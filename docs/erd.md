@@ -8,6 +8,24 @@ TutorLink uses a PostgreSQL relational database as the single source of truth fo
 
 ## Tables
 
+### `users`
+Login accounts for the admin dashboard. Supports two roles: `admin` (full access) and `tutor` (own schedule only). Tutor accounts are linked to a row in the `tutors` table.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| email | VARCHAR | Unique — used as login username |
+| hashed_password | VARCHAR | Bcrypt hashed |
+| role | ENUM | admin, tutor |
+| tutor_id | UUID | FK → tutors.id — null for admin accounts |
+| is_active | BOOLEAN | Soft delete flag |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | |
+
+Constraints: `UNIQUE (email)` · `INDEX (email, role)`
+
+---
+
 ### `parents`
 Stores parent/guardian information. Identified by phone number, which is used by the bot to recognise returning clients.
 
@@ -151,6 +169,8 @@ Constraints: `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)`
 ## Relationships
 
 ```
+users ──────────────────────────────────── tutors
+                                              │
 parents ──────────< children >──────────< bookings
                                               │
 tutors ───────────────────────────────────────┤

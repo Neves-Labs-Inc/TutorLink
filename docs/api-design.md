@@ -67,6 +67,98 @@ All `/api/*` endpoints require a valid JWT passed as a Bearer token:
 Authorization: Bearer <access_token>
 ```
 
+The JWT payload includes the user's role and tutor ID (if applicable):
+```json
+{
+  "sub": "user_uuid",
+  "role": "tutor",
+  "tutor_id": "tutor_uuid",
+  "exp": 1234567890
+}
+```
+
+---
+
+## Role-Based Access Control (RBAC)
+
+TutorLink has two roles:
+
+| Role | Access |
+|---|---|
+| `admin` | Full access to all endpoints and all data |
+| `tutor` | Read-only access to their own schedule, availability, exceptions, and bookings |
+
+Tutor accounts are scoped by `tutor_id` from the JWT. Any attempt by a tutor to access another tutor's data returns `403 Forbidden`.
+
+### Endpoint access by role
+
+| Endpoint | Admin | Tutor |
+|---|---|---|
+| `GET /api/tutors` | All tutors | Own profile only |
+| `GET /api/tutors/{id}/availability` | Any tutor | Own only |
+| `GET /api/tutors/{id}/exceptions` | Any tutor | Own only |
+| `POST/PATCH/DELETE /api/tutors/*` | ✓ | ✗ |
+| `GET /api/bookings` | All bookings | Own bookings only |
+| `POST/PATCH /api/bookings` | ✓ | ✗ |
+| `GET /api/clients` | ✓ | ✗ |
+| `GET /api/subjects` | ✓ | ✓ |
+| `POST/PATCH/DELETE /api/subjects` | ✓ | ✗ |
+| `GET /api/users` | ✓ | ✗ |
+| `POST/PATCH/DELETE /api/users` | ✓ | ✗ |
+
+---
+
+## Users
+
+```
+GET    /api/users
+GET    /api/users/{id}
+POST   /api/users
+PATCH  /api/users/{id}
+DELETE /api/users/{id}
+```
+
+Admin only. Used to create and manage admin and tutor login accounts.
+
+### `GET /api/users`
+
+Returns all user accounts.
+
+**Response**
+```json
+[
+  {
+    "id": "uuid",
+    "email": "sarah@example.com",
+    "role": "tutor",
+    "tutor_id": "uuid",
+    "is_active": true
+  }
+]
+```
+
+### `POST /api/users`
+
+Create a new user account. When creating a tutor account, provide the `tutor_id` to link it to an existing tutor profile.
+
+**Request**
+```json
+{
+  "email": "sarah@example.com",
+  "password": "temporary_password",
+  "role": "tutor",
+  "tutor_id": "uuid"
+}
+```
+
+### `PATCH /api/users/{id}`
+
+Update email, password, role, or active status.
+
+### `DELETE /api/users/{id}`
+
+Soft delete — sets `is_active = false`.
+
 ---
 
 ## Webhook

@@ -56,34 +56,34 @@ Twilio ──────────► FastAPI (Bot Backend)
 
 ```
 tutorlink/
-├── bot/                        # FastAPI backend
-│   ├── main.py                 # App entry point + Twilio webhook
-│   ├── routers/                # API route handlers
-│   │   ├── bookings.py
-│   │   ├── tutors.py
-│   │   ├── clients.py
-│   │   └── availability.py
-│   ├── services/               # Business logic
-│   │   ├── booking_service.py
-│   │   ├── availability_service.py
-│   │   └── conversation_service.py
-│   ├── models/                 # SQLAlchemy models
-│   ├── schemas/                # Pydantic schemas
-│   ├── db.py                   # Database connection
-│   └── redis_client.py         # Redis connection
-├── dashboard/                  # Vite + React frontend
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── Tutors.jsx
-│   │   │   ├── Bookings.jsx
-│   │   │   ├── Clients.jsx
-│   │   │   └── Availability.jsx
-│   │   └── components/
-│   └── vite.config.js
+├── api/                        # FastAPI service (dashboard REST API + WhatsApp bot)
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── config.py
+│   │   ├── db.py
+│   │   ├── redis_client.py
+│   │   ├── models/
+│   │   ├── schemas/
+│   │   ├── services/
+│   │   └── routers/
+│   ├── alembic/
+│   ├── tests/
+│   └── pyproject.toml
+├── dashboard/                  # Vite + React + TypeScript admin dashboard
+│   └── src/
+│       ├── pages/
+│       ├── components/
+│       ├── stores/
+│       └── lib/
+├── docker/                     # Dockerfiles
+│   ├── api.Dockerfile
+│   └── dashboard.Dockerfile
 ├── docker-compose.yml
 ├── .env.example
-└── README.md
+└── Readme.md
 ```
+
+The service is named `api/` rather than `bot/` because it serves both the Twilio webhook and the dashboard REST API from one process.
 
 ---
 
@@ -121,7 +121,15 @@ This starts:
 - PostgreSQL on port `5432`
 - Redis on port `6379`
 
-4. Expose your local webhook to Twilio using [ngrok](https://ngrok.com)
+4. Apply database migrations
+
+```bash
+docker compose run --rm api alembic upgrade head
+```
+
+Migrations are applied explicitly and never run automatically on startup.
+
+5. Expose your local webhook to Twilio using [ngrok](https://ngrok.com)
 
 ```bash
 ngrok http 8000
@@ -134,20 +142,25 @@ Set the resulting URL as your Twilio WhatsApp webhook: `https://<your-ngrok-url>
 ## Environment Variables
 
 ```env
-# Twilio
+# App
+DATABASE_URL=postgresql+psycopg://tutorlink:tutorlink@postgres:5432/tutorlink
+REDIS_URL=redis://redis:6379/0
+SECRET_KEY=change-me-generate-with-openssl-rand-hex-32
+DEBUG=true
+
+# Twilio (leave blank until Phase 7 — no webhook exists yet)
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_WHATSAPP_NUMBER=
 
-# Database
-DATABASE_URL=postgresql://user:password@postgres:5432/tutorlink
+# Postgres (container)
+POSTGRES_USER=tutorlink
+POSTGRES_PASSWORD=tutorlink
+POSTGRES_DB=tutorlink
 
-# Redis
-REDIS_URL=redis://redis:6379
-
-# App
-SECRET_KEY=
-DEBUG=true
+# Dashboard (Vite)
+VITE_API_BASE_URL=
+VITE_API_PROXY_TARGET=http://api:8000
 ```
 
 ---

@@ -5,13 +5,75 @@
 _Owned by the orchestrator. Planner must not write below this line until the next heading._
 
 - **Current phase:** 01 — Foundation
-- **Status:** Gate RUN and PASSING on the composed stack as of 2026-08-11. The plan gap is
-  resolved (D-013, T2.3). One acceptance criterion remains unproven: REQ-010's browser QA at
-  375px/1280px, blocked on a user action (see Outstanding below). Phase is not yet closed.
-- **Last verified SHA:** none. `HEAD` is still `2ae9bcc`; all Phase 1 work remains uncommitted
-  in the working tree. The user has not authorized a commit, so nothing has been committed.
-- **Next action:** run `qa-visual` once the Claude-in-Chrome site permission for
-  `localhost:5173` is granted, then — with user authorization — commit and record the SHA here.
+- **Status:** `blocked`. Twelve of thirteen requirements verified. The phase is **committed**
+  and the **clean-clone smoke has been run and passed** (2026-08-11), which closes REQ-013's
+  last open gate. REQ-010 remains the single unproven requirement and is blocked on tooling,
+  not on code or on a decision. Phase is not closed.
+- **Last verified SHA:** `dae0e55` — `feat: Phase 1 foundation — walking skeleton`, 89 files,
+  committed locally on `main` on 2026-08-11. **Not pushed.** `.env` was confirmed absent from
+  the index (`git ls-files .env` → no match; ignored at `.gitignore:2`); no `node_modules`,
+  `dist/`, `.venv`, `__pycache__` or build output was staged. Working tree clean after commit.
+- **Next action:** obtain a working browser automation channel and run `qa-visual` for
+  REQ-010. Nothing else in Phase 1 is outstanding. Do not start Phase 2 until the user
+  decides whether to accept Phase 1 with REQ-010 unproven (see "REQ-010 is now a tooling
+  blocker" below).
+
+### Clean-clone smoke — RUN AND PASSED 2026-08-11 (REQ-013 closed)
+
+Run by `verifier` against a fresh `git clone` of `dae0e55` into `/tmp/tutorlink-smoke`,
+following `Readme.md`'s Local Development steps literally. All functional criteria passed:
+
+- No undocumented step was needed. The Readme alone brought the stack up.
+- Four services started; `postgres` and `redis` `(healthy)`; `api` started only after both.
+- `alembic upgrade head` → `Running upgrade -> 0001, initial schema`. `\dt` → the 9 business
+  tables plus `alembic_version`; `\dT` → `booking_status` and `user_role`.
+- `/health` → 200 `{"status":"ok"}`; `/health/ready` → 200 `{"database":"ok","redis":"ok"}`.
+- `GET /login` → 200, serving genuine Vite dev-server SPA HTML (`/@vite/client`,
+  `/@react-refresh`, `<div id="root">`, `/src/main.tsx`) — **not** an error page. This proves
+  the dev server serves the app; it does **not** prove React Router rendered a login form.
+  That distinction is REQ-010's, and REQ-010 is still unproven.
+- `Readme.md`'s Environment Variables block and `.env.example` list the same 12 variables in
+  the same order.
+- `git status --porcelain` empty after a full build — no generated file escapes `.gitignore`.
+- Teardown clean: `docker compose down -v`, clone removed, all four host ports freed.
+
+**Orchestrator resolution of a plan-internal contradiction (REQ-013).** `verifier` returned
+BLOCKED on exactly one item: `01-03-PLAN.md:190` lists "`Readme.md` contains no reference to
+`bot/`" as an acceptance criterion, and `Readme.md:86` contains the string. That line is
+**verbatim what `01-03-PLAN.md:168-170` instructed T3.2 to write**: "Add one sentence noting
+that the service is named `api/` rather than `bot/` because it serves both the Twilio webhook
+and the dashboard REST API from one process." The plan mandates the sentence in its build
+section and forbids the substring in its acceptance section. The requirement of record,
+`REQUIREMENTS.md:149-150`, says the *Project Structure section* must not show the obsolete
+`bot/` **tree** — and it does not; the tree shows `api/`, `dashboard/`, `docker/`. **REQ-013
+is satisfied. No change to `Readme.md`.** `verifier` was correct to refuse to downgrade a
+criterion handed to it as a hard gate; resolving the contradiction is an orchestrator call,
+recorded here as one. `01-03-PLAN.md`'s acceptance bullet should be narrowed to "no reference
+to a `bot/` *directory*" at the next planner pass — planner owns that file, so it was not
+edited here.
+
+### REQ-010 is now a tooling blocker, not a permission blocker
+
+The prior state file recorded REQ-010 as waiting on the user granting the Claude-in-Chrome
+extension site permission for `localhost:5173`. That framing is **superseded**. `qa-visual`
+was re-dispatched on 2026-08-11 against a confirmed-live dev server (`/login` → 200) and
+returned BLOCKED for a different reason: **no `mcp__claude-in-chrome__*` tool exists in the
+session at all** — the extension is not connected, so there is nothing to grant permission
+to. The orchestrator independently confirmed no browser tool is registered.
+
+Headless CDP, Playwright, Puppeteer and computed-from-token analysis were all ruled out by
+the user and were **not** substituted. Nothing was fabricated: no page was loaded, no
+screenshot taken, no DOM measured.
+
+Consequently the contrast figures in this file remain **computed from CSS token values and
+still never browser-measured**: light `--border` on `--muted` 3.15:1, lowest body text
+6.13:1; dark 3.15:1 and 6.36:1. Treat them as unverified claims. Everything else REQ-010
+asks for — 375px/1280px layout of both shells, hamburger and slide-in panel, bottom tab bar,
+focus rings, no horizontal scroll, the login card's four visual states — is equally unproven.
+
+To unblock: connect the Claude-in-Chrome extension for the session (via
+`https://claude.ai/chrome` or `/chrome`), then re-run `qa-visual`. This is an environment
+gap, not a code defect — no `designer` or coder routing applies.
 
 ### Task status
 
@@ -73,17 +135,14 @@ no-op as its correctness gate.
 
 ### NOT verified — outstanding before the phase is fully closed
 
+**Exactly one item remains. Items 2 and 3 of the previous list are now done.**
+
 1. **REQ-010, entirely.** 375px/1280px layout for both shells, hamburger and slide-in panel
    behaviour, bottom tab bar, focus rings, no-horizontal-scroll, login's four visual states,
-   and measured light/dark contrast. `qa-visual` was dispatched and returned blocked: the
-   Claude-in-Chrome extension has no site permission for `localhost:5173`, which only the
-   user can grant. Headless CDP was ruled out by the user. The existing contrast figures
-   remain **computed from token values, never browser-measured**: light lowest pair
-   `--border` on `--muted` 3.15:1, lowest body text 6.13:1; dark 3.15:1 and 6.36:1.
-2. **The clean-clone smoke** (`01-03-PLAN.md`'s real gate for REQ-013). It clones the repo,
-   so it cannot run until Phase 1 is committed. Everything it would exercise has been
-   verified in place; only the from-scratch path is unproven.
-3. **The commit itself.** The tree is uncommitted, awaiting user authorisation.
+   and measured light/dark contrast. See "REQ-010 is now a tooling blocker" above for why
+   the second attempt failed and what unblocks it.
+2. ~~The clean-clone smoke.~~ **DONE 2026-08-11** against `dae0e55` — passed. REQ-013 closed.
+3. ~~The commit.~~ **DONE 2026-08-11** — `dae0e55`, local only, not pushed.
 
 ### Orchestrator decision on a leftover open question
 
@@ -104,15 +163,23 @@ defect between two concurrently-executed tasks, invisible to either one.
 
 ### Resume checklist
 
-Two user actions gate everything that is left. Neither can be done by an agent.
+**One item gates the phase, and it is an environment gap.**
 
-1. **Grant `localhost:5173` site permission in the Claude-in-Chrome extension**, then run
-   `qa-visual` against the dev server for REQ-010 (both shells at 375px and 1280px, both
-   themes, measured contrast). This is the only unproven Phase 1 requirement.
-2. **Authorise the commit.** The whole phase is uncommitted. Once committed, record the SHA
-   in "Last verified SHA" above and run the clean-clone smoke from `01-03-PLAN.md`, which
-   needs a clonable commit to exist.
-3. Then, and only then, mark Phase 1 `verified` in `ROADMAP.md` and start Phase 2.
+1. **Connect the Claude-in-Chrome extension for the session** — `https://claude.ai/chrome` or
+   `/chrome`. Granting a site permission is not enough and was never the actual problem: no
+   browser tool is registered in the session at all. Then run `qa-visual` against
+   `http://localhost:5173` for REQ-010 (both shells at 375px and 1280px, both themes,
+   **measured** contrast replacing the computed figures). This is the only unproven Phase 1
+   requirement. Do not substitute headless CDP — the user ruled it out.
+2. Then mark Phase 1 `verified` in `ROADMAP.md`. Until then it is `blocked`.
+3. **A user decision is pending:** whether to start Phase 2 with REQ-010 still unproven, or
+   to hold Phase 1 open until a browser is available. The shell compiles, builds, and is
+   served, so nothing in Phase 2 is technically blocked — but Phase 5 and 6 build directly on
+   this shell, so an unproven responsive layout compounds.
+
+To bring the stack back up after the clean-clone smoke: `docker compose up -d` from the repo
+root (the smoke required the main stack be taken down to free ports 5432/6379/8000/5173; its
+named volume was preserved — `down`, never `down -v`).
 
 Do not re-dispatch T2.2 to `designer` — its code is complete and now compiles and mounts.
 Phase 2 must discharge the D-013 removal obligation for the dev-only route bypass.

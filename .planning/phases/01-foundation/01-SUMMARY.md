@@ -3,12 +3,14 @@
 **Goal:** a runnable walking skeleton — four services up via Compose, the full schema
 migrated, the dashboard shell rendering.
 
-**Status:** gate run and passing, **one requirement outstanding**. `verifier` returned PASS
-over the combined result. REQ-010 could not be verified because it is browser-only and
-`qa-visual` is blocked on a user action. The phase is substantially, not fully, closed.
+**Status:** `blocked` — 12 of 13 requirements verified. `verifier` returned PASS over the
+combined result, and the clean-clone smoke has since been run and passed, closing REQ-013.
+REQ-010 remains the single unproven requirement: it is browser-only and no browser
+automation tooling is available. The phase is substantially, not fully, closed.
 
-**Commit:** none. `HEAD` is still `2ae9bcc` and the entire phase sits uncommitted in the
-working tree, deliberately, pending user authorisation.
+**Commit:** `dae0e55` — `feat: Phase 1 foundation — walking skeleton`, 89 files, on `main`,
+2026-08-11. **Local only; not pushed.** `.env` confirmed absent from the index; no
+`node_modules`, `dist/`, `.venv`, `__pycache__` or build output staged. Tree clean after.
 
 ---
 
@@ -62,10 +64,10 @@ mount from shadowing installed dependencies. `Readme.md` corrected to match the 
 | REQ-007 initial migration | Satisfied | up → 9 tables + 2 enums; `alembic check` clean; down → only `alembic_version`, enums dropped; re-up works; third up is a no-op |
 | REQ-008 no double-booking | Satisfied | duplicate live slot raises on `uq_booking_live_slot`; succeeds after cancelling the first |
 | REQ-009 dashboard scaffold | Satisfied | `tsc -b` / lint / build clean; single Axios instance; no web storage |
-| REQ-010 responsive shell | **NOT VERIFIED** | browser-only; `qa-visual` blocked on extension site permission |
+| REQ-010 responsive shell | **NOT VERIFIED** | browser-only; `qa-visual` blocked twice. The second attempt (2026-08-11, against a confirmed-live dev server) found **no browser tool registered in the session at all** — the extension is not connected, so there is no site permission to grant. Contrast figures remain computed, never measured |
 | REQ-011 Compose stack | Satisfied | 4 services, healthcheck ordering honoured, `node_modules` intact, volume persistence, hot reload |
 | REQ-012 env hygiene | Satisfied | `.env` ignored at `.gitignore:2`; no credentials in `.env.example`; no build output in `git status` |
-| REQ-013 accurate Readme | Satisfied, **partially proven** | content verified in place; the clean-clone smoke cannot run until there is a commit to clone |
+| REQ-013 accurate Readme | **Satisfied, fully proven** | clean-clone smoke run against `dae0e55` 2026-08-11: Readme followed literally with no undocumented step; 4 services up, healthcheck ordering honoured; `alembic upgrade head` → 9 tables + 2 enums; `/health/ready` → 200 both `ok`; `/login` → 200 serving genuine Vite SPA HTML; env-var block matches `.env.example` (12 names, same order); `git status` empty post-build. See the `bot/` resolution below |
 
 ---
 
@@ -137,14 +139,35 @@ D-011 deliberately added `day_of_week BETWEEN 0 AND 6`, but nothing enforces
 
 ---
 
+## Plan contradiction resolved by the orchestrator — REQ-013 / `bot/`
+
+`verifier` returned BLOCKED on one literal criterion: `01-03-PLAN.md:190` requires that
+`Readme.md` "contains no reference to `bot/`", and `Readme.md:86` contains the string —
+"The service is named `api/` rather than `bot/` because it serves both the Twilio webhook
+and the dashboard REST API from one process."
+
+That sentence is **verbatim what `01-03-PLAN.md:168-170` instructed T3.2 to add.** The plan
+mandates it in its build section and forbids the substring in its acceptance section; the
+two cannot both be met. The requirement of record, `REQUIREMENTS.md:149-150`, asks that the
+*Project Structure section* not show the obsolete `bot/` **tree**, and it does not — the
+tree shows `api/`, `dashboard/`, `docker/`. **REQ-013 is satisfied; `Readme.md` is
+unchanged.** `verifier` was right not to soften a gate it was handed; resolving the
+contradiction is the orchestrator's call and is recorded as such here and in `STATE.md`.
+`01-03-PLAN.md:190` should be narrowed to "no reference to a `bot/` *directory*" at the next
+planner pass — `planner` owns that file, so it was not edited.
+
 ## Outstanding
 
-1. **REQ-010 browser QA.** Needs `localhost:5173` site permission granted in the
-   Claude-in-Chrome extension — a user action. Until then the responsive behaviour and the
-   WCAG AA contrast claims are unproven; the existing contrast figures are computed from
-   token values, not measured.
-2. **The commit.** The phase is uncommitted by choice.
-3. **The clean-clone smoke** for REQ-013, which needs a commit to clone.
+**One item.** The commit and the clean-clone smoke are both done.
+
+1. **REQ-010 browser QA.** Blocked on tooling, not on a user permission and not on code. No
+   `mcp__claude-in-chrome__*` tool is registered in the session; the extension must be
+   connected (`https://claude.ai/chrome` or `/chrome`) before `qa-visual` can run. Headless
+   CDP was ruled out by the user and was not substituted — nothing was fabricated. Until
+   this runs, the responsive behaviour and every WCAG AA contrast claim are unproven; the
+   figures on record are computed from CSS tokens, not measured.
+2. ~~The commit.~~ Done — `dae0e55`, local, not pushed.
+3. ~~The clean-clone smoke.~~ Done — passed against `dae0e55`.
 
 ## Carried into Phase 2
 

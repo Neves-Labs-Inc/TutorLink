@@ -4,7 +4,7 @@ Status values: `planned` · `in-progress` · `verified` · `blocked`
 
 | # | Phase | Goal | Requirements | Status |
 |---|---|---|---|---|
-| 1 | Foundation | A runnable walking skeleton: four services up via Compose, full schema migrated, dashboard shell rendering. | REQ-001 … REQ-013 | planned |
+| 1 | Foundation | A runnable walking skeleton: four services up via Compose, full schema migrated, dashboard shell rendering. | REQ-001 … REQ-013 | blocked |
 | 2 | Auth & RBAC | Real login end to end: JWT issue/refresh, role scoping enforced server-side, dashboard guards, seeded admin. | REQ-020 … REQ-029 | planned |
 | 3 | Core CRUD API | Every non-scheduling resource readable and writable: users, subjects, clients, children, tutors, tutor-subjects. | REQ-030 … REQ-036 | planned |
 | 4 | Scheduling engine | Availability, exceptions, the three-step slot query, and bookings with conflict handling. | REQ-040 … REQ-045 | planned |
@@ -12,6 +12,13 @@ Status values: `planned` · `in-progress` · `verified` · `blocked`
 | 6 | Tutor dashboard | The three tutor views, plus proof that tutor scoping holds at the network layer. | REQ-060 … REQ-063 | planned |
 | 7 | WhatsApp bot | Twilio webhook, signature validation, Redis conversation state machine, intake and booking flows. | REQ-070 … REQ-076 | planned |
 | 8 | Deployment | Production Compose overlay on EC2, HTTPS webhook, managed-service migration path. | REQ-080 … REQ-082 | planned |
+
+**Phase 1 is `blocked`, not `verified`.** Twelve of thirteen requirements are verified and
+the phase is committed at `dae0e55`. REQ-010 (responsive shell, priority *must*) has never
+been observed in a browser: it is browser-only, and no browser automation tooling has been
+available in any session that attempted it. Phase 1 cannot be marked `verified` while a
+must-priority requirement is unproven. This blocks nothing in Phase 2 technically — the
+shell code compiles, builds, and is served — but the phase is not closed.
 
 ## Ordering rationale
 

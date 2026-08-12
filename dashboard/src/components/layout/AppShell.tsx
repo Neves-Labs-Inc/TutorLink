@@ -5,11 +5,11 @@ import { useAuthStore } from '@/stores/authStore'
 import { AdminSidebar } from './AdminSidebar'
 import { TutorNav } from './TutorNav'
 
-interface AppShellProps {
+type AppShellProps = {
   children: ReactNode
 }
 
-export function AppShell({ children }: AppShellProps) {
+export const AppShell = ({ children }: AppShellProps) => {
   const role = useAuthStore((state) => state.role)
   // The chrome follows the authenticated role; a guard has already established a non-null one.
   const isTutor = role === 'tutor'

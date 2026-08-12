@@ -1,7 +1,3 @@
-"""Dashboard login accounts."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 from typing import TYPE_CHECKING
@@ -30,9 +26,7 @@ class User(Base):
     tutor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tutors.id"), nullable=True
     )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -40,4 +34,4 @@ class User(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    tutor: Mapped[Tutor | None] = relationship(back_populates="users")
+    tutor: Mapped["Tutor | None"] = relationship(back_populates="users")

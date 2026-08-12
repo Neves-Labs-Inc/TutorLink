@@ -29,7 +29,7 @@ const tabLinkClasses = ({ isActive }: { isActive: boolean }) =>
       : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
   )
 
-export function TutorNav() {
+export const TutorNav = () => {
   const { logout } = useAuth()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
 
@@ -41,9 +41,7 @@ export function TutorNav() {
   return (
     <>
       <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-sidebar-border bg-sidebar px-4 md:hidden">
-        <span className="font-heading text-base font-semibold tracking-tight text-sidebar-foreground">
-          TutorLink
-        </span>
+        <Brand />
         <button
           type="button"
           onClick={handleLogout}
@@ -57,9 +55,7 @@ export function TutorNav() {
 
       <aside className="hidden border-r border-sidebar-border bg-sidebar md:sticky md:top-0 md:flex md:h-dvh md:w-56 md:shrink-0 md:flex-col">
         <div className="flex h-14 items-center border-b border-sidebar-border px-6">
-          <span className="font-heading text-base font-semibold tracking-tight text-sidebar-foreground">
-            TutorLink
-          </span>
+          <Brand />
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Tutor">
           {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
@@ -102,3 +98,9 @@ export function TutorNav() {
     </>
   )
 }
+
+const Brand = () => (
+  <span className="font-heading text-base font-semibold tracking-tight text-sidebar-foreground">
+    TutorLink
+  </span>
+)

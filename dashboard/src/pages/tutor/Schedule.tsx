@@ -1,3 +1,1 @@
-export function Schedule() {
-  return <h1>Schedule</h1>
-}
+export const Schedule = () => <h1>Schedule</h1>

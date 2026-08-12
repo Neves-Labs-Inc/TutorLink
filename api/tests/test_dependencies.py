@@ -14,8 +14,6 @@ Phase 3 router would be written — they take `TutorScope`, never read it, and q
 and the tests assert that such a route cannot answer with rows at all.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta

@@ -1,5 +1,4 @@
-"""Every ORM model. Importing this package populates `Base.metadata` for Alembic."""
-
+from app.db import Base
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -16,6 +15,8 @@ from app.models.refresh_token import RefreshToken
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
+
+metadata = Base.metadata
 
 __all__ = [
     "BOOKING_STATUS_ENUM_NAME",
@@ -34,4 +35,5 @@ __all__ = [
     "TutorSubject",
     "User",
     "UserRole",
+    "metadata",
 ]

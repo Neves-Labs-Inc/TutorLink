@@ -1,7 +1,3 @@
-"""Tutoring sessions."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 from typing import TYPE_CHECKING
@@ -66,7 +62,7 @@ class Booking(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    child: Mapped[Child] = relationship(back_populates="bookings")
-    tutor: Mapped[Tutor] = relationship(back_populates="bookings")
-    subject: Mapped[Subject] = relationship(back_populates="bookings")
-    availability: Mapped[TutorAvailability] = relationship(back_populates="bookings")
+    child: Mapped["Child"] = relationship(back_populates="bookings")
+    tutor: Mapped["Tutor"] = relationship(back_populates="bookings")
+    subject: Mapped["Subject"] = relationship(back_populates="bookings")
+    availability: Mapped["TutorAvailability"] = relationship(back_populates="bookings")

@@ -1,5 +1,3 @@
-"""Typed application configuration, sourced exclusively from the environment."""
-
 from functools import lru_cache
 
 from pydantic import field_validator

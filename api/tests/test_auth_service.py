@@ -79,8 +79,8 @@ def _count_rows(db: Session, family_id: uuid.UUID, *, live_only: bool) -> int:
     """Counts rows by querying the database, never the identity map, so the assertion proves
     the UPDATE was actually emitted rather than that an attribute was set in Python."""
     db.expire_all()
-    query = select(func.count()).select_from(RefreshToken).where(
-        RefreshToken.family_id == family_id
+    query = (
+        select(func.count()).select_from(RefreshToken).where(RefreshToken.family_id == family_id)
     )
     if live_only:
         query = query.where(RefreshToken.revoked_at.is_(None))

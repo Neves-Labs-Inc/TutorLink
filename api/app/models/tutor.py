@@ -1,7 +1,3 @@
-"""Tutor profiles and the tutor↔subject junction."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 from typing import TYPE_CHECKING
@@ -39,9 +35,7 @@ class Tutor(Base):
     phone_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -49,11 +43,11 @@ class Tutor(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    users: Mapped[list[User]] = relationship(back_populates="tutor")
-    tutor_subjects: Mapped[list[TutorSubject]] = relationship(back_populates="tutor")
-    availability: Mapped[list[TutorAvailability]] = relationship(back_populates="tutor")
-    exceptions: Mapped[list[TutorAvailabilityException]] = relationship(back_populates="tutor")
-    bookings: Mapped[list[Booking]] = relationship(back_populates="tutor")
+    users: Mapped[list["User"]] = relationship(back_populates="tutor")
+    tutor_subjects: Mapped[list["TutorSubject"]] = relationship(back_populates="tutor")
+    availability: Mapped[list["TutorAvailability"]] = relationship(back_populates="tutor")
+    exceptions: Mapped[list["TutorAvailabilityException"]] = relationship(back_populates="tutor")
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="tutor")
 
 
 class TutorSubject(Base):
@@ -74,5 +68,5 @@ class TutorSubject(Base):
     )
     grade_levels: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
 
-    tutor: Mapped[Tutor] = relationship(back_populates="tutor_subjects")
-    subject: Mapped[Subject] = relationship(back_populates="tutor_subjects")
+    tutor: Mapped["Tutor"] = relationship(back_populates="tutor_subjects")
+    subject: Mapped["Subject"] = relationship(back_populates="tutor_subjects")

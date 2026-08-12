@@ -1,7 +1,3 @@
-"""Canonical subject list."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 from typing import TYPE_CHECKING
@@ -25,12 +21,10 @@ class Subject(Base):
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    tutor_subjects: Mapped[list[TutorSubject]] = relationship(back_populates="subject")
-    bookings: Mapped[list[Booking]] = relationship(back_populates="subject")
+    tutor_subjects: Mapped[list["TutorSubject"]] = relationship(back_populates="subject")
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="subject")

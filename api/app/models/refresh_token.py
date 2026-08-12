@@ -1,7 +1,3 @@
-"""Server-side record of live refresh tokens. Stores no token string or hash."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 
@@ -29,9 +25,7 @@ class RefreshToken(Base):
     issued_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    expires_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

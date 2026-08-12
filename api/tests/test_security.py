@@ -1,5 +1,3 @@
-"""Unit tests for password hashing and JWT primitives. No database, no fixtures."""
-
 import uuid
 from datetime import UTC, datetime, timedelta
 

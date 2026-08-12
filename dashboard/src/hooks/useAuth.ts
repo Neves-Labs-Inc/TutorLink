@@ -7,11 +7,7 @@ import { useAuthStore } from '@/stores/authStore'
 
 const LOGIN_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 
-function landingPath(role: Role): string {
-  return role === 'admin' ? '/dashboard' : '/schedule'
-}
-
-export function useAuth() {
+export const useAuth = () => {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const status = useAuthStore((state) => state.status)
@@ -24,7 +20,9 @@ export function useAuth() {
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
       const { data } = await requestLogin(email, password)
       const claims = decodeAccessToken(data.access_token)
+
       if (claims === null) throw new Error('Unreadable access token')
+
       return { accessToken: data.access_token, role: claims.role }
     },
     onSuccess: ({ accessToken, role: nextRole }) => {
@@ -68,3 +66,5 @@ export function useAuth() {
         : (errorDetail(loginMutation.error) ?? LOGIN_FALLBACK_ERROR),
   }
 }
+
+const landingPath = (role: Role): string => (role === 'admin' ? '/dashboard' : '/schedule')

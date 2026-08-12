@@ -3,7 +3,7 @@ import { decodeAccessToken, type Role } from '@/lib/auth'
 
 export type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
 
-interface AuthState {
+type AuthState = {
   status: AuthStatus
   accessToken: string | null
   role: Role | null
@@ -35,11 +35,12 @@ export const useAuthStore = create<AuthState>((set) => ({
   // lands in exactly the same state as a logged-out user.
   setSession: ({ accessToken }) => {
     const claims = decodeAccessToken(accessToken)
+
     if (claims === null) {
       set(ANONYMOUS)
-      return
+    } else {
+      set({ status: 'authenticated', accessToken, role: claims.role, tutorId: claims.tutorId })
     }
-    set({ status: 'authenticated', accessToken, role: claims.role, tutorId: claims.tutorId })
   },
   clearSession: () => set(ANONYMOUS),
 }))

@@ -64,5 +64,4 @@ function Button({
   )
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- shadcn exports the cva helper alongside the component
-export { Button, buttonVariants }
+export { Button }

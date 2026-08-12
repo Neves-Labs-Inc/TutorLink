@@ -1,6 +1,10 @@
 import { useEffect, type ReactNode } from 'react'
 import { refreshSession } from '@/lib/api'
 
+type AuthProviderProps = {
+  children: ReactNode
+}
+
 // Module-level, not a `useRef`: the bootstrap refresh must fire once per page load, full
 // stop. `main.tsx` renders inside <React.StrictMode>, which deliberately mounts, unmounts
 // and remounts every component in development, running this effect twice. Refresh tokens
@@ -14,18 +18,19 @@ import { refreshSession } from '@/lib/api'
 // component instance, so any remount would start over.
 let bootstrapStarted = false
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+// Gates nothing: RouteGuard reads `status` and decides what to render while it is
+// 'loading'. Blocking here would flash a spinner over the login page too.
+export const AuthProvider = ({ children }: AuthProviderProps) => {
   useEffect(() => {
-    if (bootstrapStarted) return
-    bootstrapStarted = true
+    if (!bootstrapStarted) {
+      bootstrapStarted = true
 
-    refreshSession().catch(() => {
-      // No cookie, or an expired/revoked one. `refreshSession` has already put the store in
-      // the anonymous state, which is the correct resting state for a first-time visitor.
-    })
+      refreshSession().catch(() => {
+        // No cookie, or an expired/revoked one. `refreshSession` has already put the store in
+        // the anonymous state, which is the correct resting state for a first-time visitor.
+      })
+    }
   }, [])
 
-  // Gates nothing: RouteGuard reads `status` and decides what to render while it is
-  // 'loading'. Blocking here would flash a spinner over the login page too.
   return children
 }

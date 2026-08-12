@@ -57,8 +57,6 @@ loads the row, and calls `assert_can_access_tutor` on its owner — that pattern
 it can know the owner, so it deliberately does not arm the guard above.
 """
 
-from __future__ import annotations
-
 import uuid
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -204,16 +202,18 @@ def _decide_tutor_scope(
     | tutor with `tutor_id` None | anything       | **403**          |
     """
     if user.role is UserRole.ADMIN:
-        return requested_tutor_id
+        scoped_tutor_id = requested_tutor_id
+    else:
+        if user.tutor_id is None:
+            raise _forbidden(TUTOR_SCOPE_ERROR)
 
-    if user.tutor_id is None:
-        raise _forbidden(TUTOR_SCOPE_ERROR)
+        if requested_tutor_id is not None and requested_tutor_id != user.tutor_id:
+            raise _forbidden(TUTOR_SCOPE_ERROR)
 
-    if requested_tutor_id is not None and requested_tutor_id != user.tutor_id:
-        raise _forbidden(TUTOR_SCOPE_ERROR)
+        # Not `requested_tutor_id`: a tutor who asked for nothing is scoped to themselves.
+        scoped_tutor_id = user.tutor_id
 
-    # Not `requested_tutor_id`: a tutor who asked for nothing is scoped to themselves.
-    return user.tutor_id
+    return scoped_tutor_id
 
 
 def _is_tutor_owned(mapper: Mapper[Any]) -> bool:
@@ -228,19 +228,19 @@ def _guard_unapplied_scope(scope: ResolvedTutorScope) -> Callable[[ORMExecuteSta
     """Build the `do_orm_execute` hook that refuses tutor-owned reads until `scope` is read."""
 
     def guard(state: ORMExecuteState) -> None:
-        if scope.applied or not (state.is_select or state.is_update or state.is_delete):
-            return
+        is_query = state.is_select or state.is_update or state.is_delete
+        offenders: list[str] = []
 
-        offenders = sorted({m.class_.__name__ for m in state.all_mappers if _is_tutor_owned(m)})
-        if not offenders:
-            return
+        if not scope.applied and is_query:
+            offenders = sorted({m.class_.__name__ for m in state.all_mappers if _is_tutor_owned(m)})
 
-        raise TutorScopeNotApplied(
-            f"{', '.join(offenders)} queried before this request's tutor scope was applied. "
-            "Pass `scope.tutor_id` into the service call that builds this query, or — if the "
-            "route loads a single row and checks its owner — depend on `Principal` and "
-            "`assert_can_access_tutor` instead of on `TutorScope`."
-        )
+        if offenders:
+            raise TutorScopeNotApplied(
+                f"{', '.join(offenders)} queried before this request's tutor scope was applied. "
+                "Pass `scope.tutor_id` into the service call that builds this query, or — if the "
+                "route loads a single row and checks its owner — depend on `Principal` and "
+                "`assert_can_access_tutor` instead of on `TutorScope`."
+            )
 
     return guard
 
@@ -284,8 +284,7 @@ def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None)
     before it can know the owner, so there is no filter to apply up front and nothing for the
     unapplied-scope guard to check.
     """
-    if user.role is UserRole.ADMIN:
-        return
-
-    if user.tutor_id is None or owner_tutor_id != user.tutor_id:
+    if user.role is not UserRole.ADMIN and (
+        user.tutor_id is None or owner_tutor_id != user.tutor_id
+    ):
         raise _forbidden(TUTOR_SCOPE_ERROR)

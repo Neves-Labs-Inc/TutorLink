@@ -1,6 +1,4 @@
-"""Metadata-level assertions about the ERD schema. No live database required."""
-
-from app.db import Base
+from app.models import metadata
 
 EXPECTED_TABLES = {
     "users",
@@ -20,21 +18,15 @@ NON_ERD_TABLES = {
 
 
 def test_all_erd_tables_registered() -> None:
-    import app.models  # noqa: F401  — import registers every model on Base.metadata
-
-    assert EXPECTED_TABLES <= set(Base.metadata.tables)
+    assert EXPECTED_TABLES <= set(metadata.tables)
 
 
 def test_no_unexpected_tables() -> None:
-    import app.models  # noqa: F401
-
-    assert set(Base.metadata.tables) == EXPECTED_TABLES | NON_ERD_TABLES
+    assert set(metadata.tables) == EXPECTED_TABLES | NON_ERD_TABLES
 
 
 def test_partial_unique_index_on_bookings() -> None:
-    import app.models  # noqa: F401
-
-    bookings = Base.metadata.tables["bookings"]
+    bookings = metadata.tables["bookings"]
     index = next(i for i in bookings.indexes if i.name == "uq_booking_live_slot")
 
     assert index.unique is True

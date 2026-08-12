@@ -1,5 +1,3 @@
-"""Tests for the idempotent first-admin seed command."""
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

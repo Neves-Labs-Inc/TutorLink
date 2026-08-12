@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-interface UiState {
+type UiState = {
   mobileNavOpen: boolean
   toggleMobileNav: () => void
   closeMobileNav: () => void

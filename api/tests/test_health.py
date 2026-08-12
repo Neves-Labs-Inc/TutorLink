@@ -1,5 +1,3 @@
-"""Health probe behaviour. No live PostgreSQL or Redis is required."""
-
 import pytest
 from fastapi.testclient import TestClient
 

@@ -1,7 +1,3 @@
-"""Children belonging to a parent."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 from typing import TYPE_CHECKING
@@ -38,5 +34,5 @@ class Child(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    parent: Mapped[Parent] = relationship(back_populates="children")
-    bookings: Mapped[list[Booking]] = relationship(back_populates="child")
+    parent: Mapped["Parent"] = relationship(back_populates="children")
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="child")

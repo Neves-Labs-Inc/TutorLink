@@ -1,5 +1,3 @@
-"""Liveness and readiness probes."""
-
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 

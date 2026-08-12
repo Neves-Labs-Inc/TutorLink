@@ -16,6 +16,10 @@ import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
 import { useUiStore } from '@/stores/uiStore'
 
+type NavBodyProps = {
+  onNavigate?: () => void
+}
+
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/tutors', label: 'Tutors', icon: GraduationCap },
@@ -34,54 +38,16 @@ const linkClasses = ({ isActive }: { isActive: boolean }) =>
       : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
   )
 
-function Brand() {
-  return (
-    <span className="font-heading text-base font-semibold tracking-tight text-sidebar-foreground">
-      TutorLink
-    </span>
-  )
-}
+const logoutButtonClasses = cn(
+  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+  'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+  'outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar',
+)
 
-function NavBody({ onNavigate }: { onNavigate?: () => void }) {
-  const { logout } = useAuth()
-  const [isLoggingOut, setIsLoggingOut] = useState(false)
+const iconButtonClasses =
+  'inline-flex size-10 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none'
 
-  const handleLogout = () => {
-    setIsLoggingOut(true)
-    onNavigate?.()
-    logout()
-  }
-
-  return (
-    <>
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Admin">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
-          <NavLink key={to} to={to} className={linkClasses} onClick={onNavigate}>
-            <Icon aria-hidden="true" className="size-4 shrink-0" />
-            <span className="truncate">{label}</span>
-          </NavLink>
-        ))}
-      </nav>
-      <div className="border-t border-sidebar-border px-3 py-3">
-        <button
-          type="button"
-          onClick={handleLogout}
-          disabled={isLoggingOut}
-          className={cn(
-            'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-            'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-            'outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar',
-          )}
-        >
-          <LogOut aria-hidden="true" className="size-4 shrink-0" />
-          <span>Logout</span>
-        </button>
-      </div>
-    </>
-  )
-}
-
-export function AdminSidebar() {
+export const AdminSidebar = () => {
   const mobileNavOpen = useUiStore((state) => state.mobileNavOpen)
   const toggleMobileNav = useUiStore((state) => state.toggleMobileNav)
   const closeMobileNav = useUiStore((state) => state.closeMobileNav)
@@ -90,50 +56,51 @@ export function AdminSidebar() {
   const triggerRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    if (!mobileNavOpen) return
+    let cleanup: (() => void) | undefined
 
-    const panel = panelRef.current
-    const trigger = triggerRef.current
-    const focusables = () =>
-      Array.from(
-        panel?.querySelectorAll<HTMLElement>('a[href], button:not([disabled])') ?? [],
-      )
+    if (mobileNavOpen) {
+      const panel = panelRef.current
+      const trigger = triggerRef.current
+      const focusables = () =>
+        Array.from(panel?.querySelectorAll<HTMLElement>('a[href], button:not([disabled])') ?? [])
 
-    focusables()[0]?.focus()
+      focusables()[0]?.focus()
 
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        closeMobileNav()
-        return
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          closeMobileNav()
+        } else if (event.key === 'Tab') {
+          const items = focusables()
+
+          if (items.length > 0) {
+            const first = items[0]
+            const last = items[items.length - 1]
+            const active = document.activeElement as HTMLElement | null
+
+            if (event.shiftKey && (active === first || !panel?.contains(active))) {
+              event.preventDefault()
+              last.focus()
+            } else if (!event.shiftKey && (active === last || !panel?.contains(active))) {
+              event.preventDefault()
+              first.focus()
+            }
+          }
+        }
       }
-      if (event.key !== 'Tab') return
 
-      const items = focusables()
-      if (items.length === 0) return
+      const previousOverflow = document.body.style.overflow
+      document.body.style.overflow = 'hidden'
+      document.addEventListener('keydown', onKeyDown)
 
-      const first = items[0]
-      const last = items[items.length - 1]
-      const active = document.activeElement as HTMLElement | null
-
-      if (event.shiftKey && (active === first || !panel?.contains(active))) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && (active === last || !panel?.contains(active))) {
-        event.preventDefault()
-        first.focus()
+      cleanup = () => {
+        document.removeEventListener('keydown', onKeyDown)
+        document.body.style.overflow = previousOverflow
+        trigger?.focus()
       }
     }
 
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    document.addEventListener('keydown', onKeyDown)
-
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-      document.body.style.overflow = previousOverflow
-      trigger?.focus()
-    }
+    return cleanup
   }, [mobileNavOpen, closeMobileNav])
 
   return (
@@ -145,7 +112,7 @@ export function AdminSidebar() {
           onClick={toggleMobileNav}
           aria-label="Open navigation menu"
           aria-expanded={mobileNavOpen}
-          className="-ml-2 inline-flex size-10 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+          className={cn('-ml-2', iconButtonClasses)}
         >
           <Menu aria-hidden="true" className="size-5" />
         </button>
@@ -179,7 +146,7 @@ export function AdminSidebar() {
                 type="button"
                 onClick={closeMobileNav}
                 aria-label="Close navigation menu"
-                className="-mr-2 inline-flex size-10 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                className={cn('-mr-2', iconButtonClasses)}
               >
                 <X aria-hidden="true" className="size-5" />
               </button>
@@ -188,6 +155,47 @@ export function AdminSidebar() {
           </div>
         </div>
       )}
+    </>
+  )
+}
+
+const Brand = () => (
+  <span className="font-heading text-base font-semibold tracking-tight text-sidebar-foreground">
+    TutorLink
+  </span>
+)
+
+const NavBody = ({ onNavigate }: NavBodyProps) => {
+  const { logout } = useAuth()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+
+  const handleLogout = () => {
+    setIsLoggingOut(true)
+    onNavigate?.()
+    logout()
+  }
+
+  return (
+    <>
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Admin">
+        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+          <NavLink key={to} to={to} className={linkClasses} onClick={onNavigate}>
+            <Icon aria-hidden="true" className="size-4 shrink-0" />
+            <span className="truncate">{label}</span>
+          </NavLink>
+        ))}
+      </nav>
+      <div className="border-t border-sidebar-border px-3 py-3">
+        <button
+          type="button"
+          onClick={handleLogout}
+          disabled={isLoggingOut}
+          className={logoutButtonClasses}
+        >
+          <LogOut aria-hidden="true" className="size-4 shrink-0" />
+          <span>Logout</span>
+        </button>
+      </div>
     </>
   )
 }

@@ -7,38 +7,34 @@ import { Dashboard } from '@/pages/admin/Dashboard'
 import { Schedule } from '@/pages/tutor/Schedule'
 import { NotFound } from '@/pages/NotFound'
 
-function App() {
-  return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/dashboard"
-            element={
-              <RouteGuard allow={['admin']}>
-                <AppShell>
-                  <Dashboard />
-                </AppShell>
-              </RouteGuard>
-            }
-          />
-          <Route
-            path="/schedule"
-            element={
-              <RouteGuard allow={['tutor']}>
-                <AppShell>
-                  <Schedule />
-                </AppShell>
-              </RouteGuard>
-            }
-          />
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
-  )
-}
-
-export default App
+export const App = () => (
+  <BrowserRouter>
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/dashboard"
+          element={
+            <RouteGuard allow={['admin']}>
+              <AppShell>
+                <Dashboard />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/schedule"
+          element={
+            <RouteGuard allow={['tutor']}>
+              <AppShell>
+                <Schedule />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </AuthProvider>
+  </BrowserRouter>
+)

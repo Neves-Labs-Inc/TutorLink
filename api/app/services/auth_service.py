@@ -11,8 +11,6 @@ success path will roll the revocation back and the whole reuse defence silently 
 `revoke_family_for_token` likewise writes and returns without committing.
 """
 
-from __future__ import annotations
-
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -155,18 +153,15 @@ def revoke_family_for_token(db: Session, *, presented: str) -> None:
     try:
         claims = decode_token(presented, expected_type=REFRESH_TOKEN_TYPE)
     except TokenError:
-        return
+        claims = None
 
-    row = db.get(RefreshToken, claims.jti)
-    if row is None:
-        return
+    row = db.get(RefreshToken, claims.jti) if claims is not None else None
 
-    _revoke_family(db, family_id=row.family_id)
+    if row is not None:
+        _revoke_family(db, family_id=row.family_id)
 
 
-def _mint(
-    db: Session, *, user: User, family_id: uuid.UUID
-) -> tuple[RefreshToken, IssuedTokens]:
+def _mint(db: Session, *, user: User, family_id: uuid.UUID) -> tuple[RefreshToken, IssuedTokens]:
     jti = uuid.uuid4()
     refresh_token, refresh_expires_at = create_refresh_token(
         user_id=user.id, jti=jti, family_id=family_id

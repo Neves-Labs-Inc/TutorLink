@@ -1,7 +1,3 @@
-"""Recurring weekly availability and date-range exceptions."""
-
-from __future__ import annotations
-
 import datetime
 import uuid
 from typing import TYPE_CHECKING
@@ -39,9 +35,7 @@ class TutorAvailability(Base):
         UniqueConstraint(
             "tutor_id", "day_of_week", "start_time", name="uq_tutor_availability_slot"
         ),
-        CheckConstraint(
-            "day_of_week BETWEEN 0 AND 6", name="ck_tutor_availability_day_of_week"
-        ),
+        CheckConstraint("day_of_week BETWEEN 0 AND 6", name="ck_tutor_availability_day_of_week"),
         Index("ix_tutor_availability_tutor_id_day_of_week", "tutor_id", "day_of_week"),
     )
 
@@ -54,9 +48,7 @@ class TutorAvailability(Base):
     day_of_week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     start_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
     end_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -64,8 +56,8 @@ class TutorAvailability(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    tutor: Mapped[Tutor] = relationship(back_populates="availability")
-    bookings: Mapped[list[Booking]] = relationship(back_populates="availability")
+    tutor: Mapped["Tutor"] = relationship(back_populates="availability")
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="availability")
 
 
 class TutorAvailabilityException(Base):
@@ -95,4 +87,4 @@ class TutorAvailabilityException(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    tutor: Mapped[Tutor] = relationship(back_populates="exceptions")
+    tutor: Mapped["Tutor"] = relationship(back_populates="exceptions")

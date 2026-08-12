@@ -3,10 +3,9 @@
 **Goal:** a runnable walking skeleton — four services up via Compose, the full schema
 migrated, the dashboard shell rendering.
 
-**Status:** `blocked` — 12 of 13 requirements verified. `verifier` returned PASS over the
-combined result, and the clean-clone smoke has since been run and passed, closing REQ-013.
-REQ-010 remains the single unproven requirement: it is browser-only and no browser
-automation tooling is available. The phase is substantially, not fully, closed.
+**Status:** `verified` — 13 of 13 requirements proven. `verifier` returned PASS over the
+combined result, the clean-clone smoke passed (REQ-013), and REQ-010 was browser-verified on
+2026-08-12 once the Claude-in-Chrome extension was connected. The phase is closed.
 
 **Commit:** `dae0e55` — `feat: Phase 1 foundation — walking skeleton`, 89 files, on `main`,
 2026-08-11. **Local only; not pushed.** `.env` confirmed absent from the index; no
@@ -64,7 +63,7 @@ mount from shadowing installed dependencies. `Readme.md` corrected to match the 
 | REQ-007 initial migration | Satisfied | up → 9 tables + 2 enums; `alembic check` clean; down → only `alembic_version`, enums dropped; re-up works; third up is a no-op |
 | REQ-008 no double-booking | Satisfied | duplicate live slot raises on `uq_booking_live_slot`; succeeds after cancelling the first |
 | REQ-009 dashboard scaffold | Satisfied | `tsc -b` / lint / build clean; single Axios instance; no web storage |
-| REQ-010 responsive shell | **NOT VERIFIED** | browser-only; `qa-visual` blocked twice. The second attempt (2026-08-11, against a confirmed-live dev server) found **no browser tool registered in the session at all** — the extension is not connected, so there is no site permission to grant. Contrast figures remain computed, never measured |
+| REQ-010 responsive shell | **Satisfied, browser-verified** | 2026-08-12, third attempt, first with tooling available. Both shells at 375px/1280px in both themes; hamburger panel dismisses via backdrop and Escape with focus restored; six admin items match `docs/admin-dashboard-design.md:51-58`; tutor bottom tab bar, 3 items; login's four states driven, zero `/auth` calls; no 375px overflow, no FOUC; console clean. Contrast **measured from the rendered DOM** — found `dark:bg-input/30` putting the input border at 2.47:1 (AA needs 3:1); removed, now 3.41:1 |
 | REQ-011 Compose stack | Satisfied | 4 services, healthcheck ordering honoured, `node_modules` intact, volume persistence, hot reload |
 | REQ-012 env hygiene | Satisfied | `.env` ignored at `.gitignore:2`; no credentials in `.env.example`; no build output in `git status` |
 | REQ-013 accurate Readme | **Satisfied, fully proven** | clean-clone smoke run against `dae0e55` 2026-08-11: Readme followed literally with no undocumented step; 4 services up, healthcheck ordering honoured; `alembic upgrade head` → 9 tables + 2 enums; `/health/ready` → 200 both `ok`; `/login` → 200 serving genuine Vite SPA HTML; env-var block matches `.env.example` (12 names, same order); `git status` empty post-build. See the `bot/` resolution below |
@@ -158,16 +157,17 @@ planner pass — `planner` owns that file, so it was not edited.
 
 ## Outstanding
 
-**One item.** The commit and the clean-clone smoke are both done.
+**None.** All three items are done.
 
-1. **REQ-010 browser QA.** Blocked on tooling, not on a user permission and not on code. No
-   `mcp__claude-in-chrome__*` tool is registered in the session; the extension must be
-   connected (`https://claude.ai/chrome` or `/chrome`) before `qa-visual` can run. Headless
-   CDP was ruled out by the user and was not substituted — nothing was fabricated. Until
-   this runs, the responsive behaviour and every WCAG AA contrast claim are unproven; the
-   figures on record are computed from CSS tokens, not measured.
-2. ~~The commit.~~ Done — `dae0e55`, local, not pushed.
+1. ~~REQ-010 browser QA.~~ Done 2026-08-12 — see the requirements table and `STATE.md`. One
+   WCAG AA defect found and fixed (`input.tsx`, `dark:bg-input/30` removed). Only Chrome was
+   used; headless CDP stayed ruled out and nothing was fabricated.
+2. ~~The commit.~~ Done — `dae0e55`, local, not pushed. The REQ-010 fix awaits its own commit.
 3. ~~The clean-clone smoke.~~ Done — passed against `dae0e55`.
+
+Three things REQ-010 did **not** cover, carried as caveats rather than gates: hover-state
+contrast, an exhaustive lowest-text-pair sweep of every route, and iOS Safari rendering
+(`safe-area-inset`, `100dvh`) — desktop Chrome only.
 
 ## Carried into Phase 2
 

@@ -4,8 +4,8 @@ Status values: `planned` · `in-progress` · `verified` · `blocked`
 
 | # | Phase | Goal | Requirements | Status |
 |---|---|---|---|---|
-| 1 | Foundation | A runnable walking skeleton: four services up via Compose, full schema migrated, dashboard shell rendering. | REQ-001 … REQ-013 | blocked |
-| 2 | Auth & RBAC | Real login end to end: JWT issue/refresh with rotation and server-side revocation, role scoping enforced server-side, dashboard guards, seeded admin. | REQ-020 … REQ-029, REQ-02A | in-progress |
+| 1 | Foundation | A runnable walking skeleton: four services up via Compose, full schema migrated, dashboard shell rendering. | REQ-001 … REQ-013 | verified |
+| 2 | Auth & RBAC | Real login end to end: JWT issue/refresh with rotation and server-side revocation, role scoping enforced server-side, dashboard guards, seeded admin. | REQ-020 … REQ-029, REQ-02A | verified |
 | 3 | Core CRUD API | Every non-scheduling resource readable and writable: users, subjects, clients, children, tutors, tutor-subjects. | REQ-030 … REQ-036 | planned |
 | 4 | Scheduling engine | Availability, exceptions, the three-step slot query, and bookings with conflict handling. | REQ-040 … REQ-045 | planned |
 | 5 | Admin dashboard | The six admin views bound to live data, with the shared table/slide-over component set. | REQ-050 … REQ-058 | planned |
@@ -13,12 +13,18 @@ Status values: `planned` · `in-progress` · `verified` · `blocked`
 | 7 | WhatsApp bot | Twilio webhook, signature validation, Redis conversation state machine, intake and booking flows. | REQ-070 … REQ-076 | planned |
 | 8 | Deployment | Production Compose overlay on EC2, HTTPS webhook, managed-service migration path. | REQ-080 … REQ-082 | planned |
 
-**Phase 1 is `blocked`, not `verified`.** Twelve of thirteen requirements are verified and
-the phase is committed at `dae0e55`. REQ-010 (responsive shell, priority *must*) has never
-been observed in a browser: it is browser-only, and no browser automation tooling has been
-available in any session that attempted it. Phase 1 cannot be marked `verified` while a
-must-priority requirement is unproven. This blocks nothing in Phase 2 technically — the
-shell code compiles, builds, and is served — but the phase is not closed.
+**Phase 1 is `verified` as of 2026-08-12.** All thirteen requirements are proven. REQ-010,
+the last open one, was verified in a real browser on 2026-08-12 once the Claude-in-Chrome
+extension was connected — the third attempt, and the first with browser tooling actually
+available. Both shells were exercised at 375px and 1280px in both themes, the login card's
+four visual states were driven, and contrast was **measured from the rendered DOM** rather
+than computed from CSS token values.
+
+That measurement found and fixed one WCAG AA defect: the dark-theme input border sat at
+2.47:1 against its own composited fill, below the 3:1 required for UI component boundaries.
+Cause was `dark:bg-input/30` in shadcn's stock `Input` — a 30%-opacity fill of the border
+token itself, which nearly dissolved the border into its own background. Removed; the border
+now measures 3.41:1. Light theme was never affected (it used `bg-transparent`, 3.47:1).
 
 ## Ordering rationale
 

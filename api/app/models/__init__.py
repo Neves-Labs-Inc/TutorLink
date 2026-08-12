@@ -12,6 +12,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.parent import Parent
+from app.models.refresh_token import RefreshToken
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -25,6 +26,7 @@ __all__ = [
     "BookingStatus",
     "Child",
     "Parent",
+    "RefreshToken",
     "Subject",
     "Tutor",
     "TutorAvailability",

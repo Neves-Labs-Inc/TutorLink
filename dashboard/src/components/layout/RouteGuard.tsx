@@ -10,21 +10,17 @@ interface RouteGuardProps {
 }
 
 export function RouteGuard({ allow, children }: RouteGuardProps) {
+  const status = useAuthStore((state) => state.status)
   const role = useAuthStore((state) => state.role)
-  const accessToken = useAuthStore((state) => state.accessToken)
+
+  // The access token dies on reload while the refresh cookie survives, so on the first paint
+  // of every page load the bootstrap refresh is still in flight and `role` is null without
+  // the visitor being anonymous. Redirecting here would sign every user out on every reload.
+  if (status === 'loading') {
+    return <div aria-busy="true" />
+  }
 
   if (role === null) {
-    // Dev-only escape hatch (STATE.md D-013). Phase 1 ships no auth, so `role` is always
-    // null and every protected route would otherwise redirect to /login, making the shell
-    // impossible to inspect. `import.meta.env.DEV` is statically replaced with `false` by
-    // `vite build`, so this branch is dead-code-eliminated from every production bundle.
-    // Narrow or remove in Phase 2 when real login lands — see the note at the end of this task.
-    const devNoAuth = import.meta.env.DEV && accessToken === null
-
-    if (devNoAuth) {
-      return children
-    }
-
     return <Navigate to="/login" replace />
   }
 

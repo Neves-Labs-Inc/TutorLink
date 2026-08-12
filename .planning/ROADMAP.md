@@ -5,7 +5,7 @@ Status values: `planned` · `in-progress` · `verified` · `blocked`
 | # | Phase | Goal | Requirements | Status |
 |---|---|---|---|---|
 | 1 | Foundation | A runnable walking skeleton: four services up via Compose, full schema migrated, dashboard shell rendering. | REQ-001 … REQ-013 | blocked |
-| 2 | Auth & RBAC | Real login end to end: JWT issue/refresh, role scoping enforced server-side, dashboard guards, seeded admin. | REQ-020 … REQ-029 | planned |
+| 2 | Auth & RBAC | Real login end to end: JWT issue/refresh with rotation and server-side revocation, role scoping enforced server-side, dashboard guards, seeded admin. | REQ-020 … REQ-029, REQ-02A | in-progress |
 | 3 | Core CRUD API | Every non-scheduling resource readable and writable: users, subjects, clients, children, tutors, tutor-subjects. | REQ-030 … REQ-036 | planned |
 | 4 | Scheduling engine | Availability, exceptions, the three-step slot query, and bookings with conflict handling. | REQ-040 … REQ-045 | planned |
 | 5 | Admin dashboard | The six admin views bound to live data, with the shared table/slide-over component set. | REQ-050 … REQ-058 | planned |
@@ -43,5 +43,25 @@ shell code compiles, builds, and is served — but the phase is not closed.
 - `phases/01-foundation/01-02-PLAN.md` — dashboard scaffold and app shell
 - `phases/01-foundation/01-03-PLAN.md` — container orchestration and repository hygiene
 
-Later phases have a `NN-CONTEXT.md` stub only. Do not expand them into task plans until
-Phase 1 is verified and the user has confirmed the open questions in `STATE.md`.
+## Phase 2 plans
+
+- `phases/02-auth-rbac/02-01-PLAN.md` — backend auth foundations (security primitives,
+  revocation store and migration `0002`, live-database pytest harness)
+- `phases/02-auth-rbac/02-02-PLAN.md` — auth service and the RBAC dependency
+- `phases/02-auth-rbac/02-03-PLAN.md` — `/auth` endpoints, error envelope, first-admin seed
+- `phases/02-auth-rbac/02-04-PLAN.md` — dashboard auth client and login
+- `phases/02-auth-rbac/02-05-PLAN.md` — route guards, D-013 discharge, and logout
+
+Eleven tasks across five plans. Four are dispatchable immediately (`P2-T1.1`, `P2-T1.2`,
+`P2-T1.3`, `P2-T4.1`); the critical path is three deep,
+`P2-T1.1 → P2-T2.1 → P2-T3.1`. Plan 02-04 was deliberately split from the backend plans and
+started in the first block: the HTTP contract is frozen in `02-CONTEXT.md`, so the dashboard
+does not have to wait for the API to exist in order to be built — only to be smoke-tested.
+
+**Phase 2 started with Phase 1 still `blocked`.** Nothing in Phase 2 depends on REQ-010: the
+shell compiles, builds, and is served. Phase 2 does edit `Login.tsx`, `AdminSidebar.tsx`, and
+`TutorNav.tsx`, so when browser tooling becomes available, REQ-010's QA should be run against
+the Phase 2 tree rather than the Phase 1 tree. Phase 2 introduces no new responsive layout.
+
+Phases 3–8 have a `NN-CONTEXT.md` stub only. Do not expand them into task plans until Phase 2
+is verified.

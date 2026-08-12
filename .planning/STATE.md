@@ -319,7 +319,200 @@ truthful under concurrent WhatsApp and dashboard submissions, where a read-then-
 in the service layer would race. Phase 4 must therefore handle the integrity error and
 translate it to a 409, not rely on a pre-check alone. If the business later wants
 overlapping sessions, dropping the index is a two-line follow-up migration. Supersedes
-assumption A-2, and REQ-008's `[A]` marker is now stale.
+assumption A-2, and REQ-008's `[A]` marker is now stale. _(Marker dropped 2026-08-12.)_
+
+---
+
+### Phase 2 decisions — recorded 2026-08-12 when the phase was planned
+
+**D-015 — `/auth/refresh` transport is COOKIE FIRST, BODY FALLBACK. CONFIRMED BY THE USER
+2026-08-12.** OQ-4 is resolved and **A-4 is settled**. `POST /auth/token` sets the refresh
+token as an HttpOnly cookie **and** returns it in the response body. `POST /auth/refresh`
+reads the cookie first and falls back to a JSON body `{"refresh_token": "..."}` for
+non-browser clients; neither present is a 401.
+
+Both frozen documents therefore stay accurate and **neither is amended**:
+`docs/api-design.md:46-63` (body) describes the fallback path, and
+`docs/admin-dashboard-design.md:24,34` (HttpOnly cookie) describes the browser path. The
+contradiction OQ-4 identified was real; serving both contracts is what dissolves it.
+Cookie attributes are fixed by D-012 and are not re-litigated here:
+`HttpOnly; SameSite=Lax; Path=/auth; Secure` — the last in production only, see D-027.
+
+**D-016 — Token lifetimes: access 15 minutes, refresh 7 days. CONFIRMED BY THE USER
+2026-08-12.** Configurable through `Settings` as `access_token_expire_minutes = 15` and
+`refresh_token_expire_days = 7`, alongside `jwt_algorithm = "HS256"`.
+
+All three carry defaults, so **Phase 2 introduces no new environment variable.**
+`.env.example`, `docker-compose.yml`, and `Readme.md` are untouched, which keeps REQ-012 and
+REQ-013 undisturbed and means **no Phase 2 task owns a root-level file** — a meaningful
+reduction in cross-task collisions. If a deployment ever needs different lifetimes, the env
+vars already work through pydantic-settings; they simply are not documented as required.
+
+**D-017 — Refresh tokens ROTATE ON USE and are backed by a SERVER-SIDE REVOCATION TABLE.
+CONFIRMED BY THE USER 2026-08-12.** The user deliberately chose the stronger option over the
+stateless default `02-CONTEXT.md`'s stub proposed. Each refresh issues a new token and
+invalidates the presented one; every issued token is tracked in a `refresh_tokens` row so
+that logout and forced session termination take effect immediately instead of after seven
+days.
+
+**This is a scope addition.** REQ-020 … REQ-029 do not cover a revocation store, so it is
+recorded as the new **REQ-02A**, mapped to Phase 2, and it ships an Alembic migration
+(`0002`) for the new table. The Phase 2 decade was fully allocated; `REQ-02A` extends the
+block without renumbering any existing stable ID.
+
+**Reuse policy — decided, not deferred:** presenting an already-rotated refresh token
+**revokes the entire family** (every live row sharing that `family_id`) and returns 401. The
+reasoning: either the legitimate holder replayed an old token or an attacker stole one and
+the holder has since rotated past it, and the two are indistinguishable from the server's
+position — so the safe action is to burn the chain and force a fresh login. This is the
+standard OAuth 2.0 BCP response and it is the entire reason the table exists; without it,
+rotation detects nothing. The 401 is byte-identical to any other invalid-token 401, because
+telling an attacker their stolen token was detected as a replay tells them the family is
+burned. Two independent logins are two independent families, so logging out on a phone does
+not log out a laptop.
+
+Consequence, reported as spec drift and **not** patched into `docs/` (A-6): `POST /auth/logout`
+does not exist in `docs/api-design.md` and is introduced by REQ-02A, and `POST /auth/refresh`
+returns `refresh_token` in its body in addition to the documented `access_token` and
+`token_type`. Both additions are additive and break no documented client.
+
+**D-018 — The first admin is created by a CLI seed command, and by nothing else. CONFIRMED
+BY THE USER 2026-08-12.** `docker compose run --rm api python -m app.cli seed-admin`, reading
+`TUTORLINK_ADMIN_EMAIL` / `TUTORLINK_ADMIN_PASSWORD` from the environment or prompting
+interactively, bcrypt-hashing the password, and behaving **idempotently**: a second run
+creates no duplicate and does **not** reset the password.
+
+**There is no public setup endpoint, no registration route, and no "create an admin if none
+exists" startup hook — not now, not ever.** A bootstrap endpoint is an unauthenticated
+privilege-escalation surface that is trivially forgotten in production. The two variables are
+command inputs, not `Settings` fields, and are deliberately absent from `.env.example`: a
+committed example file is the wrong place for the shape of a real admin credential.
+`argparse` is used rather than `typer` or `click` — one subcommand does not justify a runtime
+dependency.
+
+**D-019 — D-013 is discharged by DELETION.** Both `import.meta.env.DEV` branches — the
+`devNoAuth` short-circuit in `RouteGuard.tsx:17-26` and the route-derived chrome selection in
+`AppShell.tsx:18-20` — are removed in full by task `P2-T5.1`, not narrowed and not left
+behind a flag.
+
+D-013 offered deletion or a narrowed opt-in. Deletion wins because the bypass's entire
+justification was that Phase 1 had nobody to log in as, and `P2-T3.2` now seeds an admin: the
+genuine login flow is available locally and is strictly better to exercise than a bypass. A
+narrowed opt-in would be a second, permanently-maintained authentication path whose only user
+is a developer who could instead type a password. The discharge is gated by
+`grep -rn "import.meta.env.DEV" dashboard/src` returning empty in `P2-T5.1`'s acceptance
+criteria; a Phase 2 that closes with either branch present is drift.
+
+**D-020 — Three new backend runtime dependencies, recorded as the constitution requires.**
+
+| Package | Chosen over | Why |
+|---|---|---|
+| `pyjwt>=2.9` | `python-jose` | Actively maintained, fewer transitive dependencies, and what FastAPI's own security documentation now uses |
+| `bcrypt>=4.2` used **directly** | `passlib[bcrypt]` | `passlib` is unmaintained and its bcrypt backend raises `AttributeError: module 'bcrypt' has no attribute '__about__'` against `bcrypt>=4.1`. The direct wrapper is four lines and has no such trap |
+| `python-multipart>=0.0.9` | — | Required by FastAPI to parse `OAuth2PasswordRequestForm`; without it `/auth/token` fails at import |
+
+`api/pyproject.toml` and `api/uv.lock` are owned exclusively by `P2-T1.1`; every other Phase 2
+task is instructed to stop and report rather than add a dependency.
+
+Also recorded: bcrypt silently truncates a password past **72 bytes**, which would make two
+different long passwords interchangeable. Passwords are therefore **rejected** above that
+length rather than truncated, at both the login boundary and the seed command.
+
+**D-021 — `POST /auth/token` is form-encoded, not JSON.** `docs/api-design.md:16,27` states
+"standard OAuth2 password flow, implemented natively via FastAPI's `OAuth2PasswordBearer`",
+and the standard password flow is `application/x-www-form-urlencoded` with `username` and
+`password`. The JSON block at `docs/api-design.md:29-35` is read as naming the fields, not
+the media type — the same reading D-002 applied to that document's `.jsx` filenames. This
+also makes the `/docs` Authorize button work without a custom shim. Reported as spec
+interpretation; `docs/` is not edited. The dashboard must send `URLSearchParams`, since Axios
+defaults to JSON — called out explicitly in `P2-T4.1`.
+
+**D-022 — JWT claims beyond the four documented ones.** Access tokens carry
+`sub`, `role`, `tutor_id`, `exp` (all documented) plus `iat`, `jti`, and `typ = "access"`.
+Refresh tokens carry `sub`, `exp`, `iat`, `jti`, `fid`, and `typ = "refresh"` — and
+deliberately **no** `role`, so a role change takes effect on the next refresh rather than
+persisting for seven days.
+
+`typ` is not decoration: without it a refresh token is a structurally valid access token, and
+a seven-day credential becomes an API key. `decode_token` enforces the expected `typ` and the
+auth dependency re-enforces it. Reported as an additive interpretation of
+`docs/api-design.md:70-78`.
+
+**D-023 — `get_current_user` loads the `User` row on every request.** One indexed
+primary-key lookup per request buys the property that deactivating an account
+(`is_active = false`, which is how REQ-030's soft delete works) takes effect on the **next
+request** rather than up to fifteen minutes later when the access token expires. A
+claims-only path would be faster and wrong. The dependency returns a frozen `CurrentUser`
+dataclass, never the ORM object — the constitution forbids an ORM instance crossing the HTTP
+boundary, and a frozen principal cannot be mutated by a route by accident.
+
+**D-024 — Validation errors return 400, not FastAPI's default 422.**
+`docs/api-design.md:637-644` lists 400 for validation and does not list 422 at all, and
+REQ-029 requires the documented codes. A `RequestValidationError` handler in `main.py` remaps
+the status **and** flattens FastAPI's list-of-error-objects into a single `detail` string, so
+every error body in the application is `{"detail": "<string>"}`. Binding on every router
+written from Phase 3 onward.
+
+**D-025 — The dashboard decodes the JWT itself, and bootstraps the session on mount.**
+`docs/admin-dashboard-design.md:36` says the role is read from the decoded JWT, so a
+fifteen-line base64url decode in `dashboard/src/lib/auth.ts` implements the documented
+design — **with no new dependency** (no `jwt-decode`, no `jose`). The decode is explicitly not
+verification: the signature is never checked in the browser and the role is used only to pick
+which chrome to render. Every access decision is the server's.
+
+The access token lives in memory and therefore dies on reload, while the refresh cookie
+survives. The app therefore attempts `POST /auth/refresh` **once** on mount and the store
+carries a `status: 'loading' | 'authenticated' | 'anonymous'` so `RouteGuard` can wait rather
+than redirect. Without this, the HttpOnly cookie has no purpose and every page refresh logs
+the user out.
+
+Two guards are mandatory and both are specified in `P2-T4.1`: a module-level single-flight
+promise around the refresh call, and a module-level "bootstrap already started" flag.
+`main.tsx` renders inside `<React.StrictMode>`, which double-invokes effects in development;
+under rotation (D-017) a second refresh presents an already-rotated token, the server reads it
+as a replay, the family is revoked, and the developer is logged out on page load by what looks
+like a backend bug. The same hazard applies to any two API calls that 401 concurrently.
+
+**D-026 — No frontend test runner in Phase 2.** The stack the constitution pins names no
+JavaScript test runner, and adding vitest would be a new dependency for one phase. The
+frontend gate stays `npx tsc -b` + `npm run lint` + `npm run build`, plus an explicit live
+smoke in each frontend plan's Verification section. Revisit in Phase 5 (REQ-057) when the
+shared component set lands and there is materially more client logic to protect; note that
+the refresh interceptor is the riskiest untested code in the project as a result.
+
+**D-027 — The refresh cookie's `Secure` flag is derived from `settings.debug`.**
+`secure=not get_settings().debug`. `.env.example` ships `DEBUG=true` for local HTTP and
+production sets it false, so the signal already exists and no new environment variable is
+needed (D-016). One helper sets and deletes the cookie so the attributes cannot drift apart —
+a delete whose `Path` or `SameSite` differs does not match, and the browser keeps sending a
+revoked token after logout.
+
+Recorded explicitly because it is the kind of thing a later agent "fixes": `SameSite=Lax`
+plus `Path=/auth` is what makes `/auth/refresh` and `/auth/logout` CSRF-safe, since Lax
+withholds the cookie on cross-site POSTs. **Never change it to `None`.** D-012 makes
+everything same-origin, so there is no reason to.
+
+**D-028 — Email is normalised with `.strip().lower()` at every auth boundary.** The
+`users.email` unique constraint is case-sensitive, so `Admin@X` and `admin@x` would otherwise
+be two accounts. Normalising at the boundary fixes it without a schema change; a `citext`
+column or a functional unique index would be a migration and is not warranted. **Carried into
+Phase 3: `POST /api/users` (REQ-030) must normalise identically**, or it will create accounts
+that cannot log in.
+
+**D-029 — Two constitution corrections, applied 2026-08-12.**
+1. "Testing and done" said `tsc --noEmit`. The root `dashboard/tsconfig.json` is a solution
+   file with `"files": []`, so that command type-checks **zero files** and exits 0
+   unconditionally — it is what let a dashboard that did not compile at all be reported as
+   clean (Blockers → B-1). Corrected to `npx tsc -b`, with the trap named inline so it cannot
+   quietly return. REQ-009's acceptance criterion was corrected in the same pass.
+2. The stack pinned "React Router v6", but `dashboard/package.json` has shipped
+   `react-router-dom ^7.18.2` since Phase 1 and the tree builds against it. The APIs actually
+   used (`BrowserRouter`, `Routes`, `Route`, `Navigate`, `NavLink`, `useLocation`,
+   `useNavigate`) are unchanged between v6 and v7. Corrected to v7 rather than left as a
+   knowingly false pin that would misdirect every future frontend task. **Surfaced to the
+   user as a spec amendment** — if the intent was genuinely to pin v6, the fix is a
+   downgrade in `package.json`, not a doc edit, and that is a code change no requirement has
+   asked for.
 
 ---
 
@@ -333,7 +526,7 @@ citing them remain traceable.
 | ~~A-1~~ | **CONFIRMED 2026-08-10 → D-002.** The dashboard is TypeScript. No longer an assumption. | — |
 | ~~A-2~~ | **CONFIRMED 2026-08-10 → D-014.** Partial unique index prevents double-booking. No longer an assumption; REQ-008's `[A]` marker is stale and should be dropped at the next `REQUIREMENTS.md` pass. | — |
 | ~~A-3~~ | **CONFIRMED 2026-08-10 → D-012.** Browser→API traffic is same-origin, dev and prod. No longer an assumption; the `[A]` marker on REQ-009's proxy criterion is stale. | — |
-| A-4 | The refresh token is transported as an HttpOnly cookie, and `/auth/refresh` reads it from the cookie rather than the request body. Still open — see OQ-4. D-012 settles the cookie's *attributes* (first-party, `SameSite=Lax`), not the *transport contract*. | REQ-021, REQ-027 |
+| ~~A-4~~ | **CONFIRMED 2026-08-12 → D-015.** No longer an assumption. The settled contract is broader than A-4 stated: the refresh token is transported as an HttpOnly cookie **and** returned in the response body, and `/auth/refresh` reads the cookie first with a body fallback. REQ-021's `[A]` transport marker has been dropped. | — |
 | A-5 | One business timezone; no per-user timezone handling anywhere. | REQ-042, REQ-044, REQ-060 |
 | A-6 | `docs/*.md` are frozen specs. Divergence is reported, never silently patched. | all |
 | A-7 | There is no production data anywhere yet, so the initial migration needs no backfill or data-preserving path. | REQ-007 |
@@ -418,7 +611,19 @@ _Original question, retained for audit:_
   Phase 2's cookie work becomes materially harder. Phase 8 also needs a TLS terminator
   in front of the API regardless.
 
-**OQ-4 — `/auth/refresh` contract: cookie or request body?** _(does not block Phase 1)_
+**OQ-4 — RESOLVED 2026-08-12: the recommended default, cookie first with a body fallback.**
+_(was: shapes all of Phase 2)_ The user confirmed the default verbatim. Recorded as **D-015**;
+assumption **A-4 is settled**; REQ-021's `[A]` transport marker has been dropped. **Neither
+frozen document is amended** — that was the point of the option chosen. The cookie-only
+alternative, which would have required a `docs/api-design.md` amendment, is closed.
+
+Resolved alongside it, in the same user decision and recorded as separate entries because
+they are separately reversible: token lifetimes (**D-016**), rotation and server-side
+revocation (**D-017**, which added **REQ-02A**), and first-admin seeding (**D-018**).
+
+_Original question, retained for audit:_
+
+**OQ-4 — `/auth/refresh` contract: cookie or request body?** _(did not block Phase 1)_
 - `docs/api-design.md` shows `POST /auth/refresh` with `{"refresh_token": "<jwt>"}` in the
   body. `docs/admin-dashboard-design.md` says the refresh token lives in an HttpOnly
   cookie. These contradict: JavaScript cannot read an HttpOnly cookie to put it in a body.
@@ -463,13 +668,53 @@ dashboard and the API — but not the machine, the proxy software, or the name.
   REQ-080 is deliberately left unamended today — the decision has not been made, and
   pre-emptively softening the wording would hide the choice rather than record it.
 
+**OQ-7 — Is there any brute-force protection on `POST /auth/token`?** _(opened 2026-08-12;
+blocks nothing in Phase 2)_
+- No requirement asks for one, and the constitution forbids inventing an endpoint or feature
+  no REQ requested — so Phase 2 ships none, deliberately rather than by oversight.
+- The gap is real: `/auth/token` is the only unauthenticated write surface in the system, it
+  is reachable from the public internet in Phase 8, and there is no lockout, no throttle, and
+  no CAPTCHA. bcrypt's work factor makes online guessing slow, not impossible.
+- Redis is already connected and unused outside Phase 7, so a per-IP and per-email sliding
+  window is a small service function, not an architecture change.
+- **Recommended default: defer to Phase 8** and record it here as a known gap, so it is
+  weighed alongside TLS termination and the public webhook rather than bolted on. Adding it
+  now is one new REQ and one new task in Plan 02-03; adding it later costs the same. Nothing
+  in Phase 2's shape changes either way, which is why it is deferred rather than blocking.
+- If the user wants it now, say so and it becomes REQ-02B.
+
+**OQ-8 — Where does a tutor log out?** _(opened 2026-08-12; default applied, not blocking)_
+- `docs/admin-dashboard-design.md:52-64` shows Logout in the admin sidebar and a strictly
+  three-item tutor nav — `My Schedule | My Sessions | Time Off` — with no logout anywhere.
+  `TutorNav.tsx` faithfully implements exactly that, so a tutor currently has no way to end a
+  session, which cannot be the intent once real auth exists.
+- **Default applied in `P2-T5.2`:** Logout goes in the tutor **desktop sidebar footer**, with
+  the same treatment as the admin sidebar's, and on **mobile** as an icon button in the
+  existing top bar. The documented three-tab bottom bar stays at exactly three tabs, because
+  REQ-010's acceptance criterion counts them.
+- Reported as an addition to `docs/admin-dashboard-design.md`; `docs/` is not edited (A-6).
+- If the user prefers a different placement — a fourth tab, an avatar menu, a settings page —
+  `P2-T5.2` owns two files and is cheap to re-run.
+
 ### Detail-level — defaults applied, execution is not blocked
 
 - **Dashboard package manager:** npm with a committed `package-lock.json`, matching the
   deleted scaffold.
 - **PostgreSQL and Redis versions:** `postgres:17-alpine`, `redis:7-alpine`.
-- **Seeding the first admin user:** deferred to Phase 2 alongside password hashing. Phase 1
-  ships an empty database on purpose.
+- **Seeding the first admin user:** ~~deferred to Phase 2~~ — **settled 2026-08-12 as D-018**,
+  a CLI seed command and nothing else. Phase 1 shipped an empty database on purpose.
+- **Backend test database (Phase 2):** a separate `<database>_test` database created by a
+  session-scoped pytest fixture, built with `Base.metadata.create_all` (explicitly permitted
+  in tests by the constitution) and torn down per test by transaction rollback. The migration
+  is verified separately by `alembic upgrade/check/downgrade`, not by the fixture. Rejected:
+  running Alembic from a fixture (slow, and couples every test to migration state) and a
+  shared schema inside the primary database (PostgreSQL enum types are schema-scoped and it
+  gets messy fast).
+- **Auth module placement (Phase 2):** `api/app/security.py` (pure primitives) and
+  `api/app/dependencies.py` (FastAPI principal + RBAC helpers) sit at the application level
+  alongside `db.py`, `config.py`, and `redis_client.py`. They are neither routers nor
+  services, and the constitution's `routers/ → services/ → models/` layering is about
+  business logic, which these contain none of.
 - **`day_of_week` encoding:** `0 = Monday … 6 = Sunday`, exactly as `docs/erd.md` states.
   This matches Python's `date.weekday()`. Never use `isoweekday()` (Monday=1) or
   PostgreSQL's `EXTRACT(DOW)` (Sunday=0) to derive it.
@@ -523,5 +768,13 @@ headless-Chrome CDP smoke check or verify 375px/1280px manually, and whether the
 `eslint-disable-next-line react-refresh/only-export-components` in generated `button.tsx`
 is acceptable versus a one-line `eslint.config.js` change.
 
-Every open question now has either a confirmed answer (OQ-1, OQ-2, OQ-3) or a stated
-default (OQ-4, OQ-5, OQ-6). No planning decision is outstanding.
+**Updated 2026-08-12.** Every open question now has either a confirmed answer (OQ-1, OQ-2,
+OQ-3, **OQ-4**) or a stated default that does not block execution (OQ-5, OQ-6, OQ-7, OQ-8).
+No planning decision is outstanding, and **nothing blocks the dispatch of any Phase 2 task**.
+
+Blocker **B-1 above is historical and resolved** — the `src/ui/` displacement was repaired
+during the Phase 1 gate and the dashboard has compiled since (`01-SUMMARY.md`, "Two defects
+found and repaired"). It is retained because it is the origin of the `tsc --noEmit` finding
+that D-029 acts on. The only live impediment in the project is the browser-tooling gap
+recorded in the Position section, which blocks Phase 1's REQ-010 and the browser half of
+Phase 2's frontend verification, and which no planning decision can clear.

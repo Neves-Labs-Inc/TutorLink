@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react'
-import { useLocation } from 'react-router-dom'
 
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -12,12 +11,8 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   const role = useAuthStore((state) => state.role)
-  const { pathname } = useLocation()
-  // Dev-only companion to the RouteGuard bypass (D-013): with no session, pick the chrome
-  // from the route so /schedule exercises TutorNav and /dashboard exercises AdminSidebar.
-  const isTutor =
-    role === 'tutor' ||
-    (import.meta.env.DEV && role === null && pathname.startsWith('/schedule'))
+  // The chrome follows the authenticated role; a guard has already established a non-null one.
+  const isTutor = role === 'tutor'
 
   return (
     <div className="flex min-h-dvh w-full flex-col bg-background text-foreground md:flex-row">

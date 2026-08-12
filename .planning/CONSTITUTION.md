@@ -2,7 +2,7 @@
 
 ## Stack — pinned, do not substitute
 - Backend: Python 3.12 (`python:3.12-slim`), FastAPI, SQLAlchemy 2.0 **sync** + `psycopg[binary]` v3, Alembic, Pydantic v2 + pydantic-settings, redis-py sync, `uv` for deps (`pyproject.toml` + `uv.lock`), ruff for lint/format, pytest.
-- Frontend: Node 22 (`node:22-alpine`), Vite + React 19 + **TypeScript**, React Router v6, TanStack Query v5, Zustand, Tailwind CSS, shadcn/ui, Axios, ESLint.
+- Frontend: Node 22 (`node:22-alpine`), Vite + React 19 + **TypeScript**, React Router v7, TanStack Query v5, Zustand, Tailwind CSS, shadcn/ui, Axios, ESLint.
 - Data: PostgreSQL 17, Redis 7. All local dev runs through the root `docker-compose.yml`.
 
 ## Layout — authoritative
@@ -20,7 +20,7 @@
 - Browser talks to the API same-origin through the Vite dev proxy. Do not add CORS wildcards to work around it.
 
 ## Testing and done
-- Backend: pytest, run in-container. Every service function with a branch gets a test. Frontend: `tsc --noEmit`, `npm run lint`, `npm run build` all clean.
+- Backend: pytest, run in-container. Every service function with a branch gets a test. Frontend: `npx tsc -b`, `npm run lint`, `npm run build` all clean — never `tsc --noEmit`, which checks zero files here.
 - Done = the cited REQ's acceptance criteria are observable, the migration applies from an empty database, and `docker compose up` still brings every service healthy.
 
 ## Never

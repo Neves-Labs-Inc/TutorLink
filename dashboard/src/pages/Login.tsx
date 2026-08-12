@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from 'react'
+import { Navigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useAuth } from '@/hooks/useAuth'
 
 interface FieldErrors {
   email?: string
@@ -13,10 +15,17 @@ interface FieldErrors {
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function Login() {
+  const { status, role, login, isLoggingIn, loginError } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState<FieldErrors>({})
-  const [submitting, setSubmitting] = useState(false)
+  const [formErrorDismissed, setFormErrorDismissed] = useState(false)
+
+  if (status === 'authenticated') {
+    return <Navigate to={role === 'admin' ? '/dashboard' : '/schedule'} replace />
+  }
+
+  const formError = formErrorDismissed ? null : loginError
 
   function validate(): FieldErrors {
     const next: FieldErrors = {}
@@ -34,9 +43,8 @@ export function Login() {
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) return
 
-    // Presentation only. Phase 2 replaces this with the real sign-in request.
-    setSubmitting(true)
-    window.setTimeout(() => setSubmitting(false), 1200)
+    setFormErrorDismissed(false)
+    login(email.trim(), password)
   }
 
   const disabledInput =
@@ -61,10 +69,13 @@ export function Login() {
                   autoComplete="username"
                   placeholder="you@example.com"
                   value={email}
-                  disabled={submitting}
+                  disabled={isLoggingIn}
                   aria-invalid={Boolean(errors.email)}
                   aria-describedby={errors.email ? 'email-error' : undefined}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(event) => {
+                    setEmail(event.target.value)
+                    setFormErrorDismissed(true)
+                  }}
                   className={`h-10 ${disabledInput}`}
                 />
                 {errors.email && (
@@ -82,10 +93,13 @@ export function Login() {
                   type="password"
                   autoComplete="current-password"
                   value={password}
-                  disabled={submitting}
+                  disabled={isLoggingIn}
                   aria-invalid={Boolean(errors.password)}
                   aria-describedby={errors.password ? 'password-error' : undefined}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) => {
+                    setPassword(event.target.value)
+                    setFormErrorDismissed(true)
+                  }}
                   className={`h-10 ${disabledInput}`}
                 />
                 {errors.password && (
@@ -99,12 +113,18 @@ export function Login() {
                 )}
               </div>
 
+              {formError && (
+                <p role="alert" className="text-sm font-medium text-destructive">
+                  {formError}
+                </p>
+              )}
+
               <Button
                 type="submit"
-                disabled={submitting}
+                disabled={isLoggingIn}
                 className="h-10 w-full disabled:border-border disabled:bg-transparent disabled:text-muted-foreground disabled:opacity-100"
               >
-                {submitting ? 'Signing in…' : 'Log in'}
+                {isLoggingIn ? 'Signing in…' : 'Log in'}
               </Button>
             </form>
           </CardContent>

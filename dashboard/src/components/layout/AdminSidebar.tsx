@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   BookOpen,
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/hooks/useAuth'
 import { useUiStore } from '@/stores/uiStore'
 
 const NAV_ITEMS = [
@@ -42,6 +43,15 @@ function Brand() {
 }
 
 function NavBody({ onNavigate }: { onNavigate?: () => void }) {
+  const { logout } = useAuth()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+
+  const handleLogout = () => {
+    setIsLoggingOut(true)
+    onNavigate?.()
+    logout()
+  }
+
   return (
     <>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Admin">
@@ -55,6 +65,8 @@ function NavBody({ onNavigate }: { onNavigate?: () => void }) {
       <div className="border-t border-sidebar-border px-3 py-3">
         <button
           type="button"
+          onClick={handleLogout}
+          disabled={isLoggingOut}
           className={cn(
             'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
             'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',

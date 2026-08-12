@@ -14,6 +14,10 @@ EXPECTED_TABLES = {
     "bookings",
 }
 
+NON_ERD_TABLES = {
+    "refresh_tokens",
+}
+
 
 def test_all_erd_tables_registered() -> None:
     import app.models  # noqa: F401  — import registers every model on Base.metadata
@@ -21,10 +25,10 @@ def test_all_erd_tables_registered() -> None:
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
 
 
-def test_nine_tables_exactly() -> None:
+def test_no_unexpected_tables() -> None:
     import app.models  # noqa: F401
 
-    assert set(Base.metadata.tables) == EXPECTED_TABLES
+    assert set(Base.metadata.tables) == EXPECTED_TABLES | NON_ERD_TABLES
 
 
 def test_partial_unique_index_on_bookings() -> None:

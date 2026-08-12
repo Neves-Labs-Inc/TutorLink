@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { CalendarDays, CalendarOff, ClipboardList } from 'lucide-react'
+import { CalendarDays, CalendarOff, ClipboardList, LogOut } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/hooks/useAuth'
 
 const NAV_ITEMS = [
   { to: '/schedule', label: 'My Schedule', icon: CalendarDays },
@@ -28,12 +30,29 @@ const tabLinkClasses = ({ isActive }: { isActive: boolean }) =>
   )
 
 export function TutorNav() {
+  const { logout } = useAuth()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+
+  const handleLogout = () => {
+    setIsLoggingOut(true)
+    logout()
+  }
+
   return (
     <>
-      <header className="sticky top-0 z-30 flex h-14 w-full items-center border-b border-sidebar-border bg-sidebar px-4 md:hidden">
+      <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-sidebar-border bg-sidebar px-4 md:hidden">
         <span className="font-heading text-base font-semibold tracking-tight text-sidebar-foreground">
           TutorLink
         </span>
+        <button
+          type="button"
+          onClick={handleLogout}
+          disabled={isLoggingOut}
+          aria-label="Log out"
+          className="-mr-2 inline-flex size-10 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+        >
+          <LogOut aria-hidden="true" className="size-5" />
+        </button>
       </header>
 
       <aside className="hidden border-r border-sidebar-border bg-sidebar md:sticky md:top-0 md:flex md:h-dvh md:w-56 md:shrink-0 md:flex-col">
@@ -50,6 +69,21 @@ export function TutorNav() {
             </NavLink>
           ))}
         </nav>
+        <div className="border-t border-sidebar-border px-3 py-3">
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={isLoggingOut}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+              'outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar',
+            )}
+          >
+            <LogOut aria-hidden="true" className="size-4 shrink-0" />
+            <span>Logout</span>
+          </button>
+        </div>
       </aside>
 
       <nav

@@ -19,11 +19,16 @@ _Owned by the orchestrator. Planner must not write below this line until the nex
   `tsc -b` / lint / build clean, live login 200, `/health/ready` 200.
   **Merging this branch to `main` is the next git action and has not been done.**
 - **Next action:** Phase 3 — Core CRUD API (REQ-030 … REQ-036), the first phase to mount
-  `/api/*` routes. Before its first router is written, harden the ergonomics of
-  `resolve_tutor_scope` (`api/app/dependencies.py:132-156`) — see the carry-forward in
-  `phases/02-auth-rbac/02-SUMMARY.md`. Its behaviour is correct and fully tested, but a
-  router that discards its return value leaks every tutor's rows to a tutor who passes no
-  `tutor_id`, and Phases 3, 4 and 6 call it on every route.
+  `/api/*` routes. **Its routers must use the hardened scoping contract**, not the one the
+  Phase 2 plan documents: `resolve_tutor_scope` no longer exists. Take `TutorScope`
+  (`api/app/dependencies.py:273`) as a dependency and pass `scope.tutor_id` into the service;
+  for load-one-row-by-id routes take `Principal` and call `assert_can_access_tutor` on the
+  row's owner. Read the carry-forward in `phases/02-auth-rbac/02-SUMMARY.md` first — it has
+  the call-site shape and the one branch in the rule.
+- **Known-open, scheduled:** **OQ-7** (no brute-force protection on `POST /auth/token`) is
+  deferred to **Phase 8** by the user. It is the only unauthenticated write surface and
+  becomes publicly reachable in that phase. **M3** — the refresh cookie's `Secure` flag is
+  keyed off `DEBUG`, which `.env.example` ships as `true` — belongs to the same phase.
 
 ### Dev database state (local only, not fixtures)
 
@@ -421,6 +426,17 @@ does not exist in `docs/api-design.md` and is introduced by REQ-02A, and `POST /
 returns `refresh_token` in its body in addition to the documented `access_token` and
 `token_type`. Both additions are additive and break no documented client.
 
+> **Orchestrator amendment 2026-08-12 — the logout half of this is now superseded.** The user
+> reviewed the drift and **authorized a one-endpoint exception to A-6**: `POST /auth/logout`
+> is documented in `docs/api-design.md`, which now carries a `### POST /auth/logout` section
+> covering the cookie-first/body-fallback transport, the unconditional `204`, and the reason
+> access tokens are not revocable. The user's reasoning matched the implementers': a
+> revocation store no client can trigger is decoration. The edit is **purely additive** (25
+> lines, zero deletions) and nothing else in that frozen spec was touched. **A-6 otherwise
+> stands in full** — this is a single authorized exception, not a precedent, and the other
+> six items of Phase 2 spec drift remain reported-not-patched. `POST /auth/refresh`'s body
+> addition, immediately above, is deliberately **not** documented and stays drift.
+
 **D-018 — The first admin is created by a CLI seed command, and by nothing else. CONFIRMED
 BY THE USER 2026-08-12.** `docker compose run --rm api python -m app.cli seed-admin`, reading
 `TUTORLINK_ADMIN_EMAIL` / `TUTORLINK_ADMIN_PASSWORD` from the environment or prompting
@@ -713,8 +729,16 @@ dashboard and the API — but not the machine, the proxy software, or the name.
   REQ-080 is deliberately left unamended today — the decision has not been made, and
   pre-emptively softening the wording would hide the choice rather than record it.
 
-**OQ-7 — Is there any brute-force protection on `POST /auth/token`?** _(opened 2026-08-12;
-blocks nothing in Phase 2)_
+**OQ-7 — Is there any brute-force protection on `POST /auth/token`?**
+**DEFERRED TO PHASE 8 BY THE USER 2026-08-12 — open, owned, and scheduled.** The recommended
+default below was confirmed verbatim: Phase 2 ships no rate limiting, and this is a
+**known-open item that Phase 8 must close**, not an unanswered question. It is carried here
+rather than in a plan because no Phase 8 plan exists yet; whoever writes it inherits this.
+`/auth/token` is the only unauthenticated write surface in the system and it becomes publicly
+reachable in that same phase, so it must be weighed alongside TLS termination and the public
+webhook. An independent security review of Phase 2 (2026-08-12) found no critical and no high
+findings and explicitly excluded this item as deliberately deferred rather than missed.
+_(opened 2026-08-12; blocked nothing in Phase 2)_
 - No requirement asks for one, and the constitution forbids inventing an endpoint or feature
   no REQ requested — so Phase 2 ships none, deliberately rather than by oversight.
 - The gap is real: `/auth/token` is the only unauthenticated write surface in the system, it

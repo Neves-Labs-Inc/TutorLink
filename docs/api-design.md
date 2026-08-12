@@ -62,6 +62,31 @@ Exchange a refresh token for a new access token.
 }
 ```
 
+### `POST /auth/logout`
+
+End the session. Revokes the presented refresh token and every token descended from it, so
+the session cannot be resumed, and clears the refresh cookie.
+
+The refresh token is read from the `refresh_token` cookie, falling back to the request body
+for non-browser clients — the same transport as `POST /auth/refresh`. No request body is
+required.
+
+**Request** (optional, non-browser clients only)
+```json
+{
+  "refresh_token": "<jwt>"
+}
+```
+
+**Response** — `204 No Content`, with no body.
+
+Returns `204` unconditionally, including when no token is presented or the token is already
+revoked, expired, or malformed. Logging out is never an error and the response never reveals
+whether a token was live.
+
+Access tokens are deliberately not revocable; they expire on their own short lifetime. Logout
+revokes the refresh side, which is what prevents the session from being renewed.
+
 All `/api/*` endpoints require a valid JWT passed as a Bearer token:
 ```
 Authorization: Bearer <access_token>

@@ -8,6 +8,10 @@ a throwaway app defined here and are never mounted on `app.main.app`.
 Every negative case asserts the exact status **and** that the body is `{"detail": "<string>"}`.
 `status_code != 200` would pass on a 404 or a 500, and a cross-tutor request answered with a
 404 or an empty 200 instead of a 403 is precisely the failure this task exists to prevent.
+
+The `/probe/leak/*` routes are the second half of that: they are written the way a careless
+Phase 3 router would be written — they take `TutorScope`, never read it, and query anyway —
+and the tests assert that such a route cannot answer with rows at all.
 """
 
 from __future__ import annotations
@@ -15,11 +19,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 import jwt
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -30,10 +36,12 @@ from app.dependencies import (
     TUTOR_SCOPE_ERROR,
     AdminPrincipal,
     Principal,
+    TutorScope,
+    TutorScopeNotApplied,
     assert_can_access_tutor,
-    resolve_tutor_scope,
 )
 from app.models.enums import UserRole
+from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import (
@@ -42,6 +50,8 @@ from app.security import (
     create_refresh_token,
     hash_password,
 )
+
+DbSession = Annotated[Session, Depends(get_db)]
 
 probe_app = FastAPI()
 
@@ -62,21 +72,60 @@ def probe_admin(user: AdminPrincipal) -> dict[str, str]:
 
 
 @probe_app.get("/probe/tutors")
-def probe_tutors_unscoped(user: Principal) -> dict[str, str | None]:
-    scope = resolve_tutor_scope(user, None)
-    return {"scope": str(scope) if scope is not None else None}
+def probe_tutors_unscoped(scope: TutorScope) -> dict[str, str | None]:
+    resolved = scope.tutor_id
+    return {"scope": str(resolved) if resolved is not None else None}
 
 
 @probe_app.get("/probe/tutors/{tutor_id}")
-def probe_tutors_scoped(user: Principal, tutor_id: uuid.UUID) -> dict[str, str | None]:
-    scope = resolve_tutor_scope(user, tutor_id)
-    return {"scope": str(scope) if scope is not None else None}
+def probe_tutors_scoped(scope: TutorScope) -> dict[str, str | None]:
+    # No `tutor_id` parameter here on purpose: the dependency declares it, and this route
+    # proves it binds from the path segment rather than from the query string.
+    resolved = scope.tutor_id
+    return {"scope": str(resolved) if resolved is not None else None}
 
 
 @probe_app.get("/probe/rows")
 def probe_row_owner(user: Principal, owner_tutor_id: uuid.UUID | None = None) -> dict[str, bool]:
     assert_can_access_tutor(user, owner_tutor_id)
     return {"ok": True}
+
+
+@probe_app.get("/probe/users")
+def probe_users_scoped(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
+    """The correct shape: the scope is read, and its value narrows the query."""
+    statement = select(User)
+    resolved = scope.tutor_id
+    if resolved is not None:
+        statement = statement.where(User.tutor_id == resolved)
+    return {"emails": sorted(user.email for user in db.execute(statement).scalars())}
+
+
+@probe_app.get("/probe/leak/users")
+def probe_leak_users(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
+    """The bug this module exists to make impossible: scope taken, scope never applied."""
+    return {"emails": sorted(user.email for user in db.execute(select(User)).scalars())}
+
+
+@probe_app.get("/probe/leak/tutors")
+def probe_leak_tutors(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
+    """`tutors` carries no `tutor_id` column — its own primary key is the scoped one."""
+    return {"names": sorted(tutor.name for tutor in db.execute(select(Tutor)).scalars())}
+
+
+@probe_app.get("/probe/leak/deactivate")
+def probe_leak_deactivate(scope: TutorScope, db: DbSession) -> dict[str, int]:
+    """A mass write is the same breach in the other direction, so the guard covers it too."""
+    result = db.execute(
+        update(User).values(is_active=False).execution_options(synchronize_session=False)
+    )
+    return {"rows": result.rowcount}
+
+
+@probe_app.get("/probe/leak/subjects")
+def probe_leak_subjects(scope: TutorScope, db: DbSession) -> dict[str, int]:
+    """`subjects` belongs to no tutor, so an unscoped read of it is not a breach."""
+    return {"count": len(db.execute(select(Subject)).scalars().all())}
 
 
 @pytest.fixture
@@ -87,6 +136,25 @@ def probe(db: Session) -> Generator[TestClient, None, None]:
     probe_app.dependency_overrides[get_db] = override_get_db
     try:
         yield TestClient(probe_app)
+    finally:
+        del probe_app.dependency_overrides[get_db]
+
+
+@pytest.fixture
+def probe_over_http(db: Session) -> Generator[TestClient, None, None]:
+    """`probe`, but returning the 500 a real client would see instead of re-raising.
+
+    Needed to assert on the *response* of a route that ignored its scope: the default
+    `TestClient` re-raises the server-side exception, which proves the raise but not that the
+    caller was left with nothing.
+    """
+
+    def override_get_db() -> Generator[Session, None, None]:
+        yield db
+
+    probe_app.dependency_overrides[get_db] = override_get_db
+    try:
+        yield TestClient(probe_app, raise_server_exceptions=False)
     finally:
         del probe_app.dependency_overrides[get_db]
 
@@ -279,7 +347,7 @@ def test_admin_probe_without_a_token_is_401_not_403(probe: TestClient) -> None:
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-# --- resolve_tutor_scope ------------------------------------------------------------------
+# --- TutorScope / get_tutor_scope ----------------------------------------------------------
 
 
 def test_tutor_requesting_own_id_is_scoped_to_it(probe: TestClient, db: Session) -> None:
@@ -351,6 +419,154 @@ def test_admin_requesting_another_tutor_passes_through_unchanged(
 
     assert response.status_code == 200
     assert response.json() == {"scope": str(tutor.id)}
+
+
+def test_requested_tutor_id_binds_from_the_query_string_too(probe: TestClient, db: Session) -> None:
+    """The dependency declares `tutor_id`, so a route with no `{tutor_id}` segment still
+    honours `?tutor_id=` — and still refuses a cross-tutor reach."""
+    own = _make_tutor(db)
+    other = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+    headers = _bearer(user)
+
+    allowed = probe.get(f"/probe/tutors?tutor_id={own.id}", headers=headers)
+    assert allowed.status_code == 200
+    assert allowed.json() == {"scope": str(own.id)}
+
+    _assert_detail(
+        probe.get(f"/probe/tutors?tutor_id={other.id}", headers=headers), 403, TUTOR_SCOPE_ERROR
+    )
+
+
+# --- the discarded scope: a route that takes TutorScope and never reads it -----------------
+
+
+def test_route_that_discards_the_scope_cannot_read_tutor_owned_rows(
+    probe: TestClient, db: Session
+) -> None:
+    """The core guarantee. A tutor who requested no `tutor_id` is the case where nothing
+    raises on its own — the decision table hands back their own id and a careless route drops
+    it. The query must not run."""
+    own = _make_tutor(db)
+    _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    with pytest.raises(TutorScopeNotApplied):
+        probe.get("/probe/leak/users", headers=_bearer(user))
+
+
+def test_discarded_scope_leaves_the_caller_with_no_rows(
+    probe_over_http: TestClient, db: Session
+) -> None:
+    """Loud, not silent: a 500 and nothing else — not a 200 carrying another tutor's rows."""
+    own = _make_tutor(db)
+    other_user = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    response = probe_over_http.get("/probe/leak/users", headers=_bearer(user))
+
+    assert response.status_code == 500
+    assert other_user.email not in response.text
+    assert user.email not in response.text
+
+
+def test_admin_route_that_discards_the_scope_also_fails(probe: TestClient, db: Session) -> None:
+    """An admin's scope is `None`, which is a legitimate "no filter" — but a route that never
+    read it did not decide that, and the same bug must not pass review because of who called
+    it."""
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    with pytest.raises(TutorScopeNotApplied):
+        probe.get("/probe/leak/users", headers=_bearer(user))
+
+
+def test_discarded_scope_also_guards_the_tutors_table(probe: TestClient, db: Session) -> None:
+    own = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    with pytest.raises(TutorScopeNotApplied):
+        probe.get("/probe/leak/tutors", headers=_bearer(user))
+
+
+def test_discarded_scope_also_blocks_an_unscoped_mass_update(
+    probe: TestClient, db: Session
+) -> None:
+    own = _make_tutor(db)
+    victim = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    with pytest.raises(TutorScopeNotApplied):
+        probe.get("/probe/leak/deactivate", headers=_bearer(user))
+
+    db.refresh(victim)
+    assert victim.is_active is True
+
+
+def test_applying_the_scope_lets_the_query_run_and_narrows_it(
+    probe: TestClient, db: Session
+) -> None:
+    own = _make_tutor(db)
+    other_user = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    response = probe.get("/probe/users", headers=_bearer(user))
+
+    assert response.status_code == 200
+    assert response.json() == {"emails": [user.email]}
+    assert other_user.email not in response.text
+
+
+def test_admin_applying_the_scope_sees_every_tutor(probe: TestClient, db: Session) -> None:
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    admin = _make_user(db, role=UserRole.ADMIN)
+
+    response = probe.get("/probe/users", headers=_bearer(admin))
+
+    assert response.status_code == 200
+    assert tutor_user.email in response.json()["emails"]
+
+
+def test_a_table_no_tutor_owns_is_not_guarded(probe: TestClient, db: Session) -> None:
+    """The guard must not be so blunt that Phase 3 routes around it: an unscoped read of a
+    table with no `tutor_id` is legitimate and stays legal."""
+    own = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    response = probe.get("/probe/leak/subjects", headers=_bearer(user))
+
+    assert response.status_code == 200
+
+
+def test_the_guard_is_per_request_and_does_not_leak_across_them(
+    probe: TestClient, db: Session
+) -> None:
+    """The listener is bound to the request's scope and removed on the way out. A request that
+    applied its scope must not leave the next one disarmed, and a request that failed must not
+    leave a stale listener behind that breaks the next one."""
+    own = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+    headers = _bearer(user)
+
+    assert probe.get("/probe/users", headers=headers).status_code == 200
+
+    with pytest.raises(TutorScopeNotApplied):
+        probe.get("/probe/leak/users", headers=headers)
+
+    assert probe.get("/probe/users", headers=headers).status_code == 200
+
+
+def test_cross_tutor_reach_is_still_403_before_the_guard_can_matter(
+    probe: TestClient, db: Session
+) -> None:
+    """Ordering: the 403 comes from dependency resolution, so a leaky route never runs at all
+    and the caller gets the constitution's 403 body, not a 500."""
+    own = _make_tutor(db)
+    other = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    response = probe.get(f"/probe/leak/users?tutor_id={other.id}", headers=_bearer(user))
+
+    _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
 
 
 # --- assert_can_access_tutor --------------------------------------------------------------

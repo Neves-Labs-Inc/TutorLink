@@ -106,13 +106,52 @@ locally exercisable and no second auth path survives.
 
 ## Carried into Phase 3 — read before writing the first router
 
-**`resolve_tutor_scope` leaks silently if its return value is discarded**
-(`api/app/dependencies.py:132-156`, security finding M1). A router that calls it as a guard
-and then queries unscoped is correct for an admin and correct for a cross-tutor reach — but
-for a tutor passing no `tutor_id` it raises nothing and returns every tutor's rows. The
-behaviour is right and fully tested; the *contract shape* invites misuse, and Phases 3, 4
-and 6 call it on every route. Harden the ergonomics before the first router, not after
-twenty. This is the same class of trap `02-CONTEXT.md` was written to prevent.
+**Security finding M1 is FIXED, and it changed the contract.** `resolve_tutor_scope` no
+longer exists. It used to return a `uuid.UUID | None` that a router could silently discard —
+correct for an admin, correct for a cross-tutor reach, and a full cross-tutor leak for a
+tutor who passed no `tutor_id`. The user directed that the failure mode be made impossible
+rather than merely tested against.
+
+The replacement, in `api/app/dependencies.py`:
+
+- **`get_tutor_scope` (`:248`), exposed as `TutorScope` (`:273`)** — the decision table now
+  runs as a FastAPI dependency, so there is no return value to drop. The requested
+  `tutor_id` binds from the path or query string automatically.
+- **`ResolvedTutorScope` (`:160`)** — an object whose `tutor_id` property must be *read*;
+  reading it is what marks the scope applied.
+- **`_guard_unapplied_scope` (`:227`)**, a `do_orm_execute` listener installed at `:266` and
+  removed at `:270` — while the scope is unread, the request's `Session` refuses ORM
+  SELECT/UPDATE/DELETE against any tutor-owned table, raising before the statement reaches
+  PostgreSQL. "Tutor-owned" is decided by shape (`_is_tutor_owned`, `:219`): any mapper whose
+  table carries `tutor_id`, plus `tutors`. A table added in Phase 4 is guarded the day it
+  gains the column.
+
+The decision table itself is byte-identical, moved to `_decide_tutor_scope` (`:192-216`).
+Cross-tutor is still **403 with `{"detail": ...}`**, raised during dependency resolution, so
+it still beats the tripwire.
+
+**How a Phase 3 router uses it — one line, one dependency:**
+
+```python
+@router.get("/api/bookings", response_model=list[BookingRead])
+def list_bookings(scope: TutorScope, db: DbSession):
+    return booking_service.list_bookings(db, tutor_id=scope.tutor_id)   # None means "all"
+```
+
+The rule has exactly one branch: **list routes** take `TutorScope` and pass `scope.tutor_id`
+into the service; **load-one-row-by-id routes** take `Principal`, load, then call
+`assert_can_access_tutor` on the row's owner — that pattern must query before it can know the
+owner, so it deliberately does not arm the guard. Picking the wrong one fails loudly and the
+exception text names the right one.
+
+**What the guard does not catch**, stated plainly: it catches *forgetting*, not *sabotage*.
+`_ = scope.tutor_id` followed by an unfiltered query disarms it, and it does not fire on raw
+`db.execute(text(...))` or on a session obtained outside `Depends(get_db)`. Those are
+deliberate acts, not the accident the finding described.
+
+**Stale references:** `02-CONTEXT.md:214,218,299` and `02-02-PLAN.md:213,220,237` still
+describe the superseded `resolve_tutor_scope` contract. They are planner-owned and were left
+unedited; this summary is the record of what actually shipped. `docs/` never mentioned it.
 
 Also open: **M3** — the refresh cookie's `Secure` flag is keyed off `DEBUG`, which
 `.env.example` ships as `true`; a deployment that copies it serves a 7-day session cookie

@@ -4,15 +4,20 @@ Application-level wiring, alongside `db.py` and `config.py` — not a router, no
 A router's whole auth surface is meant to be an import from here:
 
 ```python
-from app.dependencies import Principal, AdminPrincipal, resolve_tutor_scope
+from app.dependencies import Principal, AdminPrincipal, TutorScope
 
 @router.get("/api/bookings")
-def list_bookings(user: Principal, db: DbSession, tutor_id: uuid.UUID | None = None):
-    scope = resolve_tutor_scope(user, tutor_id)          # 403 on a cross-tutor reach
-    return booking_service.list_bookings(db, tutor_id=scope)   # None means "all tutors"
+def list_bookings(scope: TutorScope, db: DbSession):
+    return booking_service.list_bookings(db, tutor_id=scope.tutor_id)   # None means "all"
 ```
 
-Four properties this module exists to guarantee, all of which Phase 3 onwards depends on:
+`TutorScope` is a dependency, not a helper call: the 403 decision runs during dependency
+resolution, and the route receives the resolved scope as a parameter. The `tutor_id` the
+caller asked for is declared by the dependency, so the route does not repeat it — a
+`?tutor_id=` query parameter appears automatically, and on a path like
+`/api/tutors/{tutor_id}/bookings` the same dependency binds the path parameter instead.
+
+Five properties this module exists to guarantee, all of which Phase 3 onwards depends on:
 
 - **Authentication failures are indistinguishable.** A missing, malformed, badly signed,
   expired, or wrong-`typ` token, an unknown user, and a deactivated user all produce the same
@@ -25,35 +30,48 @@ Four properties this module exists to guarantee, all of which Phase 3 onwards de
   token's claims, for the same reason. Do not "optimise" this into a claims-only path and do
   not cache it.
 
-- **A tutor cannot opt out of scoping.** `resolve_tutor_scope` returns the caller's own
-  `tutor_id` when a tutor asks for nothing in particular. Returning `None` there would mean
-  "no filter" and would silently widen a list endpoint to every tutor's rows. A tutor account
-  whose `users.tutor_id` is `NULL` is rejected with 403 rather than treated as an admin or
-  scoped to `NULL`: that column is nullable because admins have no tutor profile, so a tutor
-  row in that state is a data error and must fail loudly.
+- **A tutor cannot opt out of scoping.** The scope carries the caller's own `tutor_id` when a
+  tutor asks for nothing in particular. Carrying `None` there would mean "no filter" and would
+  silently widen a list endpoint to every tutor's rows. A tutor account whose `users.tutor_id`
+  is `NULL` is rejected with 403 rather than treated as an admin or scoped to `NULL`: that
+  column is nullable because admins have no tutor profile, so a tutor row in that state is a
+  data error and must fail loudly.
+
+- **A route cannot forget to apply the scope.** The scope is an object, not a bare
+  `uuid.UUID | None`, and for as long as it goes unread the request's `Session` refuses to run
+  any ORM query against a tutor-owned table: `TutorScopeNotApplied` is raised from inside the
+  execute hook, before the statement reaches PostgreSQL. A route that takes `TutorScope` and
+  then queries unscoped gets a 500 and zero rows, which is the whole point — the old shape,
+  where the scope was a return value a route could evaluate for its 403 and then discard,
+  failed *open* for the one principal that most needed the filter (a tutor who requested no
+  `tutor_id` at all, for whom nothing raises).
 
 - **Cross-tutor access is 403 — never 404, and never an empty 200** (`CONSTITUTION.md:15`).
   Returning 404 to hide existence is defensible in general and is explicitly not what this
   project does. Returning an empty result set is worse still: it looks correct in a browser
   while proving nothing about whether the caller was actually denied.
 
-`resolve_tutor_scope` returns the filter a query must apply; it does not apply it. A route
-that calls it and then ignores the returned value leaks rows, so pass the result into the
-service call rather than re-deriving a filter from `user.tutor_id`.
+Two route shapes, and they do not mix. A route that *lists* takes `TutorScope` and passes
+`scope.tutor_id` into the service call. A route that *loads one row by id* takes `Principal`,
+loads the row, and calls `assert_can_access_tutor` on its owner — that pattern queries before
+it can know the owner, so it deliberately does not arm the guard above.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy import event
+from sqlalchemy.orm import Mapper, ORMExecuteState, Session
 
 from app.db import get_db
 from app.models.enums import UserRole
+from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import ACCESS_TOKEN_TYPE, TokenError, decode_token
 
@@ -129,10 +147,52 @@ def require_admin(user: Principal) -> CurrentUser:
 AdminPrincipal = Annotated[CurrentUser, Depends(require_admin)]
 
 
-def resolve_tutor_scope(
+class TutorScopeNotApplied(RuntimeError):
+    """A tutor-owned table was queried on a request whose `TutorScope` was never read.
+
+    Raised from inside SQLAlchemy's `do_orm_execute` hook, so it fires *before* the statement
+    reaches the database and the offending query yields no rows to anybody. Deliberately not
+    an `HTTPException`: this is a bug in the route, not a client error, and it must surface as
+    a 500 in the logs rather than as something a caller could mistake for a normal 4xx.
+    """
+
+
+class ResolvedTutorScope:
+    """The tutor filter a request's queries must apply — an object, never a bare UUID.
+
+    Not a `uuid.UUID | None`, so it cannot be passed into a query by accident and cannot be
+    compared against a column into a silently-true filter. `tutor_id` is read-only for the
+    same reason `CurrentUser` is frozen: a route must not be able to widen its own scope.
+
+    Reading `tutor_id` is what marks the scope applied and disarms the guard, so read it only
+    at the point where the value is handed to the service call that will filter on it.
+    """
+
+    __slots__ = ("_applied", "_tutor_id")
+
+    def __init__(self, tutor_id: uuid.UUID | None) -> None:
+        self._tutor_id = tutor_id
+        self._applied = False
+
+    def __repr__(self) -> str:
+        # Deliberately does not go through the property: repr must not disarm the guard.
+        return f"ResolvedTutorScope(tutor_id={self._tutor_id!r}, applied={self._applied})"
+
+    @property
+    def tutor_id(self) -> uuid.UUID | None:
+        """The `tutor_id` to filter on, or `None` for "no filter, all tutors"."""
+        self._applied = True
+        return self._tutor_id
+
+    @property
+    def applied(self) -> bool:
+        return self._applied
+
+
+def _decide_tutor_scope(
     user: CurrentUser, requested_tutor_id: uuid.UUID | None
 ) -> uuid.UUID | None:
-    """The `tutor_id` a query must filter on, or `None` for "no filter, all tutors".
+    """The scoping decision table. Kept separate from the dependency so it stays readable.
 
     | principal                | requested        | result           |
     |--------------------------|------------------|------------------|
@@ -156,12 +216,73 @@ def resolve_tutor_scope(
     return user.tutor_id
 
 
+def _is_tutor_owned(mapper: Mapper[Any]) -> bool:
+    # Fail closed by shape, not by a list someone has to remember to extend: anything mapped
+    # onto a table with a `tutor_id`, plus `tutors` itself, whose own primary key is what a
+    # tutor's scope filters on. A table added in a later phase is guarded the day it gains
+    # the column.
+    return "tutor_id" in mapper.columns or mapper.local_table is Tutor.__table__
+
+
+def _guard_unapplied_scope(scope: ResolvedTutorScope) -> Callable[[ORMExecuteState], None]:
+    """Build the `do_orm_execute` hook that refuses tutor-owned reads until `scope` is read."""
+
+    def guard(state: ORMExecuteState) -> None:
+        if scope.applied or not (state.is_select or state.is_update or state.is_delete):
+            return
+
+        offenders = sorted({m.class_.__name__ for m in state.all_mappers if _is_tutor_owned(m)})
+        if not offenders:
+            return
+
+        raise TutorScopeNotApplied(
+            f"{', '.join(offenders)} queried before this request's tutor scope was applied. "
+            "Pass `scope.tutor_id` into the service call that builds this query, or — if the "
+            "route loads a single row and checks its owner — depend on `Principal` and "
+            "`assert_can_access_tutor` instead of on `TutorScope`."
+        )
+
+    return guard
+
+
+def get_tutor_scope(
+    user: Principal,
+    db: Annotated[Session, Depends(get_db)],
+    tutor_id: uuid.UUID | None = None,
+) -> Generator[ResolvedTutorScope, None, None]:
+    """Resolve the request's tutor scope, and arm the guard that makes ignoring it fail.
+
+    `tutor_id` is the caller's request, taken from the path when the route has a `{tutor_id}`
+    segment and from the query string otherwise; `_decide_tutor_scope` turns it into the
+    filter, raising 403 on a cross-tutor reach before the endpoint ever runs.
+
+    The listener is bound to this request's `Session` — the same instance the route gets from
+    `Depends(get_db)`, since FastAPI caches a dependency per request — and is removed on the
+    way out so it cannot outlive the request on a pooled or test-scoped session.
+    """
+    scope = ResolvedTutorScope(_decide_tutor_scope(user, tutor_id))
+    guard = _guard_unapplied_scope(scope)
+
+    event.listen(db, "do_orm_execute", guard)
+    try:
+        yield scope
+    finally:
+        event.remove(db, "do_orm_execute", guard)
+
+
+TutorScope = Annotated[ResolvedTutorScope, Depends(get_tutor_scope)]
+
+
 def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None) -> None:
-    """Row-level companion to `resolve_tutor_scope`, for "load by id, then check the owner".
+    """Row-level companion to `TutorScope`, for "load by id, then check the owner".
 
     Admins always pass. A tutor passes only when the row belongs to them; an unowned row
     (`owner_tutor_id is None`) belongs to no tutor and so is not theirs. Raises 403 — never
     404, never a silent empty response.
+
+    A route using this pattern takes `Principal`, not `TutorScope`: it has to read the row
+    before it can know the owner, so there is no filter to apply up front and nothing for the
+    unapplied-scope guard to check.
     """
     if user.role is UserRole.ADMIN:
         return

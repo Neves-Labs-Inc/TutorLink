@@ -5,18 +5,16 @@
 _Owned by the orchestrator. Planner must not write below this line until the next heading._
 
 - **Current phase:** 01 — Foundation
-- **Status:** `blocked`. Twelve of thirteen requirements verified. The phase is **committed**
-  and the **clean-clone smoke has been run and passed** (2026-08-11), which closes REQ-013's
-  last open gate. REQ-010 remains the single unproven requirement and is blocked on tooling,
-  not on code or on a decision. Phase is not closed.
+- **Status:** `verified` as of 2026-08-12. **All thirteen requirements proven.** REQ-010 was
+  verified in a real browser on 2026-08-12 after the Claude-in-Chrome extension was connected,
+  closing the last open gate. The clean-clone smoke passed 2026-08-11 (REQ-013).
 - **Last verified SHA:** `dae0e55` — `feat: Phase 1 foundation — walking skeleton`, 89 files,
   committed locally on `main` on 2026-08-11. **Not pushed.** `.env` was confirmed absent from
   the index (`git ls-files .env` → no match; ignored at `.gitignore:2`); no `node_modules`,
   `dist/`, `.venv`, `__pycache__` or build output was staged. Working tree clean after commit.
-- **Next action:** obtain a working browser automation channel and run `qa-visual` for
-  REQ-010. Nothing else in Phase 1 is outstanding. Do not start Phase 2 until the user
-  decides whether to accept Phase 1 with REQ-010 unproven (see "REQ-010 is now a tooling
-  blocker" below).
+  **One uncommitted fix now sits on top of it** — see the REQ-010 section below.
+- **Next action:** commit the REQ-010 contrast fix, then begin Phase 2. Phase 2 must
+  discharge the D-013 dev-bypass removal obligation.
 
 ### Clean-clone smoke — RUN AND PASSED 2026-08-11 (REQ-013 closed)
 
@@ -52,28 +50,53 @@ recorded here as one. `01-03-PLAN.md`'s acceptance bullet should be narrowed to 
 to a `bot/` *directory*" at the next planner pass — planner owns that file, so it was not
 edited here.
 
-### REQ-010 is now a tooling blocker, not a permission blocker
+### REQ-010 — VERIFIED IN A BROWSER 2026-08-12, with one defect found and fixed
 
-The prior state file recorded REQ-010 as waiting on the user granting the Claude-in-Chrome
-extension site permission for `localhost:5173`. That framing is **superseded**. `qa-visual`
-was re-dispatched on 2026-08-11 against a confirmed-live dev server (`/login` → 200) and
-returned BLOCKED for a different reason: **no `mcp__claude-in-chrome__*` tool exists in the
-session at all** — the extension is not connected, so there is nothing to grant permission
-to. The orchestrator independently confirmed no browser tool is registered.
+The extension was connected on 2026-08-12 and `qa-visual` ran for the first time with real
+browser tooling. Both shells were exercised at 375px and 1280px in both themes. Chrome was
+the only engine used — headless CDP, Playwright and Puppeteer stayed ruled out and were not
+substituted.
 
-Headless CDP, Playwright, Puppeteer and computed-from-token analysis were all ruled out by
-the user and were **not** substituted. Nothing was fabricated: no page was loaded, no
-screenshot taken, no DOM measured.
+**Structural criteria — all pass, with browser evidence.** Admin shell: persistent sidebar
+at ≥768px, hamburger + slide-in panel below it, dismissible by backdrop *and* Escape with
+focus returning to the trigger; the six nav items match `docs/admin-dashboard-design.md:51-58`
+verbatim. Tutor shell: sidebar at ≥768px, three-item bottom tab bar below, no content
+overlap. Login: label, focus, error (`role="alert"`) and disabled states all driven; zero
+`/auth` requests fired, confirming it does not authenticate. No horizontal scroll at 375px on
+any route; no FOUC. Console clean on all three routes in both themes — zero errors, zero
+warnings.
 
-Consequently the contrast figures in this file remain **computed from CSS token values and
-still never browser-measured**: light `--border` on `--muted` 3.15:1, lowest body text
-6.13:1; dark 3.15:1 and 6.36:1. Treat them as unverified claims. Everything else REQ-010
-asks for — 375px/1280px layout of both shells, hamburger and slide-in panel, bottom tab bar,
-focus rings, no horizontal scroll, the login card's four visual states — is equally unproven.
+**The computed contrast figures were wrong in method, and measuring caught a real defect.**
+The recorded dark `--border` on `--muted` did measure 3.15:1, but that pair is not what
+renders. `dashboard/src/components/ui/input.tsx` carried `dark:bg-input/30` — shadcn's stock
+`Input`, which fills the field with the *border token itself at 30% opacity*. Composited over
+the card `rgb(23,26,32)` that yields a fill of `rgb(48,51,59)`, against which the border
+`rgb(105,110,121)` measures **2.47:1** — below the 3:1 WCAG AA floor for UI component
+boundaries. Light theme was never affected: it used plain `bg-transparent` and measured
+3.47:1.
 
-To unblock: connect the Claude-in-Chrome extension for the session (via
-`https://claude.ai/chrome` or `/chrome`), then re-run `qa-visual`. This is an environment
-gap, not a code defect — no `designer` or coder routing applies.
+**Fixed 2026-08-12** by removing `dark:bg-input/30`, so dark matches light's transparent
+fill. Re-measured in the browser: **3.41:1, passes.** `tsc -b` exit 0 and lint clean after the
+change. `dark:disabled:bg-input/80` was deliberately kept — disabled controls are exempt from
+WCAG contrast requirements.
+
+This defect was **not** introduced by `designer`; it is upstream shadcn default styling, the
+same category as the `button.tsx` eslint-disable accepted below. The user chose the
+narrow component-level fix over widening the `--border` token, which would have repainted
+every bordered surface and invalidated all other dark-theme measurements.
+
+**Measured contrast now on record** (rendered DOM, not token arithmetic). Dark: foreground on
+background 17.33:1; muted-foreground on card 8.17:1; input border on fill 3.41:1; error text
+6.35–6.9:1; button text on primary 7.31:1; sidebar text 16.62:1; sidebar border 3.58:1.
+Light: card title 17.6:1; description 6.82:1; footer 6.47:1; error 6.9:1; input border
+3.47:1; button text 7.52:1. Nothing measured falls below its AA threshold.
+
+**Not covered, and still unproven.** Hover-state contrast (`:hover` cannot be held open
+across a `getComputedStyle` call with this tooling); an exhaustive lowest-text-pair sweep of
+every route — the recorded 6.13:1 light / 6.36:1 dark were not reproduced pair-for-pair,
+though every pair sampled cleared 4.5:1; and iOS Safari specifics (`safe-area-inset`,
+`100dvh`), since this was desktop Chrome only. Routes beyond `/login`, `/dashboard` and
+`/schedule` are out of REQ-010's scope and were not exercised.
 
 ### Task status
 
@@ -135,14 +158,15 @@ no-op as its correctness gate.
 
 ### NOT verified — outstanding before the phase is fully closed
 
-**Exactly one item remains. Items 2 and 3 of the previous list are now done.**
+**Nothing remains. All three items are done.**
 
-1. **REQ-010, entirely.** 375px/1280px layout for both shells, hamburger and slide-in panel
-   behaviour, bottom tab bar, focus rings, no-horizontal-scroll, login's four visual states,
-   and measured light/dark contrast. See "REQ-010 is now a tooling blocker" above for why
-   the second attempt failed and what unblocks it.
+1. ~~REQ-010.~~ **DONE 2026-08-12** — browser-verified, one contrast defect found and fixed.
 2. ~~The clean-clone smoke.~~ **DONE 2026-08-11** against `dae0e55` — passed. REQ-013 closed.
-3. ~~The commit.~~ **DONE 2026-08-11** — `dae0e55`, local only, not pushed.
+3. ~~The commit.~~ **DONE 2026-08-11** — `dae0e55`, local only, not pushed. The REQ-010
+   contrast fix sits uncommitted on top of it and still needs its own commit.
+
+The only carried caveats are the three "Not covered" items listed under REQ-010 above:
+hover-state contrast, the exhaustive lowest-text-pair sweep, and iOS Safari rendering.
 
 ### Orchestrator decision on a leftover open question
 
@@ -163,19 +187,16 @@ defect between two concurrently-executed tasks, invisible to either one.
 
 ### Resume checklist
 
-**One item gates the phase, and it is an environment gap.**
+**Nothing gates the phase. Phase 1 is `verified` in `ROADMAP.md`.**
 
-1. **Connect the Claude-in-Chrome extension for the session** — `https://claude.ai/chrome` or
-   `/chrome`. Granting a site permission is not enough and was never the actual problem: no
-   browser tool is registered in the session at all. Then run `qa-visual` against
-   `http://localhost:5173` for REQ-010 (both shells at 375px and 1280px, both themes,
-   **measured** contrast replacing the computed figures). This is the only unproven Phase 1
-   requirement. Do not substitute headless CDP — the user ruled it out.
-2. Then mark Phase 1 `verified` in `ROADMAP.md`. Until then it is `blocked`.
-3. **A user decision is pending:** whether to start Phase 2 with REQ-010 still unproven, or
-   to hold Phase 1 open until a browser is available. The shell compiles, builds, and is
-   served, so nothing in Phase 2 is technically blocked — but Phase 5 and 6 build directly on
-   this shell, so an unproven responsive layout compounds.
+1. Commit the REQ-010 contrast fix (`dashboard/src/components/ui/input.tsx`, one class
+   removed) together with this planning update. `dae0e55` and `684a015` are still local and
+   unpushed.
+2. Begin Phase 2. It must discharge the D-013 dev-bypass removal obligation, and should
+   correct the constitution's frontend gate from `tsc --noEmit` to `tsc -b`.
+3. Optional follow-up, not a gate: the three uncovered items under REQ-010 (hover-state
+   contrast, exhaustive text-pair sweep, iOS Safari). Phase 5 is the natural place for the
+   first two, when many more shadcn components land.
 
 To bring the stack back up after the clean-clone smoke: `docker compose up -d` from the repo
 root (the smoke required the main stack be taken down to free ports 5432/6379/8000/5173; its

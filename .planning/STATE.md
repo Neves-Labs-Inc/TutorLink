@@ -4,17 +4,41 @@
 
 _Owned by the orchestrator. Planner must not write below this line until the next heading._
 
-- **Current phase:** 01 — Foundation
-- **Status:** `verified` as of 2026-08-12. **All thirteen requirements proven.** REQ-010 was
-  verified in a real browser on 2026-08-12 after the Claude-in-Chrome extension was connected,
-  closing the last open gate. The clean-clone smoke passed 2026-08-11 (REQ-013).
-- **Last verified SHA:** `dae0e55` — `feat: Phase 1 foundation — walking skeleton`, 89 files,
-  committed locally on `main` on 2026-08-11. **Not pushed.** `.env` was confirmed absent from
-  the index (`git ls-files .env` → no match; ignored at `.gitignore:2`); no `node_modules`,
-  `dist/`, `.venv`, `__pycache__` or build output was staged. Working tree clean after commit.
-  **One uncommitted fix now sits on top of it** — see the REQ-010 section below.
-- **Next action:** commit the REQ-010 contrast fix, then begin Phase 2. Phase 2 must
-  discharge the D-013 dev-bypass removal obligation.
+- **Current phase:** 02 — Authentication and RBAC
+- **Status:** `verified` as of 2026-08-12. All of REQ-020 … REQ-029 plus the new REQ-02A are
+  proven. `verifier` returned PASS over the combined result of all eleven tasks; `qa-visual`
+  returned PASS on two browser passes (admin shell, then tutor shell); an independent
+  security review returned **no critical and no high findings**. D-013's dev-bypass removal
+  obligation is discharged by deletion. Phase 1 remains `verified` (all thirteen).
+- **Last verified SHA:** `phase-2-auth-rbac` branch — `feat: Phase 2 — authentication and
+  RBAC` merged with `main`'s Phase 1 close-out (`af9089a`), plus the close-out commit. **On a
+  branch, not on `main`, and not pushed.** This workspace was sitting on detached HEAD at
+  `684a015` while `main` had already advanced to `af9089a`; the two were reconciled by
+  merging `main` into the branch. Only `.planning/ROADMAP.md` conflicted and was resolved by
+  hand. The merged tree was re-verified as a whole: **110 backend tests**, ruff clean,
+  `tsc -b` / lint / build clean, live login 200, `/health/ready` 200.
+  **Merging this branch to `main` is the next git action and has not been done.**
+- **Next action:** Phase 3 — Core CRUD API (REQ-030 … REQ-036), the first phase to mount
+  `/api/*` routes. Before its first router is written, harden the ergonomics of
+  `resolve_tutor_scope` (`api/app/dependencies.py:132-156`) — see the carry-forward in
+  `phases/02-auth-rbac/02-SUMMARY.md`. Its behaviour is correct and fully tested, but a
+  router that discards its return value leaks every tutor's rows to a tutor who passes no
+  `tutor_id`, and Phases 3, 4 and 6 call it on every route.
+
+### Dev database state (local only, not fixtures)
+
+The shared `tutorlink` dev database holds two real accounts, both with password
+`change-me-please`: `admin@tutorlink.test` (admin, created by the seed CLI) and
+`tutor@tutorlink.test` (tutor, with a matching `tutors` row, created by the orchestrator so
+`qa-visual` could reach the tutor shell at all — the tutor half of REQ-010 and REQ-028 had
+never been exercised in a browser). Neither is a fixture and neither is committed. Phase 3
+should replace the tutor row with one created through `POST /api/tutors` once that exists.
+
+### Phase 1 record below
+
+The sections that follow document Phase 1 and are kept as history. See
+`phases/02-auth-rbac/02-SUMMARY.md` for what Phase 2 shipped, its REQ-by-REQ close-out, its
+deviations, and the seven items of spec drift it reported.
 
 ### Clean-clone smoke — RUN AND PASSED 2026-08-11 (REQ-013 closed)
 

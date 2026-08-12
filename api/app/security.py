@@ -1,7 +1,3 @@
-"""Password hashing and JWT primitives. Pure functions — no database, no FastAPI."""
-
-from __future__ import annotations
-
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -22,7 +18,7 @@ MAX_PASSWORD_BYTES = 72
 
 
 class TokenError(Exception):
-    """A token was malformed, badly signed, expired, or of the wrong type."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -44,10 +40,12 @@ def hash_password(plain: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        matches = bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
     except (ValueError, TypeError):
         # A corrupt or non-bcrypt hash is a failed login, not a 500.
-        return False
+        matches = False
+
+    return matches
 
 
 def password_is_encodable(plain: str) -> bool:
@@ -116,7 +114,7 @@ def decode_token(token: str, *, expected_type: str) -> TokenClaims:
     expires_at = datetime.fromtimestamp(payload["exp"], tz=UTC)
 
     if token_type == ACCESS_TOKEN_TYPE:
-        return TokenClaims(
+        claims = TokenClaims(
             subject=subject,
             token_type=token_type,
             jti=jti,
@@ -124,14 +122,16 @@ def decode_token(token: str, *, expected_type: str) -> TokenClaims:
             role=_require_role(payload.get("role")),
             tutor_id=_optional_uuid(payload.get("tutor_id"), "tutor_id"),
         )
+    else:
+        claims = TokenClaims(
+            subject=subject,
+            token_type=token_type,
+            jti=jti,
+            expires_at=expires_at,
+            family_id=_require_uuid(payload.get("fid"), "fid"),
+        )
 
-    return TokenClaims(
-        subject=subject,
-        token_type=token_type,
-        jti=jti,
-        expires_at=expires_at,
-        family_id=_require_uuid(payload.get("fid"), "fid"),
-    )
+    return claims
 
 
 def _encode(claims: dict[str, Any]) -> str:
@@ -148,8 +148,11 @@ def _require_uuid(value: Any, claim: str) -> uuid.UUID:
 
 def _optional_uuid(value: Any, claim: str) -> uuid.UUID | None:
     if value is None:
-        return None
-    return _require_uuid(value, claim)
+        parsed = None
+    else:
+        parsed = _require_uuid(value, claim)
+
+    return parsed
 
 
 def _require_role(value: Any) -> UserRole:

@@ -1,5 +1,3 @@
-"""Process-wide Redis client."""
-
 import redis
 from redis.exceptions import RedisError
 
@@ -10,6 +8,8 @@ redis_client = redis.Redis.from_url(get_settings().redis_url, decode_responses=T
 
 def check_redis() -> bool:
     try:
-        return bool(redis_client.ping())
+        reachable = bool(redis_client.ping())
     except RedisError:
-        return False
+        reachable = False
+
+    return reachable

@@ -53,7 +53,7 @@ Each parent can have one or more children. The bot collects child info during in
 | parent_id | UUID | FK → parents.id |
 | name | VARCHAR | Child's full name |
 | age | INT | Age at time of registration |
-| grade_level | VARCHAR | e.g. Grade 7, High School Year 2 |
+| grade_level | INT | The child's grade, as a number — 7, not "Grade 7" |
 | school_name | VARCHAR | School the child attends |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
@@ -96,14 +96,16 @@ Constraints: `UNIQUE (email, phone_number)`
 ---
 
 ### `tutor_subjects`
-Junction table linking tutors to the subjects they can teach, with the grade levels they cover per subject.
+Junction table linking tutors to the subjects they can teach, with the highest grade level they cover per subject.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
 | tutor_id | UUID | FK → tutors.id |
 | subject_id | UUID | FK → subjects.id |
-| grade_levels | VARCHAR[] | Array of grade levels, e.g. ["Grade 6", "Grade 7"] |
+| max_grade_level | INT | Ceiling, not an enumeration — 8 covers grades 1–8 |
+
+The ceiling is per subject because a tutor may handle grade 12 maths but only grade 8 French. Matching asks `max_grade_level >= child.grade_level`, so a tutor is offered for every grade at or below their ceiling rather than only those explicitly listed.
 
 Constraints: `UNIQUE (tutor_id, subject_id)` · `INDEX (tutor_id, subject_id)`
 

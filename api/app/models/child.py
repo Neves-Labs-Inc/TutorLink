@@ -25,7 +25,7 @@ class Child(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     age: Mapped[int] = mapped_column(Integer, nullable=False)
-    grade_level: Mapped[str] = mapped_column(String(64), nullable=False)
+    grade_level: Mapped[int] = mapped_column(Integer, nullable=False)
     school_name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

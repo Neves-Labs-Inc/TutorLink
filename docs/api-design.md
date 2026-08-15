@@ -302,7 +302,7 @@ Returns a single client with their children.
       "id": "uuid",
       "name": "Tommy Doe",
       "age": 12,
-      "grade_level": "Grade 7",
+      "grade_level": 7,
       "school_name": "Lincoln Middle School"
     }
   ]
@@ -350,7 +350,7 @@ Create a child linked to a parent. Called by the bot during intake.
   "parent_id": "uuid",
   "name": "Tommy Doe",
   "age": 12,
-  "grade_level": "Grade 7",
+  "grade_level": 7,
   "school_name": "Lincoln Middle School"
 }
 ```
@@ -376,7 +376,9 @@ DELETE /api/tutors/{id}/subjects/{subject_id}
 
 ### `GET /api/tutors`
 
-Returns all active tutors. Supports filtering: `?subject_id=uuid&grade_level=Grade 7`
+Returns all active tutors. Supports filtering: `?subject_id=uuid&grade_level=7`.
+
+`grade_level` is a **ceiling comparison, not a membership test**: it returns every tutor whose `max_grade_level` for the subject is at or above the requested grade. With no `subject_id`, it returns tutors with at least one qualifying subject assignment.
 
 **Response**
 ```json
@@ -392,7 +394,7 @@ Returns all active tutors. Supports filtering: `?subject_id=uuid&grade_level=Gra
       {
         "subject_id": "uuid",
         "name": "Math",
-        "grade_levels": ["Grade 6", "Grade 7", "Grade 8"]
+        "max_grade_level": 8
       }
     ]
   }
@@ -427,13 +429,13 @@ Soft delete — sets `is_active = false`.
 
 ### `POST /api/tutors/{id}/subjects`
 
-Assign a subject (and grade levels) to a tutor.
+Assign a subject to a tutor, with the highest grade level they cover in it.
 
 **Request**
 ```json
 {
   "subject_id": "uuid",
-  "grade_levels": ["Grade 6", "Grade 7", "Grade 8"]
+  "max_grade_level": 8
 }
 ```
 
@@ -550,7 +552,7 @@ The core endpoint used by the bot to find open slots for a client. Runs the full
 | Param | Required | Description |
 |---|---|---|
 | subject_id | Yes | Filter by subject |
-| grade_level | Yes | Filter by grade level |
+| grade_level | Yes | The child's grade. Matches tutors whose ceiling for the subject is at or above it |
 | date | Yes | The requested session date (YYYY-MM-DD) |
 | tutor_id | No | Filter to a specific tutor if client has a preference |
 

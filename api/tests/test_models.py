@@ -57,3 +57,14 @@ def test_system_setting_key_is_unique() -> None:
     constraint = next(c for c in system_settings.constraints if c.name == "uq_system_settings_key")
 
     assert [c.name for c in constraint.columns] == ["key"]
+
+
+def test_grade_level_is_comparable_not_a_label() -> None:
+    """The rule is an ordering — a tutor takes a student at or below their own grade — so
+    both sides have to be numbers. Free text sorts 'Grade 10' before 'Grade 7'."""
+    children = metadata.tables["children"]
+    tutor_subjects = metadata.tables["tutor_subjects"]
+
+    assert children.c.grade_level.type.python_type is int
+    assert tutor_subjects.c.max_grade_level.type.python_type is int
+    assert "grade_levels" not in tutor_subjects.c

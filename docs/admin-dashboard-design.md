@@ -95,14 +95,14 @@ Manage the tutor roster.
 
 **Tutor detail (`/tutors/{id}`):**
 - Profile section: name, email, phone, bio, active toggle
-- Subjects section: list of assigned subjects + grade levels, add/remove
+- Subjects section: list of assigned subjects + the grade ceiling for each, add/remove
 - Availability section: weekly schedule grid (Mon–Sun), add/edit/remove slots
 - Exceptions section: list of upcoming exceptions, add new exception
 - Recent bookings for this tutor
 
 **Forms:**
 - Add/Edit Tutor: name, email, phone, bio
-- Add Subject: subject dropdown + grade level multi-select
+- Add Subject: subject dropdown + a single grade ceiling input
 - Add Availability Slot: day of week, start time, end time
 - Add Exception: date range picker, reason dropdown, notes
 

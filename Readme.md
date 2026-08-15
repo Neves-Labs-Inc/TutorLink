@@ -129,7 +129,20 @@ docker compose run --rm api alembic upgrade head
 
 Migrations are applied explicitly and never run automatically on startup.
 
-5. Expose your local webhook to Twilio using [ngrok](https://ngrok.com)
+5. Create the first account
+
+```bash
+docker compose run --rm api python -m app.cli seed-admin
+docker compose run --rm api python -m app.cli create-developer
+```
+
+Both prompt for an email and password. There is no public setup endpoint and there never will be — the first accounts are created here, never over HTTP.
+
+`create-developer` is the only way to get a `developer`: an admin may not create one, nor promote anyone to it, so the system cannot bootstrap its own super-user through the API. Run it again with a fresh email to recover from a lockout.
+
+Neither command resets a password or changes an existing account's role. An email that is already taken is reported and left alone, and `create-developer` exits non-zero rather than promoting an existing admin.
+
+6. Expose your local webhook to Twilio using [ngrok](https://ngrok.com)
 
 ```bash
 ngrok http 8000

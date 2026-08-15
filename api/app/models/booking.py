@@ -12,6 +12,8 @@ from app.models.enums import BookingStatus, booking_status_enum
 if TYPE_CHECKING:
     from app.models.availability import TutorAvailability
     from app.models.child import Child
+    from app.models.guardian import Guardian
+    from app.models.home import Home
     from app.models.subject import Subject
     from app.models.tutor import Tutor
 
@@ -23,6 +25,7 @@ class Booking(Base):
     __table_args__ = (
         Index("ix_bookings_tutor_date_status", "tutor_id", "scheduled_date", "status"),
         Index("ix_bookings_child_date", "child_id", "scheduled_date"),
+        Index("ix_bookings_home_id", "home_id"),
         Index("ix_bookings_date_status", "scheduled_date", "status"),
         # REQ-008: at most one live (pending or confirmed) booking per tutor slot.
         Index(
@@ -50,6 +53,16 @@ class Booking(Base):
     availability_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tutor_availability.id"), nullable=False
     )
+    # Required, and not derivable: once a child has two homes the location is genuinely
+    # ambiguous, and a tutor with no address cannot work.
+    home_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("homes.id"), nullable=False
+    )
+    # NULL when an admin created the booking from the dashboard. Populated, it answers "who
+    # scheduled this" — a question separated guardians sharing a child will ask.
+    booked_by_guardian_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("guardians.id"), nullable=True
+    )
     scheduled_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     start_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
     end_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
@@ -66,3 +79,5 @@ class Booking(Base):
     tutor: Mapped["Tutor"] = relationship(back_populates="bookings")
     subject: Mapped["Subject"] = relationship(back_populates="bookings")
     availability: Mapped["TutorAvailability"] = relationship(back_populates="bookings")
+    home: Mapped["Home"] = relationship(back_populates="bookings")
+    booked_by_guardian: Mapped["Guardian | None"] = relationship()

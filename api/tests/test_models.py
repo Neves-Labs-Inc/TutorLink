@@ -2,7 +2,11 @@ from app.models import metadata
 
 EXPECTED_TABLES = {
     "users",
-    "parents",
+    "guardians",
+    "homes",
+    "child_guardians",
+    "child_homes",
+    "guardian_homes",
     "children",
     "subjects",
     "tutors",
@@ -68,3 +72,41 @@ def test_grade_level_is_comparable_not_a_label() -> None:
     assert children.c.grade_level.type.python_type is int
     assert tutor_subjects.c.max_grade_level.type.python_type is int
     assert "grade_levels" not in tutor_subjects.c
+
+
+def test_identity_and_location_are_separate_tables() -> None:
+    """`parents` fused who the client is with where they live, which works only while a child
+    has one of each. Separated guardians mean two of both."""
+    guardians = metadata.tables["guardians"]
+
+    assert "address" not in guardians.c
+    assert "access_code" not in guardians.c
+    assert "address" in metadata.tables["homes"].c
+
+
+def test_a_child_has_many_guardians_and_many_homes() -> None:
+    children = metadata.tables["children"]
+
+    assert "parent_id" not in children.c
+    for junction, columns in (
+        ("child_guardians", {"child_id", "guardian_id"}),
+        ("child_homes", {"child_id", "home_id"}),
+        ("guardian_homes", {"guardian_id", "home_id"}),
+    ):
+        assert columns <= set(metadata.tables[junction].c.keys()), junction
+
+
+def test_junctions_are_hard_delete() -> None:
+    """No `is_active`, matching tutor_subjects. A link is not an entity, so unlinking a
+    guardian after a custody change is a DELETE and takes effect immediately."""
+    for junction in ("child_guardians", "child_homes", "guardian_homes"):
+        assert "is_active" not in metadata.tables[junction].c, junction
+
+
+def test_a_booking_names_its_home_and_may_name_who_booked_it() -> None:
+    """home_id cannot be derived once a child has two homes, and a tutor with no address
+    cannot work — so it is required. booked_by_guardian_id is NULL for admin bookings."""
+    bookings = metadata.tables["bookings"]
+
+    assert bookings.c.home_id.nullable is False
+    assert bookings.c.booked_by_guardian_id.nullable is True

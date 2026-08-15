@@ -10,7 +10,8 @@ from app.models.enums import (
     BookingStatus,
     UserRole,
 )
-from app.models.parent import Parent
+from app.models.guardian import ChildGuardian, Guardian
+from app.models.home import ChildHome, GuardianHome, Home
 from app.models.refresh_token import RefreshToken
 from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
@@ -28,7 +29,11 @@ __all__ = [
     "Booking",
     "BookingStatus",
     "Child",
-    "Parent",
+    "ChildGuardian",
+    "ChildHome",
+    "Guardian",
+    "GuardianHome",
+    "Home",
     "RefreshToken",
     "Subject",
     "SystemSetting",

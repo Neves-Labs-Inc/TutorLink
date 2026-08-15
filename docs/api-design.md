@@ -278,8 +278,6 @@ Returns all clients. Supports optional query params: `?is_active=true`
     "id": "uuid",
     "name": "Jane Doe",
     "phone_number": "+1234567890",
-    "address": "123 Main St",
-    "access_code": "1234",
     "is_active": true
   }
 ]
@@ -287,7 +285,9 @@ Returns all clients. Supports optional query params: `?is_active=true`
 
 ### `GET /api/clients/{id}`
 
-Returns a single client with their children.
+Returns a single client with their children and their homes.
+
+A client is a **guardian**. Address and access code belong to a `home`, not to the guardian: a child with separated guardians has two homes, either guardian may book into either, and siblings share the pair. The API keeps the word *client* because that is the business relationship; the table is `guardians`.
 
 **Response**
 ```json
@@ -295,8 +295,14 @@ Returns a single client with their children.
   "id": "uuid",
   "name": "Jane Doe",
   "phone_number": "+1234567890",
-  "address": "123 Main St",
-  "access_code": "1234",
+  "homes": [
+    {
+      "id": "uuid",
+      "label": "Mum's",
+      "address": "123 Main St",
+      "access_code": "1234"
+    }
+  ],
   "children": [
     {
       "id": "uuid",
@@ -318,14 +324,17 @@ Create a new client. Called internally by the bot during the intake flow.
 {
   "name": "Jane Doe",
   "phone_number": "+1234567890",
-  "address": "123 Main St",
-  "access_code": "1234"
+  "home": {
+    "label": "Mum's",
+    "address": "123 Main St",
+    "access_code": "1234"
+  }
 }
 ```
 
 ### `PATCH /api/clients/{id}`
 
-Update client info (address, access code, name, active status).
+Update client info (name, active status). Address and access code belong to a home and are edited through the home, not here.
 
 ### `GET /api/clients/{id}/bookings`
 
@@ -342,12 +351,13 @@ PATCH  /api/children/{id}
 
 ### `POST /api/children`
 
-Create a child linked to a parent. Called by the bot during intake.
+Create a child, linked to one or more guardians and one or more homes. Called by the bot during intake.
 
 **Request**
 ```json
 {
-  "parent_id": "uuid",
+  "guardian_ids": ["uuid"],
+  "home_ids": ["uuid"],
   "name": "Tommy Doe",
   "age": 12,
   "grade_level": 7,
@@ -606,7 +616,7 @@ Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&from=
 
 ### `GET /api/bookings/{id}`
 
-Returns full detail for a single booking including parent address.
+Returns full detail for a single booking, including the address and access code of **the booking's home** — not the guardian's. Once a child has two homes those are different things, and resolving through the guardian returns the wrong house whenever a session is at the other one.
 
 ### `POST /api/bookings`
 

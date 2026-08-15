@@ -26,31 +26,88 @@ Constraints: `UNIQUE (email)` · `INDEX (email, role)`
 
 ---
 
-### `parents`
-Stores parent/guardian information. Identified by phone number, which is used by the bot to recognise returning clients.
+### `guardians`
+**Identity only.** Who the client is and how the bot reaches them. Identified by phone number, which is used to recognise returning clients.
+
+Called a *guardian* rather than a parent because the person engaging the service may be a grandparent, a step-parent, or a legal guardian. The API keeps calling them a **client**, which is the business relationship rather than the relationship to the child; both are accurate on their own axis.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
 | phone_number | VARCHAR | Unique — used to identify returning clients |
-| name | VARCHAR | Parent/guardian full name |
-| address | TEXT | Home address where tutoring takes place |
-| access_code | VARCHAR | Neighbourhood or building access code |
+| name | VARCHAR | Guardian's full name |
 | is_active | BOOLEAN | Soft delete flag |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
 Constraints: `UNIQUE (phone_number)` · `INDEX (phone_number)`
 
+Address and access code are **not here** — they belong to a `home`. A child with separated guardians has two homes, either guardian may book into either, and siblings share the pair. A single fused row could express none of that.
+
 ---
 
-### `children`
-Each parent can have one or more children. The bot collects child info during intake and loops until all children are registered.
+### `homes`
+Where tutoring happens. Separated from guardian identity so a child can have more than one.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
-| parent_id | UUID | FK → parents.id |
+| label | VARCHAR | Optional short name — "Mum's", "Dad's". The bot asks "which home?" and reading two full addresses over WhatsApp is a poor prompt |
+| address | TEXT | Address where tutoring takes place |
+| access_code | VARCHAR | Neighbourhood or building access code |
+| is_active | BOOLEAN | Soft delete flag |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | |
+
+---
+
+### `child_guardians`
+Which guardians a child has. Many-to-many: siblings share guardians, and a child with separated guardians has two.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| child_id | UUID | FK → children.id |
+| guardian_id | UUID | FK → guardians.id |
+
+Constraints: `UNIQUE (child_id, guardian_id)` · `INDEX (guardian_id)`
+
+---
+
+### `child_homes`
+Which homes a child is tutored at. Many-to-many, which is what accommodates siblings sharing a home and one child having two.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| child_id | UUID | FK → children.id |
+| home_id | UUID | FK → homes.id |
+
+Constraints: `UNIQUE (child_id, home_id)` · `INDEX (home_id)`
+
+---
+
+### `guardian_homes`
+Which homes belong to a guardian. Explicit rather than derived through children: a couple sharing one home before separation cannot be expressed by a single owner column, a tutor at an address needs to know which guardian to call, and intake collects the address before any child row exists.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| guardian_id | UUID | FK → guardians.id |
+| home_id | UUID | FK → homes.id |
+
+Constraints: `UNIQUE (guardian_id, home_id)` · `INDEX (home_id)`
+
+**All three junctions are hard-delete** — no `is_active`, matching `tutor_subjects`. A junction is a link rather than an entity, so the soft-delete rule does not apply to it. Unlinking after a custody change is a DELETE and takes effect immediately.
+
+---
+
+### `children`
+A child belongs to one or more guardians, through `child_guardians`, and is tutored at one or more homes, through `child_homes`. Neither is derivable from the other. The bot collects child info during intake and loops until all children are registered.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
 | name | VARCHAR | Child's full name |
 | age | INT | Age at time of registration |
 | grade_level | INT | The child's grade, as a number — 7, not "Grade 7" |
@@ -58,7 +115,7 @@ Each parent can have one or more children. The bot collects child info during in
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
-Constraints: `INDEX (parent_id)`
+Constraints: none beyond the primary key — the guardian and home links live in their own tables
 
 ---
 
@@ -156,6 +213,8 @@ Confirmed tutoring sessions. Links a child to a tutor for a specific subject on 
 | tutor_id | UUID | FK → tutors.id |
 | subject_id | UUID | FK → subjects.id |
 | availability_id | UUID | FK → tutor_availability.id — the recurring slot this booking came from |
+| home_id | UUID | FK → homes.id — **where the session happens.** Required, and not derivable once a child has two |
+| booked_by_guardian_id | UUID | FK → guardians.id — NULL when an admin created it. Answers "who scheduled this" |
 | scheduled_date | DATE | The actual date of the session |
 | start_time | TIME | Session start time |
 | end_time | TIME | Session end time |
@@ -164,7 +223,7 @@ Confirmed tutoring sessions. Links a child to a tutor for a specific subject on 
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
-Constraints: `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)`
+Constraints: `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
 
 ---
 
@@ -200,7 +259,11 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 ```
 users ──────────────────────────────────── tutors
                                               │
-parents ──────────< children >──────────< bookings
+guardians ──< child_guardians >── children >── bookings
+    │                                 │        │
+    └──< guardian_homes >── homes >── child_homes
+                              │       │
+                              └───────┴──────< bookings
                                               │
 tutors ───────────────────────────────────────┤
   │                                           │

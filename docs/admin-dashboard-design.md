@@ -110,16 +110,17 @@ Manage the tutor roster.
 
 ### Clients (`/clients`)
 
-View all parent/client records.
+View all guardian/client records.
 
 **List view:**
-- Table: parent name, phone number, address, number of children, active status
+- Table: guardian name, phone number, number of homes, number of children, active status
 - Search by name or phone number
 - Filter by active status
 
 **Client detail (`/clients/{id}`):**
-- Parent info: name, phone, address, access code
-- Children list: name, age, grade, school — each expandable
+- Guardian info: name, phone. No address here — see homes below
+- Homes: label, address, access code — a client may have more than one, and a home may be shared with another guardian
+- Children list: name, age, grade, school — each expandable, showing that child's guardians and homes
 - Booking history across all children, filterable by status and date
 
 ---
@@ -136,7 +137,7 @@ View and manage all sessions.
 - "Create Booking" button for manual bookings
 
 **Booking detail slide-over:**
-- Full session info: child, parent, tutor, subject, date, time
+- Full session info: child, the guardian who booked it, tutor, subject, date, time, and the home it is at
 - Parent address + access code (visible to admin)
 - Status update dropdown
 - Notes field
@@ -198,7 +199,7 @@ The tutor's upcoming and past bookings.
 - Child name + grade
 - Subject
 - Date + time
-- Address + access code (tap to reveal)
+- Address + access code (tap to reveal) — **from the booking's home**, not the guardian's. A child with separated guardians has two, and the session is at one of them
 
 ---
 

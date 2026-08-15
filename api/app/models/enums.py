@@ -20,6 +20,7 @@ BOOKING_STATUS_ENUM_NAME = "booking_status"
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
     TUTOR = "tutor"
+    DEVELOPER = "developer"
 
 
 class BookingStatus(str, enum.Enum):

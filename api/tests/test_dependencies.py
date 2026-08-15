@@ -610,3 +610,82 @@ def test_tutor_with_null_tutor_id_may_access_no_row(probe: TestClient, db: Sessi
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
 
     _assert_detail(probe.get("/probe/rows", headers=_bearer(user)), 403, TUTOR_SCOPE_ERROR)
+
+
+# --- the developer role reaches everything an admin reaches ---------------------------------
+#
+# `developer` is a superset of `admin`, so every gate asks "admin or above" rather than
+# "is admin". Each test below fails on the pre-#40 code, where the comparison was against
+# `UserRole.ADMIN` by identity and a developer was refused everywhere.
+
+
+def test_developer_passes_both_probes(probe: TestClient, db: Session) -> None:
+    user = _make_user(db, role=UserRole.DEVELOPER)
+    headers = _bearer(user)
+
+    assert probe.get("/probe/any", headers=headers).status_code == 200
+    assert probe.get("/probe/admin", headers=headers).status_code == 200
+
+
+def test_developer_requesting_nothing_gets_no_filter(probe: TestClient, db: Session) -> None:
+    """A developer has no tutor profile, so the tutor branch would 403 on `tutor_id is None`
+    — the most confusing possible failure for the one role meant to see everything."""
+    user = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = probe.get("/probe/tutors", headers=_bearer(user))
+
+    assert response.status_code == 200
+    assert response.json() == {"scope": None}
+
+
+def test_developer_requesting_another_tutor_passes_through_unchanged(
+    probe: TestClient, db: Session
+) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = probe.get(f"/probe/tutors/{tutor.id}", headers=_bearer(user))
+
+    assert response.status_code == 200
+    assert response.json() == {"scope": str(tutor.id)}
+
+
+def test_developer_applying_the_scope_sees_every_tutor(probe: TestClient, db: Session) -> None:
+    own = _make_tutor(db)
+    _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+    user = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = probe.get("/probe/users", headers=_bearer(user))
+
+    assert response.status_code == 200
+    assert user.email in response.json()["emails"]
+
+
+def test_developer_may_access_any_row(probe: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = probe.get(f"/probe/rows?owner_tutor_id={tutor.id}", headers=_bearer(user))
+
+    assert response.status_code == 200
+
+
+def test_developer_may_access_an_unowned_row(probe: TestClient, db: Session) -> None:
+    user = _make_user(db, role=UserRole.DEVELOPER)
+
+    assert probe.get("/probe/rows", headers=_bearer(user)).status_code == 200
+
+
+def test_widening_the_gates_granted_a_tutor_nothing(probe: TestClient, db: Session) -> None:
+    """The regression that matters: `not in ADMIN_ROLES` must deny exactly what
+    `is not UserRole.ADMIN` denied. One inverted polarity here grants instead of refusing."""
+    own = _make_tutor(db)
+    other = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+    headers = _bearer(user)
+
+    _assert_detail(probe.get("/probe/admin", headers=headers), 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(probe.get(f"/probe/tutors/{other.id}", headers=headers), 403, TUTOR_SCOPE_ERROR)
+    _assert_detail(
+        probe.get(f"/probe/rows?owner_tutor_id={other.id}", headers=headers), 403, TUTOR_SCOPE_ERROR
+    )

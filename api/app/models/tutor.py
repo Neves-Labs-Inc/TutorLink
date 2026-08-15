@@ -7,13 +7,14 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -66,7 +67,9 @@ class TutorSubject(Base):
     subject_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("subjects.id"), nullable=False
     )
-    grade_levels: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
+    # A ceiling, not an enumeration: the rule is "at or below", so 8 covers grades 1-8.
+    # Per subject, because a tutor may handle grade 12 maths but only grade 8 French.
+    max_grade_level: Mapped[int] = mapped_column(Integer, nullable=False)
 
     tutor: Mapped["Tutor"] = relationship(back_populates="tutor_subjects")
     subject: Mapped["Subject"] = relationship(back_populates="tutor_subjects")

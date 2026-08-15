@@ -6,7 +6,7 @@ TutorLink is a WhatsApp-based scheduling tool that helps tutoring businesses man
 
 ## How It Works
 
-Clients message the TutorLink WhatsApp number to book tutoring sessions for their children. The bot guides them through an intake flow — collecting parent details, child information, subject, and preferred times — then matches them with an available tutor and confirms the booking.
+Clients message the TutorLink WhatsApp number to book tutoring sessions for their children. The bot guides them through an intake flow — collecting guardian details, the home, child information, subject, and preferred times — then matches them with an available tutor and confirms the booking.
 
 Admins manage everything through a web dashboard: adding tutors, setting weekly availability, creating exceptions (vacations, days off), and viewing all upcoming bookings.
 
@@ -129,7 +129,20 @@ docker compose run --rm api alembic upgrade head
 
 Migrations are applied explicitly and never run automatically on startup.
 
-5. Expose your local webhook to Twilio using [ngrok](https://ngrok.com)
+5. Create the first account
+
+```bash
+docker compose run --rm api python -m app.cli seed-admin
+docker compose run --rm api python -m app.cli create-developer
+```
+
+Both prompt for an email and password. There is no public setup endpoint and there never will be — the first accounts are created here, never over HTTP.
+
+`create-developer` is the only way to get a `developer`: an admin may not create one, nor promote anyone to it, so the system cannot bootstrap its own super-user through the API. Run it again with a fresh email to recover from a lockout.
+
+Neither command resets a password or changes an existing account's role. An email that is already taken is reported and left alone, and `create-developer` exits non-zero rather than promoting an existing admin.
+
+6. Expose your local webhook to Twilio using [ngrok](https://ngrok.com)
 
 ```bash
 ngrok http 8000
@@ -191,7 +204,7 @@ When reliability becomes a priority:
 
 1. Client messages TutorLink on WhatsApp
 2. Bot checks if client is returning (by phone number)
-3. New clients go through intake: parent name → home address + access code → child info (loops for multiple children)
+3. New clients go through intake: guardian name → home address + access code → child info (loops for multiple children)
 4. For each child: subject → tutor selection → preferred day/time → available slots → confirm
 5. Booking is written to Postgres, confirmation sent to client
 6. Returning clients can book new sessions, cancel, or reschedule
@@ -203,7 +216,7 @@ When reliability becomes a priority:
 - **Tutors** — add, edit, and deactivate tutors; assign subjects and grade levels
 - **Availability** — set weekly recurring schedules per tutor; add exceptions (vacation, days off)
 - **Bookings** — view all upcoming and past sessions; manually create or cancel bookings
-- **Clients** — view parent profiles, children, addresses, and booking history
+- **Clients** — view guardian profiles, their homes, children, and booking history
 
 ---
 

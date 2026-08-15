@@ -287,6 +287,15 @@ When a client requests a slot, the bot runs three checks in sequence:
 3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
 4. Return remaining open slots to the client
 
+Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
+`slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.
+
+This matters because `session_length_minutes` is runtime-editable, so the slot grid is not stable over
+time — changing it from 60 to 45 re-cuts every future availability range. Stored bookings keep their own
+`start_time`/`end_time` and are unaffected, but they end up misaligned with the new grid: a 60-minute
+booking at 10:00 straddles both the 09:45–10:30 and the 10:30–11:15 slots. Matching on equality would
+find neither and offer both, double-booking the tutor.
+
 ---
 
 ## Redis — Conversation State

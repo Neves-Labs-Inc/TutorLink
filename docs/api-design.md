@@ -641,7 +641,12 @@ The core endpoint used by the bot to find open slots for a client. Runs the full
 
 1. Fetches recurring slots from `tutor_availability` for the requested day
 2. Removes slots blocked by `tutor_availability_exceptions`
-3. Removes slots already taken in `bookings`
+3. Removes slots already taken in `bookings`, by time overlap — `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`
+
+Step 3 compares ranges, not start times. `session_length_minutes` is runtime-editable, so an existing
+booking need not line up with the current grid: at a 45-minute length, a 60-minute booking at 10:00
+straddles 09:45–10:30 and 10:30–11:15 and matches the start time of neither. Overlap subtraction drops
+both; equality matching would offer both. See the availability query logic in `docs/erd.md`.
 
 **Query Parameters**
 

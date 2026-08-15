@@ -166,6 +166,33 @@ Constraints: `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)`
 
 ---
 
+### `system_settings`
+Runtime-configurable business settings, as typed key/value rows. A row per setting rather than one row per column: the set grows, and adding one should be an INSERT rather than a migration. Read at request time — several of these re-cut the slot grid, so a cached value would silently serve a stale schedule.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| key | VARCHAR | Unique — e.g. `session_length_minutes` |
+| value | TEXT | Stored as text; `value_type` says how to read it |
+| value_type | VARCHAR | Rendering hint for the settings page. Validators stay in code |
+| is_developer_only | BOOLEAN | Defaults **TRUE** — fail closed, so an unflagged setting hides from admins rather than leaking |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | |
+
+Constraints: `UNIQUE (key)`
+
+Seeded contents. Every row is admin-editable today; the `is_developer_only` gate exists ahead of its first occupant.
+
+| key | default | re-cuts the grid? |
+|---|---|---|
+| session_length_minutes | 60 | yes |
+| session_gap_minutes | 30 | yes |
+| booking_lookahead_days | 90 | no |
+| min_booking_lead_hours | 0 | no |
+| cancellation_cutoff_hours | 24 | no |
+
+---
+
 ## Relationships
 
 ```

@@ -811,7 +811,7 @@ Create a confirmed booking. Called by the bot after the client selects a slot.
 The requested range is accepted when it satisfies all of the following:
 
 1. it sits entirely inside an active `tutor_availability` range for that tutor and day
-2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`
+2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
 3. it is at least `session_gap_minutes` clear of the nearest booking on either side
 4. it is not blocked by a `tutor_availability_exceptions` row with `status = 'approved'` covering
    `scheduled_date` — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they

@@ -59,6 +59,10 @@ def _test_engine() -> Generator[Engine, None, None]:
         user_role_enum.create(connection, checkfirst=True)
         booking_status_enum.create(connection, checkfirst=True)
         exception_status_enum.create(connection, checkfirst=True)
+        # For the same reason: `excl_bookings_live_overlap` compares a UUID with `=` inside a
+        # GiST index, which only `btree_gist` teaches PostgreSQL to do. Migration 0009 creates
+        # the extension, and `create_all` will not, so the table would fail to create here.
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
     metadata.create_all(engine)
 
     yield engine

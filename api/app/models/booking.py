@@ -2,8 +2,19 @@ import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Text, Time, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    Time,
+    func,
+    literal_column,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID, ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -18,6 +29,11 @@ if TYPE_CHECKING:
     from app.models.tutor import Tutor
 
 LIVE_BOOKING_STATUSES = (BookingStatus.PENDING.value, BookingStatus.CONFIRMED.value)
+LIVE_BOOKING_STATUS_PREDICATE = "status IN ({})".format(
+    ", ".join(f"'{status}'" for status in LIVE_BOOKING_STATUSES)
+)
+BOOKING_RANGE_EXPRESSION = "tsrange(scheduled_date + start_time, scheduled_date + end_time)"
+BOOKING_TIME_ORDER_PREDICATE = "end_time > start_time"
 
 
 class Booking(Base):
@@ -27,14 +43,28 @@ class Booking(Base):
         Index("ix_bookings_child_date", "child_id", "scheduled_date"),
         Index("ix_bookings_home_id", "home_id"),
         Index("ix_bookings_date_status", "scheduled_date", "status"),
-        # REQ-008: at most one live (pending or confirmed) booking per tutor slot.
-        Index(
-            "uq_booking_live_slot",
-            "tutor_id",
-            "scheduled_date",
-            "start_time",
-            unique=True,
-            postgresql_where=text("status IN ('pending', 'confirmed')"),
+        # What makes the exclusion constraint below sound, not a separate nicety. A row with
+        # `end_time == start_time` builds an *empty* `tsrange`, which overlaps nothing and so
+        # is invisible to an EXCLUDE — two identical zero-length bookings would both land.
+        # `end_time < start_time` is worse: PostgreSQL rejects the range construction itself
+        # with SQLSTATE 22000, a `DataError` rather than the `IntegrityError` a caller
+        # translating conflicts into a 409 is watching for.
+        #
+        # The cost is that a session ending at midnight (23:00-00:00) cannot be stored. That
+        # is deliberate: the range expression already produces garbage for a wrap-around, so
+        # refusing it is strictly better than storing a booking that no constraint can see.
+        # Loosening this check without giving the range a real end date reopens both holes.
+        CheckConstraint(BOOKING_TIME_ORDER_PREDICATE, name="ck_bookings_time_order"),
+        # REQ-008: a tutor's live (pending or confirmed) bookings never overlap in time.
+        # `tsrange` is half-open `[)`, so a 10:00-11:00 and an 11:00-12:00 booking are
+        # adjacent rather than conflicting. Requires the `btree_gist` extension, which the
+        # equality operator on a plain UUID column has no GiST support without.
+        ExcludeConstraint(
+            ("tutor_id", "="),
+            (literal_column(BOOKING_RANGE_EXPRESSION), "&&"),
+            name="excl_bookings_live_overlap",
+            using="gist",
+            where=text(LIVE_BOOKING_STATUS_PREDICATE),
         ),
     )
 

@@ -239,7 +239,7 @@ Confirmed tutoring sessions. Links a child to a tutor for a specific subject on 
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
-Constraints: `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
+Constraints: `EXCLUDE USING gist excl_bookings_live_overlap (tutor_id WITH =, tsrange(scheduled_date + start_time, scheduled_date + end_time) WITH &&) WHERE (status IN (pending, confirmed))` · `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
 
 ---
 

@@ -199,11 +199,19 @@ Overrides the recurring schedule for specific dates or date ranges. Handles sing
 | end_time | TIME | Nullable. NULL means the exception blocks the whole day |
 | reason | VARCHAR | vacation, personal, sick, other |
 | notes | TEXT | Optional admin notes |
+| status | ENUM `exception_status` | `pending`, `approved`, `rejected`. NOT NULL, default `approved` |
 | created_at | TIMESTAMPTZ | |
 
 A set time window applies to **every** day in the `start_date`–`end_date` range, not as one continuous
 absence across it — the row cannot express "Monday 09:00 straight through to Wednesday 17:00", and the
 `end_time > start_time` check makes that reading unrepresentable anyway.
+
+`status` defaults to `approved` because exceptions were admin-managed and immediately blocking before
+tutors could create their own — every row that existed before this column was added backfills to
+`approved`, the meaning-preserving value that leaves their effect on availability unchanged. A tutor
+creating their own exception gets `pending` instead; an admin or developer creating one still gets
+`approved` immediately, since making an admin approve their own entry would be a step with no gate value.
+Only an `approved` row subtracts from availability — see [Availability Query Logic](#availability-query-logic).
 
 Constraints: `CHECK ((start_time IS NULL) = (end_time IS NULL))` · `CHECK (start_time IS NULL OR end_time > start_time)` · `INDEX (tutor_id, start_date, end_date)`
 
@@ -291,7 +299,7 @@ tutors ────────────────────────�
 When a client requests a slot, the bot runs three checks in sequence:
 
 1. Fetch recurring ranges from `tutor_availability` matching the requested day of week, and cut each into a grid of candidate slots
-2. Subtract slots blocked by a `tutor_availability_exceptions` range covering the requested date (`start_date <= requested_date <= end_date`) — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they are set
+2. Subtract slots blocked by a `tutor_availability_exceptions` range with `status = 'approved'` covering the requested date (`start_date <= requested_date <= end_date`) — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they are set. `pending` and `rejected` rows are ignored entirely
 3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
 4. Return remaining open slots to the client
 
@@ -315,12 +323,15 @@ grid.
 A slot is also withheld unless it starts after `now + min_booking_lead_hours` (default 0), and the
 requested date must fall within `booking_lookahead_days` (default 90) of today.
 
-Step 2 blocks the whole day when the exception's `start_time`/`end_time` are NULL — the existing,
-unchanged behavior. When they are set, only the overlapping portion of the day is subtracted, using the
-same overlap comparison as step 3: `slot.start_time < exception.end_time AND slot.end_time >
-exception.start_time`, applied to any date within the exception's `start_date`–`end_date` range. A mid-day
-appointment is routine, and an all-or-nothing day flag forces a tutor to give up a whole day for a
-one-hour errand.
+Step 2 only considers rows with `status = 'approved'`. A tutor-created exception starts `pending` and has
+no effect on the grid until an admin approves it — it is visible to both the tutor and admins, but a
+pending request that blocked bookings would let a tutor unilaterally freeze their own schedule before
+anyone reviewed it. Within the approved set, the exception blocks the whole day when `start_time`/
+`end_time` are NULL — the existing, unchanged behavior. When they are set, only the overlapping portion of
+the day is subtracted, using the same overlap comparison as step 3: `slot.start_time < exception.end_time
+AND slot.end_time > exception.start_time`, applied to any date within the exception's
+`start_date`–`end_date` range. A mid-day appointment is routine, and an all-or-nothing day flag forces a
+tutor to give up a whole day for a one-hour errand.
 
 Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
 `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.

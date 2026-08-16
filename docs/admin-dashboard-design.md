@@ -97,7 +97,8 @@ Manage the tutor roster.
 - Profile section: name, email, phone, bio, active toggle
 - Subjects section: list of assigned subjects + the grade ceiling for each, add/remove
 - Availability section: weekly schedule grid (Mon–Sun), add/edit/remove slots
-- Exceptions section: list of upcoming exceptions, add new exception
+- Exceptions section: list of upcoming exceptions with a status badge (pending / approved / rejected),
+  approve/reject buttons on any `pending` row, add new exception
 - Recent bookings for this tutor
 
 **Forms:**
@@ -108,6 +109,8 @@ Manage the tutor roster.
   - The times apply to **each day** in the range, not as one continuous absence. Label them so an admin
     picking Mon–Wed 09:00–17:00 reads "those hours on all three days", not "Monday morning through
     Wednesday evening" — the overnights stay bookable
+  - An exception created here is `approved` on creation, not `pending` — an admin's own entry needs no
+    review step, unlike a tutor's self-serve request from `/time-off`
 
 ---
 
@@ -208,13 +211,17 @@ The tutor's upcoming and past bookings.
 
 ### Time Off (`/time-off`)
 
-The tutor's exception history.
+The tutor's exception history and self-serve time-off requests.
 
-- List of upcoming and past exceptions: date range, time range (blank = all day), reason, notes
-- Read-only — tutor cannot create or delete exceptions themselves
-- Includes a contact prompt: "To request time off, contact your admin"
-
-> **Note:** whether tutors can self-serve time off requests is a future decision. For now, all exceptions are admin-managed.
+- List of upcoming and past exceptions: date range, time range (blank = all day), reason, notes, status
+  (pending / approved / rejected)
+- "Request Time Off" button → the same date range / time range / reason / notes form as the admin's Add
+  Exception, but the row it creates lands `pending`, not `approved`
+- A `pending` request does not block bookings — only after an admin approves it does it subtract from the
+  tutor's availability. The status badge is what tells the tutor whether a request has taken effect yet
+- A tutor may withdraw a request while it is still `pending` (delete from the list). Once an admin has
+  approved or rejected it, the row is locked from the tutor's side — undoing an admin's decision is an
+  admin action, not a tutor one
 
 ---
 

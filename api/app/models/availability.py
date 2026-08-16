@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.enums import ExceptionStatus, exception_status_enum
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
@@ -62,7 +63,12 @@ class TutorAvailability(Base):
 
 class TutorAvailabilityException(Base):
     """Overrides the recurring schedule for a date or an inclusive date range. A NULL
-    `start_time`/`end_time` pair blocks the whole day; a set pair blocks only that window."""
+    `start_time`/`end_time` pair blocks the whole day; a set pair blocks only that window.
+
+    Only a row whose `status` is `APPROVED` overrides anything. A tutor's own time-off request
+    lands as `PENDING` and is inert until an admin decides it, so a consumer that subtracts
+    exceptions from availability must filter on `status` — the row existing is not enough.
+    """
 
     __tablename__ = "tutor_availability_exceptions"
     __table_args__ = (
@@ -94,6 +100,12 @@ class TutorAvailabilityException(Base):
     end_time: Mapped[datetime.time | None] = mapped_column(Time, nullable=True)
     reason: Mapped[str] = mapped_column(String(32), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The server default is `approved`, not `pending`: every row that predates the approval
+    # workflow was written by an admin and already blocks bookings, so `approved` is the one
+    # backfill that leaves existing rows meaning what they meant. See migration 0008.
+    status: Mapped[ExceptionStatus] = mapped_column(
+        exception_status_enum, nullable=False, server_default=text("'approved'")
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

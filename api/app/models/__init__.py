@@ -5,9 +5,12 @@ from app.models.child import Child
 from app.models.enums import (
     BOOKING_STATUS_ENUM_NAME,
     BOOKING_STATUS_VALUES,
+    EXCEPTION_STATUS_ENUM_NAME,
+    EXCEPTION_STATUS_VALUES,
     USER_ROLE_ENUM_NAME,
     USER_ROLE_VALUES,
     BookingStatus,
+    ExceptionStatus,
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
@@ -23,6 +26,8 @@ metadata = Base.metadata
 __all__ = [
     "BOOKING_STATUS_ENUM_NAME",
     "BOOKING_STATUS_VALUES",
+    "EXCEPTION_STATUS_ENUM_NAME",
+    "EXCEPTION_STATUS_VALUES",
     "SETTING_VALUE_TYPE_INTEGER",
     "USER_ROLE_ENUM_NAME",
     "USER_ROLE_VALUES",
@@ -31,6 +36,7 @@ __all__ = [
     "Child",
     "ChildGuardian",
     "ChildHome",
+    "ExceptionStatus",
     "Guardian",
     "GuardianHome",
     "Home",

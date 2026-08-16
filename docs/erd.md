@@ -195,11 +195,19 @@ Overrides the recurring schedule for specific dates or date ranges. Handles sing
 | tutor_id | UUID | FK → tutors.id |
 | start_date | DATE | First day of exception |
 | end_date | DATE | Last day of exception (equals start_date for a single day off) |
+| start_time | TIME | Nullable. NULL means the exception blocks the whole day |
+| end_time | TIME | Nullable. NULL means the exception blocks the whole day |
 | reason | VARCHAR | vacation, personal, sick, other |
 | notes | TEXT | Optional admin notes |
 | created_at | TIMESTAMPTZ | |
 
-Constraints: `INDEX (tutor_id, start_date, end_date)`
+A set time window applies to **every** day in the `start_date`–`end_date` range, not as one continuous
+absence across it — the row cannot express "Monday 09:00 straight through to Wednesday 17:00", and the
+`end_time > start_time` check makes that reading unrepresentable anyway.
+
+Constraints: `CHECK ((start_time IS NULL) = (end_time IS NULL))` · `CHECK (start_time IS NULL OR end_time > start_time)` · `INDEX (tutor_id, start_date, end_date)`
+
+The two checks are separate rather than one expression: each is null-safe on its own, and a violation names which rule was broken. A half-set pair is rejected outright — NULL only reads as "whole day" if it cannot also mean "the other half was left off".
 
 ---
 
@@ -283,7 +291,7 @@ tutors ────────────────────────�
 When a client requests a slot, the bot runs three checks in sequence:
 
 1. Fetch recurring ranges from `tutor_availability` matching the requested day of week, and cut each into a grid of candidate slots
-2. Subtract any slots where the requested date falls within a `tutor_availability_exceptions` range (`start_date <= requested_date <= end_date`)
+2. Subtract slots blocked by a `tutor_availability_exceptions` range covering the requested date (`start_date <= requested_date <= end_date`) — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they are set
 3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
 4. Return remaining open slots to the client
 
@@ -301,10 +309,18 @@ Leftover                                  (11:30-12:00)
 
 At length 60 and gap 30 the stride is 90 minutes: 09:00 and 10:30 fit, 12:00 would end at 13:00 and is
 dropped, leaving 11:30–12:00 unoffered. Both settings are runtime-editable and both re-cut every future
-grid, which is why steps 3 and 4 never assume a stored booking lines up with the current grid.
+grid, which is why steps 2 and 3 never assume a stored exception or booking lines up with the current
+grid.
 
 A slot is also withheld unless it starts after `now + min_booking_lead_hours` (default 0), and the
 requested date must fall within `booking_lookahead_days` (default 90) of today.
+
+Step 2 blocks the whole day when the exception's `start_time`/`end_time` are NULL — the existing,
+unchanged behavior. When they are set, only the overlapping portion of the day is subtracted, using the
+same overlap comparison as step 3: `slot.start_time < exception.end_time AND slot.end_time >
+exception.start_time`, applied to any date within the exception's `start_date`–`end_date` range. A mid-day
+appointment is routine, and an all-or-nothing day flag forces a tutor to give up a whole day for a
+one-hour errand.
 
 Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
 `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.

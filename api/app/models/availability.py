@@ -61,7 +61,8 @@ class TutorAvailability(Base):
 
 
 class TutorAvailabilityException(Base):
-    """Overrides the recurring schedule for a date or an inclusive date range."""
+    """Overrides the recurring schedule for a date or an inclusive date range. A NULL
+    `start_time`/`end_time` pair blocks the whole day; a set pair blocks only that window."""
 
     __tablename__ = "tutor_availability_exceptions"
     __table_args__ = (
@@ -70,6 +71,14 @@ class TutorAvailabilityException(Base):
             "tutor_id",
             "start_date",
             "end_date",
+        ),
+        CheckConstraint(
+            "(start_time IS NULL) = (end_time IS NULL)",
+            name="ck_tutor_availability_exceptions_time_pair",
+        ),
+        CheckConstraint(
+            "start_time IS NULL OR end_time > start_time",
+            name="ck_tutor_availability_exceptions_time_order",
         ),
     )
 
@@ -81,6 +90,8 @@ class TutorAvailabilityException(Base):
     )
     start_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     end_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    start_time: Mapped[datetime.time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[datetime.time | None] = mapped_column(Time, nullable=True)
     reason: Mapped[str] = mapped_column(String(32), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(

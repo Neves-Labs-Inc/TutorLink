@@ -599,8 +599,19 @@ Returns all exceptions for a tutor.
       "id": "uuid",
       "start_date": "2026-12-20",
       "end_date": "2026-12-31",
+      "start_time": null,
+      "end_time": null,
       "reason": "vacation",
       "notes": "Christmas break"
+    },
+    {
+      "id": "uuid",
+      "start_date": "2026-08-18",
+      "end_date": "2026-08-18",
+      "start_time": "09:00",
+      "end_time": "12:00",
+      "reason": "personal",
+      "notes": "Dentist appointment"
     }
   ],
   "total": 42,
@@ -611,15 +622,19 @@ Returns all exceptions for a tutor.
 
 ### `POST /api/tutors/{id}/exceptions`
 
-Add an exception. For a single day off, set `start_date` and `end_date` to the same date.
+Add an exception. For a single day off, set `start_date` and `end_date` to the same date. `start_time` and
+`end_time` are optional and must both be NULL or both be set — NULL blocks the whole day, set values block
+only that portion of each day in the range.
 
 **Request**
 ```json
 {
-  "start_date": "2026-12-20",
-  "end_date": "2026-12-31",
-  "reason": "vacation",
-  "notes": "Christmas break"
+  "start_date": "2026-08-18",
+  "end_date": "2026-08-18",
+  "start_time": "09:00",
+  "end_time": "12:00",
+  "reason": "personal",
+  "notes": "Dentist appointment"
 }
 ```
 
@@ -640,7 +655,7 @@ GET    /api/slots/available
 The core endpoint used by the bot to find open slots for a client. Runs the full three-step availability check:
 
 1. Fetches recurring ranges from `tutor_availability` for the requested day and cuts each into a grid, striding by `session_length_minutes + session_gap_minutes`
-2. Removes slots blocked by `tutor_availability_exceptions`
+2. Removes slots blocked by `tutor_availability_exceptions` — the whole day when `start_time`/`end_time` are NULL, by time overlap otherwise
 3. Removes slots already taken in `bookings`, by time overlap — `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`
 
 Step 1 strides rather than packing slots back-to-back because the tutor travels to the home between
@@ -739,9 +754,17 @@ The requested range is accepted when it satisfies all of the following:
 1. it sits entirely inside an active `tutor_availability` range for that tutor and day
 2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`
 3. it is at least `session_gap_minutes` clear of the nearest booking on either side
+4. it is not blocked by a `tutor_availability_exceptions` row covering `scheduled_date` — the whole day
+   when `start_time`/`end_time` are NULL, or by time overlap when they are set
 
-Rule 1 failing is **400**. Rules 2 and 3 failing are **409**, the conflict case the error table already
+Rule 1 failing is **400**. Rules 2, 3 and 4 failing are **409**, the conflict case the error table already
 names.
+
+Rule 4 is checked here and not only in `GET /api/slots/available`. The grid is an offer, and an exception
+can be added between the offer and the confirm — a same-day partial-day window especially, which is the
+routine case that motivated the time columns. Without this rule the bot can confirm a slot it was offered
+minutes earlier onto a tutor who has since gone unavailable, and an admin posting a time directly is never
+checked against exceptions at all.
 
 The endpoint does **not** require the range to land on a generated grid slot. The grid from
 `GET /api/slots/available` is an offer mechanism for the bot, not an API constraint: an admin may book

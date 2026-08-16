@@ -104,7 +104,10 @@ Manage the tutor roster.
 - Add/Edit Tutor: name, email, phone, bio
 - Add Subject: subject dropdown + a single grade ceiling input
 - Add Availability Slot: day of week, start time, end time
-- Add Exception: date range picker, reason dropdown, notes
+- Add Exception: date range picker, start time (optional), end time (optional), reason dropdown, notes
+  - The times apply to **each day** in the range, not as one continuous absence. Label them so an admin
+    picking Mon–Wed 09:00–17:00 reads "those hours on all three days", not "Monday morning through
+    Wednesday evening" — the overnights stay bookable
 
 ---
 
@@ -180,7 +183,7 @@ Manage login accounts for admin and tutor users.
 The tutor's weekly availability view.
 
 - Read-only weekly grid showing their recurring availability slots
-- Exceptions displayed as blocked-out dates with reason label
+- Exceptions displayed as blocked-out dates with reason label — a partial-day exception blocks only its own hours, not the whole day
 - Cannot edit — directs tutor to contact admin for changes
 
 ---
@@ -207,7 +210,7 @@ The tutor's upcoming and past bookings.
 
 The tutor's exception history.
 
-- List of upcoming and past exceptions: date range, reason, notes
+- List of upcoming and past exceptions: date range, time range (blank = all day), reason, notes
 - Read-only — tutor cannot create or delete exceptions themselves
 - Includes a contact prompt: "To request time off, contact your admin"
 

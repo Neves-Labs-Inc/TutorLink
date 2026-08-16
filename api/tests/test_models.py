@@ -1,3 +1,5 @@
+import datetime
+
 from app.models import metadata
 
 EXPECTED_TABLES = {
@@ -101,6 +103,22 @@ def test_junctions_are_hard_delete() -> None:
     guardian after a custody change is a DELETE and takes effect immediately."""
     for junction in ("child_guardians", "child_homes", "guardian_homes"):
         assert "is_active" not in metadata.tables[junction].c, junction
+
+
+def test_an_exception_may_block_part_of_a_day() -> None:
+    """A dentist appointment at 09:00 does not cost the tutor the afternoon. NULL on both
+    times means the whole day, so every row written before the columns existed still reads
+    the same — and the pair constraint keeps that NULL unambiguous."""
+    exceptions = metadata.tables["tutor_availability_exceptions"]
+
+    assert exceptions.c.start_time.nullable is True
+    assert exceptions.c.end_time.nullable is True
+    assert exceptions.c.start_time.type.python_type is datetime.time
+    assert exceptions.c.end_time.type.python_type is datetime.time
+
+    names = {c.name for c in exceptions.constraints}
+    assert "ck_tutor_availability_exceptions_time_pair" in names
+    assert "ck_tutor_availability_exceptions_time_order" in names
 
 
 def test_a_booking_names_its_home_and_may_name_who_booked_it() -> None:

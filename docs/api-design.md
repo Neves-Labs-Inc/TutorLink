@@ -816,15 +816,30 @@ The requested range is accepted when it satisfies all of the following:
 4. it is not blocked by a `tutor_availability_exceptions` row with `status = 'approved'` covering
    `scheduled_date` — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they
    are set. `pending` and `rejected` rows never block a booking.
+5. the tutor's `max_grade_level` for the **booked subject** is at or above the booked child's
+   `grade_level`. The ceiling is per subject, so this resolves the `(tutor_id, subject_id)` pair from
+   `bookings.subject_id` — there is no tutor-wide grade to fall back on. A tutor qualified for the child's
+   grade in one subject is still refused for a subject where their ceiling is lower. The boundary is
+   inclusive: a ceiling equal to the child's grade is accepted.
+
+   A **missing** `tutor_subjects` row for the booked subject is a refusal, not a pass. With no assignment
+   there is no ceiling to compare against, and the tutor does not teach the subject at all. Written as a
+   join that silently drops the row, the strongest possible violation would return success.
 
 Rule 1 failing is **400**. Rules 2, 3 and 4 failing are **409**, the conflict case the error table already
-names.
+names. Rule 5 failing is **422** — the request is well-formed and conflicts with nothing, the tutor is
+simply not qualified to teach that child at that grade.
 
 Rule 4 is checked here and not only in `GET /api/slots/available`. The grid is an offer, and an exception
 can be approved between the offer and the confirm — a same-day partial-day window especially, which is the
 routine case that motivated the time columns. Without this rule the bot can confirm a slot it was offered
 minutes earlier onto a tutor whose time off has since been approved, and an admin posting a time directly is
 never checked against exceptions at all.
+
+Rule 5 is likewise not redundant with the `grade_level` filter on `GET /api/slots/available`. That filter is
+an offer mechanism, and `POST /api/bookings` is reachable directly from the admin dashboard's manual booking
+form, which never passes through slot matching. Enforcing the ceiling only at the offer surface leaves it
+unenforced on the path an admin actually uses.
 
 The endpoint does **not** require the range to land on a generated grid slot. The grid from
 `GET /api/slots/available` is an offer mechanism for the bot, not an API constraint: an admin may book
@@ -892,4 +907,5 @@ All endpoints return consistent error shapes.
 | 403 | Forbidden — invalid Twilio signature |
 | 404 | Resource not found |
 | 409 | Conflict — e.g. slot already booked |
+| 422 | Unprocessable — e.g. tutor's ceiling for the subject is below the child's grade |
 | 500 | Internal server error |

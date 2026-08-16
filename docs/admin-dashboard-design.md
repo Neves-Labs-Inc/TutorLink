@@ -140,11 +140,21 @@ View and manage all sessions.
 - Filters: date range, tutor, subject, status
 - Status badge with colour coding: pending (yellow), confirmed (green), cancelled (red), completed (grey)
 - Click a row to open booking detail slide-over
-- "Create Booking" button for manual bookings
+- "Create Booking" button for manual bookings → opens a slide-over form
+
+**Create Booking form:**
+- Child selector (searchable, across all clients)
+- Tutor selector
+- Subject selector
+- Date, start time, end time
+- Home selector — scoped to **the selected child's homes**, not a free list of every home in the system.
+  Empty until a child is chosen, and re-scoped when the child changes
+- `booked_by_guardian_id` stays NULL for bookings created here; this is the admin path, with no guardian
+  on the other end of it
 
 **Booking detail slide-over:**
 - Full session info: child, the guardian who booked it, tutor, subject, date, time, and the home it is at
-- Parent address + access code (visible to admin)
+- The address and access code of **the booking's home** — not the guardian's (visible to admin)
 - Status update dropdown
 - Notes field
 

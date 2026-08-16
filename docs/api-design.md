@@ -826,9 +826,29 @@ The requested range is accepted when it satisfies all of the following:
    there is no ceiling to compare against, and the tutor does not teach the subject at all. Written as a
    join that silently drops the row, the strongest possible violation would return success.
 
+6. `home_id` is one of the booked child's homes — a `child_homes` row exists for
+   `(child_id, home_id)`. Any other home is refused, including one belonging to a different family.
+
+7. `booked_by_guardian_id`, when present, is one of the booked child's guardians — a `child_guardians`
+   row exists for `(child_id, booked_by_guardian_id)`. NULL is always allowed and is the admin path.
+
 Rule 1 failing is **400**. Rules 2, 3 and 4 failing are **409**, the conflict case the error table already
-names. Rule 5 failing is **422** — the request is well-formed and conflicts with nothing, the tutor is
-simply not qualified to teach that child at that grade.
+names. Rules 5, 6 and 7 failing are **422** — the request is well-formed and conflicts with nothing, it
+just names a combination that is not permitted: a tutor not qualified to teach that child at that grade,
+a home the child does not live at, or a guardian not linked to the child.
+
+Rules 6 and 7 are deliberately independent of each other. The home is checked against the **child**, never
+against the booking guardian, so a guardian booking a session at the child's *other* home — the co-parent's
+house — is accepted; that case is the reason the two columns exist. A rule phrased as "the home must belong
+to the booking guardian" would wrongly refuse it. Rule 7 is what keeps that openness safe: a stranger
+booking for someone else's child is refused because they hold no `child_guardians` link, and that link is
+the only thing separating the two requests. Two siblings sharing a home each pass rule 6 on their own
+`child_homes` row.
+
+This enumeration is the authority for what `POST /api/bookings` enforces, and it belongs in one place in
+code — a single ordered rule set carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
+rules 6 and 7 from #38), not prose scattered across issues. The list has been amended three times in two
+days; treat it as open and expect a fourth.
 
 Rule 4 is checked here and not only in `GET /api/slots/available`. The grid is an offer, and an exception
 can be approved between the offer and the confirm — a same-day partial-day window especially, which is the
@@ -840,6 +860,10 @@ Rule 5 is likewise not redundant with the `grade_level` filter on `GET /api/slot
 an offer mechanism, and `POST /api/bookings` is reachable directly from the admin dashboard's manual booking
 form, which never passes through slot matching. Enforcing the ceiling only at the offer surface leaves it
 unenforced on the path an admin actually uses.
+
+Rules 6 and 7 sit in the endpoint for the same reason. The dashboard's manual booking form scopes its home
+selector to the selected child, but that is a UI affordance on one client, not enforcement — the endpoint is
+reachable without it.
 
 The endpoint does **not** require the range to land on a generated grid slot. The grid from
 `GET /api/slots/available` is an offer mechanism for the bot, not an API constraint: an admin may book

@@ -639,9 +639,16 @@ GET    /api/slots/available
 
 The core endpoint used by the bot to find open slots for a client. Runs the full three-step availability check:
 
-1. Fetches recurring slots from `tutor_availability` for the requested day
+1. Fetches recurring ranges from `tutor_availability` for the requested day and cuts each into a grid, striding by `session_length_minutes + session_gap_minutes`
 2. Removes slots blocked by `tutor_availability_exceptions`
 3. Removes slots already taken in `bookings`, by time overlap — `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`
+
+Step 1 strides rather than packing slots back-to-back because the tutor travels to the home between
+sessions. From a 09:00–12:00 range at length 60 and gap 30, the stride is 90 minutes and the grid is
+09:00–10:00 and 10:30–11:30; 11:30–12:00 is leftover and is not offered here. A slot is offered only if
+it starts after `now + min_booking_lead_hours`.
+
+`date` in the past returns **400**, as does a `date` further ahead than `booking_lookahead_days`.
 
 Step 3 compares ranges, not start times. `session_length_minutes` is runtime-editable, so an existing
 booking need not line up with the current grid: at a 45-minute length, a 60-minute booking at 10:00
@@ -724,6 +731,26 @@ Returns full detail for a single booking, including the address and access code 
 ### `POST /api/bookings`
 
 Create a confirmed booking. Called by the bot after the client selects a slot.
+
+**Validation**
+
+The requested range is accepted when it satisfies all of the following:
+
+1. it sits entirely inside an active `tutor_availability` range for that tutor and day
+2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`
+3. it is at least `session_gap_minutes` clear of the nearest booking on either side
+
+Rule 1 failing is **400**. Rules 2 and 3 failing are **409**, the conflict case the error table already
+names.
+
+The endpoint does **not** require the range to land on a generated grid slot. The grid from
+`GET /api/slots/available` is an offer mechanism for the bot, not an API constraint: an admin may book
+the 11:30–12:00 leftover that a rigid grid strands. This is the only rule set compatible with
+runtime-editable `session_length_minutes` and `session_gap_minutes` — under a grid-locked rule, changing
+either setting would leave every existing booking failing its own validation the next time it is edited.
+
+`scheduled_date` in the past returns **400**, as does a date further ahead than `booking_lookahead_days`.
+A start time earlier than `now + min_booking_lead_hours` returns **400**.
 
 **Request**
 ```json

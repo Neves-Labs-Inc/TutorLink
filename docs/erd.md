@@ -282,10 +282,29 @@ tutors ────────────────────────�
 
 When a client requests a slot, the bot runs three checks in sequence:
 
-1. Fetch recurring slots from `tutor_availability` matching the requested day of week
+1. Fetch recurring ranges from `tutor_availability` matching the requested day of week, and cut each into a grid of candidate slots
 2. Subtract any slots where the requested date falls within a `tutor_availability_exceptions` range (`start_date <= requested_date <= end_date`)
 3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
 4. Return remaining open slots to the client
+
+Step 1 strides from the range's `start_time` by `session_length_minutes + session_gap_minutes`. Tutoring
+happens at the home (`homes.address`), so the tutor travels between sessions and back-to-back slots were
+never realistic. Slot *n* runs from `start_time + n × (length + gap)` for `length` minutes, and is emitted
+only while its end lands at or before the range's `end_time`. Whatever remains after the last whole slot
+is leftover and is not offered.
+
+```
+Availability   09:00 ------------------------------ 12:00
+Grid (60+30)   [09:00-10:00] .... [10:30-11:30] ....
+Leftover                                  (11:30-12:00)
+```
+
+At length 60 and gap 30 the stride is 90 minutes: 09:00 and 10:30 fit, 12:00 would end at 13:00 and is
+dropped, leaving 11:30–12:00 unoffered. Both settings are runtime-editable and both re-cut every future
+grid, which is why steps 3 and 4 never assume a stored booking lines up with the current grid.
+
+A slot is also withheld unless it starts after `now + min_booking_lead_hours` (default 0), and the
+requested date must fall within `booking_lookahead_days` (default 90) of today.
 
 Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
 `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.

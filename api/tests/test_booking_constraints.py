@@ -1,4 +1,5 @@
-"""`excl_bookings_live_overlap` and `ck_bookings_time_order`, against a real PostgreSQL.
+"""`excl_bookings_live_overlap`, `ck_bookings_time_order`, and
+`ck_tutor_availability_exceptions_date_order`, against a real PostgreSQL.
 
 Metadata assertions prove the constraints are declared, not that the database rejects
 anything. This module is the half that matters: every case below is an INSERT that either
@@ -23,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.availability import TutorAvailability
+from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingStatus
@@ -44,6 +45,7 @@ TWELVE = datetime.time(12, 0)
 
 OVERLAP_CONSTRAINT = "excl_bookings_live_overlap"
 TIME_ORDER_CONSTRAINT = "ck_bookings_time_order"
+DATE_ORDER_CONSTRAINT = "ck_tutor_availability_exceptions_date_order"
 
 OVERLAPPING_WINDOWS = [
     (TEN, ELEVEN),
@@ -206,6 +208,27 @@ def test_two_zero_length_bookings_cannot_both_land(db: Session, parents: Booking
     assert _live_count(db) == 0
 
 
+def test_an_exception_with_end_date_before_start_date_is_rejected(db: Session) -> None:
+    tutor = _make_tutor(db)
+
+    with pytest.raises(IntegrityError, match=DATE_ORDER_CONSTRAINT), db.begin_nested():
+        db.add(_exception(tutor.id, start_date=NEXT_DATE, end_date=DATE))
+        db.flush()
+
+
+def test_a_single_day_exception_with_equal_start_and_end_date_is_accepted(
+    db: Session,
+) -> None:
+    """The comparison is inclusive on both ends, so a one-day exception must not be caught by
+    the same check that rejects an inverted range."""
+    tutor = _make_tutor(db)
+    exception = _exception(tutor.id, start_date=DATE, end_date=DATE)
+    db.add(exception)
+    db.flush()
+
+    assert exception.end_date == exception.start_date
+
+
 def _booking(
     parents: BookingParents,
     *,
@@ -226,6 +249,14 @@ def _booking(
         start_time=start,
         end_time=end,
         status=status,
+    )
+
+
+def _exception(
+    tutor_id: uuid.UUID, *, start_date: datetime.date, end_date: datetime.date
+) -> TutorAvailabilityException:
+    return TutorAvailabilityException(
+        tutor_id=tutor_id, start_date=start_date, end_date=end_date, reason="vacation"
     )
 
 

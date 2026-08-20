@@ -713,21 +713,43 @@ GET    /api/slots/available
 
 The core endpoint used by the bot to find open slots for a client. Runs the full three-step availability check:
 
-1. Fetches recurring ranges from `tutor_availability` for the requested day and cuts each into a grid, striding by `session_length_minutes + session_gap_minutes`
+1. Fetches recurring ranges from `tutor_availability` with `is_active = true` for the requested day and cuts each into a grid, striding by `session_length_minutes + session_gap_minutes`
 2. Removes slots blocked by `tutor_availability_exceptions` rows with `status = 'approved'` — the whole day when `start_time`/`end_time` are NULL, by time overlap otherwise. `pending` and `rejected` rows are ignored.
-3. Removes slots already taken in `bookings`, by time overlap — `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`
+3. Removes slots already taken in `bookings`, by **gap-expanded** time overlap — `slot.start_time < booking.end_time + session_gap_minutes AND slot.end_time + session_gap_minutes > booking.start_time`
 
 Step 1 strides rather than packing slots back-to-back because the tutor travels to the home between
 sessions. From a 09:00–12:00 range at length 60 and gap 30, the stride is 90 minutes and the grid is
 09:00–10:00 and 10:30–11:30; 11:30–12:00 is leftover and is not offered here. A slot is offered only if
 it starts after `now + min_booking_lead_hours`.
 
+Step 1 also takes only rows with `is_active = true`. Deactivating a recurring slot is a soft delete, so
+the row survives it, and a query that assumed a withdrawn slot was gone would keep offering it. Rule 1 of
+`POST /api/bookings` already requires an **active** range, so the filter is what stops the bot offering a
+slot the confirm then refuses with **400** — the same trap step 2's `status` filter avoids.
+
 `date` in the past returns **400**, as does a `date` further ahead than `booking_lookahead_days`.
 
-Step 3 compares ranges, not start times. `session_length_minutes` is runtime-editable, so an existing
-booking need not line up with the current grid: at a 45-minute length, a 60-minute booking at 10:00
-straddles 09:45–10:30 and 10:30–11:15 and matches the start time of neither. Overlap subtraction drops
-both; equality matching would offer both. See the availability query logic in `docs/erd.md`.
+Step 3 compares ranges, not start times, and widens each booking by `session_gap_minutes` on both sides
+before comparing. The gap is where the tutor travels, so a slot that merely abuts a booking, or sits inside
+the travel gap beside one, is no more bookable than one that overlaps it — which is exactly what rule 3 of
+`POST /api/bookings` says: "at least `session_gap_minutes` clear of the nearest booking on either side".
+Subtracting by bare overlap here would offer slots the confirm then rejects with **409**, the offer surface
+and the write path disagreeing about the same rows.
+
+Both inequalities stay strict, so clearance of exactly `session_gap_minutes` passes, which is what rule 3's
+"at least" means. At length 60 and gap 30, a booking filling the 09:00–10:00 grid slot leaves 10:30–11:30
+offered, because `10:30 < 10:00 + 30` is false — and that is general rather than lucky, since the stride is
+`length + gap` and consecutive grid slots are therefore always exactly a gap apart and never erase each
+other. An admin booking 10:00–11:00, off-grid and abutting, does drop 09:00–10:00, which bare overlap would
+have kept and rule 3 would then have rejected.
+
+Ranges rather than start times, because `session_length_minutes` is runtime-editable and
+`POST /api/bookings` does not require a booking to land on the grid at all. From the same 09:00–12:00 range
+at length 45 and gap 30 the stride is 75 minutes, so the grid is 09:00–09:45 and 10:15–11:00, with
+11:30–12:15 overrunning the range and 11:00–12:00 left over. An admin booking 09:30–10:30 directly starts
+at neither 09:00 nor 10:15, yet takes the last 15 minutes of the first slot and the first 15 of the second.
+Equality matching would find no slot to remove and offer both, double-booking the tutor. See the
+availability query logic in `docs/erd.md`.
 
 **Query Parameters**
 
@@ -812,7 +834,7 @@ The requested range is accepted when it satisfies all of the following:
 
 1. it sits entirely inside an active `tutor_availability` range for that tutor and day
 2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
-3. it is at least `session_gap_minutes` clear of the nearest booking on either side
+3. it is at least `session_gap_minutes` clear of the nearest booking on either side — refused when `new.start_time < booking.end_time + session_gap_minutes AND new.end_time + session_gap_minutes > booking.start_time` holds for any booking counted by rule 2. That is rule 2's comparison with the booking widened by the gap on both sides, and it is the comparison step 3 of `GET /api/slots/available` subtracts by, so the offer surface and this check read the same rows the same way. The inequalities are strict, so clearance of exactly `session_gap_minutes` is accepted
 4. it is not blocked by a `tutor_availability_exceptions` row with `status = 'approved'` covering
    `scheduled_date` — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they
    are set. `pending` and `rejected` rows never block a booking.
@@ -849,6 +871,12 @@ This enumeration is the authority for what `POST /api/bookings` enforces, and it
 code — a single ordered rule set carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
 rules 6 and 7 from #38), not prose scattered across issues. The list has been amended three times in two
 days; treat it as open and expect a fourth.
+
+Rule 3 is checked here and not only in `GET /api/slots/available`, even though the two now apply the same
+gap-expanded comparison. Agreement removes the case where a slot the bot was just offered is refused on
+arrival; it does not remove the booking created between the offer and the confirm, which the offer could not
+have seen. The admin dashboard's manual booking form also reaches this endpoint without passing through slot
+matching at all.
 
 Rule 4 is checked here and not only in `GET /api/slots/available`. The grid is an offer, and an exception
 can be approved between the offer and the confirm — a same-day partial-day window especially, which is the

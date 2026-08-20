@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/useAuth'
+import { landingPath } from '@/lib/auth'
 
 type FieldErrors = {
   email?: string
@@ -51,8 +52,8 @@ export const Login = () => {
     }
   }
 
-  if (status === 'authenticated') {
-    content = <Navigate to={role === 'admin' ? '/dashboard' : '/schedule'} replace />
+  if (status === 'authenticated' && role !== null) {
+    content = <Navigate to={landingPath(role)} replace />
   } else {
     content = (
       <div className="grid min-h-dvh w-full place-items-center bg-background px-4 py-10">

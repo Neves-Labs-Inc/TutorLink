@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { errorDetail, requestLogin, requestLogout } from '@/lib/api'
-import { decodeAccessToken, type Role } from '@/lib/auth'
+import { decodeAccessToken, landingPath } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 
 const LOGIN_FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -66,5 +66,3 @@ export const useAuth = () => {
         : (errorDetail(loginMutation.error) ?? LOGIN_FALLBACK_ERROR),
   }
 }
-
-const landingPath = (role: Role): string => (role === 'admin' ? '/dashboard' : '/schedule')

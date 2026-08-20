@@ -1,11 +1,10 @@
 import type { ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
+import { landingPath, type Role } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 
-type Role = 'admin' | 'tutor'
-
 type RouteGuardProps = {
-  allow: Role[]
+  allow: readonly Role[]
   children: ReactNode
 }
 
@@ -22,7 +21,7 @@ export const RouteGuard = ({ allow, children }: RouteGuardProps) => {
   } else if (role === null) {
     content = <Navigate to="/login" replace />
   } else if (!allow.includes(role)) {
-    content = <Navigate to={role === 'admin' ? '/dashboard' : '/schedule'} replace />
+    content = <Navigate to={landingPath(role)} replace />
   } else {
     content = children
   }

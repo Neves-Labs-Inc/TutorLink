@@ -171,6 +171,12 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `GET /api/bookings` | All bookings | All bookings | Own bookings only |
 | `POST/PATCH /api/bookings` | ✓ | ✓ | ✗ |
 | `GET /api/clients` | ✓ | ✓ | ✗ |
+| `GET /api/conversations` | ✓ | ✓ | ✗ |
+| `GET /api/conversations/{id}` | ✓ | ✓ | ✗ |
+| `GET /api/conversations/{id}/messages` | ✓ | ✓ | ✗ |
+| `POST/DELETE /api/conversations/{id}/takeover` | ✓ | ✓ | ✗ |
+| `POST /api/conversations/{id}/read` | ✓ | ✓ | ✗ |
+| `WS /api/conversations/stream` | ✓ | ✓ | ✗ |
 | `GET /api/subjects` | ✓ | ✓ | ✓ |
 | `POST/PATCH/DELETE /api/subjects` | ✓ | ✓ | ✗ |
 | `GET /api/users` | ✓ | ✓ | ✗ |
@@ -265,12 +271,86 @@ Every request from Twilio includes an `X-Twilio-Signature` header. FastAPI valid
 Form-encoded body:
   From: whatsapp:+1234567890
   Body: "I'd like to book a session"
+  MessageSid: SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   ...
 ```
 
+**Order of operations**
+
+1. Validate the `X-Twilio-Signature`. Invalid or missing is **403**.
+2. Resolve the conversation by `From`, creating it on first contact.
+3. Insert the inbound message with `author_kind = 'client'`, `status = 'received'` and Twilio's
+   `MessageSid`. A duplicate SID means this delivery is a Twilio retry: the insert conflicts, nothing
+   is recorded, and processing continues at step 5.
+4. Update the conversation's `last_message_at`.
+5. Branch on the conversation's `status`. A `human` conversation returns an empty TwiML document; a
+   `bot` conversation runs bot processing as before, records the reply with `author_kind = 'bot'`,
+   and returns it as TwiML.
+6. In both branches, broadcast the new message to connected admin sockets — see
+   [WebSocket](#websocket).
+
+The message is recorded before the branch, not inside the `bot` arm. The whole point of a handoff is
+that the admin can read what the client said while the bot was silent, so a paused conversation has
+to be logged as fully as a running one. Recording as a side effect of bot processing would be the
+cheaper change and would lose exactly the messages the feature exists to show.
+
+`MessageSid` carries the idempotency. Twilio retries a webhook it believes failed — a timeout on our
+side, a 5xx, a body it could not parse — and the retry arrives as the same message with the same
+SID, so without a guard a slow response duplicates the client's line in the thread. The unique index
+on `messages.twilio_sid` is that guard, and the insert itself is the check: the second write
+conflicts and is discarded. A read-then-write "does this SID already exist?" test would be the
+obvious alternative and is the same race as rule 2 under [`POST /api/bookings`](#post-apibookings) —
+two retries landing together both read nothing and both insert.
+
 **Response**
 
-Returns a TwiML response with the bot's reply message.
+A `bot` conversation returns a TwiML response with the bot's reply message. A `human` conversation
+returns an empty TwiML document, and nothing else:
+
+```xml
+<Response></Response>
+```
+
+Returning nothing at all is not the same thing and is not an option. Twilio expects a well-formed
+TwiML body on every webhook and treats a non-200 or an unparseable body as a delivery failure to
+retry, so expressing "say nothing" as "send nothing" turns a deliberately silent conversation into a
+stream of retries against an endpoint that will keep declining to answer. An empty `<Response>` is a
+valid instruction to send no reply, which is precisely the semantics of a paused bot: the webhook
+succeeded, the message is recorded, and there is no outbound message to make.
+
+Redis is untouched by a takeover. Live bot flow state keeps its 30-minute TTL and will usually
+expire during a handoff of any length, so when the bot is released the client resumes from a fresh
+state — the same behaviour as any other client who went quiet for half an hour. Freezing the TTL for
+the duration of the handoff was the alternative and is worse: it restores a half-finished intake
+that the admin has by then completed by hand, and the client is asked again for details already on
+file.
+
+### `POST /webhook/whatsapp/status`
+
+Twilio's delivery status callback for outbound messages, pointed at the absolute URL in
+`TWILIO_STATUS_CALLBACK_URL`. The `X-Twilio-Signature` is validated identically, and an invalid or
+missing signature is the same **403**.
+
+**Request** _(sent by Twilio)_
+```
+Form-encoded body:
+  MessageSid: SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  MessageStatus: delivered
+  ErrorCode: 63016
+  ...
+```
+
+The `MessageSid` is matched to a `messages` row and advances its `status`, recording `error_code`
+when the status is `failed`. An outbound message is written `queued` when it is sent and reaches
+`sent`, `delivered` or `failed` only through this callback; an inbound message is written `received`
+and never moves.
+
+**Response** — `204 No Content`, with no body.
+
+An unknown `MessageSid` is acknowledged with the same `204` and ignored rather than answered with a
+`404`. Retention deletes messages on a schedule and Twilio's callbacks are not bounded by it, so a
+status arriving for a purged message is an ordinary event, not an error; answering it with a `404`
+would only teach Twilio to retry a row that no longer exists.
 
 ---
 
@@ -409,6 +489,8 @@ Create a new client. Called internally by the bot during the intake flow.
 ### `PATCH /api/clients/{id}`
 
 Update client info (name, active status). Address and access code belong to a home and are edited through the home, not here.
+
+`phone_number` may be updated — a guardian changes handset, or the number was mistyped at intake. The edit moves `guardians.phone_number` only. It does **not** move the client's existing conversation thread, which stays on the number it was actually held with; the next inbound message from the new number opens a second thread carrying the same client. See [`conversations`](../docs/erd.md#conversations).
 
 ### `GET /api/clients/{id}/bookings`
 
@@ -942,6 +1024,277 @@ For rescheduling, cancel the existing booking and create a new one via `POST /ap
 
 ---
 
+## Conversations
+
+```
+GET    /api/conversations
+GET    /api/conversations/{id}
+GET    /api/conversations/{id}/messages
+POST   /api/conversations/{id}/takeover
+DELETE /api/conversations/{id}/takeover
+POST   /api/conversations/{id}/read
+```
+
+Every WhatsApp conversation the bot has ever had, readable by an admin, and steppable into. A
+conversation is keyed on the phone number rather than on the guardian, because the bot is talking
+before a guardian row exists — intake collects the name several messages in. A `guardian` of `null`
+therefore means intake has not got that far, not that something went wrong, and those are the
+conversations an admin most wants to read.
+
+Admin or above on all six. A `tutor` token gets **403** on every one of them; chat is an admin
+surface and there is no tutor-scoped view of it to fall back to.
+
+### `GET /api/conversations`
+
+Returns conversations in the standard page envelope, ordered by `last_message_at` descending so the
+list reads as an inbox.
+
+**Query Parameters**
+
+| Param | Required | Description |
+|---|---|---|
+| status | No | `bot` or `human` — who is answering right now |
+| unread | No | `true` restricts to conversations with messages newer than `last_read_at` |
+| q | No | Free-text match over the phone number and the linked guardian's name |
+
+**Response**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "phone_number": "+1234567890",
+      "guardian": { "id": "uuid", "name": "Jane Doe" },
+      "status": "human",
+      "taken_over_by": { "id": "uuid", "email": "admin@tutorlink.com" },
+      "last_message_at": "2026-08-20T14:31:02Z",
+      "last_message_preview": "Could we move Tommy to Thursday?",
+      "unread": true
+    }
+  ],
+  "total": 42,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+`unread` is computed against `conversations.last_read_at`, which is one watermark shared by every
+admin rather than one per admin. This is a shared inbox for a small team, and a takeover is already
+a shared act — the conversation is claimed by a person but visible to all of them. Per-admin unread
+state would need a junction row per admin per conversation to deliver a personal badge nobody has
+asked for.
+
+### `GET /api/conversations/{id}`
+
+The same object as a list item, plus the message counts the thread header shows. An unknown `id`
+returns **404**.
+
+**Response**
+```json
+{
+  "id": "uuid",
+  "phone_number": "+1234567890",
+  "guardian": { "id": "uuid", "name": "Jane Doe" },
+  "status": "human",
+  "taken_over_by": { "id": "uuid", "email": "admin@tutorlink.com" },
+  "taken_over_at": "2026-08-20T14:29:40Z",
+  "last_message_at": "2026-08-20T14:31:02Z",
+  "last_read_at": "2026-08-20T14:30:00Z",
+  "message_count": 412,
+  "unread_count": 3,
+  "created_at": "2026-06-02T09:14:00Z"
+}
+```
+
+### `GET /api/conversations/{id}/messages`
+
+The thread, in the standard page envelope with the same `page` and `page_size` as everywhere else,
+ordered **newest first**. An unknown `id` returns **404**.
+
+**Query Parameters**
+
+| Param | Required | Description |
+|---|---|---|
+| before | No | ISO timestamp — return only messages older than this marker |
+
+**Response**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "author_kind": "admin",
+      "author": { "id": "uuid", "email": "admin@tutorlink.com" },
+      "body": "Thursday at 4pm works — I've moved it.",
+      "status": "delivered",
+      "created_at": "2026-08-20T14:31:02Z"
+    },
+    {
+      "id": "uuid",
+      "author_kind": "client",
+      "author": null,
+      "body": "Could we move Tommy to Thursday?",
+      "status": "received",
+      "created_at": "2026-08-20T14:29:11Z"
+    }
+  ],
+  "total": 412,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+Newest first is the opposite of the rest of the API and is deliberate. A thread is read from its
+end: page 1 has to be what the admin sees when the conversation opens, and oldest-first would make
+that page the first twenty messages of a year-old conversation, reachable only by paging to a number
+the client has to compute from `total`.
+
+`before` is what makes paging back through a live thread stable. Offsets are counted from the newest
+message, so a message arriving between two requests shifts every row down one and page 3 becomes a
+different set that repeats one message and skips none-to-several. Passing the `created_at` of the
+oldest message already on screen pins the window to a fixed point in the thread, and the arriving
+messages land above it where they belong. It is a paging marker, not a filter on the conversation:
+`total` still counts every message in the conversation before paging, which is what the envelope
+contract requires and what lets the thread header say how much history there is.
+
+There is no `direction` field. Inbound and outbound are derivable from `author_kind` — `client` is
+inbound, `bot` and `admin` are outbound — and carrying both invites a row where they disagree.
+`author` is populated only for `author_kind = 'admin'`; a bot message has no user behind it, and a
+client message is identified by the conversation.
+
+### `POST /api/conversations/{id}/takeover`
+
+Claim the conversation. Sets `status` to `human`, `taken_over_by_user_id` to the caller and
+`taken_over_at` to now, which pauses the bot: from this point `POST /webhook/whatsapp` records
+inbound messages and answers with an empty TwiML document until the claim is released. No request
+body. Returns the conversation object. An unknown `id` returns **404**.
+
+**Response**
+```json
+{
+  "id": "uuid",
+  "phone_number": "+1234567890",
+  "status": "human",
+  "taken_over_by": { "id": "uuid", "email": "admin@tutorlink.com" },
+  "taken_over_at": "2026-08-20T14:29:40Z"
+}
+```
+
+A conversation already held by **another** admin returns **409** naming the holder. This is the same
+reasoning as [`PATCH /api/exceptions/{id}`](#patch-apiexceptionsid): silently reassigning the claim
+would let a second admin take a live conversation out from under the first with no trace, and the
+first would go on typing into a thread they no longer own. The **409** names the holder because the
+only useful next step is to go and ask them.
+
+A conversation already held by the **caller** is a no-op **200** returning the unchanged
+conversation. A double-click, or a retry after a dropped response, is not a conflict, and answering
+it with a **409** would put an error in front of an admin whose state is exactly what they asked
+for.
+
+### `DELETE /api/conversations/{id}/takeover`
+
+Release the conversation back to the bot. Clears `status`, `taken_over_by_user_id` and
+`taken_over_at` together — the schema's CHECK ties them, so a holder without a pause, or a pause
+without a holder, is unrepresentable. Returns the conversation. An unknown `id` returns **404**.
+
+Any admin may release, not only the holder. The asymmetry with claiming is intentional: a claim that
+only its owner can undo means an admin who closes their laptop for the day leaves a client talking
+to nobody until that person comes back. Releasing is the safe direction — it hands the conversation
+to the bot, which will answer — so the cost of letting anyone do it is far below the cost of a
+conversation stuck in a pause.
+
+Releasing a conversation that is already `bot` is a no-op **200**, for the same reason a duplicate
+claim by the holder is: the caller asked for a state the conversation is already in.
+
+The bot resumes from a fresh flow state, not from wherever it was when the takeover began — see
+[`POST /webhook/whatsapp`](#post-webhookwhatsapp).
+
+### `POST /api/conversations/{id}/read`
+
+Sets `last_read_at` to now. No request body. Returns the conversation, so the caller gets the
+recomputed `unread_count` without a second request. An unknown `id` returns **404**.
+
+---
+
+## WebSocket
+
+### `WS /api/conversations/stream`
+
+One socket per admin session, carrying every conversation. The list screen and the open thread share
+it; there is no per-conversation socket to open when the admin clicks into a thread and close when
+they click out. An admin watching the inbox needs updates for conversations they have not opened,
+so the socket has to be conversation-wide anyway, and a second per-thread socket would only add a
+connection lifecycle to get wrong.
+
+**Authentication reuses the access JWT and nothing else.** The first frame the client sends must be:
+
+```json
+{
+  "type": "auth",
+  "access_token": "<jwt>"
+}
+```
+
+The server validates it exactly as the `Authorization` header is validated on `/api/*`, checks the
+role is admin or above, and replies `{"type": "ready"}`. No other frame is accepted before then, and
+a socket that has not authenticated within ten seconds is closed with `1008`.
+
+The handshake exists because a browser cannot set an `Authorization` header on a WebSocket upgrade —
+the API is a `new WebSocket(url)` call and nothing else. The two alternatives were both rejected.
+Putting the token in the query string is the common workaround and writes a live credential into
+every proxy log, access log and browser history entry along the path. Issuing a separate short-lived
+ticket for the socket is a second credential scheme to mint, expire, revoke and audit, for a
+transport that is already answering to the same users as the REST API. Sending the JWT as the first
+frame keeps one credential, one validator and one role gate, and moves only the transport.
+
+When the access token expires the server closes with `1008`. The client refreshes through
+`POST /auth/refresh` and reconnects; the refresh token stays in its HttpOnly cookie and is never
+seen by the socket, which is the reason the socket takes the access token rather than the long-lived
+one.
+
+**Frames from the client**
+
+| type | Payload | Meaning |
+|---|---|---|
+| `auth` | `access_token` | First frame, always |
+| `send` | `conversation_id`, `body`, `client_message_id` | Send an admin message to the client |
+
+**Frames from the server**
+
+| type | Payload | Meaning |
+|---|---|---|
+| `ready` | — | Authenticated |
+| `message.created` | The message object, plus `conversation_id`, and `client_message_id` when echoing a send | A message was recorded, whatever its author |
+| `conversation.updated` | The conversation object | Takeover claimed or released, or `last_message_at` moved |
+| `error` | `detail` | Same shape as a REST error body |
+
+A `send` naming a conversation that is not in `human` status is refused with an `error` frame. An
+admin must claim the conversation before speaking into it, so that the client never receives an
+admin line interleaved with a bot line answering the same message — the pause is what makes the
+admin the only voice on the outbound side.
+
+**Sending lives on the socket, and there is no REST twin.** A `POST /api/conversations/{id}/messages`
+doing the same job would be a second path into the same state transition — insert the message, send
+it through Twilio, broadcast it — and the two would drift the first time one of them grew a rule.
+The socket already has to carry the message back to every other connected admin, so putting the send
+on it makes the write an extra frame on a connection that exists, rather than a request whose only
+purpose is to be echoed back down that same connection.
+
+`client_message_id` is the client's own idempotency key, and it is the socket's counterpart to
+`twilio_sid` on the inbound side. It comes back on the `message.created` echo, which is how the
+composer matches its optimistic bubble to the persisted row instead of rendering the message twice,
+and how a resend after a reconnect is recognised as the message that was already delivered rather
+than sent a second time.
+
+**The socket is not a delivery guarantee.** On reconnect the client refetches
+`GET /api/conversations/{id}/messages` for the open thread and `GET /api/conversations` for the
+list, rather than assuming the gap contained nothing. Reconnection is exponential backoff from one
+second to a thirty-second ceiling. REST is the source of truth and the socket is how the client
+learns it should ask — designing it the other way round means every dropped frame is permanent data
+loss in the UI, recoverable only by a reload the admin has to think to perform.
+
+---
+
 ## Error Responses
 
 All endpoints return consistent error shapes.
@@ -956,7 +1309,7 @@ All endpoints return consistent error shapes.
 |---|---|
 | 400 | Bad request — validation error |
 | 401 | Missing or invalid JWT |
-| 403 | Forbidden — invalid Twilio signature |
+| 403 | Forbidden — invalid Twilio signature, or a role reaching an endpoint or another tutor's data it is not entitled to |
 | 404 | Resource not found |
 | 409 | Conflict — e.g. slot already booked |
 | 422 | Unprocessable — e.g. tutor's ceiling for the subject is below the child's grade |

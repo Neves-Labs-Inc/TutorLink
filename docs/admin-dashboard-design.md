@@ -51,6 +51,7 @@ TutorLink
 Dashboard
 Tutors
 Clients
+Chats
 Bookings
 Subjects
 Users
@@ -128,6 +129,38 @@ View all guardian/client records.
 - Homes: label, address, access code — a client may have more than one, and a home may be shared with another guardian
 - Children list: name, age, grade, school — each expandable, showing that child's guardians and homes
 - Booking history across all children, filterable by status and date
+
+---
+
+### Chats (`/chats`)
+
+Every WhatsApp conversation the bot has had, admin-only — tutors have no chat surface.
+
+**Conversation list:**
+- Rows: guardian name, or the bare phone number when intake never got far enough to create one, last
+  message preview, relative time, a `Human` badge naming the holder when the conversation is under
+  takeover
+- Unread rows render bold with a dot
+- Filters: all / bot / human, unread only, and a free-text search box over phone number and guardian
+  name
+- A guardian who has changed phone number has one row per number, since a thread stays on the number it
+  was held with. The list shows the same name more than once, so each row carries its phone number
+  underneath to tell them apart, and ordering by last message puts the live one on top
+
+**Thread (`/chats/{id}`):**
+- Client messages left-aligned; bot and admin messages right-aligned
+- Admin messages are labelled with the sending admin's email, so a later reader can tell a human reply
+  from a bot one without opening the message detail
+- Failed outbound messages carry an error marker
+- Opening a thread marks it read
+- The composer is disabled and replaced by a **Take over** button until the conversation is claimed.
+  Once claimed, a banner reads that the bot is paused and names who paused it, with a **Release to
+  bot** control next to it. Release opens a confirm dialog rather than acting immediately — releasing
+  hands an in-progress conversation back to an automated flow that starts fresh, not from where the
+  admin left it, so an accidental click should not be able to do that to a client mid-conversation
+
+Live updates for both the list and the open thread arrive over the single admin WebSocket described in
+`docs/api-design.md`, not a per-conversation connection.
 
 ---
 
@@ -245,6 +278,7 @@ The tutor's exception history and self-serve time-off requests.
 | Forms | Slide-over panel | Full-screen modal |
 | Booking detail | Slide-over | Full-screen page |
 | Tutor weekly grid | Full 7-day grid | Scrollable horizontal grid |
+| Chats list + thread | Two-pane: list on the left, thread on the right | List full-screen; thread opens as a full-screen page with a back control |
 
 ---
 
@@ -260,6 +294,8 @@ dashboard/src/
 │   │   ├── TutorDetail.jsx
 │   │   ├── Clients.jsx
 │   │   ├── ClientDetail.jsx
+│   │   ├── Chats.jsx
+│   │   ├── ChatThread.jsx
 │   │   ├── Bookings.jsx
 │   │   ├── Subjects.jsx
 │   │   └── Users.jsx
@@ -272,6 +308,10 @@ dashboard/src/
 │   │   ├── AdminSidebar.jsx
 │   │   ├── TutorNav.jsx
 │   │   └── RouteGuard.jsx
+│   ├── chat/
+│   │   ├── ConversationList.jsx
+│   │   ├── MessageThread.jsx
+│   │   └── Composer.jsx
 │   ├── shared/
 │   │   ├── StatusBadge.jsx
 │   │   ├── SlideOver.jsx
@@ -287,9 +327,11 @@ dashboard/src/
 │   ├── useAuth.js
 │   ├── useTutors.js
 │   ├── useBookings.js
-│   └── useClients.js
+│   ├── useClients.js
+│   └── useConversations.js
 ├── lib/
 │   ├── api.js          # Axios instance with JWT interceptor
-│   └── auth.js         # Token management
+│   ├── auth.js         # Token management
+│   └── socket.js       # WebSocket connection, auth handshake, reconnect backoff
 └── App.jsx
 ```

@@ -97,14 +97,20 @@ Manage the tutor roster.
 - Profile section: name, email, phone, bio, active toggle
 - Subjects section: list of assigned subjects + the grade ceiling for each, add/remove
 - Availability section: weekly schedule grid (Mon–Sun), add/edit/remove slots
-- Exceptions section: list of upcoming exceptions, add new exception
+- Exceptions section: list of upcoming exceptions with a status badge (pending / approved / rejected),
+  approve/reject buttons on any `pending` row, add new exception
 - Recent bookings for this tutor
 
 **Forms:**
 - Add/Edit Tutor: name, email, phone, bio
 - Add Subject: subject dropdown + a single grade ceiling input
 - Add Availability Slot: day of week, start time, end time
-- Add Exception: date range picker, reason dropdown, notes
+- Add Exception: date range picker, start time (optional), end time (optional), reason dropdown, notes
+  - The times apply to **each day** in the range, not as one continuous absence. Label them so an admin
+    picking Mon–Wed 09:00–17:00 reads "those hours on all three days", not "Monday morning through
+    Wednesday evening" — the overnights stay bookable
+  - An exception created here is `approved` on creation, not `pending` — an admin's own entry needs no
+    review step, unlike a tutor's self-serve request from `/time-off`
 
 ---
 
@@ -134,11 +140,21 @@ View and manage all sessions.
 - Filters: date range, tutor, subject, status
 - Status badge with colour coding: pending (yellow), confirmed (green), cancelled (red), completed (grey)
 - Click a row to open booking detail slide-over
-- "Create Booking" button for manual bookings
+- "Create Booking" button for manual bookings → opens a slide-over form
+
+**Create Booking form:**
+- Child selector (searchable, across all clients)
+- Tutor selector
+- Subject selector
+- Date, start time, end time
+- Home selector — scoped to **the selected child's homes**, not a free list of every home in the system.
+  Empty until a child is chosen, and re-scoped when the child changes
+- `booked_by_guardian_id` stays NULL for bookings created here; this is the admin path, with no guardian
+  on the other end of it
 
 **Booking detail slide-over:**
 - Full session info: child, the guardian who booked it, tutor, subject, date, time, and the home it is at
-- Parent address + access code (visible to admin)
+- The address and access code of **the booking's home** — not the guardian's (visible to admin)
 - Status update dropdown
 - Notes field
 
@@ -180,7 +196,7 @@ Manage login accounts for admin and tutor users.
 The tutor's weekly availability view.
 
 - Read-only weekly grid showing their recurring availability slots
-- Exceptions displayed as blocked-out dates with reason label
+- Exceptions displayed as blocked-out dates with reason label — a partial-day exception blocks only its own hours, not the whole day
 - Cannot edit — directs tutor to contact admin for changes
 
 ---
@@ -205,13 +221,17 @@ The tutor's upcoming and past bookings.
 
 ### Time Off (`/time-off`)
 
-The tutor's exception history.
+The tutor's exception history and self-serve time-off requests.
 
-- List of upcoming and past exceptions: date range, reason, notes
-- Read-only — tutor cannot create or delete exceptions themselves
-- Includes a contact prompt: "To request time off, contact your admin"
-
-> **Note:** whether tutors can self-serve time off requests is a future decision. For now, all exceptions are admin-managed.
+- List of upcoming and past exceptions: date range, time range (blank = all day), reason, notes, status
+  (pending / approved / rejected)
+- "Request Time Off" button → the same date range / time range / reason / notes form as the admin's Add
+  Exception, but the row it creates lands `pending`, not `approved`
+- A `pending` request does not block bookings — only after an admin approves it does it subtract from the
+  tutor's availability. The status badge is what tells the tutor whether a request has taken effect yet
+- A tutor may withdraw a request while it is still `pending` (delete from the list). Once an admin has
+  approved or rejected it, the row is locked from the tutor's side — undoing an admin's decision is an
+  admin action, not a tutor one
 
 ---
 

@@ -15,6 +15,7 @@ from sqlalchemy.dialects import postgresql
 
 USER_ROLE_ENUM_NAME = "user_role"
 BOOKING_STATUS_ENUM_NAME = "booking_status"
+EXCEPTION_STATUS_ENUM_NAME = "exception_status"
 
 
 class UserRole(str, enum.Enum):
@@ -28,6 +29,20 @@ class BookingStatus(str, enum.Enum):
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
+
+
+class ExceptionStatus(str, enum.Enum):
+    """Approval state of a tutor availability exception.
+
+    Only `APPROVED` blocks bookings. A `PENDING` request is a tutor asking for time off and
+    has no effect on availability until an admin decides it, and `REJECTED` is terminal — so
+    any query that subtracts exceptions from a tutor's schedule must filter on `APPROVED`
+    rather than on the row's existence.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 def _values(enum_class: type[enum.Enum]) -> list[str]:
@@ -48,5 +63,13 @@ booking_status_enum = postgresql.ENUM(
     values_callable=_values,
 )
 
+exception_status_enum = postgresql.ENUM(
+    ExceptionStatus,
+    name=EXCEPTION_STATUS_ENUM_NAME,
+    create_type=False,
+    values_callable=_values,
+)
+
 USER_ROLE_VALUES = _values(UserRole)
 BOOKING_STATUS_VALUES = _values(BookingStatus)
+EXCEPTION_STATUS_VALUES = _values(ExceptionStatus)

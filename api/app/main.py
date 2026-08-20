@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.routers import auth, health
+from app.routers import auth, exceptions, health, users
 
 # No CORS middleware by design (D-012): the browser reaches this API same-origin through the
 # Vite dev proxy. Do not add one.
@@ -10,6 +10,8 @@ app = FastAPI(title="TutorLink API", docs_url="/docs")
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(exceptions.router)
 
 
 @app.exception_handler(RequestValidationError)

@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '@/components/auth/AuthProvider'
 import { RouteGuard } from '@/components/layout/RouteGuard'
 import { AppShell } from '@/components/layout/AppShell'
+import { ADMIN_ROLES } from '@/lib/auth'
 import { Login } from '@/pages/Login'
 import { Dashboard } from '@/pages/admin/Dashboard'
 import { Schedule } from '@/pages/tutor/Schedule'
@@ -15,7 +16,7 @@ export const App = () => (
         <Route
           path="/dashboard"
           element={
-            <RouteGuard allow={['admin']}>
+            <RouteGuard allow={ADMIN_ROLES}>
               <AppShell>
                 <Dashboard />
               </AppShell>

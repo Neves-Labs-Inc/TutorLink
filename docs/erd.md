@@ -298,9 +298,9 @@ tutors ────────────────────────�
 
 When a client requests a slot, the bot runs three checks in sequence:
 
-1. Fetch recurring ranges from `tutor_availability` matching the requested day of week, and cut each into a grid of candidate slots
+1. Fetch recurring ranges from `tutor_availability` with `is_active = true` matching the requested day of week, and cut each into a grid of candidate slots
 2. Subtract slots blocked by a `tutor_availability_exceptions` range with `status = 'approved'` covering the requested date (`start_date <= requested_date <= end_date`) — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they are set. `pending` and `rejected` rows are ignored entirely
-3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
+3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`, widening each booking by `session_gap_minutes` on both sides before comparing
 4. Return remaining open slots to the client
 
 Step 1 strides from the range's `start_time` by `session_length_minutes + session_gap_minutes`. Tutoring
@@ -323,24 +323,48 @@ grid.
 A slot is also withheld unless it starts after `now + min_booking_lead_hours` (default 0), and the
 requested date must fall within `booking_lookahead_days` (default 90) of today.
 
+Step 1 also takes only rows with `is_active = true`. Deactivating a recurring slot is a soft delete, so the
+row is still there afterwards, and a query that treated a withdrawn slot as absent would keep cutting a grid
+out of it. Rule 1 of `POST /api/bookings` requires an **active** range, so leaving the filter out would have
+the bot offering slots the write path refuses — the same trap step 2's `status` filter avoids, for the same
+reason: the row existing is not enough.
+
 Step 2 only considers rows with `status = 'approved'`. A tutor-created exception starts `pending` and has
 no effect on the grid until an admin approves it — it is visible to both the tutor and admins, but a
 pending request that blocked bookings would let a tutor unilaterally freeze their own schedule before
 anyone reviewed it. Within the approved set, the exception blocks the whole day when `start_time`/
 `end_time` are NULL — the existing, unchanged behavior. When they are set, only the overlapping portion of
-the day is subtracted, using the same overlap comparison as step 3: `slot.start_time < exception.end_time
-AND slot.end_time > exception.start_time`, applied to any date within the exception's
-`start_date`–`end_date` range. A mid-day appointment is routine, and an all-or-nothing day flag forces a
-tutor to give up a whole day for a one-hour errand.
+the day is subtracted, by bare overlap — `slot.start_time < exception.end_time AND slot.end_time >
+exception.start_time`, applied to any date within the exception's `start_date`–`end_date` range. Bare, not
+gap-expanded like step 3, because rule 4 of `POST /api/bookings` blocks on bare overlap with an exception
+too, and the offer surface must not read the same rows differently from the write path. A mid-day
+appointment is routine, and an all-or-nothing day flag forces a tutor to give up a whole day for a one-hour
+errand.
 
-Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
-`slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.
+Step 3 subtracts by **time overlap**, widened by `session_gap_minutes` on both sides, never by start-time
+equality. A candidate slot is dropped when `slot.start_time < booking.end_time + gap AND
+slot.end_time + gap > booking.start_time`.
 
-This matters because `session_length_minutes` is runtime-editable, so the slot grid is not stable over
-time — changing it from 60 to 45 re-cuts every future availability range. Stored bookings keep their own
-`start_time`/`end_time` and are unaffected, but they end up misaligned with the new grid: a 60-minute
-booking at 10:00 straddles both the 09:45–10:30 and the 10:30–11:15 slots. Matching on equality would
-find neither and offer both, double-booking the tutor.
+The widening is what keeps this step and the write path agreeing. The gap is where the tutor travels, so a
+slot that merely abuts a booking, or sits inside the travel gap beside one, is not bookable — and rule 3 of
+`POST /api/bookings` refuses it in as many words: "at least `session_gap_minutes` clear of the nearest
+booking on either side". Bare overlap here would offer a slot the confirm then rejects with a 409, which is
+the offer surface and the write path reading the same rows by different rules. Both inequalities stay
+strict, so clearance of exactly one gap passes, which is what "at least" means: on the 60+30 grid above, a
+booking filling 09:00–10:00 leaves 10:30–11:30 offered, since `10:30 < 10:00 + 30` is false. That holds in
+general and not by luck — the stride is `length + gap`, so consecutive grid slots are always exactly a gap
+apart and can never erase each other. What the widening does drop is the off-grid neighbour: a booking of
+10:00–11:00 clears 09:00–10:00, which bare overlap would have kept.
+
+Equality matching fails for a separate reason. Both settings are runtime-editable and `POST /api/bookings`
+does not require a booking to land on the grid, so a stored booking's `start_time` need not be any slot's:
+an admin may book outside the grid, and a booking made before the settings were re-cut keeps the times it
+was given. At length 45 and gap 30 the stride is 75 minutes, so the 09:00–12:00 range above cuts into
+09:00–09:45 and 10:15–11:00 — 11:30–12:15 would overrun the range, leaving 11:00–12:00 over. An admin
+booking the tutor 09:30–10:30 starts at neither 09:00 nor 10:15, yet takes the last 15 minutes of the first
+slot and the first 15 of the second. Matching on equality would find no slot to remove and offer both,
+double-booking the tutor. Overlap alone is enough to drop both here; the widening extends the same
+subtraction to the slots such a booking only abuts.
 
 ---
 

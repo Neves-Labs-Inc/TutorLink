@@ -31,7 +31,7 @@ def _test_engine() -> Generator[Engine, None, None]:
     """
     from app.config import get_settings
     from app.models import metadata
-    from app.models.enums import booking_status_enum, user_role_enum
+    from app.models.enums import booking_status_enum, exception_status_enum, user_role_enum
 
     url = make_url(get_settings().database_url)
     test_url = url.set(database=f"{url.database}_test")
@@ -58,6 +58,11 @@ def _test_engine() -> Generator[Engine, None, None]:
         # them; migration 0001 creates them by hand and the harness has to do the same.
         user_role_enum.create(connection, checkfirst=True)
         booking_status_enum.create(connection, checkfirst=True)
+        exception_status_enum.create(connection, checkfirst=True)
+        # For the same reason: `excl_bookings_live_overlap` compares a UUID with `=` inside a
+        # GiST index, which only `btree_gist` teaches PostgreSQL to do. Migration 0009 creates
+        # the extension, and `create_all` will not, so the table would fail to create here.
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
     metadata.create_all(engine)
 
     yield engine

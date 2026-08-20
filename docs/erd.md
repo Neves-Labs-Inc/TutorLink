@@ -195,11 +195,27 @@ Overrides the recurring schedule for specific dates or date ranges. Handles sing
 | tutor_id | UUID | FK → tutors.id |
 | start_date | DATE | First day of exception |
 | end_date | DATE | Last day of exception (equals start_date for a single day off) |
+| start_time | TIME | Nullable. NULL means the exception blocks the whole day |
+| end_time | TIME | Nullable. NULL means the exception blocks the whole day |
 | reason | VARCHAR | vacation, personal, sick, other |
 | notes | TEXT | Optional admin notes |
+| status | ENUM `exception_status` | `pending`, `approved`, `rejected`. NOT NULL, default `approved` |
 | created_at | TIMESTAMPTZ | |
 
-Constraints: `INDEX (tutor_id, start_date, end_date)`
+A set time window applies to **every** day in the `start_date`–`end_date` range, not as one continuous
+absence across it — the row cannot express "Monday 09:00 straight through to Wednesday 17:00", and the
+`end_time > start_time` check makes that reading unrepresentable anyway.
+
+`status` defaults to `approved` because exceptions were admin-managed and immediately blocking before
+tutors could create their own — every row that existed before this column was added backfills to
+`approved`, the meaning-preserving value that leaves their effect on availability unchanged. A tutor
+creating their own exception gets `pending` instead; an admin or developer creating one still gets
+`approved` immediately, since making an admin approve their own entry would be a step with no gate value.
+Only an `approved` row subtracts from availability — see [Availability Query Logic](#availability-query-logic).
+
+Constraints: `CHECK ((start_time IS NULL) = (end_time IS NULL))` · `CHECK (start_time IS NULL OR end_time > start_time)` · `INDEX (tutor_id, start_date, end_date)`
+
+The two checks are separate rather than one expression: each is null-safe on its own, and a violation names which rule was broken. A half-set pair is rejected outright — NULL only reads as "whole day" if it cannot also mean "the other half was left off".
 
 ---
 
@@ -223,7 +239,7 @@ Confirmed tutoring sessions. Links a child to a tutor for a specific subject on 
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
-Constraints: `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
+Constraints: `EXCLUDE USING gist excl_bookings_live_overlap (tutor_id WITH =, tsrange(scheduled_date + start_time, scheduled_date + end_time) WITH &&) WHERE (status IN (pending, confirmed))` · `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
 
 ---
 
@@ -282,10 +298,49 @@ tutors ────────────────────────�
 
 When a client requests a slot, the bot runs three checks in sequence:
 
-1. Fetch recurring slots from `tutor_availability` matching the requested day of week
-2. Subtract any slots where the requested date falls within a `tutor_availability_exceptions` range (`start_date <= requested_date <= end_date`)
+1. Fetch recurring ranges from `tutor_availability` matching the requested day of week, and cut each into a grid of candidate slots
+2. Subtract slots blocked by a `tutor_availability_exceptions` range with `status = 'approved'` covering the requested date (`start_date <= requested_date <= end_date`) — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they are set. `pending` and `rejected` rows are ignored entirely
 3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
 4. Return remaining open slots to the client
+
+Step 1 strides from the range's `start_time` by `session_length_minutes + session_gap_minutes`. Tutoring
+happens at the home (`homes.address`), so the tutor travels between sessions and back-to-back slots were
+never realistic. Slot *n* runs from `start_time + n × (length + gap)` for `length` minutes, and is emitted
+only while its end lands at or before the range's `end_time`. Whatever remains after the last whole slot
+is leftover and is not offered.
+
+```
+Availability   09:00 ------------------------------ 12:00
+Grid (60+30)   [09:00-10:00] .... [10:30-11:30] ....
+Leftover                                  (11:30-12:00)
+```
+
+At length 60 and gap 30 the stride is 90 minutes: 09:00 and 10:30 fit, 12:00 would end at 13:00 and is
+dropped, leaving 11:30–12:00 unoffered. Both settings are runtime-editable and both re-cut every future
+grid, which is why steps 2 and 3 never assume a stored exception or booking lines up with the current
+grid.
+
+A slot is also withheld unless it starts after `now + min_booking_lead_hours` (default 0), and the
+requested date must fall within `booking_lookahead_days` (default 90) of today.
+
+Step 2 only considers rows with `status = 'approved'`. A tutor-created exception starts `pending` and has
+no effect on the grid until an admin approves it — it is visible to both the tutor and admins, but a
+pending request that blocked bookings would let a tutor unilaterally freeze their own schedule before
+anyone reviewed it. Within the approved set, the exception blocks the whole day when `start_time`/
+`end_time` are NULL — the existing, unchanged behavior. When they are set, only the overlapping portion of
+the day is subtracted, using the same overlap comparison as step 3: `slot.start_time < exception.end_time
+AND slot.end_time > exception.start_time`, applied to any date within the exception's
+`start_date`–`end_date` range. A mid-day appointment is routine, and an all-or-nothing day flag forces a
+tutor to give up a whole day for a one-hour errand.
+
+Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
+`slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.
+
+This matters because `session_length_minutes` is runtime-editable, so the slot grid is not stable over
+time — changing it from 60 to 45 re-cuts every future availability range. Stored bookings keep their own
+`start_time`/`end_time` and are unaffected, but they end up misaligned with the new grid: a 60-minute
+booking at 10:00 straddles both the 09:45–10:30 and the 10:30–11:15 slots. Matching on equality would
+find neither and offer both, double-booking the tutor.
 
 ---
 

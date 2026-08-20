@@ -164,9 +164,10 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `GET /api/tutors` | All tutors | All tutors | Own profile only |
 | `GET /api/tutors/{id}/availability` | Any tutor | Any tutor | Own only |
 | `GET /api/tutors/{id}/exceptions` | Any tutor | Any tutor | Own only |
-| `POST/PATCH/DELETE /api/tutors/*` | ✓ | ✓ | ✗ |
+| `POST/PATCH/DELETE /api/tutors/*` (profile, subjects, availability — excludes `/exceptions`, see below) | ✓ | ✓ | ✗ |
 | `POST /api/tutors/{id}/exceptions` (time-off request) | ✓ | ✓ | Own only |
 | `PATCH /api/exceptions/{id}` (approve/reject) | ✓ | ✓ | ✗ |
+| `DELETE /api/exceptions/{id}` | ✓ | ✓ | Own, pending only |
 | `GET /api/bookings` | All bookings | All bookings | Own bookings only |
 | `POST/PATCH /api/bookings` | ✓ | ✓ | ✗ |
 | `GET /api/clients` | ✓ | ✓ | ✗ |
@@ -176,6 +177,8 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `POST/PATCH/DELETE /api/users` | ✓ | ✓ (not `developer`) | ✗ |
 | `GET /api/settings` | All fields | Admin-visible fields only | ✗ |
 | `PATCH /api/settings` | All fields | Admin-visible fields only | ✗ |
+
+> A `pending` exception is visible to both the tutor and admins but does not block bookings — only an `approved` one subtracts from availability. See [Availability](#availability) and `docs/erd.md`.
 
 ### Settings
 
@@ -541,6 +544,7 @@ DELETE /api/availability/{id}
 
 GET    /api/tutors/{id}/exceptions
 POST   /api/tutors/{id}/exceptions
+PATCH  /api/exceptions/{id}
 DELETE /api/exceptions/{id}
 ```
 
@@ -589,7 +593,9 @@ Remove a recurring slot.
 
 ### `GET /api/tutors/{id}/exceptions`
 
-Returns all exceptions for a tutor.
+Returns all exceptions for a tutor, including still-`pending` requests. A `pending` row is shown to both
+the tutor and admins but has no effect on availability until it is approved — see rule 2 in
+[Availability Query Logic](../docs/erd.md).
 
 **Response**
 ```json
@@ -599,8 +605,21 @@ Returns all exceptions for a tutor.
       "id": "uuid",
       "start_date": "2026-12-20",
       "end_date": "2026-12-31",
+      "start_time": null,
+      "end_time": null,
       "reason": "vacation",
-      "notes": "Christmas break"
+      "notes": "Christmas break",
+      "status": "approved"
+    },
+    {
+      "id": "uuid",
+      "start_date": "2026-08-18",
+      "end_date": "2026-08-18",
+      "start_time": "09:00",
+      "end_time": "12:00",
+      "reason": "personal",
+      "notes": "Dentist appointment",
+      "status": "pending"
     }
   ],
   "total": 42,
@@ -611,21 +630,76 @@ Returns all exceptions for a tutor.
 
 ### `POST /api/tutors/{id}/exceptions`
 
-Add an exception. For a single day off, set `start_date` and `end_date` to the same date.
+Add an exception. For a single day off, set `start_date` and `end_date` to the same date. `start_time` and
+`end_time` are optional and must both be NULL or both be set — NULL blocks the whole day, set values block
+only that portion of each day in the range.
+
+Callable by an admin or developer for any tutor, or by a tutor for themselves — a tutor naming another
+tutor's id returns **403**. `status` is not a request field; a client cannot choose its own status. It is
+set by who called the endpoint: a tutor's request lands `pending` and waits on admin review, while an
+admin or developer's entry is `approved` immediately. Exceptions were admin-managed and immediately
+blocking before tutor self-serve existed; forcing an admin to approve their own entry would be a step with
+no gate value, so their writes keep the old behaviour.
 
 **Request**
 ```json
 {
-  "start_date": "2026-12-20",
-  "end_date": "2026-12-31",
-  "reason": "vacation",
-  "notes": "Christmas break"
+  "start_date": "2026-08-18",
+  "end_date": "2026-08-18",
+  "start_time": "09:00",
+  "end_time": "12:00",
+  "reason": "personal",
+  "notes": "Dentist appointment"
+}
+```
+
+**Response**
+```json
+{
+  "id": "uuid",
+  "start_date": "2026-08-18",
+  "end_date": "2026-08-18",
+  "start_time": "09:00",
+  "end_time": "12:00",
+  "reason": "personal",
+  "notes": "Dentist appointment",
+  "status": "pending"
+}
+```
+
+### `PATCH /api/exceptions/{id}`
+
+Approve or reject a pending exception. Admin or developer only.
+
+**Request**
+```json
+{
+  "status": "approved"
+}
+```
+
+`status` must be `approved` or `rejected` — `pending` is not an accepted target, since a row only ever
+becomes pending by being created, never by transitioning back to it.
+
+Only a `pending` row may transition. An already-`approved` or already-`rejected` row returns **409**: the
+decision has already been made, and silently overwriting it would let a second admin action erase the
+first without a trace. An unknown `id` returns **404**.
+
+**Response**
+```json
+{
+  "id": "uuid",
+  "status": "approved"
 }
 ```
 
 ### `DELETE /api/exceptions/{id}`
 
-Remove an exception.
+An admin or developer may delete any exception. A tutor may delete only their **own** exception, and only
+while it is still `pending` — that is withdrawing a request before anyone has acted on it. Deleting an
+`approved` or `rejected` exception as a tutor returns **403**: once an admin has ruled on a request, a
+tutor must not be able to unilaterally undo that decision in either direction, whether that means erasing
+a block they'd rather not have or erasing a rejection they disagree with.
 
 ---
 
@@ -639,9 +713,21 @@ GET    /api/slots/available
 
 The core endpoint used by the bot to find open slots for a client. Runs the full three-step availability check:
 
-1. Fetches recurring slots from `tutor_availability` for the requested day
-2. Removes slots blocked by `tutor_availability_exceptions`
-3. Removes slots already taken in `bookings`
+1. Fetches recurring ranges from `tutor_availability` for the requested day and cuts each into a grid, striding by `session_length_minutes + session_gap_minutes`
+2. Removes slots blocked by `tutor_availability_exceptions` rows with `status = 'approved'` — the whole day when `start_time`/`end_time` are NULL, by time overlap otherwise. `pending` and `rejected` rows are ignored.
+3. Removes slots already taken in `bookings`, by time overlap — `slot.start_time < booking.end_time AND slot.end_time > booking.start_time`
+
+Step 1 strides rather than packing slots back-to-back because the tutor travels to the home between
+sessions. From a 09:00–12:00 range at length 60 and gap 30, the stride is 90 minutes and the grid is
+09:00–10:00 and 10:30–11:30; 11:30–12:00 is leftover and is not offered here. A slot is offered only if
+it starts after `now + min_booking_lead_hours`.
+
+`date` in the past returns **400**, as does a `date` further ahead than `booking_lookahead_days`.
+
+Step 3 compares ranges, not start times. `session_length_minutes` is runtime-editable, so an existing
+booking need not line up with the current grid: at a 45-minute length, a 60-minute booking at 10:00
+straddles 09:45–10:30 and 10:30–11:15 and matches the start time of neither. Overlap subtraction drops
+both; equality matching would offer both. See the availability query logic in `docs/erd.md`.
 
 **Query Parameters**
 
@@ -720,6 +806,74 @@ Returns full detail for a single booking, including the address and access code 
 
 Create a confirmed booking. Called by the bot after the client selects a slot.
 
+**Validation**
+
+The requested range is accepted when it satisfies all of the following:
+
+1. it sits entirely inside an active `tutor_availability` range for that tutor and day
+2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
+3. it is at least `session_gap_minutes` clear of the nearest booking on either side
+4. it is not blocked by a `tutor_availability_exceptions` row with `status = 'approved'` covering
+   `scheduled_date` — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they
+   are set. `pending` and `rejected` rows never block a booking.
+5. the tutor's `max_grade_level` for the **booked subject** is at or above the booked child's
+   `grade_level`. The ceiling is per subject, so this resolves the `(tutor_id, subject_id)` pair from
+   `bookings.subject_id` — there is no tutor-wide grade to fall back on. A tutor qualified for the child's
+   grade in one subject is still refused for a subject where their ceiling is lower. The boundary is
+   inclusive: a ceiling equal to the child's grade is accepted.
+
+   A **missing** `tutor_subjects` row for the booked subject is a refusal, not a pass. With no assignment
+   there is no ceiling to compare against, and the tutor does not teach the subject at all. Written as a
+   join that silently drops the row, the strongest possible violation would return success.
+
+6. `home_id` is one of the booked child's homes — a `child_homes` row exists for
+   `(child_id, home_id)`. Any other home is refused, including one belonging to a different family.
+
+7. `booked_by_guardian_id`, when present, is one of the booked child's guardians — a `child_guardians`
+   row exists for `(child_id, booked_by_guardian_id)`. NULL is always allowed and is the admin path.
+
+Rule 1 failing is **400**. Rules 2, 3 and 4 failing are **409**, the conflict case the error table already
+names. Rules 5, 6 and 7 failing are **422** — the request is well-formed and conflicts with nothing, it
+just names a combination that is not permitted: a tutor not qualified to teach that child at that grade,
+a home the child does not live at, or a guardian not linked to the child.
+
+Rules 6 and 7 are deliberately independent of each other. The home is checked against the **child**, never
+against the booking guardian, so a guardian booking a session at the child's *other* home — the co-parent's
+house — is accepted; that case is the reason the two columns exist. A rule phrased as "the home must belong
+to the booking guardian" would wrongly refuse it. Rule 7 is what keeps that openness safe: a stranger
+booking for someone else's child is refused because they hold no `child_guardians` link, and that link is
+the only thing separating the two requests. Two siblings sharing a home each pass rule 6 on their own
+`child_homes` row.
+
+This enumeration is the authority for what `POST /api/bookings` enforces, and it belongs in one place in
+code — a single ordered rule set carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
+rules 6 and 7 from #38), not prose scattered across issues. The list has been amended three times in two
+days; treat it as open and expect a fourth.
+
+Rule 4 is checked here and not only in `GET /api/slots/available`. The grid is an offer, and an exception
+can be approved between the offer and the confirm — a same-day partial-day window especially, which is the
+routine case that motivated the time columns. Without this rule the bot can confirm a slot it was offered
+minutes earlier onto a tutor whose time off has since been approved, and an admin posting a time directly is
+never checked against exceptions at all.
+
+Rule 5 is likewise not redundant with the `grade_level` filter on `GET /api/slots/available`. That filter is
+an offer mechanism, and `POST /api/bookings` is reachable directly from the admin dashboard's manual booking
+form, which never passes through slot matching. Enforcing the ceiling only at the offer surface leaves it
+unenforced on the path an admin actually uses.
+
+Rules 6 and 7 sit in the endpoint for the same reason. The dashboard's manual booking form scopes its home
+selector to the selected child, but that is a UI affordance on one client, not enforcement — the endpoint is
+reachable without it.
+
+The endpoint does **not** require the range to land on a generated grid slot. The grid from
+`GET /api/slots/available` is an offer mechanism for the bot, not an API constraint: an admin may book
+the 11:30–12:00 leftover that a rigid grid strands. This is the only rule set compatible with
+runtime-editable `session_length_minutes` and `session_gap_minutes` — under a grid-locked rule, changing
+either setting would leave every existing booking failing its own validation the next time it is edited.
+
+`scheduled_date` in the past returns **400**, as does a date further ahead than `booking_lookahead_days`.
+A start time earlier than `now + min_booking_lead_hours` returns **400**.
+
 **Request**
 ```json
 {
@@ -777,4 +931,5 @@ All endpoints return consistent error shapes.
 | 403 | Forbidden — invalid Twilio signature |
 | 404 | Resource not found |
 | 409 | Conflict — e.g. slot already booked |
+| 422 | Unprocessable — e.g. tutor's ceiling for the subject is below the child's grade |
 | 500 | Internal server error |

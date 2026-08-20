@@ -1,3 +1,5 @@
+import datetime
+
 from app.models import metadata
 
 EXPECTED_TABLES = {
@@ -30,14 +32,30 @@ def test_no_unexpected_tables() -> None:
     assert set(metadata.tables) == EXPECTED_TABLES | NON_ERD_TABLES
 
 
-def test_partial_unique_index_on_bookings() -> None:
+def test_live_bookings_are_excluded_by_overlap_not_by_equal_start_time() -> None:
+    """A unique index on start_time let a 10:30-11:30 booking land inside a live 10:00-11:00
+    one. Only a range exclusion catches that, so the index is replaced rather than joined."""
     bookings = metadata.tables["bookings"]
-    index = next(i for i in bookings.indexes if i.name == "uq_booking_live_slot")
+    constraint = next(c for c in bookings.constraints if c.name == "excl_bookings_live_overlap")
 
-    assert index.unique is True
-    assert [c.name for c in index.columns] == ["tutor_id", "scheduled_date", "start_time"]
-    where = index.dialect_options["postgresql"]["where"]
-    assert "pending" in str(where) and "confirmed" in str(where)
+    assert constraint.using == "gist"
+    assert constraint.operators == {
+        "tutor_id": "=",
+        "tsrange(scheduled_date + start_time, scheduled_date + end_time)": "&&",
+    }
+    where = str(constraint.where)
+    assert "pending" in where and "confirmed" in where
+    assert not any(i.name == "uq_booking_live_slot" for i in bookings.indexes)
+
+
+def test_a_booking_must_span_time() -> None:
+    """An empty range overlaps nothing, so a zero-length booking is invisible to the exclusion
+    constraint above and an inverted one never builds a range at all. Without this check the
+    replacement is weaker than the unique index it replaced, not stronger."""
+    bookings = metadata.tables["bookings"]
+    constraint = next(c for c in bookings.constraints if c.name == "ck_bookings_time_order")
+
+    assert "end_time > start_time" in str(constraint.sqltext)
 
 
 def test_enum_types_are_not_implicitly_created() -> None:
@@ -101,6 +119,22 @@ def test_junctions_are_hard_delete() -> None:
     guardian after a custody change is a DELETE and takes effect immediately."""
     for junction in ("child_guardians", "child_homes", "guardian_homes"):
         assert "is_active" not in metadata.tables[junction].c, junction
+
+
+def test_an_exception_may_block_part_of_a_day() -> None:
+    """A dentist appointment at 09:00 does not cost the tutor the afternoon. NULL on both
+    times means the whole day, so every row written before the columns existed still reads
+    the same — and the pair constraint keeps that NULL unambiguous."""
+    exceptions = metadata.tables["tutor_availability_exceptions"]
+
+    assert exceptions.c.start_time.nullable is True
+    assert exceptions.c.end_time.nullable is True
+    assert exceptions.c.start_time.type.python_type is datetime.time
+    assert exceptions.c.end_time.type.python_type is datetime.time
+
+    names = {c.name for c in exceptions.constraints}
+    assert "ck_tutor_availability_exceptions_time_pair" in names
+    assert "ck_tutor_availability_exceptions_time_order" in names
 
 
 def test_a_booking_names_its_home_and_may_name_who_booked_it() -> None:

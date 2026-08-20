@@ -2,21 +2,23 @@
 
 ## Overview
 
-TutorLink uses a PostgreSQL relational database as the single source of truth for all business data. Conversation state is handled separately in Redis and is not persisted long-term.
+TutorLink uses a PostgreSQL relational database as the single source of truth for all business data, including the full history of every WhatsApp conversation the bot has had. Redis holds only the live flow state of a conversation currently in progress — which step the bot is on and what it has collected so far — and that state is still ephemeral and expires on its own. What was said, by whom, and when is relational and retained; see [`conversations`](#conversations) and [`messages`](#messages).
 
 ---
 
 ## Tables
 
 ### `users`
-Login accounts for the admin dashboard. Supports two roles: `admin` (full access) and `tutor` (own schedule only). Tutor accounts are linked to a row in the `tutors` table.
+Login accounts for the admin dashboard. Supports three roles: `developer` (everything an admin has, plus developer-only settings fields), `admin` (full access) and `tutor` (own schedule only). Tutor accounts are linked to a row in the `tutors` table.
+
+`developer` is a superset of `admin` rather than a parallel role — every gate asks "admin or above" rather than "is admin". An admin may not create a `developer` nor promote anyone to one, including themselves, so the first account is created by a CLI command rather than over HTTP.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
 | email | VARCHAR | Unique — used as login username |
 | hashed_password | VARCHAR | Bcrypt hashed |
-| role | ENUM | admin, tutor |
+| role | ENUM | developer, admin, tutor |
 | tutor_id | UUID | FK → tutors.id — null for admin accounts |
 | is_active | BOOLEAN | Soft delete flag |
 | created_at | TIMESTAMPTZ | |
@@ -243,6 +245,82 @@ Constraints: `EXCLUDE USING gist excl_bookings_live_overlap (tutor_id WITH =, ts
 
 ---
 
+### `conversations`
+One row per WhatsApp identity, created on the first inbound message. Holds who is answering the client right now — the bot, or an admin who has taken over.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| phone_number | VARCHAR | Unique — the WhatsApp identity |
+| guardian_id | UUID | FK → guardians.id, nullable — linked once intake creates the guardian |
+| status | ENUM `conversation_status` | `bot`, `human`. NOT NULL, default `bot` — who is answering right now |
+| taken_over_by_user_id | UUID | FK → users.id, nullable |
+| taken_over_at | TIMESTAMPTZ | nullable |
+| last_message_at | TIMESTAMPTZ | Ordering the conversation list |
+| last_read_at | TIMESTAMPTZ | nullable — shared admin-side read watermark |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | |
+
+Constraints: `UNIQUE (phone_number)` · `CHECK ((status = 'human') = (taken_over_by_user_id IS NOT NULL))` · `INDEX (guardian_id)` · `INDEX (last_message_at DESC)`
+
+The row is keyed on `phone_number` rather than on `guardian_id` because the bot is already talking
+before a guardian exists — intake collects the name several messages in. A conversation that could not
+exist until intake succeeded would lose exactly the conversations an admin most wants to read: the ones
+that stalled part-way through it. `guardian_id` is backfilled when the guardian row is created and stays
+NULL otherwise, which is why the conversation list has to be able to render a bare phone number.
+
+`conversations.phone_number` is never rewritten. When an admin corrects or changes a guardian's number on
+the client screen, `guardians.phone_number` moves and the conversation stays where it is: a thread records
+what was said to one WhatsApp identity, and re-pointing it would make the archive claim messages went to a
+number Twilio never sent them to. The next inbound message from the new number opens a second conversation
+carrying the same `guardian_id`, which is why `INDEX (guardian_id)` is not unique. A guardian who has
+changed handsets has more than one thread, the older one still readable as history.
+
+`last_read_at` is a single watermark shared by every admin rather than one per admin. This is a shared
+inbox for a small team, and a takeover is already a shared act — one admin claims a conversation and any
+other can see it is claimed. A per-admin junction table would buy per-person unread counts that nobody
+has asked for, at the cost of a second table on the read path of the list screen.
+
+The CHECK ties the two halves of the takeover state together, so `human` with no holder, and a holder
+with the bot still running, are both unrepresentable rather than merely discouraged. This is the same
+reasoning as the paired NULL check on `tutor_availability_exceptions`: a state that has no coherent
+meaning should be rejected by the database, not left for the application to remember to avoid.
+
+---
+
+### `messages`
+Every message in a conversation — what the client sent, what the bot replied, and what an admin typed while holding the conversation.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| conversation_id | UUID | FK → conversations.id |
+| author_kind | ENUM `message_author` | `client`, `bot`, `admin` |
+| author_user_id | UUID | FK → users.id, nullable — set only when `author_kind = 'admin'` |
+| body | TEXT | Message text as sent or received |
+| twilio_sid | VARCHAR | nullable, unique — Twilio's message SID |
+| status | ENUM `message_status` | `received`, `queued`, `sent`, `delivered`, `failed` |
+| error_code | VARCHAR | nullable — Twilio's error code on `failed` |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | Moves only when the delivery callback advances `status` |
+
+Constraints: `UNIQUE (twilio_sid)` · `CHECK ((author_kind = 'admin') = (author_user_id IS NOT NULL))` · `INDEX (conversation_id, created_at)`
+
+There is deliberately no `direction` column. Inbound and outbound are already derivable from
+`author_kind` — `client` is inbound, `bot` and `admin` are outbound — and storing both would create two
+facts that can disagree, with nothing in the schema to say which one is right.
+
+`twilio_sid` is unique because Twilio retries a webhook whose delivery it believes failed, and the same
+message can therefore arrive more than once. The insert is the idempotency key: a retry of an
+already-recorded message conflicts on the unique index and is discarded, rather than appearing twice in
+the thread an admin is reading.
+
+An inbound message is written `received` and never changes state again — it has already arrived, and
+there is nothing further to report about it. An outbound one starts `queued` and is advanced by Twilio's
+delivery status callback, which is also what records `error_code` when the send ultimately fails.
+
+---
+
 ### `system_settings`
 Runtime-configurable business settings, as typed key/value rows. A row per setting rather than one row per column: the set grows, and adding one should be an INSERT rather than a migration. Read at request time — several of these re-cut the slot grid, so a cached value would silently serve a stale schedule.
 
@@ -267,6 +345,16 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 | booking_lookahead_days | 90 | no |
 | min_booking_lead_hours | 0 | no |
 | cancellation_cutoff_hours | 24 | no |
+| chat_retention_days | 365 | no |
+
+`chat_retention_days` is how long a message is kept. A nightly job deletes `messages` older than the
+window, and a `conversations` row left with no surviving messages goes with them rather than lingering as
+an empty thread in the list. A value of `0` means never purge, which is the setting a client on a
+records-retention obligation will want.
+
+It is a setting rather than a constant for the same reason `session_gap_minutes` is: the answer is a
+business policy, it differs from one client to the next, and it changes for reasons that have nothing to
+do with a release. Hard-coding it would make a legal or contractual decision into a deploy.
 
 ---
 
@@ -290,7 +378,16 @@ tutors ────────────────────────�
   │         └──────────────────────────── bookings
   │
   └──< tutor_availability_exceptions
+
+guardians ──< conversations ──< messages
+                   │                │
+users ─────────────┴────────────────┘
 ```
+
+`users` appears twice: once as the tutor login account, and once against the chat tables, where it names
+the admin holding a conversation (`conversations.taken_over_by_user_id`) and the admin who typed a
+particular message (`messages.author_user_id`). Both links from `users` are nullable — a conversation the
+bot is still handling has no holder, and a client or bot message has no author account.
 
 ---
 
@@ -346,10 +443,23 @@ find neither and offer both, double-booking the tutor.
 
 ## Redis — Conversation State
 
-Not part of the relational schema. Redis stores temporary per-user conversation state during an active bot session.
+Not part of the relational schema. Redis stores the live flow state of a bot session in progress — which step the bot is on and what it has collected so far.
 
 | Key | Value | TTL |
 |---|---|---|
 | `phone_number` | `{ step, collected_data }` | 30 minutes |
 
 The state is discarded automatically when the TTL expires. If a client goes idle mid-conversation, they start fresh next time they message.
+
+Redis is not the record of the conversation and never was, but the division is worth stating now that
+there is a second store. Redis answers "where is this client up to in the flow right now", holds nothing
+once the flow ends, and is safe to lose — losing it costs a client one restarted intake.
+[`conversations`](#conversations) and [`messages`](#messages) answer "what was said, by whom, when, and
+did it get delivered", are the source of truth for the admin chat screens, and are retained for
+`chat_retention_days`. Nothing is written to both.
+
+A takeover touches Redis not at all. Flow state keeps its 30-minute TTL and will usually expire during a
+handoff of any length, so when the admin releases the conversation the client resumes from a fresh state
+— the same behaviour as any other client who went idle. Freezing the TTL for the duration of a handoff
+was the alternative, and it is worse: it would restore a half-finished intake that the admin has by then
+completed by hand, and the bot would ask again for answers the client has already given.

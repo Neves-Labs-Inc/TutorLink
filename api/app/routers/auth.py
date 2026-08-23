@@ -187,7 +187,7 @@ def _shared_cookie_attributes() -> dict[str, object]:
         "httponly": True,
         "samesite": REFRESH_COOKIE_SAMESITE,
         "path": REFRESH_COOKIE_PATH,
-        "secure": not get_settings().debug,
+        "secure": get_settings().cookie_secure,
     }
 
 

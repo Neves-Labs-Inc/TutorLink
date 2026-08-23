@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str
     secret_key: str
-    debug: bool = False
+    cookie_secure: bool = True
 
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None

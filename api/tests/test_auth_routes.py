@@ -42,10 +42,10 @@ def test_login_returns_a_token_pair_and_sets_the_refresh_cookie(
     assert "Secure" not in set_cookie
 
 
-def test_login_marks_the_refresh_cookie_secure_when_debug_is_off(
+def test_login_marks_the_refresh_cookie_secure_when_cookie_secure_is_on(
     api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    production = get_settings().model_copy(update={"debug": False})
+    production = get_settings().model_copy(update={"cookie_secure": True})
     monkeypatch.setattr(auth, "get_settings", lambda: production)
     _make_user(db)
 

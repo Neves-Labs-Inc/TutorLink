@@ -71,6 +71,68 @@ Standard OAuth2 password flow. Used by the admin dashboard login screen.
 }
 ```
 
+**Rate limited** — `429 Too Many Requests`, with `Retry-After` in seconds. This is the only
+unauthenticated write surface in the system, so it is the only endpoint that is throttled (#3,
+OQ-7). Two independent sliding windows, each with its own pair of settings:
+
+| Bucket | Keyed on | Max attempts | Window |
+|---|---|---|---|
+| Per-IP | The direct socket peer | `login_rate_limit_ip_max_attempts` (20) | `login_rate_limit_ip_window_seconds` (900) |
+| Per-email | The submitted address, lowercased and trimmed | `login_rate_limit_email_max_attempts` (5) | `login_rate_limit_email_window_seconds` (900) |
+
+Wide and tight on purpose. The per-IP limit is generous enough not to lock out an office behind
+one NAT while still making a password spray across every account from one host expensive; the
+per-email limit is what makes guessing one account's password expensive from anywhere,
+including a rotating botnet. Because the email bucket keys on the *normalised* address,
+`Admin@X` and `admin@x` share one budget — the same normalisation the account lookup uses, so
+varying the casing buys an attacker nothing.
+
+**A slot is taken before the password is checked, not recorded after it.** Every request claims
+its slot in both buckets up front and gives it back only if it turns out not to have been a
+failure — a successful login returns its own slot, a refused one returns whatever it managed to
+claim. Recording the failure afterwards instead sounds equivalent and is not: the endpoint runs
+on a worker threadpool, so every request arriving during one bcrypt round would read the same
+count and be admitted, making the configured number a floor rather than a ceiling. Measured
+against a live Redis, thirty-two simultaneous attempts at a limit of five were all admitted
+under the record-afterwards form and exactly five under this one.
+
+**Only failures ultimately count**, so a shared address signing in correctly all morning is
+never throttled by its own success — in either bucket. What a successful login must *not* do is
+clear the bucket, and it does not: it removes only the one slot it took. A bucket-wide reset
+would make the counter observable shared state, and an attacker parked one attempt short of the
+limit could poll it and read a silent reset as proof that someone had just signed in — which
+identifies the address as a live, in-use account and timestamps its sessions. That is the same
+account-enumeration oracle the single 401 message and the dummy-hash round exist to close.
+
+The 429 carries one generic message for both buckets and for every address. Naming the bucket
+would tell an unauthenticated caller whether it was their account or their network that tripped,
+and a message that appeared only for real accounts would reintroduce the enumeration oracle the
+shared 401 exists to close.
+
+Counting is backed by Redis, and **an unreachable Redis fails open** — the request is allowed
+through unthrottled rather than refused. Making Redis a hard dependency of login would turn a
+Redis blip into a total authentication outage, which is worse and far likelier than the
+unthrottled state that preceded the limiter. Setting either `max_attempts` to `0` disables that
+bucket outright; both at `0` is the kill switch, and it is an integer rather than a boolean
+because `integer` is the only `value_type` the settings table has.
+
+> **The client address is the socket peer, and keeping it that way takes a server flag.** The
+> application reads `request.client` and never `X-Forwarded-For` — but uvicorn ships
+> `--proxy-headers` **on** by default, with `forwarded_allow_ips` defaulting to `127.0.0.1`, so
+> whenever the peer is loopback it overwrites the client address from that header before any
+> application code runs. An attacker then rotates the header and lands in a fresh bucket every
+> request, and the per-IP limit stops existing. `docker/api.Dockerfile` therefore starts uvicorn
+> with `--no-proxy-headers`; that flag is part of this security property, not a tuning choice.
+>
+> This matters most under the Phase 8 topology, where nginx terminates TLS on the same host: the
+> peer *is* loopback there, so the bypass would arm itself exactly when the endpoint becomes
+> public. When the reverse proxy from #2 lands, proxy-header handling must land with it —
+> re-enabled together with `forwarded_allow_ips` set to that proxy's **specific** address.
+> Without it every request appears to come from the proxy and the per-IP bucket silently becomes
+> one global bucket. `FORWARDED_ALLOW_IPS=*` is the obvious reflex for that and must never be
+> used: it trusts the header from any peer, which is worse than the collapsed bucket because it
+> looks like it is working.
+
 ### `POST /auth/refresh`
 
 Exchange a refresh token for a new access token.
@@ -193,6 +255,8 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 **The gate is per field, not per route.** Both roles reach both endpoints; what differs is which fields come back and which may be written. An admin never receives a developer-only field, and a `PATCH` from an admin token naming one is refused rather than silently ignored. Hiding a field in the dashboard is presentation only.
 
 Every setting that exists today is admin-visible. The mechanism is built ahead of its first developer-only occupant, and `is_developer_only` defaults to TRUE so a setting added without thought hides rather than leaks.
+
+That includes the four login rate limits — `login_rate_limit_ip_max_attempts` (20), `login_rate_limit_ip_window_seconds` (900), `login_rate_limit_email_max_attempts` (5), `login_rate_limit_email_window_seconds` (900). They are admin-tunable rather than constants because the right numbers depend on how a client's staff actually sign in — a shared office address behind one NAT looks like an attacker to a limit tuned for a home connection — and finding that out during an incident must not require a deploy. See [`POST /auth/token`](#post-authtoken) for what they do and what `0` means.
 
 > ⚠️ **Tutors are no longer read-only.** `POST /api/tutors/{id}/exceptions` lets a tutor request time off, which an admin then approves or rejects. It is the only tutor write path, and a pending request does not block bookings — only an approved one does. Any test asserting the blanket read-only form needs to learn this exception.
 

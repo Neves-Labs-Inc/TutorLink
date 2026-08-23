@@ -346,6 +346,10 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 | min_booking_lead_hours | 0 | no |
 | cancellation_cutoff_hours | 24 | no |
 | chat_retention_days | 365 | no |
+| login_rate_limit_ip_max_attempts | 20 | no |
+| login_rate_limit_ip_window_seconds | 900 | no |
+| login_rate_limit_email_max_attempts | 5 | no |
+| login_rate_limit_email_window_seconds | 900 | no |
 
 `chat_retention_days` is how long a message is kept. A nightly job deletes `messages` older than the
 window, and a `conversations` row left with no surviving messages goes with them rather than lingering as
@@ -355,6 +359,16 @@ records-retention obligation will want.
 It is a setting rather than a constant for the same reason `session_gap_minutes` is: the answer is a
 business policy, it differs from one client to the next, and it changes for reasons that have nothing to
 do with a release. Hard-coding it would make a legal or contractual decision into a deploy.
+
+The four `login_rate_limit_*` rows are the thresholds for the brute-force limiter on `POST /auth/token`
+(#3, OQ-7): two independent sliding windows, one keyed on the caller's address and one on the submitted
+email, each with its own maximum and window. They are rows for the same reason — the right numbers depend
+on how a client's staff actually sign in, a shared office address behind one NAT looks like an attacker to
+a limit tuned for a home connection, and discovering that during an incident must not require a deploy. A
+`max_attempts` of `0` disables that bucket; both at `0` turns the limiter off. That is an integer rather
+than a boolean because `integer` is the only `value_type` in use, and adding one to express "off" would be
+a schema change to say what `0` already says. `POST /auth/token` is the only reader of these, and the only
+reader of `system_settings` at all today — see `docs/api-design.md`.
 
 ---
 

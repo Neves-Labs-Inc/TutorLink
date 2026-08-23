@@ -161,7 +161,7 @@ Set the resulting URL as your Twilio WhatsApp webhook: `https://<your-ngrok-url>
 DATABASE_URL=postgresql+psycopg://tutorlink:tutorlink@postgres:5432/tutorlink
 REDIS_URL=redis://redis:6379/0
 SECRET_KEY=change-me-generate-with-openssl-rand-hex-32
-DEBUG=true
+COOKIE_SECURE=true
 
 # Twilio (leave blank until Phase 7 — no webhook exists yet)
 TWILIO_ACCOUNT_SID=
@@ -178,6 +178,8 @@ POSTGRES_DB=tutorlink
 VITE_API_BASE_URL=
 VITE_API_PROXY_TARGET=http://api:8000
 ```
+
+`COOKIE_SECURE` gates the `Secure` attribute on the refresh cookie and defaults to `true` when unset. Keep it `true` for any deployment reachable over the network — the refresh token is the long-lived half of the auth pair, and without `Secure` it travels over plain HTTP. Set it to `false` only for local plain-HTTP development, where a browser would refuse to store the cookie at all.
 
 `TWILIO_STATUS_CALLBACK_URL` must be an absolute public URL — Twilio posts delivery statuses to it and cannot resolve a relative path or the service's own hostname.
 

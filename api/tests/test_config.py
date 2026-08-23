@@ -37,6 +37,22 @@ def test_settings_accepts_a_secret_key_of_at_least_thirty_two_bytes(secret_key: 
     assert Settings(secret_key=secret_key).secret_key == secret_key
 
 
+def test_settings_defaults_cookie_secure_to_true_when_env_var_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COOKIE_SECURE", raising=False)
+
+    assert Settings(secret_key="a" * MINIMUM_SECRET_KEY_BYTES).cookie_secure is True
+
+
+def test_settings_honours_an_explicit_false_cookie_secure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+
+    assert Settings(secret_key="a" * MINIMUM_SECRET_KEY_BYTES).cookie_secure is False
+
+
 def test_settings_error_never_repeats_the_rejected_secret_key() -> None:
     secret_key = "sekrit"
 

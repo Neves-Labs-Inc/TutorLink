@@ -14,6 +14,7 @@ from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.routers import auth
 from app.security import REFRESH_TOKEN_TYPE, decode_token, hash_password
+from tests.conftest import FakeRedis
 
 EMAIL = "admin@example.com"
 DORMANT_EMAIL = "dormant@example.com"
@@ -237,7 +238,10 @@ def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session],
 @pytest.fixture
 def session_per_request_api(
     committed_sessions: sessionmaker[Session],
+    redis_double: FakeRedis,
 ) -> Generator[TestClient, None, None]:
+    # Takes `redis_double` for its side effect: it is what puts the `get_redis` override on the
+    # app, and without it these two tests would log in against whatever the live Redis holds.
     from app.db import get_db
     from app.main import app
 

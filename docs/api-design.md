@@ -260,6 +260,59 @@ That includes the four login rate limits — `login_rate_limit_ip_max_attempts` 
 
 > ⚠️ **Tutors are no longer read-only.** `POST /api/tutors/{id}/exceptions` lets a tutor request time off, which an admin then approves or rejects. It is the only tutor write path, and a pending request does not block bookings — only an approved one does. Any test asserting the blanket read-only form needs to learn this exception.
 
+### `GET /api/settings`
+
+Returns every setting the caller's role may see. Takes no paging parameters — `page_size` always equals `total`, since a settings form must render every field it receives.
+
+**Response**
+```json
+{
+  "items": [
+    {
+      "key": "session_length_minutes",
+      "value": "60",
+      "value_type": "integer",
+      "is_developer_only": false
+    },
+    {
+      "key": "some_developer_only_setting",
+      "value": "1",
+      "value_type": "integer",
+      "is_developer_only": true
+    }
+  ],
+  "total": 2,
+  "page": 1,
+  "page_size": 2
+}
+```
+
+An admin never receives the second item — a developer-only row is absent from `items` entirely, not present with a redacted `value`.
+
+### `PATCH /api/settings`
+
+Update one or more settings by key.
+
+**Request**
+```json
+{"updates": [{"key": "session_length_minutes", "value": "90"}]}
+```
+
+`value` is always a string, mirroring the underlying column. The request is all-or-nothing: every update is validated before any is applied, and a duplicate key anywhere in `updates` is refused rather than letting the last occurrence silently win. The response is the same envelope `GET /api/settings` would return for that caller, reflecting the new state.
+
+`PATCH` writes `value` only. It never creates, deletes, or reclassifies a row — migrations remain the only thing that does that, which is what makes `is_developer_only` trustworthy.
+
+`value` is validated against the row's `value_type` before it is applied. `0` remains a valid value for a rate-limit `max_attempts` setting because it is the documented kill switch — see the rate-limit paragraph above.
+
+| Status | When |
+|---|---|
+| 400 | Empty `updates`, a duplicate key, a non-string `value`, or a value that does not parse for the setting's `value_type` |
+| 401 | No or invalid token |
+| 403 | A tutor on either endpoint; an admin naming a developer-only key in `PATCH` |
+| 404 | A key with no settings row, for any role |
+
+**The asymmetry above is the section's whole point: a read filters silently, a write refuses loudly.** `GET` asks "what may I see" and a response listing only what the caller may see is a complete, honest answer. `PATCH` asks "change this specific thing", and silently not changing it would be a lie — so it is refused instead.
+
 ---
 
 ## Users

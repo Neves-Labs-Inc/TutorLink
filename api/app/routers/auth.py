@@ -132,26 +132,27 @@ def logout(
 
 
 def _client_ip(request: Request) -> str | None:
-    """The socket peer, and deliberately never `X-Forwarded-For` — but only half of that
-    guarantee lives here.
+    """The ASGI peer, `request.client`, and nothing else — this function never reads
+    `X-Forwarded-For` itself.
 
-    This function reads `request.client` and nothing else. What `request.client` *contains* is
-    the server's decision, not this module's: uvicorn ships `proxy_headers=True` with
-    `forwarded_allow_ips` defaulting to `127.0.0.1`, so whenever the real peer is loopback it
-    overwrites `scope["client"]` from `X-Forwarded-For` before any application code runs. That
-    is a header the client wrote — an attacker rotates it per request, lands in a fresh bucket
-    every time, and the per-IP limit is worth nothing. `docker/api.Dockerfile` therefore starts
-    uvicorn with `--no-proxy-headers`, and that flag is part of this security property rather
-    than a deployment detail. Removing it silently re-arms the spoof.
+    What `request.client` *contains* is decided before this function runs, and no longer split
+    across a Dockerfile flag. `create_app()` mounts `ProxyHeadersMiddleware` whenever
+    `TRUSTED_PROXIES` names one or more addresses or CIDR blocks; when a request arrives from
+    one of those addresses, the middleware replaces `scope["client"]` from `X-Forwarded-For`
+    before this function ever sees it. From any other peer the header is ignored.
 
-    **When the reverse proxy from #2 lands, XFF handling must land with it.** Behind a proxy
-    every request arrives from the proxy's address, so this function would collapse the whole
-    internet into one bucket — the limit does not fail open or closed, it silently locks out
-    every user at once the first time an attacker spends the shared budget. Re-enabling
-    `--proxy-headers` at that point requires `forwarded_allow_ips` set to the proxy's specific
-    address. `FORWARDED_ALLOW_IPS=*` is the obvious reflex and must never be used: it trusts
-    the header from any peer and restores full spoofability, which is worse than the collapsed
-    bucket because it looks like it works.
+    With `TRUSTED_PROXIES` unset the limiter buckets by socket peer, which is correct when the
+    API is reached directly and collapses every user into one bucket behind a proxy — that is
+    the outage this mechanism exists to avoid. Widening the trusted set to `*` would let an
+    attacker rotate the header per request and make the per-IP limit stop existing, which is
+    worse than the collapsed bucket because it looks like it is working; the setting refuses `*`
+    at startup, so that failure mode is no longer reachable by configuration (`app/config.py`).
+
+    A forged header still loses through a correctly-configured proxy: Caddy appends the address
+    it actually received the request from, and uvicorn scans the forwarded list from the right,
+    taking the first untrusted entry — a value the client wrote survives only as a prefix that
+    gets skipped. That holds only while the trusted set contains the proxy and nothing else,
+    which is the other reason not to widen it.
 
     `request.client` is None when the ASGI server reports no peer address; the caller skips the
     IP bucket rather than inventing a key for it.

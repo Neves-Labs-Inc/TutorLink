@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Settings,
   UserCog,
   Users,
   X,
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { to: '/bookings', label: 'Bookings', icon: CalendarDays },
   { to: '/subjects', label: 'Subjects', icon: BookOpen },
   { to: '/users', label: 'Users', icon: UserCog },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ] as const
 
 const linkClasses = ({ isActive }: { isActive: boolean }) =>

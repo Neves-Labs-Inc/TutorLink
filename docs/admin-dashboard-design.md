@@ -2,10 +2,11 @@
 
 ## Overview
 
-The TutorLink dashboard is a Vite + React web application. It serves two types of users with different views and access levels:
+The TutorLink dashboard is a Vite + React web application. It serves three types of users with different views and access levels:
 
 - **Admin** — full control over tutors, clients, bookings, availability, and user accounts
 - **Tutor** — read-only view of their own schedule, sessions, and time off
+- **Developer** — a superset of admin: the same views and the same access, plus system-level fields an admin does not see
 
 The dashboard is fully responsive, designed to work on desktop browsers and iPhone.
 
@@ -32,12 +33,12 @@ The dashboard is fully responsive, designed to work on desktop browsers and iPho
 - Email + password form
 - Calls `POST /auth/token`
 - On success: stores access token in memory, refresh token in HttpOnly cookie
-- Redirects to `/dashboard` for admins or `/schedule` for tutors
+- Redirects to `/dashboard` for admins and developers, or `/schedule` for tutors
 - Role is read from the decoded JWT and stored in app state
 
 ### Route Guards
 
-All routes are protected. Unauthenticated users are redirected to `/login`. Tutor users attempting to access admin-only routes are redirected to their own schedule view.
+All routes are protected. Unauthenticated users are redirected to `/login`. Tutor users attempting to access admin-only routes are redirected to their own schedule view. Admin routes admit admin or above — asked that way, not by naming roles — so a developer is admitted alongside an admin.
 
 ---
 
@@ -55,6 +56,7 @@ Chats
 Bookings
 Subjects
 Users
+Settings
 ─────────────
 Logout
 ```
@@ -220,6 +222,26 @@ Manage login accounts for admin and tutor users.
 
 ---
 
+### Settings (`/settings`)
+
+System-wide configuration, reachable by admin and developer alike — the same `ADMIN_ROLES` gate as `/dashboard`, not an admin-only check.
+
+**List view:**
+- Renders exactly the rows `GET /api/settings` returns, in the order it returns them. The page keeps no list of its own about which settings exist — a setting added by a migration appears without a dashboard change
+- Each row's control comes from the server's `value_type`; a `value_type` the dashboard has no editor for renders read-only rather than being guessed at or hidden
+- Which fields the viewer may edit is the server's answer, not the page's: every field the page received is editable by the viewer who received it, and a developer-only field is simply absent from an admin's response — not blank, not redacted, absent
+- A row flagged `is_developer_only` carries a "Developer only" badge beside its label. An admin never receives such a row, so the badge is something only a developer can see
+- **Today no setting is developer-only, so the page renders identically for both roles.** This is expected, not a gap — the mechanism is built ahead of any field that needs it
+
+**Editing:**
+- One "Save changes" button saves the whole form as a single batch; only the fields that changed are sent, in one all-or-nothing request
+- A "Discard changes" button restores the server values
+- A refused save shows the API's own message and keeps the viewer's edits
+
+**The nine settings today**, named here for a reader's reference — this list is documentation, not a client-side key list the page itself holds: `session_length_minutes`, `session_gap_minutes`, `booking_lookahead_days`, `min_booking_lead_hours`, `cancellation_cutoff_hours`, and the four login rate limits (`login_rate_limit_ip_max_attempts`, `login_rate_limit_ip_window_seconds`, `login_rate_limit_email_max_attempts`, `login_rate_limit_email_window_seconds`). A `max_attempts` of `0` disables that rate-limit bucket. See `docs/api-design.md`'s Settings section for what each one does.
+
+---
+
 ## Tutor Views
 
 ---
@@ -298,7 +320,8 @@ dashboard/src/
 │   │   ├── ChatThread.jsx
 │   │   ├── Bookings.jsx
 │   │   ├── Subjects.jsx
-│   │   └── Users.jsx
+│   │   ├── Users.jsx
+│   │   └── Settings.jsx
 │   └── tutor/
 │       ├── Schedule.jsx
 │       ├── Sessions.jsx
@@ -335,3 +358,5 @@ dashboard/src/
 │   └── socket.js       # WebSocket connection, auth handshake, reconnect backoff
 └── App.jsx
 ```
+
+This tree is illustrative and predates the TypeScript conversion: the shipped files are `.tsx`, and the settings page lives at `pages/admin/Settings.tsx` with its server state in `lib/queries/settings.ts` and its pure logic in `lib/settings.ts`.

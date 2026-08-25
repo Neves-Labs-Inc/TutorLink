@@ -9,6 +9,8 @@ The TutorLink API is built with FastAPI and serves two consumers:
 
 All endpoints are prefixed with `/api/` except for auth and the Twilio webhook.
 
+This document is a contract specification: endpoints are specified before they are built, and several sections below describe endpoints that do not exist yet — where the two disagree, the code is the authority for what ships today and this document is the authority for what it must do.
+
 ---
 
 ## List responses — the page envelope
@@ -36,6 +38,37 @@ All endpoints are prefixed with `/api/` except for auth and the Twilio webhook.
 It also earns something on the capped endpoints. `/api/slots/available` returns at most 5 slots, so `total` is what lets the bot say *"showing 5 of 8"* rather than implying 5 is all there is.
 
 `total` counts matches, not returned rows. On a capped or paged response the two differ, and that difference is the useful part.
+
+---
+
+## Soft deletes and the `is_active` filter
+
+Nothing an admin manages is deleted. `DELETE /api/{resource}/{id}` sets `is_active = false` and the row stays in the database.
+
+**Every list endpoint over a soft-deleted resource returns active rows by default and deactivated rows only when asked. Uniform, with no per-endpoint variation.**
+
+| `?is_active` | Returns |
+|---|---|
+| omitted | active rows only |
+| `true` | active rows only |
+| `false` | deactivated rows only |
+
+**The parameter is a boolean and there is no "both" state.** A caller cannot retrieve active and deactivated rows in one response; a full audit list is two requests and the sum of two `total`s. That is a real property of the contract, not an omission.
+
+A value that is not a boolean is **400**, with the usual `{"detail": "<string>"}` body. A schema or type validation failure — a malformed body, a non-boolean query parameter — is always 400 and never 422, because the framework's validation error is converted; the 422 the status table lists is a different thing, a semantic refusal of an otherwise well-formed request rather than a validation failure — see [Error Responses](#error-responses).
+
+`total` counts matches of the **filtered** query, before paging. A default request reporting `"total": 42` is reporting 42 *active* rows — a dashboard rendering that number is showing a count of active clients, not of clients. This follows from the envelope section's own `total` rule above; it is worth stating separately because it is the sentence a dashboard bug comes from.
+
+**The four collection endpoints this governs, named:** `GET /api/users`, `GET /api/tutors`, `GET /api/subjects`, `GET /api/clients` — every collection whose resource carries an `is_active` column. It is stated once here rather than on each because a rule written four times reads four different ways, and a dashboard table cannot explain to a user why one screen hides deactivated rows and another does not.
+
+**Fetching one row by id ignores the flag.** `GET /api/{resource}/{id}` takes no `?is_active` and returns the row whatever its flag, and where the response carries `is_active` it reports the real state (not every by-id response documents the field today, so a caller that must distinguish a deactivated row needs it added to that endpoint's schema first). Three reasons: an id is an address and not a query, so there is no set to filter; the admin surface that deactivated a row is the surface that must be able to open it again in order to reactivate it; and a 404 for a deactivated row would make a soft delete indistinguishable from a hard one, which is the entire distinction the flag exists to draw. This is not the 403-not-404 rule from [Role-Based Access Control](#role-based-access-control-rbac) wearing a different hat — that rule is about *denial*, and a deactivated row is a state the response reports rather than something withheld.
+
+**Two resources carry `is_active` and are deliberately outside this rule:**
+
+- `tutor_availability` — `GET /api/tutors/{id}/availability` returns the tutor's full weekly schedule, inactive slots included, because this endpoint's purpose is to feed an availability editor, and an editor that hid disabled slots by default would leave them unreachable for re-enabling. Unlike the four collection endpoints above, this one deliberately does not filter. `PATCH /api/availability/{id}` toggles the flag.
+- `homes` — homes are returned nested inside `GET /api/clients/{id}` and have no collection endpoint of their own. A nested list inside a single-resource response is not a list endpoint and this rule does not reach it.
+
+**Some resources carry no flag at all, and that is also deliberate: junctions, plus these entities.** Junction tables are hard deleted and carry no `is_active`: `child_guardians`, `child_homes`, `guardian_homes`, `tutor_subjects`. A junction is a link rather than an entity, so unlinking a guardian after a custody change is a `DELETE` that takes effect immediately. `children` carries no flag either. Neither does `tutor_availability_exceptions`: `DELETE /api/exceptions/{id}` really erases the row, because a time-off request that was withdrawn or refused has no state worth keeping. Do not add one to any of them to make the rule look uniform — the rule is about entities an admin retires, and a link that still exists is a claim that is still true.
 
 ---
 
@@ -340,7 +373,7 @@ Admin only. Used to create and manage admin and tutor login accounts.
 
 ### `GET /api/users`
 
-Returns all user accounts.
+Returns user accounts, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`.
 
 **Response**
 ```json
@@ -493,7 +526,7 @@ DELETE /api/subjects/{id}
 
 ### `GET /api/subjects`
 
-Returns all active subjects.
+Returns subjects, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`.
 
 **Response**
 ```json
@@ -546,7 +579,11 @@ GET    /api/clients/{id}/bookings
 
 ### `GET /api/clients`
 
-Returns all clients. Supports optional query params: `?is_active=true`
+Returns clients, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports `?phone_number=`.
+
+`?phone_number=` is how the bot resolves a returning client before intake. It is a **filter, not an address**: the response is the ordinary page envelope holding zero or one item — never a bare object, and never a 404. `total` is `0` when no client holds that number and `1` when one does, never more, because `guardians.phone_number` is UNIQUE (see [`guardians`](erd.md#guardians)). No match is an empty set rather than a missing resource: the collection exists either way, and "look up, then create when empty" is one branch on `total` rather than a caught error. [List responses — the page envelope](#list-responses--the-page-envelope) admits no exception to the envelope, and a lookup is not one.
+
+The two parameters compose and `?is_active=`'s default is **not** special-cased for the lookup: `?phone_number=X` on its own finds an **active** client. A deactivated client is found with `?phone_number=X&is_active=false`. This matters on the intake path — see `POST /api/clients` below — because the lookup coming back empty does **not** guarantee the create will succeed: the UNIQUE constraint spans deactivated rows too.
 
 **Response**
 ```json
@@ -601,6 +638,14 @@ A client is a **guardian**. Address and access code belong to a `home`, not to t
 
 Create a new client. Called internally by the bot during the intake flow.
 
+**Never an upsert.** A `POST` naming a `phone_number` that any client already holds — active or deactivated — is refused with **409** and the `detail` string `A client with that phone number already exists`. It does not update the existing client. Upserting here would silently overwrite a real guardian's name and homes with whatever was just typed into WhatsApp: data loss reported as success, which is the one failure this endpoint cannot have.
+
+Uniqueness is held by the `UNIQUE (phone_number)` constraint on `guardians`, not by the check that produces the message. The check is what turns a collision into a 409 with something readable in it; the constraint is what makes the collision impossible under two concurrent requests.
+
+On a 409, the bot does not retry the `POST`; the same request fails the same way for as long as the other row exists. It re-runs the lookup — `GET /api/clients?phone_number=X`, then with `&is_active=false`, because a deactivated client is invisible to the first — and continues with the client it finds, reactivating it with `PATCH /api/clients/{id}` if it was deactivated. It never creates a second client for that number and never overwrites the existing one's name or homes.
+
+A 409 here is a bug or a lost race, not a normal path: the bot resolves returning clients by lookup before intake, so reaching this endpoint at all means the lookup found nobody. A 409 anyway means the lookup's answer went stale between the two calls, the lookup was skipped, or the client was deactivated and the lookup was never going to see them.
+
 **Request**
 ```json
 {
@@ -616,9 +661,11 @@ Create a new client. Called internally by the bot during the intake flow.
 
 ### `PATCH /api/clients/{id}`
 
-Update client info (name, active status). Address and access code belong to a home and are edited through the home, not here.
+Update client info (name, active status, phone number). Address and access code belong to a home and are edited through the home, not here.
 
 `phone_number` may be updated — a guardian changes handset, or the number was mistyped at intake. The edit moves `guardians.phone_number` only. It does **not** move the client's existing conversation thread, which stays on the number it was actually held with; the next inbound message from the new number opens a second thread carrying the same client. See [`conversations`](../docs/erd.md#conversations).
+
+A `phone_number` that **another** client already holds — active or deactivated — is refused with **409** and the same `detail` string `A client with that phone number already exists` that `POST /api/clients` returns: the duplicate-phone case has two entry points and one rule, so it has one message. **"Another client" excludes this one** — a `PATCH` carrying the client's own current number is a no-op on that field and returns 200, never a conflict with itself, including a `PATCH` that changes only the name and echoes the existing number back.
 
 ### `GET /api/clients/{id}/bookings`
 
@@ -670,7 +717,7 @@ DELETE /api/tutors/{id}/subjects/{subject_id}
 
 ### `GET /api/tutors`
 
-Returns all active tutors. Supports filtering: `?subject_id=uuid&grade_level=7`.
+Returns tutors, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports filtering: `?subject_id=uuid&grade_level=7`.
 
 `grade_level` is a **ceiling comparison, not a membership test**: it returns every tutor whose `max_grade_level` for the subject is at or above the requested grade. With no `subject_id`, it returns tutors with at least one qualifying subject assignment.
 
@@ -1435,10 +1482,10 @@ All endpoints return consistent error shapes.
 
 | Status | Meaning |
 |---|---|
-| 400 | Bad request — validation error |
+| 400 | Bad request — a schema or type validation failure: a malformed body, a missing required field, a non-boolean where a boolean belongs. Every framework validation error arrives here, converted, so a client never sees a raw 422 from validation |
 | 401 | Missing or invalid JWT |
 | 403 | Forbidden — invalid Twilio signature, or a role reaching an endpoint or another tutor's data it is not entitled to |
 | 404 | Resource not found |
-| 409 | Conflict — e.g. slot already booked |
-| 422 | Unprocessable — e.g. tutor's ceiling for the subject is below the child's grade |
+| 409 | Conflict — e.g. slot already booked, or a client phone number that already exists |
+| 422 | Unprocessable — a **semantic** refusal of a well-formed request, always raised deliberately and never produced by validation: e.g. a tutor's ceiling for the subject is below the child's grade. The distinction from 400 is whether the request was understood: 400 could not be read, 422 was read and refused |
 | 500 | Internal server error |

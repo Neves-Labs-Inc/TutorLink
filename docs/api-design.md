@@ -1482,10 +1482,10 @@ All endpoints return consistent error shapes.
 
 | Status | Meaning |
 |---|---|
-| 400 | Bad request — validation error |
+| 400 | Bad request — a schema or type validation failure: a malformed body, a missing required field, a non-boolean where a boolean belongs. Every framework validation error arrives here, converted, so a client never sees a raw 422 from validation |
 | 401 | Missing or invalid JWT |
 | 403 | Forbidden — invalid Twilio signature, or a role reaching an endpoint or another tutor's data it is not entitled to |
 | 404 | Resource not found |
 | 409 | Conflict — e.g. slot already booked, or a client phone number that already exists |
-| 422 | Unprocessable — e.g. tutor's ceiling for the subject is below the child's grade |
+| 422 | Unprocessable — a **semantic** refusal of a well-formed request, always raised deliberately and never produced by validation: e.g. a tutor's ceiling for the subject is below the child's grade. The distinction from 400 is whether the request was understood: 400 could not be read, 422 was read and refused |
 | 500 | Internal server error |

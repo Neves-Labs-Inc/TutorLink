@@ -82,6 +82,13 @@ Overview page with key metrics at a glance.
 - Total active clients
 - Recent bookings (last 5)
 
+**Data:**
+- `GET /api/stats/overview?date=<today>` supplies the four counts and the recent-bookings feed in one request. `date` is required — the API holds no clock.
+- Today's session **list** is `GET /api/bookings?status=pending&status=confirmed&from=<today>&to=<today>` — the same status scoping as `today_session_count`, so the number and the rows beneath it agree. The stats endpoint carries the count only; an aggregate endpoint returns aggregates.
+- "Upcoming this week" is the rest of the ISO week — tomorrow through Sunday, so it reads `0` on a Sunday. Label the widget with the `week_end` the response returns rather than computing a week boundary in the client.
+- `<today>` is the **browser's local date**; re-fetch on date rollover so a tab left open past midnight does not keep showing yesterday. The API bounds `date` neither way and will not catch a stale one.
+- Bigger hazard: `scheduled_date` is a bare **business-local** date and TutorLink configures no business timezone, so an admin whose machine runs a different zone from the sessions sends the wrong calendar day near either edge of the day and the widgets show another day's counts with no error. Until a business timezone exists there is nothing but the browser to resolve `<today>` against; show the date the page queried rather than only the word "today".
+
 ---
 
 ### Tutors (`/tutors`)
@@ -200,6 +207,9 @@ Manage the canonical subject list.
 **List view:**
 - Table: subject name, description, number of tutors teaching it, active status
 - "Add Subject" button
+
+**Data:**
+- "number of tutors teaching it" is the `tutor_count` field on each `GET /api/subjects` item — active tutors only, one request, no second call per row.
 
 **Forms:**
 - Add/Edit Subject: name, description, active toggle

@@ -289,6 +289,7 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `POST/PATCH/DELETE /api/users` | ✓ | ✓ (not `developer`) | ✗ |
 | `GET /api/settings` | All fields | Admin-visible fields only | ✗ |
 | `PATCH /api/settings` | All fields | Admin-visible fields only | ✗ |
+| `GET /api/stats/overview` | ✓ | ✓ | ✗ |
 
 > A `pending` exception is visible to both the tutor and admins but does not block bookings — only an `approved` one subtracts from availability. See [Availability](#availability) and `docs/erd.md`.
 
@@ -536,7 +537,8 @@ Returns subjects, active by default. See [Soft deletes and the `is_active` filte
       "id": "uuid",
       "name": "Math",
       "description": "Mathematics tutoring",
-      "is_active": true
+      "is_active": true,
+      "tutor_count": 3
     }
   ],
   "total": 42,
@@ -544,6 +546,18 @@ Returns subjects, active by default. See [Soft deletes and the `is_active` filte
   "page_size": 20
 }
 ```
+
+`tutor_count` is the number of **active** tutors assigned to the subject: `tutors` rows with `is_active = true`, joined to the subject through `tutor_subjects`. **The filter is on `tutors.is_active` and on nothing else.** `tutor_subjects` is a junction, carries no `is_active` and is hard deleted — [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) already names it as one. An implementation looking for a flag on the junction is looking for a column that does not exist.
+
+**`max_grade_level` is ignored.** A tutor who covers the subject only to grade 3 still counts. The ceiling is a per-assignment bound, used by `GET /api/tutors?grade_level=` and by rule 5 of [`POST /api/bookings`](#post-apibookings); `tutor_count` answers a roster question — how many tutors teach this subject at all — and applying a grade filter here would give a subjects table a number that depends on a grade nobody named.
+
+**A subject with no tutors reports `0`. The field is always present and is never omitted.** A response schema that varies by data forces every client to model the field as optional and then guess what its absence means. The field appears on `GET /api/subjects` items because those are the only subject bodies this contract documents; **if `POST`, `PATCH` or `DELETE /api/subjects` is ever given a response body it carries `tutor_count` on these same terms** — one subject shape across all four routes rather than a schema that varies by endpoint, and on `DELETE` that is the count as it stands after deactivation, which is the same number, since the subject's own `is_active` does not enter it.
+
+**The subject's own `is_active` does not affect the count.** A deactivated subject retrieved with `?is_active=false` reports its real active-tutor count, which is the number an admin needs before reactivating it or before reassigning its tutors.
+
+**`total` is unchanged: it counts subjects, not tutors.** A `LEFT JOIN` plus `COUNT` is exactly where a `total` accidentally becomes a count of join rows, and [List responses — the page envelope](#list-responses--the-page-envelope) already fixes what `total` means.
+
+**Every role that may read `GET /api/subjects` sees `tutor_count`, tutors included.** Stated rather than left to be noticed: it is roster-size information carrying no name and no identity, the response schema does not vary by role, and hiding the column in the dashboard would be presentation only.
 
 ### `POST /api/subjects`
 
@@ -669,7 +683,7 @@ A `phone_number` that **another** client already holds — active or deactivated
 
 ### `GET /api/clients/{id}/bookings`
 
-Returns all bookings for a client across all their children, in the standard page envelope. Supports filtering: `?status=confirmed&from=2026-08-01`
+Returns all bookings for a client across all their children, in the standard page envelope. Supports filtering: `?status=confirmed&from=2026-08-01`. Every filter [`GET /api/bookings`](#get-apibookings) defines — `?status=` including its repeated form, `?tutor_id=`, and `?from=`/`?to=` including the empty page for an inverted range — carries the same meaning here, applied within this client's bookings.
 
 ---
 
@@ -1055,6 +1069,10 @@ PATCH  /api/bookings/{id}
 
 Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&from=2026-08-01&to=2026-08-31`
 
+**`?status=` may be repeated**, and repeated values are ORed: `?status=pending&status=confirmed` returns every booking in either status. A single `?status=confirmed` is the one-element case and means what it has always meant, and omitting `status` still returns every status. Repetition rather than a comma-separated list, because every filter in this contract carries one value per key: a comma inside a value slot would need an escaping rule that then has to be documented for every parameter, and a repeated key needs none. This is the first multi-value parameter in this contract, and the form is chosen here rather than improvised later.
+
+**`from` and `to` are inclusive bounds on `scheduled_date`** — the date the session happens, not the date the booking was created. `?from=2026-08-10&to=2026-08-10` is exactly the sessions scheduled on 10 August. Either bound may be given without the other. **An inverted range — `from` later than `to` — is not an error: it selects nothing, so the response is the ordinary page envelope with `items: []` and `total: 0`.** It is neither refused nor special-cased. A caller that computes its window arithmetically can hand over whatever that arithmetic produced, including a window that collapsed to nothing, and read the answer off `total`; a 400 here would move that check into every caller and make `total` unavailable for exactly the case where `0` is the right answer.
+
 **Response**
 ```json
 {
@@ -1196,6 +1214,105 @@ Update booking status. Used for cancellations, completions, and rescheduling.
 ```
 
 For rescheduling, cancel the existing booking and create a new one via `POST /api/bookings`.
+
+---
+
+## Dashboard aggregates
+
+```
+GET    /api/stats/overview
+```
+
+### `GET /api/stats/overview`
+
+The admin dashboard's overview page in one request: five widgets — today's sessions, the rest of this week, active tutors, active clients, and the five most recently created bookings. It is purpose-built rather than composed from five list calls, so every count is computed in SQL rather than assembled client-side, and the page renders from one round trip.
+
+**Authorization is `admin` or above.** A `tutor` receives **403** — never an empty payload and never a tutor-scoped variant. See [Role-Based Access Control](#role-based-access-control-rbac). These are whole-system metrics, and a role that may see only its own bookings has no correct value for any of them; an own-scoped variant would be a different endpoint answering a different question, and nothing has asked for one.
+
+**The endpoint holds no clock.** `date` is a **required** query parameter and every window in the response is computed relative to it. That makes the response a pure function of the date and the data: deterministic, identical for every caller naming the same day, and assertable by a test without freezing anything. It is also the honest division of labour, because the caller already knows which day it means and the API does not. Making the caller name the date is the same shape [`GET /api/slots/available`](#get-apislotsavailable) already uses, where `date` is likewise required and the bot supplies it.
+
+**This endpoint needs no clock because it has no rule that requires one.** The endpoints that do hold one hold it because their rules are about the present instant — a slot is offered only if it starts after `now + min_booking_lead_hours`, and a session cannot be booked into the past. Neither rule can be written without knowing what time it is. This endpoint states no such rule: it reads, and the window it reads is named by its caller.
+
+That distinction matters because TutorLink configures no business timezone anywhere — not in code, not in config, not in `system_settings` — so those `now` comparisons resolve against whatever zone the API container happens to run in. **That gap is real and this section does not close it.** This endpoint sidesteps the question rather than answering it; the endpoints that must answer it still have to.
+
+A missing or malformed `date` is **400**, per [Error Responses](#error-responses).
+
+Unlike `GET /api/slots/available`, **`date` here carries no past or future bound**. That endpoint bounds its `date` for the same reason it consults a clock at all: it is deciding what can be booked, and a slot in the past or beyond `booking_lookahead_days` cannot be. This endpoint decides nothing and bounds nothing. A reader who finds the same parameter name governed differently two sections apart is looking at a deliberate difference rather than a mistake.
+
+**Query Parameters**
+
+| Param | Required | Description |
+|---|---|---|
+| date | Yes | The reference date (YYYY-MM-DD). Every window below is relative to it |
+
+**Response** — a single JSON object, **not** the page envelope, because this endpoint does not return a list:
+
+```json
+{
+  "date": "2026-08-25",
+  "week_end": "2026-08-30",
+  "today_session_count": 12,
+  "upcoming_week_session_count": 35,
+  "active_tutor_count": 8,
+  "active_client_count": 63,
+  "recent_bookings": [
+    {
+      "id": "uuid",
+      "child": { "id": "uuid", "name": "Tommy Doe" },
+      "tutor": { "id": "uuid", "name": "Sarah Miller" },
+      "subject": { "id": "uuid", "name": "Math" },
+      "scheduled_date": "2026-08-27",
+      "start_time": "09:00",
+      "end_time": "10:00",
+      "status": "confirmed",
+      "notes": null
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `date` | Echoes the `date` parameter |
+| `week_end` | The Sunday of the ISO week containing `date` |
+| `today_session_count` | Live sessions on `date` |
+| `upcoming_week_session_count` | Live sessions from the day after `date` through `week_end`, inclusive |
+| `active_tutor_count` | `tutors` rows with `is_active = true` |
+| `active_client_count` | `guardians` rows with `is_active = true` |
+| `recent_bookings` | The five most recently created bookings, newest first |
+
+**What counts as a session.** Both session counts count bookings whose `status` is **`pending` or `confirmed`** — the same set rule 2 of [`POST /api/bookings`](#post-apibookings) uses, and the same set the `excl_bookings_live_overlap` exclusion constraint is scoped by. `cancelled` and `completed` are excluded. This is deliberately the *only* definition of a booking that counts anywhere in TutorLink: a second one here — "everything not cancelled", say — would be a fifth place with a fourth opinion, which is the failure mode a purpose-built aggregate exists to avoid.
+
+**`today_session_count` therefore falls as the day is worked through**, because marking a session `completed` removes it from the live set. That is the intended reading of the widget: sessions still live today, not sessions scheduled today.
+
+**The windows.** Both are inclusive date ranges over `scheduled_date`, which is a bare date — no time-of-day comparison enters either count, and neither changes during the day except through a status change.
+
+- `today_session_count` — `scheduled_date = date`. The whole calendar date, not the next 24 hours; a session at 08:00 counts all day.
+- `upcoming_week_session_count` — `scheduled_date` from **`date` + 1 day through `week_end`, inclusive**. `week_end` is the **Sunday** of the ISO week containing `date`, because `tutor_availability.day_of_week` is 0 = Monday … 6 = Sunday throughout this system. One week convention, not two.
+- The two windows are **disjoint by construction**: `date` itself is excluded from the upcoming window, so no booking is reported by both and the two widgets cannot double-count.
+- **When `date` is a Sunday the upcoming window is empty and `upcoming_week_session_count` is `0`**, because the rest of that ISO week is already past. That is stated rather than left to be discovered: a dashboard should label the widget as the rest of this week, through `week_end`. On a Sunday `week_end` is `date` itself, so the window written as a query is `from=<date + 1 day>&to=<date>` — an inverted range, which [`GET /api/bookings`](#get-apibookings) answers with an empty page and a `total` of `0` rather than a 400. The count and that call therefore report the same `0`, and nothing on either side branches on the day of the week.
+
+**The counts agree with the list endpoints.** This is the heart of the endpoint, and it is an obligation rather than an aspiration.
+
+- `today_session_count` is the number of live bookings on `date`. **For an admin-or-above caller it equals the `total` of `GET /api/bookings?status=pending&status=confirmed&from=<date>&to=<date>`** — the same status set, the same inclusive bounds on the same column. That call is exactly the list a dashboard renders beneath this number, so the count and the rows agree by construction rather than by luck.
+- `upcoming_week_session_count` equals the `total` of that same call with `from=<date + 1 day>&to=<week_end>`. **The equality holds on a Sunday as well**, where that call's `from` is a day later than its `to`: an inverted range returns an empty page, so both sides are `0` and the assertion needs no Sunday case.
+- `active_tutor_count` is the number of `tutors` rows with `is_active = true`. **For an admin-or-above caller it equals the `total` of `GET /api/tutors?is_active=true`** — same column, same predicate, same treatment of the deactivated set.
+- `active_client_count` is the number of `guardians` rows with `is_active = true`, equal to the `total` of `GET /api/clients?is_active=true` on the same terms and under the same role qualifier. A *client* is a `guardian`: neither `children` nor `homes` enters this count.
+- **The role qualifier is load-bearing.** `GET /api/tutors` is scoped to "own profile only" for a tutor, so its `total` on a tutor token is 1, and `GET /api/bookings` is scoped to "own bookings only", so its `total` on that token counts that tutor's sessions rather than the system's. Only `admin` and `developer` can observe both sides of any of these equalities, and only they can call this endpoint at all — which is what makes the equality statable without a caveat rather than in spite of one.
+- The aggregate and the list endpoint **must share one predicate per resource**: one function producing the filter that both the count query and the page query use, so the two cannot drift. Observable equality is what a test can assert; a shared predicate is what makes the equality hold for reasons rather than by coincidence.
+- The equality is verified by test once both endpoints exist. Neither of them does today.
+- The two active counts are counts of rows and are unaffected by `date`; the two session counts are functions of it by construction. All four equalities are with `total`, which counts matching rows before paging, so none of them depends on `page_size`.
+
+**`recent_bookings` is a bare JSON array of at most five objects, not a page envelope.** [The envelope rule](#list-responses--the-page-envelope) governs endpoints whose response *is* a list; this response is an object with a list field, exactly like the `homes` array nested in `GET /api/clients/{id}` that [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) already names as not a list endpoint.
+
+**`GET /api/slots/available` does not govern here**, and it must be said, because a reader will find that precedent and it points the other way: it is capped at five and carries the full envelope. The difference is that its *entire response* is the capped list, and its `total` earns its place by letting the bot say "showing 5 of 8". There is no equivalent question here — the number a dashboard wants beside a recent-activity feed is not the count of all bookings ever, and `page: 1` of an object that cannot be paged reports nothing.
+
+- **Ordering is `created_at` descending, tie-broken by `id` descending.** This is a feed of what was just booked, not of what happens next; the two session counts above already answer what happens next. `created_at` is an absolute instant, so ordering by it needs no zone this system does not have, unlike `scheduled_date + start_time`, which is a bare date beside a bare time and has no offset to order by. The `id` tie-break is there because ids are `gen_random_uuid()` and carry no insertion order — without it, two bookings created in the same transaction have no defined order and the endpoint is not deterministic.
+- **Every status appears, `cancelled` and `completed` included.** That deliberately differs from the session counts above: the counts answer what is live, the feed answers what just happened, and a booking cancelled ten minutes ago is exactly the recent activity an admin opened the page to see. Each row's `status` field reports which it is.
+- **Five is fixed and there is no parameter.** The widget is "last 5". A caller wanting more wants paging over an ordered `GET /api/bookings`, which is a change to that endpoint and not to this one.
+- **Each object is identical to a [`GET /api/bookings`](#get-apibookings) item** — the same nine fields, the same nesting, the same names. That is deliberate: a second booking-summary shape is a second thing to keep in step.
+
+**What this endpoint deliberately does not carry.** The dashboard's today's-sessions widget is a count *and a list*; only the count is here. The list is `GET /api/bookings?status=pending&status=confirmed&from=<date>&to=<date>`, which already exists in this contract, already pages and already returns the envelope. **The status filter is not optional decoration:** without it the list returns that day's cancellations too, and the widget renders a count above a list of different rows. Scoped this way the two agree, and the equality above says so. An aggregate endpoint returns aggregates: a second unbounded copy of a booking list inside this one would be a second path to the same rows, which is what this endpoint exists to remove rather than to add.
 
 ---
 

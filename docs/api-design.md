@@ -116,22 +116,33 @@ unthrottled state that preceded the limiter. Setting either `max_attempts` to `0
 bucket outright; both at `0` is the kill switch, and it is an integer rather than a boolean
 because `integer` is the only `value_type` the settings table has.
 
-> **The client address is the socket peer, and keeping it that way takes a server flag.** The
-> application reads `request.client` and never `X-Forwarded-For` — but uvicorn ships
-> `--proxy-headers` **on** by default, with `forwarded_allow_ips` defaulting to `127.0.0.1`, so
-> whenever the peer is loopback it overwrites the client address from that header before any
-> application code runs. An attacker then rotates the header and lands in a fresh bucket every
-> request, and the per-IP limit stops existing. `docker/api.Dockerfile` therefore starts uvicorn
-> with `--no-proxy-headers`; that flag is part of this security property, not a tuning choice.
+> **The client address is the socket peer unless a trusted proxy says otherwise.** The
+> application reads `request.client`; `X-Forwarded-For` reaches it only through
+> `ProxyHeadersMiddleware`, which `create_app()` mounts when `TRUSTED_PROXIES` is configured, and
+> which honors the header only from a peer in that set. Trust is fail-closed: unset or empty
+> mounts no middleware at all, so the address is the socket peer, full stop. That is correct when
+> the API is reached directly and wrong behind a proxy — behind a proxy every request appears to
+> come from the proxy and the per-IP bucket silently becomes one global bucket, which locks out
+> every user at once rather than failing open or closed.
 >
-> This matters most under the Phase 8 topology, where nginx terminates TLS on the same host: the
-> peer *is* loopback there, so the bypass would arm itself exactly when the endpoint becomes
-> public. When the reverse proxy from #2 lands, proxy-header handling must land with it —
-> re-enabled together with `forwarded_allow_ips` set to that proxy's **specific** address.
-> Without it every request appears to come from the proxy and the per-IP bucket silently becomes
-> one global bucket. `FORWARDED_ALLOW_IPS=*` is the obvious reflex for that and must never be
-> used: it trusts the header from any peer, which is worse than the collapsed bucket because it
-> looks like it is working.
+> `*` is not merely discouraged, it is unconfigurable — so are `0.0.0.0/0` and `::/0`. They trust
+> the header from any peer and restore full spoofability, which is worse than the collapsed
+> bucket because it looks like it is working. The setting refuses them at startup. A hostname
+> does not work either, and does not warn: trust is matched against the peer address and nothing
+> resolves a name, so `TRUSTED_PROXIES=caddy` would trust nothing while looking configured — the
+> setting refuses that too. The value must be an IP address or a CIDR block.
+>
+> uvicorn's own proxy-header handling stays off (`--no-proxy-headers` in
+> `docker/api.Dockerfile`), so that exactly one place decides trust. Caddy from #2 proxies to
+> `api:8000` by Docker service name, so it is a container on the compose network and the peer is
+> a container address — not loopback, and not the same host. `X-Forwarded-Proto` is honored on
+> the same terms; it has no consumer today, since the refresh cookie keys off `COOKIE_SECURE`
+> rather than the scheme, but the Phase 7 Twilio webhook will validate signatures over the full
+> request URL, scheme included, and will be its first reader.
+>
+> `TRUSTED_PROXIES` ships unset. This repository contains no Caddy service and no fixed network,
+> so the value cannot be chosen here. Whoever stands Caddy up sets it to Caddy's address on the
+> network the two containers share, and confirms Caddy is setting both headers.
 
 ### `POST /auth/refresh`
 

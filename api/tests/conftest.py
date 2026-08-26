@@ -75,18 +75,21 @@ def _test_engine() -> Generator[Engine, None, None]:
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migration 0011 seeds.
+    """Insert the `system_settings` rows migrations 0011 and 0012 seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
-    /auth/token` now reads these four on every request — without them every login test fails
-    with `SettingNotFound`. Same reason the ENUMs and `btree_gist` are created by hand above:
-    the harness has to stand in for whatever a migration did that isn't in the metadata.
+    /auth/token` now reads the four rate-limit rows on every request — without them every login
+    test fails with `SettingNotFound`. The same holds for `default_phone_country_code` (0012),
+    which every client and tutor write path reads through `phone_service`. Same reason the
+    ENUMs and `btree_gist` are created by hand above: the harness has to stand in for whatever a
+    migration did that isn't in the metadata.
 
     Committed rather than written through the rolled-back `db` fixture, because
     `session_per_request_api` opens its own sessions and would not see an uncommitted row.
     `ON CONFLICT DO NOTHING` keeps this idempotent — the test database outlives the run.
     """
     from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER
+    from app.services.phone_service import DEFAULT_COUNTRY_CODE_SETTING
     from app.services.rate_limit_service import (
         EMAIL_MAX_ATTEMPTS_SETTING,
         EMAIL_WINDOW_SECONDS_SETTING,
@@ -99,6 +102,7 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         IP_WINDOW_SECONDS_SETTING: "900",
         EMAIL_MAX_ATTEMPTS_SETTING: "5",
         EMAIL_WINDOW_SECONDS_SETTING: "900",
+        DEFAULT_COUNTRY_CODE_SETTING: "1",
     }
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"

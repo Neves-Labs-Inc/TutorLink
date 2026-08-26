@@ -276,6 +276,26 @@ def test_the_constraint_answers_when_the_pre_check_does_not(
     assert api.get("/api/subjects", headers=headers).status_code == 200
 
 
+def test_the_constraint_answers_a_patch_when_the_pre_check_does_not(
+    api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `POST` sibling above, on the update path — a `PATCH` racing a `POST` onto the same
+    name loses to the constraint, and the savepoint has to unwind the edit it was refused."""
+    admin = _make_user(db)
+    _make_subject(db, name="Math")
+    other = _make_subject(db, name="Science")
+    headers = _auth(admin)
+
+    monkeypatch.setattr(subject_service, "_name_taken", lambda *_, **__: False)
+
+    response = api.patch(f"/api/subjects/{other.id}", headers=headers, json={"name": "Math"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A subject with that name already exists"
+    # The savepoint's whole purpose: the session is still usable afterwards.
+    assert api.get("/api/subjects", headers=headers).status_code == 200
+
+
 def test_delete_sets_is_active_false_and_the_row_survives(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     subject = _make_subject(db)

@@ -13,7 +13,9 @@ the old thread's key would silently reattribute the messages already in it.
 **Duplicate phone numbers are refused twice**, per `03-RESEARCH.md`'s normative idiom. The
 pre-check `_phone_number_taken` produces the contract's readable message; `UNIQUE
 (phone_number)` is what survives a race between two requests, and the savepoint around the
-insert is what leaves the `Session` usable when it fires. The predicate is a named seam rather
+write — the insert in `create_client`, the flush in `update_client` — is what leaves the
+`Session` usable when it fires. Both write paths carry both layers: a `PATCH` racing a `POST`
+onto the same number is the same 409, never a 500. The predicate is a named seam rather
 than the inline query `user_service.py:93` writes, deliberately: without it the constraint path
 is unreachable by any test this harness can run.
 """
@@ -139,8 +141,14 @@ def update_client(
     The duplicate check excludes this client, so a `PATCH` echoing back the number already
     stored — in any format, since both sides are normalised first — is a no-op on that field
     rather than a conflict with itself.
+
+    The savepoint wraps the edits and the flush, and nothing else, for the reason
+    `create_client` gives: a number claimed between the pre-check and the write is the
+    constraint's 409, not a 500, and unwinding to the savepoint leaves the `Session` usable for
+    the rest of the request.
     """
     client = _guardian(db, client_id=client_id)
+    canonical: str | None = None
 
     if phone_number is not None:
         canonical = normalize_phone_number(db, raw=phone_number)
@@ -148,15 +156,27 @@ def update_client(
         if _phone_number_taken(db, phone_number=canonical, exclude_id=client.id):
             raise PhoneNumberTaken
 
-        client.phone_number = canonical
+    # The edits are applied *inside* the savepoint because `begin_nested` flushes whatever is
+    # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`):
+    # assigned above the block, the UPDATE would run outside the savepoint and a constraint
+    # violation would deactivate the whole request's transaction, leaving the `Session`
+    # unusable even though this raises the right error. Nothing in the block but three
+    # in-memory assignments and the flush, so no other failure can be mislabelled. The
+    # constraint is matched by the exception, never by its name — see `create_client`.
+    try:
+        with db.begin_nested():
+            if canonical is not None:
+                client.phone_number = canonical
 
-    if name is not None:
-        client.name = name
+            if name is not None:
+                client.name = name
 
-    if is_active is not None:
-        client.is_active = is_active
+            if is_active is not None:
+                client.is_active = is_active
 
-    db.flush()
+            db.flush()
+    except IntegrityError as exc:
+        raise PhoneNumberTaken from exc
 
     return _detail(db, client)
 

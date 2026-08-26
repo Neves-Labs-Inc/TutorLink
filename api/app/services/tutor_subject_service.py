@@ -26,6 +26,10 @@ class SubjectNotFound(TutorSubjectServiceError):
     """No subject with that id."""
 
 
+class SubjectRetired(TutorSubjectServiceError):
+    """That subject exists but is no longer active."""
+
+
 class AssignmentExists(TutorSubjectServiceError):
     """This tutor already teaches this subject."""
 
@@ -40,8 +44,13 @@ def assign_subject(
     if db.get(Tutor, tutor_id) is None:
         raise TutorNotFound
 
-    if db.get(Subject, subject_id) is None:
+    subject = db.get(Subject, subject_id)
+
+    if subject is None:
         raise SubjectNotFound
+
+    if not subject.is_active:
+        raise SubjectRetired
 
     if _assignment_exists(db, tutor_id=tutor_id, subject_id=subject_id):
         raise AssignmentExists

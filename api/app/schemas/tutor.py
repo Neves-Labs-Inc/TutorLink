@@ -14,6 +14,8 @@ import uuid
 
 from pydantic import BaseModel
 
+from app.schemas.user import Email
+
 
 class TutorSubjectRead(BaseModel):
     subject_id: uuid.UUID
@@ -33,14 +35,14 @@ class TutorRead(BaseModel):
 
 class TutorCreate(BaseModel):
     name: str
-    email: str
+    email: Email
     phone_number: str
     bio: str | None = None
 
 
 class TutorUpdate(BaseModel):
     name: str | None = None
-    email: str | None = None
+    email: Email | None = None
     phone_number: str | None = None
     bio: str | None = None
     is_active: bool | None = None

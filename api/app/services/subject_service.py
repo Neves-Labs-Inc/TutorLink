@@ -107,20 +107,27 @@ def update_subject(
     found = _get_with_count(db, subject_id=subject_id)
     subject = found.subject
 
-    if name is not None:
-        if _name_taken(db, name=name, exclude_id=subject.id):
-            raise SubjectNameTaken
+    if name is not None and _name_taken(db, name=name, exclude_id=subject.id):
+        raise SubjectNameTaken
 
-        subject.name = name
-
-    if description is not None:
-        subject.description = description
-
-    if is_active is not None:
-        subject.is_active = is_active
-
+    # The edits are applied *inside* the savepoint because `begin_nested` flushes whatever is
+    # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`): assigned
+    # above the block, the UPDATE would run outside the savepoint and a `UNIQUE (subjects.name)`
+    # violation would deactivate the whole request's transaction, leaving the `Session` unusable
+    # even though this raises the right error. Nothing in the block but three in-memory
+    # assignments and the flush, so no other failure can be mislabelled a duplicate name. The
+    # constraint is matched by the exception, never by its name.
     try:
         with db.begin_nested():
+            if name is not None:
+                subject.name = name
+
+            if description is not None:
+                subject.description = description
+
+            if is_active is not None:
+                subject.is_active = is_active
+
             db.flush()
     except IntegrityError as exc:
         raise SubjectNameTaken from exc

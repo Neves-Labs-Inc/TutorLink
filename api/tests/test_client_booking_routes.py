@@ -267,6 +267,29 @@ def test_bookings_are_ordered_by_date_then_start_time(
     ]
 
 
+def test_paging_over_a_tied_group_repeats_and_drops_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    tutors = [family.tutor, family.other_tutor]
+    for _ in range(3):
+        tutor = _make_tutor(db)
+        _make_availability(db, tutor.id)
+        tutors.append(tutor)
+    bookings = [_book(db, family, tutor=tutor, on=DATE, start=NINE, end=TEN) for tutor in tutors]
+
+    seen: list[str] = []
+    for page in range(1, 4):
+        body = api.get(
+            f"/api/clients/{family.client.id}/bookings?page={page}&page_size=2",
+            headers=_auth(admin),
+        ).json()
+        seen.extend(row["id"] for row in body["items"])
+
+    assert sorted(seen) == sorted(str(booking.id) for booking in bookings)
+    assert len(seen) == len(bookings)
+
+
 def test_an_item_is_the_nine_field_booking_summary(
     api: TestClient, db: Session, family: Family
 ) -> None:

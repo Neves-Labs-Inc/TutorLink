@@ -50,7 +50,7 @@ def list_client_bookings(
                 joinedload(Booking.tutor),
                 joinedload(Booking.subject),
             )
-            .order_by(Booking.scheduled_date, Booking.start_time)
+            .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)
             .offset(offset)
         ).all()

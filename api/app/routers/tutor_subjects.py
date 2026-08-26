@@ -19,6 +19,7 @@ from app.services.tutor_subject_service import (
     AssignmentExists,
     AssignmentNotFound,
     SubjectNotFound,
+    SubjectRetired,
     TutorNotFound,
     assign_subject,
     remove_subject,
@@ -26,6 +27,7 @@ from app.services.tutor_subject_service import (
 
 TUTOR_NOT_FOUND_ERROR = "Tutor not found"
 SUBJECT_NOT_FOUND_ERROR = "Unknown subject_id"
+SUBJECT_RETIRED_ERROR = "That subject has been retired and cannot be assigned"
 ASSIGNMENT_EXISTS_ERROR = "That subject is already assigned to this tutor"
 ASSIGNMENT_NOT_FOUND_ERROR = "That subject is not assigned to this tutor"
 
@@ -53,6 +55,8 @@ def assign(
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
     except SubjectNotFound as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, SUBJECT_NOT_FOUND_ERROR) from exc
+    except SubjectRetired as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, SUBJECT_RETIRED_ERROR) from exc
     except AssignmentExists as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, ASSIGNMENT_EXISTS_ERROR) from exc
 

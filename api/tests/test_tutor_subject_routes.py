@@ -165,6 +165,29 @@ def test_assign_with_unknown_subject_id_is_400(api: TestClient, db: Session) -> 
     assert response.json()["detail"] == "Unknown subject_id"
 
 
+def test_assign_with_a_retired_subject_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    subject = _make_subject(db)
+    subject.is_active = False
+    db.flush()
+
+    response = api.post(
+        f"/api/tutors/{tutor.id}/subjects",
+        headers=_auth(admin),
+        json={"subject_id": str(subject.id), "max_grade_level": 8},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "That subject has been retired and cannot be assigned"
+    rows = db.scalars(
+        select(TutorSubject).where(
+            TutorSubject.tutor_id == tutor.id, TutorSubject.subject_id == subject.id
+        )
+    ).all()
+    assert rows == []
+
+
 def test_assign_with_unknown_tutor_id_is_404(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     subject = _make_subject(db)
@@ -215,6 +238,32 @@ def test_delete_a_pair_that_was_never_assigned_is_404(api: TestClient, db: Sessi
 
     assert response.status_code == 404
     assert response.json()["detail"] == "That subject is not assigned to this tutor"
+
+
+def test_delete_still_works_after_the_subject_is_retired(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    subject = _make_subject(db)
+    headers = _auth(admin)
+    api.post(
+        f"/api/tutors/{tutor.id}/subjects",
+        headers=headers,
+        json={"subject_id": str(subject.id), "max_grade_level": 8},
+    )
+    subject.is_active = False
+    db.flush()
+
+    response = api.delete(f"/api/tutors/{tutor.id}/subjects/{subject.id}", headers=headers)
+
+    assert response.status_code == 204
+    assert (
+        db.scalars(
+            select(TutorSubject).where(
+                TutorSubject.tutor_id == tutor.id, TutorSubject.subject_id == subject.id
+            )
+        ).first()
+        is None
+    )
 
 
 def test_delete_with_unknown_tutor_id_is_404(api: TestClient, db: Session) -> None:

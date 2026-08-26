@@ -11,7 +11,7 @@ never stored, so a string is refused rather than coerced.
 
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChildRead(BaseModel):
@@ -28,8 +28,8 @@ class ChildCreate(BaseModel):
     guardian_ids: list[uuid.UUID]
     home_ids: list[uuid.UUID]
     name: str
-    age: int
-    grade_level: int
+    age: int = Field(ge=1)
+    grade_level: int = Field(ge=1)
     school_name: str
 
 
@@ -40,6 +40,6 @@ class ChildUpdate(BaseModel):
     guardian_ids: list[uuid.UUID] | None = None
     home_ids: list[uuid.UUID] | None = None
     name: str | None = None
-    age: int | None = None
-    grade_level: int | None = None
+    age: int | None = Field(default=None, ge=1)
+    grade_level: int | None = Field(default=None, ge=1)
     school_name: str | None = None

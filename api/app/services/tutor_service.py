@@ -117,7 +117,10 @@ def list_tutors(
     total = db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
     tutors = list(
         db.scalars(
-            filtered.options(SUBJECTS_LOADED).order_by(Tutor.name).limit(limit).offset(offset)
+            filtered.options(SUBJECTS_LOADED)
+            .order_by(Tutor.name, Tutor.id)
+            .limit(limit)
+            .offset(offset)
         ).all()
     )
 
@@ -176,10 +179,17 @@ def update_tutor(
     bio: str | None,
     is_active: bool | None,
 ) -> Tutor:
-    tutor = get_tutor(db, tutor_id=tutor_id)
+    """The duplicate checks exclude this tutor, so a `PATCH` echoing back the email or number
+    already stored — in any format, since both sides are normalised first — is a no-op on that
+    field rather than a conflict with itself.
 
-    if name is not None:
-        tutor.name = name
+    The savepoint wraps the edits and the flush, and nothing else, for the reason `create_tutor`
+    gives: a value claimed between a pre-check and the write is the constraint's 409, not a 500,
+    and unwinding to the savepoint leaves the `Session` usable for the rest of the request.
+    """
+    tutor = get_tutor(db, tutor_id=tutor_id)
+    normalized_email: str | None = None
+    canonical_phone_number: str | None = None
 
     if email is not None:
         normalized_email = email.strip().lower()
@@ -187,24 +197,36 @@ def update_tutor(
         if _email_taken(db, email=normalized_email, exclude_id=tutor.id):
             raise TutorEmailTaken
 
-        tutor.email = normalized_email
-
     if phone_number is not None:
         canonical_phone_number = normalize_phone_number(db, raw=phone_number)
 
         if _phone_number_taken(db, phone_number=canonical_phone_number, exclude_id=tutor.id):
             raise TutorPhoneNumberTaken
 
-        tutor.phone_number = canonical_phone_number
-
-    if bio is not None:
-        tutor.bio = bio
-
-    if is_active is not None:
-        tutor.is_active = is_active
-
+    # The edits are applied *inside* the savepoint because `begin_nested` flushes whatever is
+    # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`): assigned
+    # above the block, the UPDATE would run outside the savepoint and a constraint violation would
+    # deactivate the whole request's transaction, leaving the `Session` unusable even though this
+    # raises the right error. Nothing in the block but in-memory assignments and the flush, so no
+    # other failure can be mislabelled a duplicate. The normalisation above stays outside it: it
+    # reads the database and can raise `InvalidPhoneNumber`, which is a 400, not a 409.
     try:
         with db.begin_nested():
+            if name is not None:
+                tutor.name = name
+
+            if normalized_email is not None:
+                tutor.email = normalized_email
+
+            if canonical_phone_number is not None:
+                tutor.phone_number = canonical_phone_number
+
+            if bio is not None:
+                tutor.bio = bio
+
+            if is_active is not None:
+                tutor.is_active = is_active
+
             db.flush()
     except IntegrityError as exc:
         raise TutorUniqueViolation from exc

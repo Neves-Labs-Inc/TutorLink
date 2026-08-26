@@ -351,6 +351,83 @@ def test_patch_may_change_grade_level(api: TestClient, db: Session) -> None:
     assert db.scalar(select(Child.grade_level).where(Child.id == child_id)) == 8
 
 
+@pytest.mark.parametrize("grade_level", [0, -1])
+def test_post_refuses_a_grade_level_below_one(
+    api: TestClient, db: Session, grade_level: int
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["grade_level"] = grade_level
+    before = db.scalar(select(func.count()).select_from(Child))
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(func.count()).select_from(Child)) == before
+
+
+def test_post_refuses_an_age_below_one(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["age"] = 0
+    before = db.scalar(select(func.count()).select_from(Child))
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(func.count()).select_from(Child)) == before
+
+
+def test_post_accepts_a_grade_level_of_one(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["grade_level"] = 1
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["grade_level"] == 1
+
+
+@pytest.mark.parametrize("grade_level", [0, -1])
+def test_patch_refuses_a_grade_level_below_one_and_writes_nothing(
+    api: TestClient, db: Session, grade_level: int
+) -> None:
+    admin = _make_user(db)
+    guardian, home = _make_guardian(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[guardian], homes=[home])
+
+    response = api.patch(
+        f"/api/children/{child_id}",
+        headers=_auth(admin),
+        json={"name": "Renamed", "grade_level": grade_level},
+    )
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(Child.name).where(Child.id == child_id)) == "Tommy Doe"
+    assert db.scalar(select(Child.grade_level).where(Child.id == child_id)) == 7
+
+
+def test_patch_refuses_an_age_below_one_and_writes_nothing(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    guardian, home = _make_guardian(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[guardian], homes=[home])
+
+    response = api.patch(
+        f"/api/children/{child_id}",
+        headers=_auth(admin),
+        json={"name": "Renamed", "age": 0},
+    )
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(Child.name).where(Child.id == child_id)) == "Tommy Doe"
+    assert db.scalar(select(Child.age).where(Child.id == child_id)) == 12
+
+
 def test_patch_on_an_unknown_child_is_404(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 

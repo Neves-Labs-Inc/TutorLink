@@ -77,7 +77,7 @@ def list_all(
     db: DbSession,
     is_active: bool = True,
     subject_id: uuid.UUID | None = None,
-    grade_level: int | None = None,
+    grade_level: Annotated[int | None, Query(ge=1)] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[TutorRead]:

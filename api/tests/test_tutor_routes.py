@@ -173,6 +173,30 @@ def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
     assert asked["total"] == 3
 
 
+def test_paging_over_tutors_sharing_one_name_repeats_nothing_and_loses_nothing(
+    api: TestClient, db: Session
+) -> None:
+    """`tutors.name` is not unique, so `ORDER BY name` alone leaves the tie order up to the
+    plan — and `LIMIT/OFFSET` is a different plan from the unpaged scan. Without `Tutor.id` as
+    the final sort key one of these namesakes can land on two pages and another on none."""
+    admin = _make_user(db)
+    expected = {str(_make_tutor(db, name="Sarah Miller").id) for _ in range(7)}
+    headers = _auth(admin)
+
+    paged = [
+        tutor_id
+        for page in (1, 2, 3)
+        for tutor_id in _ids(
+            api.get(f"/api/tutors?page={page}&page_size=3", headers=headers).json()
+        )
+    ]
+    unpaged = _ids(api.get("/api/tutors?page_size=100", headers=headers).json())
+
+    assert len(paged) == len(expected)
+    assert set(paged) == expected
+    assert paged == unpaged
+
+
 def test_a_deactivated_tutor_is_still_readable_by_id(api: TestClient, db: Session) -> None:
     """The by-id path takes no `?is_active` and deliberately does not filter: the surface that
     deactivated a row has to be able to open it in order to reactivate it."""
@@ -381,6 +405,34 @@ def test_grade_level_is_a_ceiling_not_a_membership_test(api: TestClient, db: Ses
     assert body["total"] == 2
 
 
+@pytest.mark.parametrize("grade_level", ["0", "-1", "-12"])
+def test_grade_level_below_one_is_400_not_the_whole_roster(
+    api: TestClient, db: Session, grade_level: str
+) -> None:
+    """`max_grade_level >= 0` is true of every assignment, so an unbounded parameter turns the
+    filter into "list everyone". `TutorSubjectCreate` already carries `Field(ge=1)`; this is
+    the same floor on the read side."""
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    _assign(db, tutor, _make_subject(db), 12)
+
+    response = api.get(f"/api/tutors?grade_level={grade_level}", headers=_auth(admin))
+
+    assert response.status_code == 400
+    assert "grade_level" in response.json()["detail"]
+
+
+def test_grade_level_one_is_the_lowest_accepted_grade(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    _assign(db, tutor, _make_subject(db), 1)
+
+    body = api.get("/api/tutors?grade_level=1", headers=_auth(admin)).json()
+
+    assert _ids(body) == [str(tutor.id)]
+    assert body["total"] == 1
+
+
 def test_a_ceiling_of_eight_matches_a_request_for_grade_seven(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     tutor = _make_tutor(db)
@@ -568,6 +620,38 @@ def test_create_rejects_a_number_that_cannot_be_dialled(
     assert isinstance(response.json()["detail"], str)
 
 
+@pytest.mark.parametrize("email", ["", "   ", "\t\n", "nobody-at-example.com"])
+def test_create_rejects_an_email_the_shared_rule_refuses(
+    api: TestClient, db: Session, email: str
+) -> None:
+    """`TutorCreate.email` carries the same `Email` annotation `UserCreate` does. Without it a
+    blank address survives `email.strip().lower()` and lands in `UNIQUE (email)` as `''`, which
+    then 409s every later blank create and can never be matched by a `users` row."""
+    admin = _make_user(db)
+
+    response = api.post("/api/tutors", headers=_auth(admin), json=_payload(email=email))
+
+    assert response.status_code == 400
+    assert "email" in response.json()["detail"]
+    assert db.scalars(select(Tutor)).first() is None
+
+
+@pytest.mark.parametrize("email", ["", "   ", "\t\n", "nobody-at-example.com"])
+def test_patch_rejects_an_email_the_shared_rule_refuses(
+    api: TestClient, db: Session, email: str
+) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    original = tutor.email
+
+    response = api.patch(f"/api/tutors/{tutor.id}", headers=_auth(admin), json={"email": email})
+
+    assert response.status_code == 400
+    assert "email" in response.json()["detail"]
+    db.refresh(tutor)
+    assert tutor.email == original
+
+
 def test_create_with_a_duplicate_email_is_409(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     existing = _make_tutor(db)
@@ -671,6 +755,32 @@ def test_patch_taking_another_tutors_email_is_409(api: TestClient, db: Session) 
 
     assert response.status_code == 409
     assert response.json()["detail"] == "A tutor with that email already exists"
+
+
+def test_the_constraint_answers_a_patch_when_the_pre_check_does_not(
+    api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two `POST` siblings above, on the update path — a `PATCH` racing a `POST` onto the
+    same email loses to the constraint, and a 500 there would be the bot's retry storm. The
+    final assertion is the one those tests cannot borrow: the `UPDATE` has to be issued *inside*
+    the savepoint, because `begin_nested` flushes whatever is already dirty before it emits the
+    SAVEPOINT, and a violation flushed outside it leaves the `Session` unusable for everything
+    the request does next.
+    """
+    admin = _make_user(db)
+    headers = _auth(admin)
+    incumbent = _make_tutor(db)
+    challenger = _make_tutor(db)
+
+    monkeypatch.setattr(tutor_service, "_email_taken", lambda *_, **__: False)
+
+    response = api.patch(
+        f"/api/tutors/{challenger.id}", headers=headers, json={"email": incumbent.email}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A tutor with that email or phone number already exists"
+    assert api.get("/api/tutors", headers=headers).status_code == 200
 
 
 def test_patch_with_an_unparseable_phone_number_is_400(api: TestClient, db: Session) -> None:

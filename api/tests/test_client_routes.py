@@ -485,6 +485,27 @@ def test_patch_to_another_clients_number_is_the_same_409(
     assert client.phone_number == PHONE
 
 
+def test_the_constraint_answers_a_patch_when_the_pre_check_does_not(
+    api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `POST` sibling above, on the update path — a `PATCH` racing a `POST` onto the same
+    number loses to the constraint, and a 500 there would be the bot's retry storm."""
+    admin = _make_user(db)
+    _make_client(db, name="Jane Doe", phone_number=PHONE)
+    client = _make_client(db, name="John Doe", phone_number=OTHER_PHONE)
+
+    monkeypatch.setattr(client_service, "_phone_number_taken", lambda *_, **__: False)
+
+    response = api.patch(
+        f"/api/clients/{client.id}", headers=_auth(admin), json={"phone_number": PHONE}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PHONE_TAKEN_ERROR
+    # The savepoint's whole purpose: the session is still usable afterwards.
+    assert api.get("/api/clients", headers=_auth(admin)).status_code == 200
+
+
 def test_patching_the_phone_number_moves_that_column_and_nothing_else(
     api: TestClient, db: Session
 ) -> None:

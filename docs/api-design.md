@@ -303,6 +303,8 @@ Every setting that exists today is admin-visible. The mechanism is built ahead o
 
 That includes the four login rate limits — `login_rate_limit_ip_max_attempts` (20), `login_rate_limit_ip_window_seconds` (900), `login_rate_limit_email_max_attempts` (5), `login_rate_limit_email_window_seconds` (900). They are admin-tunable rather than constants because the right numbers depend on how a client's staff actually sign in — a shared office address behind one NAT looks like an attacker to a limit tuned for a home connection — and finding that out during an incident must not require a deploy. See [`POST /auth/token`](#post-authtoken) for what they do and what `0` means.
 
+Also admin-visible: `default_phone_country_code` (1), the E.164 calling code used to normalise a `phone_number` given without one on `POST`/`PATCH /api/clients` and `POST /api/tutors`. It is a setting rather than a constant for the same reason the rate limits are — the right default depends on where a deployment's guardians and tutors actually live, and that should not require a deploy to change.
+
 > ⚠️ **Tutors are no longer read-only.** `POST /api/tutors/{id}/exceptions` lets a tutor request time off, which an admin then approves or rejects. It is the only tutor write path, and a pending request does not block bookings — only an approved one does. Any test asserting the blanket read-only form needs to learn this exception.
 
 ### `GET /api/settings`
@@ -597,6 +599,8 @@ Returns clients, active by default. See [Soft deletes and the `is_active` filter
 
 `?phone_number=` is how the bot resolves a returning client before intake. It is a **filter, not an address**: the response is the ordinary page envelope holding zero or one item — never a bare object, and never a 404. `total` is `0` when no client holds that number and `1` when one does, never more, because `guardians.phone_number` is UNIQUE (see [`guardians`](erd.md#guardians)). No match is an empty set rather than a missing resource: the collection exists either way, and "look up, then create when empty" is one branch on `total` rather than a caught error. [List responses — the page envelope](#list-responses--the-page-envelope) admits no exception to the envelope, and a lookup is not one.
 
+The value is normalised the same way a `POST`/`PATCH` body is before it is compared against `guardians.phone_number`, so a human-typed `(202) 555-0123` finds the row stored as `+12025550123`. A value that cannot be parsed as a phone number at all is refused with **400**, the same rule `POST`/`PATCH` apply to the field itself.
+
 The two parameters compose and `?is_active=`'s default is **not** special-cased for the lookup: `?phone_number=X` on its own finds an **active** client. A deactivated client is found with `?phone_number=X&is_active=false`. This matters on the intake path — see `POST /api/clients` below — because the lookup coming back empty does **not** guarantee the create will succeed: the UNIQUE constraint spans deactivated rows too.
 
 **Response**
@@ -622,12 +626,15 @@ Returns a single client with their children and their homes.
 
 A client is a **guardian**. Address and access code belong to a `home`, not to the guardian: a child with separated guardians has two homes, either guardian may book into either, and siblings share the pair. The API keeps the word *client* because that is the business relationship; the table is `guardians`.
 
+Carries `is_active`, reporting the real state whatever it is — see [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for why a by-id fetch ignores the flag as a filter but still reports it as a field.
+
 **Response**
 ```json
 {
   "id": "uuid",
   "name": "Jane Doe",
   "phone_number": "+1234567890",
+  "is_active": true,
   "homes": [
     {
       "id": "uuid",
@@ -763,7 +770,7 @@ Returns tutors, active by default. See [Soft deletes and the `is_active` filter]
 
 ### `GET /api/tutors/{id}`
 
-Returns a single tutor with subjects and weekly availability.
+Returns a single tutor with subjects. Weekly availability is not embedded here — see `GET /api/tutors/{id}/availability`.
 
 ### `POST /api/tutors`
 
@@ -1083,8 +1090,8 @@ Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&from=
       "tutor": { "id": "uuid", "name": "Sarah Miller" },
       "subject": { "id": "uuid", "name": "Math" },
       "scheduled_date": "2026-08-10",
-      "start_time": "09:00",
-      "end_time": "10:00",
+      "start_time": "09:00:00",
+      "end_time": "10:00:00",
       "status": "confirmed",
       "notes": null
     }
@@ -1094,6 +1101,8 @@ Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&from=
   "page_size": 20
 }
 ```
+
+`start_time`/`end_time` render with seconds — `"09:00:00"`, not `"09:00"` — the same `HH:MM:SS` form the API's exception schema already serialises. One time format across the API beats a booking-shaped response that differs from an exception-shaped one by a trailing `:00`. A `POST`/`PATCH` body may still submit either form; this is a response-serialisation fact, not an input restriction.
 
 ### `GET /api/bookings/{id}`
 
@@ -1197,8 +1206,8 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
   "id": "uuid",
   "status": "confirmed",
   "scheduled_date": "2026-08-10",
-  "start_time": "09:00",
-  "end_time": "10:00"
+  "start_time": "09:00:00",
+  "end_time": "10:00:00"
 }
 ```
 
@@ -1262,8 +1271,8 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
       "tutor": { "id": "uuid", "name": "Sarah Miller" },
       "subject": { "id": "uuid", "name": "Math" },
       "scheduled_date": "2026-08-27",
-      "start_time": "09:00",
-      "end_time": "10:00",
+      "start_time": "09:00:00",
+      "end_time": "10:00:00",
       "status": "confirmed",
       "notes": null
     }

@@ -5,12 +5,10 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     CheckConstraint,
     Date,
-    DateTime,
     ForeignKey,
     Index,
     Text,
     Time,
-    func,
     literal_column,
     text,
 )
@@ -19,6 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.enums import BookingStatus, booking_status_enum
+from app.models.mixins import HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.availability import TutorAvailability
@@ -36,7 +35,7 @@ BOOKING_RANGE_EXPRESSION = "tsrange(scheduled_date + start_time, scheduled_date 
 BOOKING_TIME_ORDER_PREDICATE = "end_time > start_time"
 
 
-class Booking(Base):
+class Booking(HasID, HasTimestamps, Base):
     __tablename__ = "bookings"
     __table_args__ = (
         Index("ix_bookings_tutor_date_status", "tutor_id", "scheduled_date", "status"),
@@ -68,9 +67,6 @@ class Booking(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     child_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("children.id"), nullable=False
     )
@@ -98,12 +94,6 @@ class Booking(Base):
     end_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
     status: Mapped[BookingStatus] = mapped_column(booking_status_enum, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
 
     child: Mapped["Child"] = relationship(back_populates="bookings")
     tutor: Mapped["Tutor"] = relationship(back_populates="bookings")

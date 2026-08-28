@@ -37,6 +37,22 @@ inside the 4300-digit interpreter limit rather than pinned to it, so this module
 if that limit ever moves, and it is a 400 with a clear reason instead of the read path
 discovering the problem later.
 
+**The five scheduling keys carry per-key bounds on top of that pattern.** The pattern accepts a
+leading `-`, and each of those five is arithmetic some other module performs on every scheduling
+request: a negative `session_gap_minutes` *shrinks* the overlap window `GET /api/slots/available`
+and `POST /api/bookings` share, so the offer surface starts handing out slots the write path then
+answers with a 409 — #44 item 1, reached through the settings surface rather than through a
+divergent comparison. A `max_slots_offered` of `0` reports `items: []` beside a non-zero `total`,
+which is the same outage told silently. A negative `booking_lookahead_days` refuses every date
+including today. The minimums differ because the values do: `session_gap_minutes` of `0` means
+back-to-back sessions and is a real configuration, while `session_length_minutes` of `0` is a grid
+with no slots in it. The maximums exist because `datetime.timedelta` overflows long before the
+18-digit pattern does — `timedelta(minutes=10**18)` raises, inside a request handler, on every
+slot query after the write. **Only those five are bounded**: a bound is a fact about how a value
+is used, and every other row here is used somewhere this module has no business guessing about.
+The keys are spelled out below rather than imported from `scheduling_service`, which imports this
+module.
+
 **Which rows a caller may see is decided here, from `actor_role`** (D-010), rather than by the
 caller handing in a precomputed flag. One place answers "what may this role see", and it is
 testable without an HTTP request.
@@ -65,6 +81,42 @@ class SettingUpdate:
     value: str
 
 
+@dataclass(frozen=True, slots=True)
+class _Bounds:
+    minimum: int
+    maximum: int | None
+
+    def permits(self, value: int) -> bool:
+        return self.minimum <= value and (self.maximum is None or value <= self.maximum)
+
+    def __str__(self) -> str:
+        return (
+            f"{self.minimum} to {self.maximum}"
+            if self.maximum is not None
+            else f"{self.minimum} or more"
+        )
+
+
+_SCHEDULING_BOUNDS = {
+    # A slot length of zero emits no grid at all; a day is the longest slot that can fit inside
+    # one `tutor_availability` range, all of which live within a single day.
+    "session_length_minutes": _Bounds(minimum=1, maximum=24 * 60),
+    # Zero is back-to-back sessions and is meaningful. Negative inverts `overlaps_within_gap`
+    # into a *narrower* comparison than bare overlap.
+    "session_gap_minutes": _Bounds(minimum=0, maximum=24 * 60),
+    # Zero offers today only, which is restrictive but coherent. Negative puts today itself past
+    # the last offerable date, refusing every slot query and every booking.
+    "booking_lookahead_days": _Bounds(minimum=0, maximum=365 * 10),
+    # Zero is the seeded default and means "any start still in the future". Negative accepts a
+    # session that already started, which the date window does not catch for today.
+    "min_booking_lead_hours": _Bounds(minimum=0, maximum=24 * 365),
+    # Zero returns an empty page beside a non-zero total, and negative makes `open_slots[:n]`
+    # drop the last `n` slots instead of capping. No maximum: a cap larger than the day's grid
+    # is simply not a cap, and nothing downstream does arithmetic with it.
+    "max_slots_offered": _Bounds(minimum=1, maximum=None),
+}
+
+
 class SettingsError(Exception):
     """Base class for every failure this module reports."""
 
@@ -90,7 +142,12 @@ class SettingNotEditable(SettingsError):
 
 
 class SettingValueInvalid(SettingsError):
-    """The submitted value does not parse as the row's `value_type`."""
+    """The submitted value does not parse as the row's `value_type`, or is outside its bounds.
+
+    One class for both because the router maps both the same way — a 400 naming the value, not
+    the reason (`routers/settings.py:63`). A caller who submits `-30` for `session_gap_minutes`
+    and a caller who submits `soon` have each sent a value this row cannot hold.
+    """
 
 
 class SettingKeyDuplicated(SettingsError):
@@ -183,6 +240,13 @@ def apply_setting_updates(
 
         if _INTEGER_VALUE_PATTERN.fullmatch(update.value.strip()) is None:
             raise SettingValueInvalid(f"system setting {update.key!r} rejects {update.value!r}")
+
+        bounds = _SCHEDULING_BOUNDS.get(update.key)
+
+        if bounds is not None and not bounds.permits(int(update.value)):
+            raise SettingValueInvalid(
+                f"system setting {update.key!r} rejects {update.value!r}: accepts {bounds}"
+            )
 
         pending.append((row, update.value))
 

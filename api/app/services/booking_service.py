@@ -30,6 +30,57 @@ class BookingServiceError(Exception): ...
 class ClientNotFound(BookingServiceError): ...
 
 
+class BookingNotFound(BookingServiceError): ...
+
+
+def list_bookings(
+    db: Session,
+    *,
+    tutor_id: uuid.UUID | None,
+    filters: BookingFilters,
+    limit: int,
+    offset: int,
+) -> tuple[list[Booking], int]:
+    statement = select(Booking)
+    if tutor_id is not None:
+        statement = statement.where(Booking.tutor_id == tutor_id)
+    statement = _apply_filters(statement, filters)
+
+    total = db.scalar(select(func.count()).select_from(statement.subquery()))
+    bookings = list(
+        db.scalars(
+            statement.options(
+                joinedload(Booking.child),
+                joinedload(Booking.tutor),
+                joinedload(Booking.subject),
+            )
+            .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+
+    return bookings, total
+
+
+def get_booking(db: Session, *, booking_id: uuid.UUID) -> Booking:
+    booking = db.scalar(
+        select(Booking)
+        .where(Booking.id == booking_id)
+        .options(
+            joinedload(Booking.child),
+            joinedload(Booking.tutor),
+            joinedload(Booking.subject),
+            joinedload(Booking.home),
+            joinedload(Booking.booked_by_guardian),
+        )
+    )
+    if booking is None:
+        raise BookingNotFound
+
+    return booking
+
+
 def list_client_bookings(
     db: Session,
     *,
@@ -42,7 +93,7 @@ def list_client_bookings(
         raise ClientNotFound
 
     matching = _matching(client_id=client_id, filters=filters)
-    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
+    total = db.scalar(select(func.count()).select_from(matching.subquery()))
     bookings = list(
         db.scalars(
             matching.options(
@@ -77,6 +128,12 @@ def _matching(*, client_id: uuid.UUID, filters: BookingFilters) -> Select[tuple[
     )
     statement = select(Booking).where(guardian_link.exists())
 
+    return _apply_filters(statement, filters)
+
+
+def _apply_filters(
+    statement: Select[tuple[Booking]], filters: BookingFilters
+) -> Select[tuple[Booking]]:
     if filters.statuses:
         statement = statement.where(Booking.status.in_(filters.statuses))
 

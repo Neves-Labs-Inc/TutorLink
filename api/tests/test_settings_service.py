@@ -176,7 +176,9 @@ def test_apply_setting_updates_checks_authorization_before_the_value(db: Session
 
 @pytest.mark.parametrize("value", ["0", "90", "-1"])
 def test_apply_setting_updates_accepts_an_integer_value(db: Session, value: str) -> None:
-    # "0" is load-bearing: it is the documented rate-limit kill switch (D-009).
+    # "0" is load-bearing: it is the documented rate-limit kill switch (D-009). `KEY` is not a
+    # scheduling key, and that is what this case now also pins: the per-key bounds below apply
+    # to five named keys and leave the generic integer contract for every other row untouched.
     _make_setting(db, value="42")
 
     apply_setting_updates(
@@ -232,6 +234,107 @@ def test_apply_setting_updates_accepted_value_always_reads_back(db: Session, val
     )
 
     get_int_setting(db, key=KEY)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("session_length_minutes", "0"),
+        ("session_length_minutes", "-60"),
+        ("session_length_minutes", "1441"),
+        ("session_gap_minutes", "-30"),
+        ("session_gap_minutes", "1441"),
+        ("booking_lookahead_days", "-1"),
+        ("booking_lookahead_days", "3651"),
+        ("min_booking_lead_hours", "-4"),
+        ("min_booking_lead_hours", "8761"),
+        ("max_slots_offered", "0"),
+        ("max_slots_offered", "-3"),
+    ],
+)
+def test_apply_setting_updates_refuses_an_out_of_range_scheduling_value(
+    db: Session, key: str, value: str
+) -> None:
+    # Each of these is a live scheduling outage an admin could type into `PATCH /api/settings`:
+    # a negative gap narrows the shared overlap window until the bot offers slots the booking
+    # endpoint refuses with a 409, `max_slots_offered = 0` reports no availability for a full
+    # roster, and a negative lookahead puts today past the last offerable date. The row itself
+    # is the one `conftest.py` seeds — a migration owns these five keys, so a test creating its
+    # own would be asserting against a row the application never reads.
+    seeded = get_int_setting(db, key=key)
+
+    with pytest.raises(SettingValueInvalid):
+        apply_setting_updates(
+            db, actor_role=UserRole.ADMIN, updates=[SettingUpdate(key=key, value=value)]
+        )
+
+    assert get_int_setting(db, key=key) == seeded
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("session_length_minutes", "1"),
+        ("session_length_minutes", "60"),
+        ("session_length_minutes", "1440"),
+        ("session_gap_minutes", "0"),
+        ("session_gap_minutes", "30"),
+        ("session_gap_minutes", "1440"),
+        ("booking_lookahead_days", "0"),
+        ("booking_lookahead_days", "90"),
+        ("booking_lookahead_days", "3650"),
+        ("min_booking_lead_hours", "0"),
+        ("min_booking_lead_hours", "24"),
+        ("min_booking_lead_hours", "8760"),
+        ("max_slots_offered", "1"),
+        ("max_slots_offered", "5"),
+        ("max_slots_offered", "9" * 18),
+    ],
+)
+def test_apply_setting_updates_accepts_a_scheduling_value_in_range(
+    db: Session, key: str, value: str
+) -> None:
+    # The zeroes are the point: `session_gap_minutes = 0` is back-to-back sessions,
+    # `booking_lookahead_days = 0` is today only and `min_booking_lead_hours = 0` is the seeded
+    # default, so a bound written as "positive everywhere" would break all three. The largest
+    # `max_slots_offered` case pins that this key is deliberately unbounded above.
+    apply_setting_updates(
+        db, actor_role=UserRole.ADMIN, updates=[SettingUpdate(key=key, value=value)]
+    )
+
+    assert get_int_setting(db, key=key) == int(value)
+
+
+def test_apply_setting_updates_bounds_a_scheduling_value_for_a_developer_too(db: Session) -> None:
+    # Bounds are a fact about how the value is used, not a role gate: a developer is held to the
+    # same range an admin is.
+    seeded = get_int_setting(db, key="session_gap_minutes")
+
+    with pytest.raises(SettingValueInvalid):
+        apply_setting_updates(
+            db,
+            actor_role=UserRole.DEVELOPER,
+            updates=[SettingUpdate(key="session_gap_minutes", value="-30")],
+        )
+
+    assert get_int_setting(db, key="session_gap_minutes") == seeded
+
+
+def test_apply_setting_updates_writes_nothing_when_a_later_update_is_out_of_range(
+    db: Session,
+) -> None:
+    seeded_length = get_int_setting(db, key="session_length_minutes")
+    seeded_gap = get_int_setting(db, key="session_gap_minutes")
+    updates = [
+        SettingUpdate(key="session_length_minutes", value="45"),
+        SettingUpdate(key="session_gap_minutes", value="-30"),
+    ]
+
+    with pytest.raises(SettingValueInvalid):
+        apply_setting_updates(db, actor_role=UserRole.ADMIN, updates=updates)
+
+    assert get_int_setting(db, key="session_length_minutes") == seeded_length
+    assert get_int_setting(db, key="session_gap_minutes") == seeded_gap
 
 
 def test_apply_setting_updates_raises_on_a_value_type_it_cannot_validate(db: Session) -> None:

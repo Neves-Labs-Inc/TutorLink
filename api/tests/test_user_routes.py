@@ -93,6 +93,42 @@ def test_deactivated_users_are_hidden_until_asked_for(api: TestClient, db: Sessi
     assert [row["email"] for row in asked["items"]] == [dormant.email]
 
 
+def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    for _ in range(2):
+        _make_user(db, is_active=False)
+    headers = _auth(admin)
+
+    asked = api.get("/api/users?is_active=false&page_size=1", headers=headers).json()
+
+    assert len(asked["items"]) == 1
+    assert asked["total"] == 2
+
+
+def test_a_deactivated_user_is_still_readable_by_id(api: TestClient, db: Session) -> None:
+    """The by-id path takes no `?is_active` and deliberately does not filter, because the
+    surface that deactivated a row has to be able to open it in order to reactivate it — a 404
+    would make a soft delete indistinguishable from a hard one."""
+    admin = _make_user(db)
+    dormant = _make_user(db, is_active=False)
+
+    response = api.get(f"/api/users/{dormant.id}", headers=_auth(admin))
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
+
+
+def test_malformed_is_active_query_is_400_not_422(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get("/api/users?is_active=sideways", headers=_auth(admin))
+
+    assert response.status_code == 400
+    assert "is_active" in response.json()["detail"]
+
+
 def test_a_tutor_is_refused(api: TestClient, db: Session) -> None:
     tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
 

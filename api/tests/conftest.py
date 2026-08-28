@@ -1,9 +1,11 @@
 import os
-from collections.abc import Generator
+import threading
+from collections.abc import Callable, Generator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, make_url, text
+from redis.exceptions import RedisError
+from sqlalchemy import create_engine, make_url, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
@@ -11,6 +13,7 @@ from sqlalchemy.orm import Session
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
+os.environ.setdefault("COOKIE_SECURE", "false")
 
 
 @pytest.fixture
@@ -64,10 +67,67 @@ def _test_engine() -> Generator[Engine, None, None]:
         # the extension, and `create_all` will not, so the table would fail to create here.
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
     metadata.create_all(engine)
+    _seed_login_rate_limit_settings(engine)
 
     yield engine
 
     engine.dispose()
+
+
+def _seed_login_rate_limit_settings(engine: Engine) -> None:
+    """Insert the `system_settings` rows migrations 0004, 0011, 0012 and 0013 seed.
+
+    `create_all` reproduces the schema and none of the data a migration writes, and `POST
+    /auth/token` now reads the four rate-limit rows on every request — without them every login
+    test fails with `SettingNotFound`. The same holds for `default_phone_country_code` (0012),
+    which every client and tutor write path reads through `phone_service`, and for the five
+    scheduling rows (0004 and 0013), which `scheduling_service.load_scheduling_settings` reads on
+    every slot query and every booking write. Same reason the ENUMs and `btree_gist` are created
+    by hand above: the harness has to stand in for whatever a migration did that isn't in the
+    metadata.
+
+    Committed rather than written through the rolled-back `db` fixture, because
+    `session_per_request_api` opens its own sessions and would not see an uncommitted row.
+    `ON CONFLICT DO NOTHING` keeps this idempotent — the test database outlives the run.
+    """
+    from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER
+    from app.services.phone_service import DEFAULT_COUNTRY_CODE_SETTING
+    from app.services.rate_limit_service import (
+        EMAIL_MAX_ATTEMPTS_SETTING,
+        EMAIL_WINDOW_SECONDS_SETTING,
+        IP_MAX_ATTEMPTS_SETTING,
+        IP_WINDOW_SECONDS_SETTING,
+    )
+    from app.services.scheduling_service import (
+        BOOKING_LOOKAHEAD_SETTING,
+        MAX_SLOTS_OFFERED_SETTING,
+        MIN_BOOKING_LEAD_SETTING,
+        SESSION_GAP_SETTING,
+        SESSION_LENGTH_SETTING,
+    )
+
+    defaults = {
+        IP_MAX_ATTEMPTS_SETTING: "20",
+        IP_WINDOW_SECONDS_SETTING: "900",
+        EMAIL_MAX_ATTEMPTS_SETTING: "5",
+        EMAIL_WINDOW_SECONDS_SETTING: "900",
+        DEFAULT_COUNTRY_CODE_SETTING: "1",
+        SESSION_LENGTH_SETTING: "60",
+        SESSION_GAP_SETTING: "30",
+        BOOKING_LOOKAHEAD_SETTING: "90",
+        MIN_BOOKING_LEAD_SETTING: "0",
+        MAX_SLOTS_OFFERED_SETTING: "5",
+    }
+    statement = text(
+        "INSERT INTO system_settings (key, value, value_type, is_developer_only)"
+        " VALUES (:key, :value, :value_type, false) ON CONFLICT (key) DO NOTHING"
+    )
+    with engine.begin() as connection:
+        for key, value in defaults.items():
+            connection.execute(
+                statement,
+                {"key": key, "value": value, "value_type": SETTING_VALUE_TYPE_INTEGER},
+            )
 
 
 @pytest.fixture
@@ -95,7 +155,7 @@ def db(_test_engine: Engine) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def api(db: Session) -> Generator[TestClient, None, None]:
+def api(db: Session, redis_double: "FakeRedis") -> Generator[TestClient, None, None]:
     """A `TestClient` whose request handlers run against the rolled-back `db` session."""
     # Imported lazily for the same reason as `client`.
     from app.db import get_db
@@ -109,3 +169,170 @@ def api(db: Session) -> Generator[TestClient, None, None]:
         yield TestClient(app)
     finally:
         del app.dependency_overrides[get_db]
+
+
+@pytest.fixture
+def redis_double() -> Generator["FakeRedis", None, None]:
+    """A `FakeRedis` installed over `get_redis`, mirroring how `api` overrides `get_db`.
+
+    Every route test gets one, not only the rate-limit ones: login now touches Redis on both
+    the success and the failure path, and a shared live Redis would carry one test's failed
+    attempts into the next one's budget. A per-test double makes that impossible instead of
+    unlikely.
+    """
+    from app.main import app
+    from app.redis_client import get_redis
+
+    fake = FakeRedis()
+    app.dependency_overrides[get_redis] = lambda: fake
+    try:
+        yield fake
+    finally:
+        del app.dependency_overrides[get_redis]
+
+
+class FakeRedis:
+    """The two operations `rate_limit_service` issues — the reservation script and ZREM — held
+    in memory.
+
+    A double rather than a live Redis or a new `fakeredis` dependency, because it is the only
+    way to exercise the paths a healthy server will not produce on demand: `fail_with` makes
+    every command raise, which is what proves the fail-open behaviour, and `advance` ages the
+    recorded entries so the sliding window can be tested without a `sleep`.
+
+    **It does not interpret Lua.** `register_script` recognises the one script this codebase
+    has and reproduces its *effect* in Python, under a lock that also covers `execute()` — so
+    the double serialises whole commands the way Redis's single-threaded command loop does, and
+    a threaded test against it is measuring something real rather than passing by accident.
+    That is deliberately not proof that the Lua itself is atomic; `test_auth_rate_limit.py`
+    runs the same concurrency test against a live Redis for that, and skips if none is up.
+    """
+
+    def __init__(self) -> None:
+        self.sorted_sets: dict[str, dict[str, float]] = {}
+        self.expirations: dict[str, int] = {}
+        self.fail_with: RedisError | None = None
+        self.lock = threading.Lock()
+
+    def register_script(self, script: str) -> "FakeReservationScript":
+        # Imported here rather than at module scope for the same reason as `client`: importing
+        # a service at collection time drags `app.db` in with it.
+        from app.services.rate_limit_service import RESERVE_ATTEMPT_SCRIPT
+
+        if script != RESERVE_ATTEMPT_SCRIPT:
+            raise NotImplementedError("the double models only the login reservation script")
+
+        # Real `register_script` sha1s the source locally and does no I/O, so it does not raise
+        # even when the server is gone; only the call does. The double is wrong the same way.
+        return FakeReservationScript(self)
+
+    def pipeline(self) -> "FakePipeline":
+        # Same reasoning: buffering is local, only `execute()` reaches the server.
+        return FakePipeline(self)
+
+    def advance(self, seconds: float) -> None:
+        """Age every recorded entry, standing in for the wall clock moving forward."""
+        for members in self.sorted_sets.values():
+            for member in members:
+                members[member] -= seconds
+
+    def raise_if_failing(self) -> None:
+        if self.fail_with is not None:
+            raise self.fail_with
+
+    def forget_if_empty(self, key: str) -> None:
+        """Redis drops a sorted set the moment its last member goes; so does this."""
+        if key in self.sorted_sets and not self.sorted_sets[key]:
+            del self.sorted_sets[key]
+
+
+class FakeReservationScript:
+    """`RESERVE_ATTEMPT_SCRIPT`'s effect, applied with the store lock held throughout.
+
+    Trim, count, and reserve have to be indivisible or the double would admit the concurrent
+    overshoot the script exists to prevent — and a concurrency test written against a double
+    that does not serialise proves nothing at all.
+    """
+
+    def __init__(self, store: FakeRedis) -> None:
+        self._store = store
+
+    def __call__(self, keys: list[str], args: list[object]) -> list[object]:
+        self._store.raise_if_failing()
+        key = keys[0]
+        now, window, max_attempts, member = (
+            float(args[0]),  # type: ignore[arg-type]
+            int(args[1]),  # type: ignore[arg-type]
+            int(args[2]),  # type: ignore[arg-type]
+            str(args[3]),
+        )
+
+        with self._store.lock:
+            members = self._store.sorted_sets.get(key, {})
+            for stale in [held for held, score in members.items() if score <= now - window]:
+                del members[stale]
+
+            if len(members) >= max_attempts:
+                # Redis renders a score as a bulk string; `repr` round-trips through `float`
+                # the same way, which is all the service does with it.
+                reply = [0, repr(min(members.values()))]
+            else:
+                members[member] = now
+                self._store.sorted_sets[key] = members
+                self._store.expirations[key] = window
+                reply = [1, "0"]
+
+            self._store.forget_if_empty(key)
+
+        return reply
+
+
+class FakePipeline:
+    """Queues commands and applies them on `execute()`, as a MULTI/EXEC block does."""
+
+    def __init__(self, store: FakeRedis) -> None:
+        self._store = store
+        self._queued: list[Callable[[], object]] = []
+
+    def zrem(self, key: str, *members: str) -> "FakePipeline":
+        return self._queue(lambda: self._zrem(key, members))
+
+    def execute(self) -> list[object]:
+        self._store.raise_if_failing()
+        # Under the same lock the script takes: a release landing in the middle of a
+        # reservation is something real Redis cannot do, so the double must not either.
+        with self._store.lock:
+            results = [command() for command in self._queued]
+        self._queued.clear()
+
+        return results
+
+    def _queue(self, command: Callable[[], object]) -> "FakePipeline":
+        self._queued.append(command)
+
+        return self
+
+    def _zrem(self, key: str, members: tuple[str, ...]) -> int:
+        held = self._store.sorted_sets.get(key, {})
+        removed = [member for member in members if held.pop(member, None) is not None]
+        self._store.forget_if_empty(key)
+
+        return len(removed)
+
+
+@pytest.fixture
+def set_int_setting(db: Session) -> Callable[[str, int], None]:
+    """Rewrite a `system_settings` value for the duration of one test.
+
+    Written through the `db` session so the change is rolled back with everything else, and so
+    the request handler under test reads it back — which is also what proves the limiter reads
+    its thresholds at request time rather than caching them at import.
+    """
+    from app.models.system_setting import SystemSetting
+
+    def rewrite(key: str, value: int) -> None:
+        row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one()
+        row.value = str(value)
+        db.flush()
+
+    return rewrite

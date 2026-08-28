@@ -76,6 +76,10 @@ class TutorAvailabilityException(HasID, Base):
             "start_time IS NULL OR end_time > start_time",
             name="ck_tutor_availability_exceptions_time_order",
         ),
+        CheckConstraint(
+            "end_date >= start_date",
+            name="ck_tutor_availability_exceptions_date_order",
+        ),
     )
 
     tutor_id: Mapped[uuid.UUID] = mapped_column(

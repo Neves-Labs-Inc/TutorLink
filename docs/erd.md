@@ -2,21 +2,23 @@
 
 ## Overview
 
-TutorLink uses a PostgreSQL relational database as the single source of truth for all business data. Conversation state is handled separately in Redis and is not persisted long-term.
+TutorLink uses a PostgreSQL relational database as the single source of truth for all business data, including the full history of every WhatsApp conversation the bot has had. Redis holds only the live flow state of a conversation currently in progress — which step the bot is on and what it has collected so far — and that state is still ephemeral and expires on its own. What was said, by whom, and when is relational and retained; see [`conversations`](#conversations) and [`messages`](#messages).
 
 ---
 
 ## Tables
 
 ### `users`
-Login accounts for the admin dashboard. Supports two roles: `admin` (full access) and `tutor` (own schedule only). Tutor accounts are linked to a row in the `tutors` table.
+Login accounts for the admin dashboard. Supports three roles: `developer` (everything an admin has, plus developer-only settings fields), `admin` (full access) and `tutor` (own schedule only). Tutor accounts are linked to a row in the `tutors` table.
+
+`developer` is a superset of `admin` rather than a parallel role — every gate asks "admin or above" rather than "is admin". An admin may not create a `developer` nor promote anyone to one, including themselves, so the first account is created by a CLI command rather than over HTTP.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
 | email | VARCHAR | Unique — used as login username |
 | hashed_password | VARCHAR | Bcrypt hashed |
-| role | ENUM | admin, tutor |
+| role | ENUM | developer, admin, tutor |
 | tutor_id | UUID | FK → tutors.id — null for admin accounts |
 | is_active | BOOLEAN | Soft delete flag |
 | created_at | TIMESTAMPTZ | |
@@ -243,6 +245,82 @@ Constraints: `EXCLUDE USING gist excl_bookings_live_overlap (tutor_id WITH =, ts
 
 ---
 
+### `conversations`
+One row per WhatsApp identity, created on the first inbound message. Holds who is answering the client right now — the bot, or an admin who has taken over.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| phone_number | VARCHAR | Unique — the WhatsApp identity |
+| guardian_id | UUID | FK → guardians.id, nullable — linked once intake creates the guardian |
+| status | ENUM `conversation_status` | `bot`, `human`. NOT NULL, default `bot` — who is answering right now |
+| taken_over_by_user_id | UUID | FK → users.id, nullable |
+| taken_over_at | TIMESTAMPTZ | nullable |
+| last_message_at | TIMESTAMPTZ | Ordering the conversation list |
+| last_read_at | TIMESTAMPTZ | nullable — shared admin-side read watermark |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | |
+
+Constraints: `UNIQUE (phone_number)` · `CHECK ((status = 'human') = (taken_over_by_user_id IS NOT NULL))` · `INDEX (guardian_id)` · `INDEX (last_message_at DESC)`
+
+The row is keyed on `phone_number` rather than on `guardian_id` because the bot is already talking
+before a guardian exists — intake collects the name several messages in. A conversation that could not
+exist until intake succeeded would lose exactly the conversations an admin most wants to read: the ones
+that stalled part-way through it. `guardian_id` is backfilled when the guardian row is created and stays
+NULL otherwise, which is why the conversation list has to be able to render a bare phone number.
+
+`conversations.phone_number` is never rewritten. When an admin corrects or changes a guardian's number on
+the client screen, `guardians.phone_number` moves and the conversation stays where it is: a thread records
+what was said to one WhatsApp identity, and re-pointing it would make the archive claim messages went to a
+number Twilio never sent them to. The next inbound message from the new number opens a second conversation
+carrying the same `guardian_id`, which is why `INDEX (guardian_id)` is not unique. A guardian who has
+changed handsets has more than one thread, the older one still readable as history.
+
+`last_read_at` is a single watermark shared by every admin rather than one per admin. This is a shared
+inbox for a small team, and a takeover is already a shared act — one admin claims a conversation and any
+other can see it is claimed. A per-admin junction table would buy per-person unread counts that nobody
+has asked for, at the cost of a second table on the read path of the list screen.
+
+The CHECK ties the two halves of the takeover state together, so `human` with no holder, and a holder
+with the bot still running, are both unrepresentable rather than merely discouraged. This is the same
+reasoning as the paired NULL check on `tutor_availability_exceptions`: a state that has no coherent
+meaning should be rejected by the database, not left for the application to remember to avoid.
+
+---
+
+### `messages`
+Every message in a conversation — what the client sent, what the bot replied, and what an admin typed while holding the conversation.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID | Primary key |
+| conversation_id | UUID | FK → conversations.id |
+| author_kind | ENUM `message_author` | `client`, `bot`, `admin` |
+| author_user_id | UUID | FK → users.id, nullable — set only when `author_kind = 'admin'` |
+| body | TEXT | Message text as sent or received |
+| twilio_sid | VARCHAR | nullable, unique — Twilio's message SID |
+| status | ENUM `message_status` | `received`, `queued`, `sent`, `delivered`, `failed` |
+| error_code | VARCHAR | nullable — Twilio's error code on `failed` |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | Moves only when the delivery callback advances `status` |
+
+Constraints: `UNIQUE (twilio_sid)` · `CHECK ((author_kind = 'admin') = (author_user_id IS NOT NULL))` · `INDEX (conversation_id, created_at)`
+
+There is deliberately no `direction` column. Inbound and outbound are already derivable from
+`author_kind` — `client` is inbound, `bot` and `admin` are outbound — and storing both would create two
+facts that can disagree, with nothing in the schema to say which one is right.
+
+`twilio_sid` is unique because Twilio retries a webhook whose delivery it believes failed, and the same
+message can therefore arrive more than once. The insert is the idempotency key: a retry of an
+already-recorded message conflicts on the unique index and is discarded, rather than appearing twice in
+the thread an admin is reading.
+
+An inbound message is written `received` and never changes state again — it has already arrived, and
+there is nothing further to report about it. An outbound one starts `queued` and is advanced by Twilio's
+delivery status callback, which is also what records `error_code` when the send ultimately fails.
+
+---
+
 ### `system_settings`
 Runtime-configurable business settings, as typed key/value rows. A row per setting rather than one row per column: the set grows, and adding one should be an INSERT rather than a migration. Read at request time — several of these re-cut the slot grid, so a cached value would silently serve a stale schedule.
 
@@ -267,6 +345,30 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 | booking_lookahead_days | 90 | no |
 | min_booking_lead_hours | 0 | no |
 | cancellation_cutoff_hours | 24 | no |
+| chat_retention_days | 365 | no |
+| login_rate_limit_ip_max_attempts | 20 | no |
+| login_rate_limit_ip_window_seconds | 900 | no |
+| login_rate_limit_email_max_attempts | 5 | no |
+| login_rate_limit_email_window_seconds | 900 | no |
+
+`chat_retention_days` is how long a message is kept. A nightly job deletes `messages` older than the
+window, and a `conversations` row left with no surviving messages goes with them rather than lingering as
+an empty thread in the list. A value of `0` means never purge, which is the setting a client on a
+records-retention obligation will want.
+
+It is a setting rather than a constant for the same reason `session_gap_minutes` is: the answer is a
+business policy, it differs from one client to the next, and it changes for reasons that have nothing to
+do with a release. Hard-coding it would make a legal or contractual decision into a deploy.
+
+The four `login_rate_limit_*` rows are the thresholds for the brute-force limiter on `POST /auth/token`
+(#3, OQ-7): two independent sliding windows, one keyed on the caller's address and one on the submitted
+email, each with its own maximum and window. They are rows for the same reason — the right numbers depend
+on how a client's staff actually sign in, a shared office address behind one NAT looks like an attacker to
+a limit tuned for a home connection, and discovering that during an incident must not require a deploy. A
+`max_attempts` of `0` disables that bucket; both at `0` turns the limiter off. That is an integer rather
+than a boolean because `integer` is the only `value_type` in use, and adding one to express "off" would be
+a schema change to say what `0` already says. `POST /auth/token` is the only reader of these, and the only
+reader of `system_settings` at all today — see `docs/api-design.md`.
 
 ---
 
@@ -290,7 +392,16 @@ tutors ────────────────────────�
   │         └──────────────────────────── bookings
   │
   └──< tutor_availability_exceptions
+
+guardians ──< conversations ──< messages
+                   │                │
+users ─────────────┴────────────────┘
 ```
+
+`users` appears twice: once as the tutor login account, and once against the chat tables, where it names
+the admin holding a conversation (`conversations.taken_over_by_user_id`) and the admin who typed a
+particular message (`messages.author_user_id`). Both links from `users` are nullable — a conversation the
+bot is still handling has no holder, and a client or bot message has no author account.
 
 ---
 
@@ -298,9 +409,9 @@ tutors ────────────────────────�
 
 When a client requests a slot, the bot runs three checks in sequence:
 
-1. Fetch recurring ranges from `tutor_availability` matching the requested day of week, and cut each into a grid of candidate slots
+1. Fetch recurring ranges from `tutor_availability` with `is_active = true` matching the requested day of week, and cut each into a grid of candidate slots
 2. Subtract slots blocked by a `tutor_availability_exceptions` range with `status = 'approved'` covering the requested date (`start_date <= requested_date <= end_date`) — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they are set. `pending` and `rejected` rows are ignored entirely
-3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`
+3. Subtract slots already taken in `bookings` where `scheduled_date = requested_date` and `status IN (pending, confirmed)`, widening each booking by `session_gap_minutes` on both sides before comparing
 4. Return remaining open slots to the client
 
 Step 1 strides from the range's `start_time` by `session_length_minutes + session_gap_minutes`. Tutoring
@@ -323,33 +434,70 @@ grid.
 A slot is also withheld unless it starts after `now + min_booking_lead_hours` (default 0), and the
 requested date must fall within `booking_lookahead_days` (default 90) of today.
 
+Step 1 also takes only rows with `is_active = true`. Deactivating a recurring slot is a soft delete, so the
+row is still there afterwards, and a query that treated a withdrawn slot as absent would keep cutting a grid
+out of it. Rule 1 of `POST /api/bookings` requires an **active** range, so leaving the filter out would have
+the bot offering slots the write path refuses — the same trap step 2's `status` filter avoids, for the same
+reason: the row existing is not enough.
+
 Step 2 only considers rows with `status = 'approved'`. A tutor-created exception starts `pending` and has
 no effect on the grid until an admin approves it — it is visible to both the tutor and admins, but a
 pending request that blocked bookings would let a tutor unilaterally freeze their own schedule before
 anyone reviewed it. Within the approved set, the exception blocks the whole day when `start_time`/
 `end_time` are NULL — the existing, unchanged behavior. When they are set, only the overlapping portion of
-the day is subtracted, using the same overlap comparison as step 3: `slot.start_time < exception.end_time
-AND slot.end_time > exception.start_time`, applied to any date within the exception's
-`start_date`–`end_date` range. A mid-day appointment is routine, and an all-or-nothing day flag forces a
-tutor to give up a whole day for a one-hour errand.
+the day is subtracted, by bare overlap — `slot.start_time < exception.end_time AND slot.end_time >
+exception.start_time`, applied to any date within the exception's `start_date`–`end_date` range. Bare, not
+gap-expanded like step 3, because rule 4 of `POST /api/bookings` blocks on bare overlap with an exception
+too, and the offer surface must not read the same rows differently from the write path. A mid-day
+appointment is routine, and an all-or-nothing day flag forces a tutor to give up a whole day for a one-hour
+errand.
 
-Step 3 subtracts by **time overlap**, never by start-time equality. A candidate slot is dropped when
-`slot.start_time < booking.end_time AND slot.end_time > booking.start_time`.
+Step 3 subtracts by **time overlap**, widened by `session_gap_minutes` on both sides, never by start-time
+equality. A candidate slot is dropped when `slot.start_time < booking.end_time + gap AND
+slot.end_time + gap > booking.start_time`.
 
-This matters because `session_length_minutes` is runtime-editable, so the slot grid is not stable over
-time — changing it from 60 to 45 re-cuts every future availability range. Stored bookings keep their own
-`start_time`/`end_time` and are unaffected, but they end up misaligned with the new grid: a 60-minute
-booking at 10:00 straddles both the 09:45–10:30 and the 10:30–11:15 slots. Matching on equality would
-find neither and offer both, double-booking the tutor.
+The widening is what keeps this step and the write path agreeing. The gap is where the tutor travels, so a
+slot that merely abuts a booking, or sits inside the travel gap beside one, is not bookable — and rule 3 of
+`POST /api/bookings` refuses it in as many words: "at least `session_gap_minutes` clear of the nearest
+booking on either side". Bare overlap here would offer a slot the confirm then rejects with a 409, which is
+the offer surface and the write path reading the same rows by different rules. Both inequalities stay
+strict, so clearance of exactly one gap passes, which is what "at least" means: on the 60+30 grid above, a
+booking filling 09:00–10:00 leaves 10:30–11:30 offered, since `10:30 < 10:00 + 30` is false. That holds in
+general and not by luck — the stride is `length + gap`, so consecutive grid slots are always exactly a gap
+apart and can never erase each other. What the widening does drop is the off-grid neighbour: a booking of
+10:00–11:00 clears 09:00–10:00, which bare overlap would have kept.
+
+Equality matching fails for a separate reason. Both settings are runtime-editable and `POST /api/bookings`
+does not require a booking to land on the grid, so a stored booking's `start_time` need not be any slot's:
+an admin may book outside the grid, and a booking made before the settings were re-cut keeps the times it
+was given. At length 45 and gap 30 the stride is 75 minutes, so the 09:00–12:00 range above cuts into
+09:00–09:45 and 10:15–11:00 — 11:30–12:15 would overrun the range, leaving 11:00–12:00 over. An admin
+booking the tutor 09:30–10:30 starts at neither 09:00 nor 10:15, yet takes the last 15 minutes of the first
+slot and the first 15 of the second. Matching on equality would find no slot to remove and offer both,
+double-booking the tutor. Overlap alone is enough to drop both here; the widening extends the same
+subtraction to the slots such a booking only abuts.
 
 ---
 
 ## Redis — Conversation State
 
-Not part of the relational schema. Redis stores temporary per-user conversation state during an active bot session.
+Not part of the relational schema. Redis stores the live flow state of a bot session in progress — which step the bot is on and what it has collected so far.
 
 | Key | Value | TTL |
 |---|---|---|
 | `phone_number` | `{ step, collected_data }` | 30 minutes |
 
 The state is discarded automatically when the TTL expires. If a client goes idle mid-conversation, they start fresh next time they message.
+
+Redis is not the record of the conversation and never was, but the division is worth stating now that
+there is a second store. Redis answers "where is this client up to in the flow right now", holds nothing
+once the flow ends, and is safe to lose — losing it costs a client one restarted intake.
+[`conversations`](#conversations) and [`messages`](#messages) answer "what was said, by whom, when, and
+did it get delivered", are the source of truth for the admin chat screens, and are retained for
+`chat_retention_days`. Nothing is written to both.
+
+A takeover touches Redis not at all. Flow state keeps its 30-minute TTL and will usually expire during a
+handoff of any length, so when the admin releases the conversation the client resumes from a fresh state
+— the same behaviour as any other client who went idle. Freezing the TTL for the duration of a handoff
+was the alternative, and it is worse: it would restore a half-finished intake that the admin has by then
+completed by hand, and the bot would ask again for answers the client has already given.

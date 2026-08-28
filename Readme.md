@@ -8,7 +8,7 @@ TutorLink is a WhatsApp-based scheduling tool that helps tutoring businesses man
 
 Clients message the TutorLink WhatsApp number to book tutoring sessions for their children. The bot guides them through an intake flow — collecting guardian details, the home, child information, subject, and preferred times — then matches them with an available tutor and confirms the booking.
 
-Admins manage everything through a web dashboard: adding tutors, setting weekly availability, creating exceptions (vacations, days off), and viewing all upcoming bookings.
+Admins manage everything through a web dashboard: adding tutors, setting weekly availability, creating exceptions (vacations, days off), and viewing all upcoming bookings. They can also read every conversation the bot has had and step into one directly — taking over pauses the bot until the admin hands it back, so a client is never answered by both at once.
 
 ---
 
@@ -31,24 +31,26 @@ Admins manage everything through a web dashboard: adding tutors, setting weekly 
 WhatsApp
    │
    ▼
-Twilio ──────────► FastAPI (Bot Backend)
-                        │
-              ┌─────────┴──────────┐
-              ▼                    ▼
-           Redis              PostgreSQL
-      (conversation           (clients,
-          state)            tutors, bookings)
-                                   ▲
-                                   │
-                          Vite + React
+Twilio ──────────► FastAPI (Bot Backend) ───────┐
+                        │                       │
+              ┌─────────┴──────────┐            │
+              ▼                    ▼            │ WebSocket
+           Redis              PostgreSQL        │ (live chat)
+      (bot flow                (clients,        │
+          state)              tutors, bookings, │
+                              chat history)     │
+                                   ▲            │
+                                   │            │
+                          Vite + React◄─────────┘
                          (Admin Dashboard)
 ```
 
 - **Twilio** receives WhatsApp messages and forwards them to the FastAPI webhook
 - **FastAPI** processes each message, manages conversation state in Redis, reads/writes booking data to Postgres
 - **Vite + React** admin dashboard talks directly to FastAPI REST endpoints
-- **Redis** stores per-user conversation state with a 30-minute TTL — no long-term persistence needed
-- **PostgreSQL** is the single source of truth for all business data
+- **Redis** stores per-user bot flow state with a 30-minute TTL — no long-term persistence needed; the conversation history that state drives is persisted in Postgres, not Redis
+- **PostgreSQL** is the single source of truth for all business data, including full conversation and message history
+- **WebSocket** carries live chat between the dashboard and FastAPI — new messages and takeover changes push to connected admins instead of being polled for
 
 ---
 
@@ -159,12 +161,13 @@ Set the resulting URL as your Twilio WhatsApp webhook: `https://<your-ngrok-url>
 DATABASE_URL=postgresql+psycopg://tutorlink:tutorlink@postgres:5432/tutorlink
 REDIS_URL=redis://redis:6379/0
 SECRET_KEY=change-me-generate-with-openssl-rand-hex-32
-DEBUG=true
+COOKIE_SECURE=true
 
 # Twilio (leave blank until Phase 7 — no webhook exists yet)
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_WHATSAPP_NUMBER=
+TWILIO_STATUS_CALLBACK_URL=
 
 # Postgres (container)
 POSTGRES_USER=tutorlink
@@ -175,6 +178,10 @@ POSTGRES_DB=tutorlink
 VITE_API_BASE_URL=
 VITE_API_PROXY_TARGET=http://api:8000
 ```
+
+`COOKIE_SECURE` gates the `Secure` attribute on the refresh cookie and defaults to `true` when unset. Keep it `true` for any deployment reachable over the network — the refresh token is the long-lived half of the auth pair, and without `Secure` it travels over plain HTTP. Set it to `false` only for local plain-HTTP development, where a browser would refuse to store the cookie at all.
+
+`TWILIO_STATUS_CALLBACK_URL` must be an absolute public URL — Twilio posts delivery statuses to it and cannot resolve a relative path or the service's own hostname.
 
 ---
 
@@ -208,6 +215,7 @@ When reliability becomes a priority:
 4. For each child: subject → tutor selection → preferred day/time → available slots → confirm
 5. Booking is written to Postgres, confirmation sent to client
 6. Returning clients can book new sessions, cancel, or reschedule
+7. An admin may take over any conversation at any point — inbound client messages keep being recorded, but the bot stops replying until the admin releases the conversation back to it
 
 ---
 
@@ -217,6 +225,7 @@ When reliability becomes a priority:
 - **Availability** — set weekly recurring schedules per tutor; add exceptions (vacation, days off)
 - **Bookings** — view all upcoming and past sessions; manually create or cancel bookings
 - **Clients** — view guardian profiles, their homes, children, and booking history
+- **Chats** — read every conversation the bot has had, filter by bot/human status, and take over or release a conversation
 
 ---
 

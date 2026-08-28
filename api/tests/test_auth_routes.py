@@ -14,6 +14,7 @@ from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.routers import auth
 from app.security import REFRESH_TOKEN_TYPE, decode_token, hash_password
+from tests.conftest import FakeRedis
 
 EMAIL = "admin@example.com"
 DORMANT_EMAIL = "dormant@example.com"
@@ -41,10 +42,10 @@ def test_login_returns_a_token_pair_and_sets_the_refresh_cookie(
     assert "Secure" not in set_cookie
 
 
-def test_login_marks_the_refresh_cookie_secure_when_debug_is_off(
+def test_login_marks_the_refresh_cookie_secure_when_cookie_secure_is_on(
     api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    production = get_settings().model_copy(update={"debug": False})
+    production = get_settings().model_copy(update={"cookie_secure": True})
     monkeypatch.setattr(auth, "get_settings", lambda: production)
     _make_user(db)
 
@@ -237,7 +238,10 @@ def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session],
 @pytest.fixture
 def session_per_request_api(
     committed_sessions: sessionmaker[Session],
+    redis_double: FakeRedis,
 ) -> Generator[TestClient, None, None]:
+    # Takes `redis_double` for its side effect: it is what puts the `get_redis` override on the
+    # app, and without it these two tests would log in against whatever the live Redis holds.
     from app.db import get_db
     from app.main import app
 

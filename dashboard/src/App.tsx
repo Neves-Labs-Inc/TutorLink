@@ -5,6 +5,7 @@ import { AppShell } from '@/components/layout/AppShell'
 import { ADMIN_ROLES } from '@/lib/auth'
 import { Login } from '@/pages/Login'
 import { Dashboard } from '@/pages/admin/Dashboard'
+import { Settings } from '@/pages/admin/Settings'
 import { Schedule } from '@/pages/tutor/Schedule'
 import { NotFound } from '@/pages/NotFound'
 
@@ -19,6 +20,16 @@ export const App = () => (
             <RouteGuard allow={ADMIN_ROLES}>
               <AppShell>
                 <Dashboard />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Settings />
               </AppShell>
             </RouteGuard>
           }

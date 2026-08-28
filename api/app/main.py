@@ -6,12 +6,17 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.config import get_settings
 from app.routers import (
     auth,
+    availability,
+    booking_status,
+    booking_writes,
+    bookings,
     children,
     client_bookings,
     clients,
     exceptions,
     health,
     settings,
+    slots,
     subjects,
     tutor_subjects,
     tutors,
@@ -64,6 +69,11 @@ def create_app() -> FastAPI:
     app.include_router(children.router)
     app.include_router(tutors.router)
     app.include_router(tutor_subjects.router)
+    app.include_router(availability.router)
+    app.include_router(slots.router)
+    app.include_router(bookings.router)
+    app.include_router(booking_writes.router)
+    app.include_router(booking_status.router)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

@@ -75,14 +75,16 @@ def _test_engine() -> Generator[Engine, None, None]:
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migrations 0011 and 0012 seed.
+    """Insert the `system_settings` rows migrations 0004, 0011, 0012 and 0013 seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
     /auth/token` now reads the four rate-limit rows on every request — without them every login
     test fails with `SettingNotFound`. The same holds for `default_phone_country_code` (0012),
-    which every client and tutor write path reads through `phone_service`. Same reason the
-    ENUMs and `btree_gist` are created by hand above: the harness has to stand in for whatever a
-    migration did that isn't in the metadata.
+    which every client and tutor write path reads through `phone_service`, and for the five
+    scheduling rows (0004 and 0013), which `scheduling_service.load_scheduling_settings` reads on
+    every slot query and every booking write. Same reason the ENUMs and `btree_gist` are created
+    by hand above: the harness has to stand in for whatever a migration did that isn't in the
+    metadata.
 
     Committed rather than written through the rolled-back `db` fixture, because
     `session_per_request_api` opens its own sessions and would not see an uncommitted row.
@@ -96,6 +98,13 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         IP_MAX_ATTEMPTS_SETTING,
         IP_WINDOW_SECONDS_SETTING,
     )
+    from app.services.scheduling_service import (
+        BOOKING_LOOKAHEAD_SETTING,
+        MAX_SLOTS_OFFERED_SETTING,
+        MIN_BOOKING_LEAD_SETTING,
+        SESSION_GAP_SETTING,
+        SESSION_LENGTH_SETTING,
+    )
 
     defaults = {
         IP_MAX_ATTEMPTS_SETTING: "20",
@@ -103,6 +112,11 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         EMAIL_MAX_ATTEMPTS_SETTING: "5",
         EMAIL_WINDOW_SECONDS_SETTING: "900",
         DEFAULT_COUNTRY_CODE_SETTING: "1",
+        SESSION_LENGTH_SETTING: "60",
+        SESSION_GAP_SETTING: "30",
+        BOOKING_LOOKAHEAD_SETTING: "90",
+        MIN_BOOKING_LEAD_SETTING: "0",
+        MAX_SLOTS_OFFERED_SETTING: "5",
     }
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"

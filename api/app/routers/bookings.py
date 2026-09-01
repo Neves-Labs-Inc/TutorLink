@@ -36,6 +36,7 @@ def list_bookings_route(
     scope: TutorScope,
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
+    subject_id: uuid.UUID | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -50,6 +51,7 @@ def list_bookings_route(
         tutor_id=None,
         date_from=date_from,
         date_to=date_to,
+        subject_id=subject_id,
     )
 
     bookings, total = list_bookings(

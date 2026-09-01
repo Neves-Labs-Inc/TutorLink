@@ -17,6 +17,7 @@ from app.routers import (
     health,
     settings,
     slots,
+    stats,
     subjects,
     tutor_subjects,
     tutors,
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(bookings.router)
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
+    app.include_router(stats.router)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

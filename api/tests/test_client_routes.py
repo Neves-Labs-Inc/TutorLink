@@ -262,6 +262,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "label": "Mum's",
             "address": "123 Main St",
             "access_code": "1234",
+            "is_active": True,
         }
     ]
     assert body["children"] == [
@@ -352,6 +353,7 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
             "label": "Mum's",
             "address": "123 Main St",
             "access_code": "1234",
+            "is_active": True,
         }
     ]
 

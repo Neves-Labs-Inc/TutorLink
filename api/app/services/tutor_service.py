@@ -23,6 +23,9 @@ from app.services.phone_service import normalize_phone_number
 
 SUBJECTS_LOADED = selectinload(Tutor.tutor_subjects).joinedload(TutorSubject.subject)
 
+_LIKE_ESCAPE = "\\"
+_LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
 
 class TutorServiceError(Exception):
     """Base class for every failure this module reports."""
@@ -44,12 +47,13 @@ class TutorUniqueViolation(TutorServiceError):
     """A UNIQUE constraint on `tutors` fired; which of the two columns collided is unknown."""
 
 
-def _matching(
+def matching_tutors(
     *,
     is_active: bool,
     tutor_id: uuid.UUID | None,
     subject_id: uuid.UUID | None,
     grade_level: int | None,
+    q: str | None = None,
 ) -> Select[tuple[Tutor]]:
     """The filtered tutor query, as `EXISTS` rather than a join.
 
@@ -57,11 +61,19 @@ def _matching(
     who covers grade 12 qualifies for grade 8. Correlated `EXISTS` and not a `JOIN` because a
     tutor with three qualifying assignments must appear once and `total` must stay a count of
     tutors under every combination of these filters.
+
+    `q` is a case-insensitive substring of `name`; blank means no filter.
+
+    Public: `stats_service` is its second consumer, per CONSTITUTION §11.
     """
     statement = select(Tutor).where(Tutor.is_active.is_(is_active))
+    pattern = _substring_pattern(q)
 
     if tutor_id is not None:
         statement = statement.where(Tutor.id == tutor_id)
+
+    if pattern is not None:
+        statement = statement.where(Tutor.name.ilike(pattern, escape=_LIKE_ESCAPE))
 
     if subject_id is not None or grade_level is not None:
         assignment = select(1).select_from(TutorSubject).where(TutorSubject.tutor_id == Tutor.id)
@@ -75,6 +87,17 @@ def _matching(
         statement = statement.where(assignment.exists())
 
     return statement
+
+
+def _substring_pattern(raw: str | None) -> str | None:
+    trimmed = "" if raw is None else raw.strip()
+
+    if not trimmed:
+        pattern = None
+    else:
+        pattern = f"%{trimmed.translate(_LIKE_WILDCARDS)}%"
+
+    return pattern
 
 
 def _email_taken(db: Session, *, email: str, exclude_id: uuid.UUID | None) -> bool:
@@ -104,6 +127,7 @@ def list_tutors(
     grade_level: int | None,
     limit: int,
     offset: int,
+    q: str | None = None,
 ) -> tuple[list[Tutor], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -111,8 +135,12 @@ def list_tutors(
     tutor, a UUID means that one. It is a filter on `Tutor.id`, not a lookup — an unknown id
     yields an empty page rather than a 404.
     """
-    filtered = _matching(
-        is_active=is_active, tutor_id=tutor_id, subject_id=subject_id, grade_level=grade_level
+    filtered = matching_tutors(
+        is_active=is_active,
+        tutor_id=tutor_id,
+        subject_id=subject_id,
+        grade_level=grade_level,
+        q=q,
     )
     total = db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
     tutors = list(

@@ -23,7 +23,7 @@ is unreachable by any test this harness can run.
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import ScalarSelect, Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,9 @@ from app.models.child import Child
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.services.phone_service import normalize_phone_number
+
+_LIKE_ESCAPE = "\\"
+_LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +57,13 @@ class ClientDetail:
     children: list[Child]
 
 
+@dataclass(frozen=True, slots=True)
+class ClientWithCounts:
+    client: Guardian
+    home_count: int
+    child_count: int
+
+
 class ClientServiceError(Exception):
     """Base class for every failure this module reports."""
 
@@ -67,8 +77,14 @@ class PhoneNumberTaken(ClientServiceError):
 
 
 def list_clients(
-    db: Session, *, is_active: bool, phone_number: str | None, limit: int, offset: int
-) -> tuple[list[Guardian], int]:
+    db: Session,
+    *,
+    is_active: bool,
+    phone_number: str | None,
+    limit: int,
+    offset: int,
+    q: str | None = None,
+) -> tuple[list[ClientWithCounts], int]:
     """Rows for one page, plus the total matching before paging.
 
     `phone_number` is normalised before it is compared (D-E), so a human-typed
@@ -77,15 +93,26 @@ def list_clients(
     failure, not "no match", and answering it with an empty page tells the bot to create a
     duplicate.
 
-    The two filters compose, and `is_active` is **not** special-cased for the lookup: a
+    `q` is deliberately **not** normalised: a partial number such as `555` is unparseable, and
+    normalising it would turn a search into a 400. It is a raw case-insensitive substring of
+    the stored name or the stored E.164 string.
+
+    The filters compose, and `is_active` is **not** special-cased for the lookup: a
     deactivated client is found only with `is_active=False`.
     """
     canonical = None if phone_number is None else normalize_phone_number(db, raw=phone_number)
-    matching = _visible(is_active=is_active, phone_number=canonical)
+    matching = visible_clients(is_active=is_active, phone_number=canonical, q=q)
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
-    clients = list(
-        db.scalars(matching.order_by(Guardian.name, Guardian.id).limit(limit).offset(offset)).all()
-    )
+    rows = db.execute(
+        matching.add_columns(_home_count(), _child_count())
+        .order_by(Guardian.name, Guardian.id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    clients = [
+        ClientWithCounts(client=client, home_count=homes, child_count=children)
+        for client, homes, children in rows
+    ]
 
     return clients, total
 
@@ -181,13 +208,63 @@ def update_client(
     return _detail(db, client)
 
 
-def _visible(*, is_active: bool, phone_number: str | None) -> Select[tuple[Guardian]]:
+def visible_clients(
+    *, is_active: bool, phone_number: str | None, q: str | None = None
+) -> Select[tuple[Guardian]]:
     statement = select(Guardian).where(Guardian.is_active.is_(is_active))
+    pattern = _substring_pattern(q)
 
     if phone_number is not None:
         statement = statement.where(Guardian.phone_number == phone_number)
 
+    if pattern is not None:
+        statement = statement.where(
+            or_(
+                Guardian.name.ilike(pattern, escape=_LIKE_ESCAPE),
+                Guardian.phone_number.ilike(pattern, escape=_LIKE_ESCAPE),
+            )
+        )
+
     return statement
+
+
+def _substring_pattern(raw: str | None) -> str | None:
+    trimmed = "" if raw is None else raw.strip()
+
+    if not trimmed:
+        pattern = None
+    else:
+        pattern = f"%{trimmed.translate(_LIKE_WILDCARDS)}%"
+
+    return pattern
+
+
+# `homes` carries `is_active`, so a deactivated home is not counted; `children` has no such
+# column (`models/child.py`), so every linked child is. The two subqueries are scalar and
+# correlated rather than joined: a join over `guardian_homes` would multiply the guardian row
+# and turn `total` into a count of links (CONSTITUTION §8).
+#
+# This count and the nested list `_detail` builds are deliberately not the same predicate, and
+# that is not a §11 drift: `docs/api-design.md:69` places nested homes outside the collection
+# `is_active` rule, so the by-id response returns every linked home. `HomeRead` carries
+# `is_active` so the caller can tell which of them this number left out.
+def _home_count() -> ScalarSelect[int]:
+    return (
+        select(func.count())
+        .select_from(GuardianHome)
+        .join(Home, Home.id == GuardianHome.home_id)
+        .where(GuardianHome.guardian_id == Guardian.id, Home.is_active.is_(True))
+        .scalar_subquery()
+    )
+
+
+def _child_count() -> ScalarSelect[int]:
+    return (
+        select(func.count())
+        .select_from(ChildGuardian)
+        .where(ChildGuardian.guardian_id == Guardian.id)
+        .scalar_subquery()
+    )
 
 
 def _phone_number_taken(db: Session, *, phone_number: str, exclude_id: uuid.UUID | None) -> bool:

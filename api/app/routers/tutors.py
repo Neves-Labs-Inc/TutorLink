@@ -78,6 +78,7 @@ def list_all(
     is_active: bool = True,
     subject_id: uuid.UUID | None = None,
     grade_level: Annotated[int | None, Query(ge=1)] = None,
+    q: str | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[TutorRead]:
@@ -89,6 +90,7 @@ def list_all(
         tutor_id=scope.tutor_id,
         subject_id=subject_id,
         grade_level=grade_level,
+        q=q,
         limit=page_size,
         offset=(page - 1) * page_size,
     )

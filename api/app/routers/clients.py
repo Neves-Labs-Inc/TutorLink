@@ -32,6 +32,7 @@ from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, P
 from app.services.client_service import (
     ClientDetail,
     ClientNotFound,
+    ClientWithCounts,
     HomeInput,
     PhoneNumberTaken,
     create_client,
@@ -56,6 +57,7 @@ def list_all(
     db: DbSession,
     is_active: bool = True,
     phone_number: str | None = None,
+    q: str | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ClientSummary]:
@@ -64,6 +66,7 @@ def list_all(
             db,
             is_active=is_active,
             phone_number=phone_number,
+            q=q,
             limit=page_size,
             offset=(page - 1) * page_size,
         )
@@ -71,7 +74,7 @@ def list_all(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
 
     return Page[ClientSummary](
-        items=[ClientSummary.model_validate(row) for row in clients],
+        items=[_summary(row) for row in clients],
         total=total,
         page=page,
         page_size=page_size,
@@ -129,6 +132,17 @@ def update(
     db.commit()
 
     return _to_read(updated)
+
+
+def _summary(row: ClientWithCounts) -> ClientSummary:
+    return ClientSummary(
+        id=row.client.id,
+        name=row.client.name,
+        phone_number=row.client.phone_number,
+        is_active=row.client.is_active,
+        home_count=row.home_count,
+        child_count=row.child_count,
+    )
 
 
 def _home_input(home: HomeCreate | None) -> HomeInput | None:

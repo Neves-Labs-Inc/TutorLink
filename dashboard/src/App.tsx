@@ -5,6 +5,13 @@ import { AppShell } from '@/components/layout/AppShell'
 import { ADMIN_ROLES } from '@/lib/auth'
 import { Login } from '@/pages/Login'
 import { Dashboard } from '@/pages/admin/Dashboard'
+import { Tutors } from '@/pages/admin/Tutors'
+import { TutorDetail } from '@/pages/admin/TutorDetail'
+import { Clients } from '@/pages/admin/Clients'
+import { ClientDetail } from '@/pages/admin/ClientDetail'
+import { Bookings } from '@/pages/admin/Bookings'
+import { Subjects } from '@/pages/admin/Subjects'
+import { Users } from '@/pages/admin/Users'
 import { Settings } from '@/pages/admin/Settings'
 import { Schedule } from '@/pages/tutor/Schedule'
 import { NotFound } from '@/pages/NotFound'
@@ -20,6 +27,76 @@ export const App = () => (
             <RouteGuard allow={ADMIN_ROLES}>
               <AppShell>
                 <Dashboard />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/tutors"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Tutors />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/tutors/:id"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <TutorDetail />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/clients"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Clients />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/clients/:id"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <ClientDetail />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/bookings"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Bookings />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/subjects"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Subjects />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/users"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Users />
               </AppShell>
             </RouteGuard>
           }

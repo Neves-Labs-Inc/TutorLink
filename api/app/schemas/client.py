@@ -5,6 +5,13 @@ The frozen example body at `docs/api-design.md:~628` omits it while the same doc
 409-recovery path tells the bot to reactivate a deactivated client it has just fetched by id —
 a decision it cannot make without the flag. Recorded as OQ-3/A-3 for the user to accept.
 
+**`HomeRead.is_active` is a second amendment of the same kind.** `docs/api-design.md:69` keeps
+nested homes outside the collection `is_active` rule, so the by-id response returns every linked
+home while `home_count` on the list counts only the active ones; `docs/api-design.md:64` names the
+remedy — a caller that must distinguish a deactivated row "needs it added to that endpoint's
+schema first". Without the field the two numbers read as a contradiction rather than as two
+questions.
+
 `ChildRead` here is a deliberate duplicate of the read shape `schemas/child.py` owns. The two
 files must not import each other: the duplication is what lets the clients and children tracks
 land independently.
@@ -26,6 +33,7 @@ class HomeRead(BaseModel):
     label: str | None
     address: str
     access_code: str
+    is_active: bool
 
 
 class ChildRead(BaseModel):
@@ -39,12 +47,12 @@ class ChildRead(BaseModel):
 
 
 class ClientSummary(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     name: str
     phone_number: str
     is_active: bool
+    home_count: int
+    child_count: int
 
 
 class ClientRead(BaseModel):

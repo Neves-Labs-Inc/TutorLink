@@ -27,6 +27,7 @@ def list_bookings_for_client(
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     tutor_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -40,6 +41,7 @@ def list_bookings_for_client(
         tutor_id=tutor_id,
         date_from=date_from,
         date_to=date_to,
+        subject_id=subject_id,
     )
 
     try:

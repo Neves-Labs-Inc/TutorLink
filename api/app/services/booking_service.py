@@ -22,6 +22,7 @@ class BookingFilters:
     tutor_id: uuid.UUID | None = None
     date_from: datetime.date | None = None
     date_to: datetime.date | None = None
+    subject_id: uuid.UUID | None = None
 
 
 class BookingServiceError(Exception): ...
@@ -44,7 +45,7 @@ def list_bookings(
     statement = select(Booking)
     if tutor_id is not None:
         statement = statement.where(Booking.tutor_id == tutor_id)
-    statement = _apply_filters(statement, filters)
+    statement = apply_booking_filters(statement, filters)
 
     total = db.scalar(select(func.count()).select_from(statement.subquery()))
     bookings = list(
@@ -128,10 +129,10 @@ def _matching(*, client_id: uuid.UUID, filters: BookingFilters) -> Select[tuple[
     )
     statement = select(Booking).where(guardian_link.exists())
 
-    return _apply_filters(statement, filters)
+    return apply_booking_filters(statement, filters)
 
 
-def _apply_filters(
+def apply_booking_filters(
     statement: Select[tuple[Booking]], filters: BookingFilters
 ) -> Select[tuple[Booking]]:
     if filters.statuses:
@@ -139,6 +140,9 @@ def _apply_filters(
 
     if filters.tutor_id is not None:
         statement = statement.where(Booking.tutor_id == filters.tutor_id)
+
+    if filters.subject_id is not None:
+        statement = statement.where(Booking.subject_id == filters.subject_id)
 
     if filters.date_from is not None:
         statement = statement.where(Booking.scheduled_date >= filters.date_from)

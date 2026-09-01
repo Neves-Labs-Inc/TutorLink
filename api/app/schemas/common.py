@@ -19,7 +19,7 @@ MAX_PAGE_SIZE = 100
 
 class Page[ItemT](BaseModel):
     items: list[ItemT]
-    total: int
+    total: int | None
     page: int
     page_size: int
 

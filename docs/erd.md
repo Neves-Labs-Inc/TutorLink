@@ -215,7 +215,7 @@ creating their own exception gets `pending` instead; an admin or developer creat
 `approved` immediately, since making an admin approve their own entry would be a step with no gate value.
 Only an `approved` row subtracts from availability — see [Availability Query Logic](#availability-query-logic).
 
-Constraints: `CHECK ((start_time IS NULL) = (end_time IS NULL))` · `CHECK (start_time IS NULL OR end_time > start_time)` · `INDEX (tutor_id, start_date, end_date)`
+Constraints: `CHECK ((start_time IS NULL) = (end_time IS NULL))` · `CHECK (start_time IS NULL OR end_time > start_time)` · `CHECK (end_date >= start_date)` · `INDEX (tutor_id, start_date, end_date)`
 
 The two checks are separate rather than one expression: each is null-safe on its own, and a violation names which rule was broken. A half-set pair is rejected outright — NULL only reads as "whole day" if it cannot also mean "the other half was left off".
 
@@ -241,7 +241,9 @@ Confirmed tutoring sessions. Links a child to a tutor for a specific subject on 
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
-Constraints: `EXCLUDE USING gist excl_bookings_live_overlap (tutor_id WITH =, tsrange(scheduled_date + start_time, scheduled_date + end_time) WITH &&) WHERE (status IN (pending, confirmed))` · `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
+Constraints: `CHECK (end_time > start_time)` (`ck_bookings_time_order`) · `EXCLUDE USING gist excl_bookings_live_overlap (tutor_id WITH =, tsrange(scheduled_date + start_time, scheduled_date + end_time) WITH &&) WHERE (status IN (pending, confirmed))` · `INDEX (child_id, tutor_id, subject_id, scheduled_date, status)` · `INDEX (home_id)`
+
+`ck_bookings_time_order` is what makes the exclusion constraint sound and is not redundant with it. An empty or inverted `tsrange` overlaps nothing, so without the check an inverted booking is invisible to `excl_bookings_live_overlap` and double-books the tutor silently. A schema reproduced from this table without it is not equivalent.
 
 ---
 

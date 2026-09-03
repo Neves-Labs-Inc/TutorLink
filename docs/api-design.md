@@ -276,6 +276,7 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `DELETE /api/exceptions/{id}` | ✓ | ✓ | Own, pending only |
 | `GET /api/bookings` | All bookings | All bookings | Own bookings only |
 | `POST/PATCH /api/bookings` | ✓ | ✓ | ✗ |
+| `GET /api/slots/available` | ✓ | ✓ | ✗ |
 | `GET /api/clients` | ✓ | ✓ | ✗ |
 | `GET /api/conversations` | ✓ | ✓ | ✗ |
 | `GET /api/conversations/{id}` | ✓ | ✓ | ✗ |
@@ -304,6 +305,8 @@ Every setting that exists today is admin-visible. The mechanism is built ahead o
 That includes the four login rate limits — `login_rate_limit_ip_max_attempts` (20), `login_rate_limit_ip_window_seconds` (900), `login_rate_limit_email_max_attempts` (5), `login_rate_limit_email_window_seconds` (900). They are admin-tunable rather than constants because the right numbers depend on how a client's staff actually sign in — a shared office address behind one NAT looks like an attacker to a limit tuned for a home connection — and finding that out during an incident must not require a deploy. See [`POST /auth/token`](#post-authtoken) for what they do and what `0` means.
 
 Also admin-visible: `default_phone_country_code` (1), the E.164 calling code used to normalise a `phone_number` given without one on `POST`/`PATCH /api/clients` and `POST /api/tutors`. It is a setting rather than a constant for the same reason the rate limits are — the right default depends on where a deployment's guardians and tutors actually live, and that should not require a deploy to change.
+
+Also admin-visible: `max_slots_offered` (5), the maximum number of slots `GET /api/slots/available` returns in one response. It is a setting rather than a constant for the same reason the others are — how many options a guardian can usefully weigh in a chat message is a property of the deployment, not of the code. Raising or lowering it changes what is *offered* and not what is *counted*: `total` still reports every slot that matched, which is what lets the bot say "showing 5 of 8". Seeded by migration `0013`.
 
 > ⚠️ **Tutors are no longer read-only.** `POST /api/tutors/{id}/exceptions` lets a tutor request time off, which an admin then approves or rejects. It is the only tutor write path, and a pending request does not block bookings — only an approved one does. Any test asserting the blanket read-only form needs to learn this exception.
 
@@ -595,13 +598,17 @@ GET    /api/clients/{id}/bookings
 
 ### `GET /api/clients`
 
-Returns clients, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports `?phone_number=`.
+Returns clients, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports `?phone_number=` and `?q=`.
 
 `?phone_number=` is how the bot resolves a returning client before intake. It is a **filter, not an address**: the response is the ordinary page envelope holding zero or one item — never a bare object, and never a 404. `total` is `0` when no client holds that number and `1` when one does, never more, because `guardians.phone_number` is UNIQUE (see [`guardians`](erd.md#guardians)). No match is an empty set rather than a missing resource: the collection exists either way, and "look up, then create when empty" is one branch on `total` rather than a caught error. [List responses — the page envelope](#list-responses--the-page-envelope) admits no exception to the envelope, and a lookup is not one.
 
 The value is normalised the same way a `POST`/`PATCH` body is before it is compared against `guardians.phone_number`, so a human-typed `(202) 555-0123` finds the row stored as `+12025550123`. A value that cannot be parsed as a phone number at all is refused with **400**, the same rule `POST`/`PATCH` apply to the field itself.
 
-The two parameters compose and `?is_active=`'s default is **not** special-cased for the lookup: `?phone_number=X` on its own finds an **active** client. A deactivated client is found with `?phone_number=X&is_active=false`. This matters on the intake path — see `POST /api/clients` below — because the lookup coming back empty does **not** guarantee the create will succeed: the UNIQUE constraint spans deactivated rows too.
+`?phone_number=` and `?is_active=` compose and `?is_active=`'s default is **not** special-cased for the lookup: `?phone_number=X` on its own finds an **active** client. A deactivated client is found with `?phone_number=X&is_active=false`. This matters on the intake path — see `POST /api/clients` below — because the lookup coming back empty does **not** guarantee the create will succeed: the UNIQUE constraint spans deactivated rows too.
+
+`?q=` is the dashboard's search box, not the bot's lookup. It is a case-insensitive substring match against the stored name **or** the stored phone number, and it composes freely with both parameters above. It takes any string: there is no minimum length, no maximum, and no format. `%`, `_` and `\` typed by a user match themselves rather than acting as wildcards.
+
+**`?q=` is deliberately not normalised, and `?phone_number=` deliberately is.** They are different things and must stay so. `?phone_number=` is an address for one canonical row, so a human-typed `(202) 555-0123` is normalised to `+12025550123` before it is compared and an unparseable value is refused with 400. `?q=` is a *fragment*: `555` has no canonical form, and normalising it would turn a search box into a 400 on every partial number a user types. So `?q=555` searches the stored E.164 string as written and never refuses. Do not "fix" this by routing `q` through the normaliser.
 
 **Response**
 ```json
@@ -611,7 +618,9 @@ The two parameters compose and `?is_active=`'s default is **not** special-cased 
       "id": "uuid",
       "name": "Jane Doe",
       "phone_number": "+1234567890",
-      "is_active": true
+      "is_active": true,
+      "home_count": 2,
+      "child_count": 3
     }
   ],
   "total": 42,
@@ -619,6 +628,12 @@ The two parameters compose and `?is_active=`'s default is **not** special-cased 
   "page_size": 20
 }
 ```
+
+`home_count` and `child_count` are additive fields carried on every item, always present and `0` when there are none — the same shape `tutor_count` takes on [`GET /api/subjects`](#get-apisubjects). The dashboard's client list renders them as columns.
+
+**The two counts apply different predicates, and that is deliberate.** `home_count` counts only homes with `is_active = true`; `child_count` counts every linked child, because `children` carries no `is_active` column at all and [must not be given one](#soft-deletes-and-the-is_active-filter). Making the two "consistent" is not possible in one direction and not correct in the other.
+
+Both are computed as correlated scalar subqueries rather than joins. A join over `guardian_homes` would multiply the guardian row and turn `total` into a count of links rather than of clients, which [List responses — the page envelope](#list-responses--the-page-envelope) does not permit. A future count added here follows the same rule.
 
 ### `GET /api/clients/{id}`
 
@@ -640,7 +655,8 @@ Carries `is_active`, reporting the real state whatever it is — see [Soft delet
       "id": "uuid",
       "label": "Mum's",
       "address": "123 Main St",
-      "access_code": "1234"
+      "access_code": "1234",
+      "is_active": true
     }
   ],
   "children": [
@@ -654,6 +670,10 @@ Carries `is_active`, reporting the real state whatever it is — see [Soft delet
   ]
 }
 ```
+
+The nested `homes` list carries `is_active` and returns **every** linked home, deactivated ones included — a nested list inside a single-resource response is not a list endpoint and the collection filter does not reach it, as [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) states. The field is what lets a caller tell which of these homes `home_count` on [`GET /api/clients`](#get-apiclients) left out, since that count excludes the inactive ones. `homes` is an entity table with its own identity and is not a junction: `child_homes` and `guardian_homes` are the junctions, and they correctly carry no flag.
+
+`homes` and `children` are two flat, uncorrelated lists: this response does not say which home a given child is tutored at. That is a known limitation of the shape rather than an omission from it — a caller choosing a home for a booking must let `POST /api/bookings` rule 6 adjudicate, which refuses a home the child does not live at with **422**.
 
 ### `POST /api/clients`
 
@@ -738,7 +758,9 @@ DELETE /api/tutors/{id}/subjects/{subject_id}
 
 ### `GET /api/tutors`
 
-Returns tutors, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports filtering: `?subject_id=uuid&grade_level=7`.
+Returns tutors, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports filtering: `?subject_id=uuid&grade_level=7&q=sarah`.
+
+`?q=` is a case-insensitive substring match on the tutor's name, and it composes freely with every parameter above. It takes any string: no minimum length, no maximum, no format. `%`, `_` and `\` typed by a user match themselves rather than acting as wildcards.
 
 `grade_level` is a **ceiling comparison, not a membership test**: it returns every tutor whose `max_grade_level` for the subject is at or above the requested grade. With no `subject_id`, it returns tutors with at least one qualifying subject assignment.
 
@@ -837,8 +859,8 @@ Returns the tutor's full weekly schedule.
     {
       "id": "uuid",
       "day_of_week": 0,
-      "start_time": "09:00",
-      "end_time": "12:00",
+      "start_time": "09:00:00",
+      "end_time": "12:00:00",
       "is_active": true
     }
   ],
@@ -867,7 +889,7 @@ Update a slot's time or active status.
 
 ### `DELETE /api/availability/{id}`
 
-Remove a recurring slot.
+Remove a recurring slot. **This is a soft delete**: the row is kept with `is_active = false` and returned with **200**, not a 204. It cannot be anything else — `bookings.availability_id` is `NOT NULL`, so erasing the row would either fail against its own foreign key or orphan booking history. The slot stops being offered by `GET /api/slots/available` immediately; bookings already made against it are unaffected and stay valid. `GET /api/tutors/{id}/availability` still returns the row so the editor can re-enable it.
 
 ### `GET /api/tutors/{id}/exceptions`
 
@@ -881,23 +903,27 @@ the tutor and admins but has no effect on availability until it is approved — 
   "items": [
     {
       "id": "uuid",
+      "tutor_id": "uuid",
       "start_date": "2026-12-20",
       "end_date": "2026-12-31",
       "start_time": null,
       "end_time": null,
       "reason": "vacation",
       "notes": "Christmas break",
-      "status": "approved"
+      "status": "approved",
+      "created_at": "2026-08-01T14:32:00Z"
     },
     {
       "id": "uuid",
+      "tutor_id": "uuid",
       "start_date": "2026-08-18",
       "end_date": "2026-08-18",
-      "start_time": "09:00",
-      "end_time": "12:00",
+      "start_time": "09:00:00",
+      "end_time": "12:00:00",
       "reason": "personal",
       "notes": "Dentist appointment",
-      "status": "pending"
+      "status": "pending",
+      "created_at": "2026-08-01T14:32:00Z"
     }
   ],
   "total": 42,
@@ -935,13 +961,15 @@ no gate value, so their writes keep the old behaviour.
 ```json
 {
   "id": "uuid",
+  "tutor_id": "uuid",
   "start_date": "2026-08-18",
   "end_date": "2026-08-18",
-  "start_time": "09:00",
-  "end_time": "12:00",
+  "start_time": "09:00:00",
+  "end_time": "12:00:00",
   "reason": "personal",
   "notes": "Dentist appointment",
-  "status": "pending"
+  "status": "pending",
+  "created_at": "2026-08-01T14:32:00Z"
 }
 ```
 
@@ -1047,8 +1075,8 @@ availability query logic in `docs/erd.md`.
       "tutor_name": "Sarah Miller",
       "availability_id": "uuid",
       "date": "2026-08-10",
-      "start_time": "09:00",
-      "end_time": "10:00"
+      "start_time": "09:00:00",
+      "end_time": "10:00:00"
     }
   ],
   "total": 8,
@@ -1058,6 +1086,10 @@ availability query logic in `docs/erd.md`.
 ```
 
 Returns a maximum of 5 slots, ordered by start time, to keep the bot's response concise.
+
+**Which `is_active` this surface honours.** A slot is offered only when the tutor is active **and** the subject is active. A retired subject yields no qualified tutors here, the same way a retired tutor already yields none, so an unsatisfiable filter answers with an empty page rather than a refusal — this endpoint has never used a refusal shape for a filter that matches nothing. `tutor_availability.is_active` is honoured too: a withdrawn recurring slot generates no grid. Homes do not enter this endpoint at all.
+
+This must stay in step with `POST /api/bookings` below. The offer surface and the write path reading the same rows by different rules is the defect class that produced #44 item 1, and it reappears silently: nothing fails, the bot is simply offered something the write path will refuse, or worse, allowed to confirm something the offer path had already stopped showing.
 
 `total` is 8 while `items` holds at most 5: three further slots matched and were suppressed by REQ-043's cap. That is the number the bot needs in order to say "showing 5 of 8" rather than implying 5 is all there is.
 
@@ -1193,12 +1225,18 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
   "tutor_id": "uuid",
   "subject_id": "uuid",
   "availability_id": "uuid",
+  "home_id": "uuid",
   "scheduled_date": "2026-08-10",
   "start_time": "09:00",
   "end_time": "10:00",
+  "booked_by_guardian_id": null,
   "notes": null
 }
 ```
+
+`home_id` is **required** — `bookings.home_id` is `NOT NULL` and rule 6 validates it against the child's `child_homes` rows. It is not derivable once a child has two homes, which is the case the column exists for. `booked_by_guardian_id` is optional and `null` is the admin path; when present, rule 7 validates it against `child_guardians`.
+
+**Which `is_active` this endpoint honours.** A `tutor_id`, `subject_id`, `home_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a tutor `GET /api/slots/available` has already stopped offering. That 400 is deliberately not one of the 422s below — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `children` is absent from this list because it carries no `is_active` at all, and `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
 
 **Response**
 ```json
@@ -1214,6 +1252,21 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
 ### `PATCH /api/bookings/{id}`
 
 Update booking status. Used for cancellations, completions, and rescheduling.
+
+**`status` is the only writable field.** The request body carries nothing else, and `notes` in particular cannot be edited through this endpoint — a booking's notes are set at creation and are read-only thereafter. That is a property of this contract, not a gap in a client.
+
+**The legal transitions are exactly these:**
+
+| From | May move to |
+|---|---|
+| `pending` | `confirmed`, `cancelled` |
+| `confirmed` | `cancelled`, `completed` |
+| `cancelled` | — terminal |
+| `completed` | — terminal |
+
+Any other move is refused. `pending → completed` is deliberately **absent**: no path writes a `pending` booking today (`POST /api/bookings` always writes `confirmed`), so the edge is unreachable and adding it now would be speculative. When an intake path starts creating `pending` bookings, whether a session may be marked complete without ever being confirmed is a question to answer against this table rather than against an implementation's dictionary.
+
+A transition is decided once. The endpoint reads the row under a lock, judges the move against this table, and writes; two concurrent callers cannot both pass the check and have one decision silently discarded.
 
 **Request**
 ```json

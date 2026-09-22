@@ -3,10 +3,20 @@
 The first `/api/*` router in the project, so this module also pins the conventions the other
 Phase 3 tracks inherit: the envelope shape on every list, `{"detail": "<string>"}` on every
 failure, and status codes drawn only from 400 · 401 · 403 · 404 · 409.
+
+`POST` also creates tutor profiles now, so the last section drives both ways a tutor account
+can name one and every way that can fail. Its phone numbers come from the reserved
+`202-555-01xx` range, per `03-RESEARCH.md`'s normative fixture table and
+`test_tutor_routes.py`'s docstring: a payload's number is canonicalised by
+`normalize_phone_number`, which calls `phonenumbers.is_valid_number`, so a made-up number is a
+400 here by design. `_make_tutor` writes straight to the column and bypasses that check, which
+is why it is the fixtures rather than the payloads that carry arbitrary strings.
 """
 
+import itertools
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,12 +28,18 @@ from app.security import create_access_token, hash_password, verify_password
 
 PASSWORD = "correct horse battery staple"
 
+_serials = itertools.count()
 
-def _make_tutor(db: Session) -> Tutor:
+
+def _phone_number() -> str:
+    return f"+1202555{100 + next(_serials) % 80:04d}"
+
+
+def _make_tutor(db: Session, *, phone_number: str | None = None) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
         name=f"Tutor {suffix}",
-        phone_number=f"+1{suffix[:10]}",
+        phone_number=phone_number or f"+1{suffix[:10]}",
         email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
@@ -53,6 +69,25 @@ def _make_user(
 def _auth(user: User) -> dict[str, str]:
     token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
     return {"Authorization": f"Bearer {token}"}
+
+
+def _create_payload(**overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "email": f"user-{uuid.uuid4().hex[:12]}@example.com",
+        "password": PASSWORD,
+        "role": "tutor",
+    }
+    body.update(overrides)
+    return body
+
+
+def _profile(**overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "name": f"Tutor {uuid.uuid4().hex[:12]}",
+        "phone_number": _phone_number(),
+    }
+    body.update(overrides)
+    return body
 
 
 # --- the envelope and the RBAC gate ---------------------------------------------------------
@@ -355,3 +390,174 @@ def test_password_never_comes_back(api: TestClient, db: Session) -> None:
     assert "password" not in body
     assert "hashed_password" not in body
     assert PASSWORD not in str(body)
+
+
+# --- the two ways a tutor account names its profile -----------------------------------------
+
+
+def test_a_tutor_account_may_bring_its_own_profile(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(
+            tutor=_profile(name="Nadia Okafor", phone_number="(202) 555-0180", bio="Algebra")
+        ),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    profile = db.get(Tutor, uuid.UUID(body["tutor_id"]))
+    assert profile is not None
+    assert profile.name == "Nadia Okafor"
+    assert profile.bio == "Algebra"
+    assert profile.is_active is True
+    # Canonicalised on the way in, like every other write path: `phone_service` owns the form.
+    assert profile.phone_number == "+12025550180"
+
+
+def test_the_new_profile_takes_the_accounts_own_email(api: TestClient, db: Session) -> None:
+    """One address for both, by construction. The payload carries no tutor email at all, so the
+    address a tutor logs in with and the one their profile is found by cannot drift apart."""
+    admin = _make_user(db)
+
+    body = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(email="  Mirror.Me@Example.COM ", tutor=_profile()),
+    ).json()
+
+    assert body["email"] == "mirror.me@example.com"
+    assert db.get(Tutor, uuid.UUID(body["tutor_id"])).email == "mirror.me@example.com"
+
+
+def test_an_existing_profile_is_still_linked_by_id(api: TestClient, db: Session) -> None:
+    """The Tutors page creates tutors before their login exists, so `tutor_id` stays the way an
+    account joins one of those."""
+    admin = _make_user(db)
+    existing = _make_tutor(db)
+
+    response = api.post(
+        "/api/users", headers=_auth(admin), json=_create_payload(tutor_id=str(existing.id))
+    )
+
+    assert response.status_code == 201
+    assert response.json()["tutor_id"] == str(existing.id)
+
+
+def test_a_tutor_account_names_its_profile_exactly_once(api: TestClient, db: Session) -> None:
+    """Both is two answers to which profile the account belongs to, and neither is the NULL
+    `tutor_id` row `TutorScope` refuses. Each is a 400 carrying `{"detail": "<string>"}`."""
+    admin = _make_user(db)
+    headers = _auth(admin)
+
+    both = api.post(
+        "/api/users",
+        headers=headers,
+        json=_create_payload(tutor_id=str(_make_tutor(db).id), tutor=_profile()),
+    )
+    neither = api.post("/api/users", headers=headers, json=_create_payload())
+
+    assert both.status_code == 400
+    assert isinstance(both.json()["detail"], str)
+    assert neither.status_code == 400
+    assert isinstance(neither.json()["detail"], str)
+
+
+@pytest.mark.parametrize("role", ["admin", "developer"])
+def test_a_non_tutor_account_may_not_bring_a_profile(
+    api: TestClient, db: Session, role: str
+) -> None:
+    """A developer token, so `role=developer` is refused for its shape rather than by #13's
+    boundary — which answers first and would hide this."""
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    payload = _create_payload(role=role, tutor=_profile())
+
+    response = api.post("/api/users", headers=_auth(developer), json=payload)
+
+    assert response.status_code == 400
+    db.flush()
+    assert db.scalars(select(Tutor).where(Tutor.email == payload["email"])).first() is None
+
+
+def test_a_profile_already_holding_that_email_is_409(api: TestClient, db: Session) -> None:
+    """The profile exists and the account does not, which is what `tutor_id` is for. Reported
+    as a conflict rather than linked to silently: the caller did not name that row."""
+    admin = _make_user(db)
+    existing = _make_tutor(db)
+
+    response = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(email=existing.email, tutor=_profile()),
+    )
+
+    assert response.status_code == 409
+    assert isinstance(response.json()["detail"], str)
+
+
+def test_a_profile_already_holding_that_phone_number_is_409(api: TestClient, db: Session) -> None:
+    """In another format, so this also pins that the number is canonicalised *before* the
+    uniqueness check — the two sides of that comparison are produced by the same code."""
+    admin = _make_user(db)
+    _make_tutor(db, phone_number="+12025550181")
+
+    response = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(tutor=_profile(phone_number="202-555-0181")),
+    )
+
+    assert response.status_code == 409
+    assert isinstance(response.json()["detail"], str)
+
+
+def test_an_undialable_profile_phone_number_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(tutor=_profile(phone_number="555-123-4567")),
+    )
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+
+
+def test_a_taken_account_email_leaves_no_profile_behind(api: TestClient, db: Session) -> None:
+    """Ordering, not luck. The account email is claimed before `create_tutor` inserts anything,
+    so this 409 cannot leave a profile holding that same email — which the obvious retry would
+    then collide with on `tutors.email`, reporting a conflict with a row the failed request had
+    created.
+
+    The `flush` is half the assertion: a profile added to the `Session` but not yet written
+    would be sent by it, so finding nothing afterwards means nothing was ever staged.
+    """
+    admin = _make_user(db)
+    taken = _make_user(db)
+
+    response = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(email=taken.email, tutor=_profile(name="Orphan")),
+    )
+
+    assert response.status_code == 409
+    db.flush()
+    assert db.scalars(select(Tutor).where(Tutor.email == taken.email)).first() is None
+
+
+def test_a_refused_profile_leaves_no_account_behind(api: TestClient, db: Session) -> None:
+    """The same property from the other side: the account is inserted last, so nothing it could
+    have been linked to failing leaves a login pointing at a profile that was rolled back."""
+    admin = _make_user(db)
+    _make_tutor(db, phone_number="+12025550182")
+    payload = _create_payload(tutor=_profile(phone_number="+12025550182"))
+
+    response = api.post("/api/users", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 409
+    db.flush()
+    assert db.scalars(select(User).where(User.email == payload["email"])).first() is None

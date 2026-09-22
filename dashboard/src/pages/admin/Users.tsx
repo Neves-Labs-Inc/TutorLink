@@ -27,7 +27,16 @@ import { useAuthStore } from '@/stores/authStore'
 
 type FormState = UserDraft & { isActive: boolean }
 
-const EMPTY_FORM: FormState = { email: '', password: '', role: 'admin', tutorId: null, isActive: true }
+const EMPTY_NEW_TUTOR = { name: '', phoneNumber: '', bio: '' }
+const EMPTY_FORM: FormState = {
+  email: '',
+  password: '',
+  role: 'admin',
+  tutorId: null,
+  tutorMode: 'link',
+  newTutor: EMPTY_NEW_TUTOR,
+  isActive: true,
+}
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const DEACTIVATE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -57,6 +66,10 @@ export const Users = () => {
     mutationFn: createUser,
     onSuccess: () => {
       invalidateUsers()
+      // A `tutor` payload creates a profile as well as an account, so the tutor list this page
+      // reads for `tutorNames` and the "Link existing tutor" options is stale too. Only `create`
+      // can do that: `PATCH` offers neither tutor field.
+      queryClient.invalidateQueries({ queryKey: ['tutors'] })
       closeForm()
     },
   })
@@ -95,14 +108,30 @@ export const Users = () => {
   }
 
   const openEditForm = (user: User) => {
-    setForm({ email: user.email, password: '', role: user.role, tutorId: null, isActive: user.is_active })
+    setForm({
+      email: user.email,
+      password: '',
+      role: user.role,
+      tutorId: null,
+      tutorMode: 'link',
+      newTutor: EMPTY_NEW_TUTOR,
+      isActive: user.is_active,
+    })
     setValidationErrors([])
     setEditingUser(user)
     setFormMode('edit')
   }
 
+  // Leaving the tutor role clears the whole tutor sub-form, not just `tutorId`. A half-typed new
+  // tutor that survived a detour through Admin would come back already filled in when the admin
+  // switches to Tutor again, and `createUserPayload` would post it — the stale name is submittable,
+  // not merely visible.
   const handleRoleChange = (role: string) => {
-    setForm((current) => ({ ...current, role, tutorId: requiresTutorLink(role) ? current.tutorId : null }))
+    setForm((current) =>
+      requiresTutorLink(role)
+        ? { ...current, role }
+        : { ...current, role, tutorId: null, tutorMode: 'link', newTutor: EMPTY_NEW_TUTOR },
+    )
   }
 
   const handleSubmit = () => {
@@ -271,7 +300,7 @@ const UserForm = ({
   validationErrors,
   saveErrorMessage,
 }: UserFormProps) => {
-  const showTutorSelect = mode === 'create' && requiresTutorLink(form.role)
+  const showTutorFields = mode === 'create' && requiresTutorLink(form.role)
   const roleSelectOptions =
     editingRole === null ? roleOptions(viewerRole) : editRoleOptions(viewerRole, editingRole)
   let content: ReactNode = null
@@ -327,21 +356,87 @@ const UserForm = ({
         </Select>
       </div>
 
-      {showTutorSelect && (
-        <div className="space-y-1.5">
-          <Label htmlFor="user-tutor">Linked tutor</Label>
-          <Select
-            id="user-tutor"
-            value={form.tutorId ?? ''}
-            onChange={(event) => onChange({ ...form, tutorId: event.target.value || null })}
-          >
-            <option value="">Select a tutor…</option>
-            {tutorOptions.map((tutor) => (
-              <option key={tutor.id} value={tutor.id}>
-                {tutor.name}
-              </option>
-            ))}
-          </Select>
+      {showTutorFields && (
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>Tutor profile</Label>
+            <div className="flex gap-4 text-sm text-foreground">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="tutor-mode"
+                  checked={form.tutorMode === 'link'}
+                  onChange={() => onChange({ ...form, tutorMode: 'link' })}
+                />
+                Link existing tutor
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="tutor-mode"
+                  checked={form.tutorMode === 'new'}
+                  onChange={() => onChange({ ...form, tutorMode: 'new' })}
+                />
+                Create new tutor
+              </label>
+            </div>
+          </div>
+
+          {form.tutorMode === 'link' ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="user-tutor">Linked tutor</Label>
+              <Select
+                id="user-tutor"
+                value={form.tutorId ?? ''}
+                onChange={(event) => onChange({ ...form, tutorId: event.target.value || null })}
+              >
+                <option value="">Select a tutor…</option>
+                {tutorOptions.map((tutor) => (
+                  <option key={tutor.id} value={tutor.id}>
+                    {tutor.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="user-tutor-name">Tutor name</Label>
+                <Input
+                  id="user-tutor-name"
+                  value={form.newTutor.name}
+                  onChange={(event) =>
+                    onChange({ ...form, newTutor: { ...form.newTutor, name: event.target.value } })
+                  }
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="user-tutor-phone">Phone number</Label>
+                <Input
+                  id="user-tutor-phone"
+                  value={form.newTutor.phoneNumber}
+                  onChange={(event) =>
+                    onChange({
+                      ...form,
+                      newTutor: { ...form.newTutor, phoneNumber: event.target.value },
+                    })
+                  }
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="user-tutor-bio">Bio (optional)</Label>
+                <Input
+                  id="user-tutor-bio"
+                  value={form.newTutor.bio}
+                  onChange={(event) =>
+                    onChange({ ...form, newTutor: { ...form.newTutor, bio: event.target.value } })
+                  }
+                />
+              </div>
+            </>
+          )}
         </div>
       )}
 

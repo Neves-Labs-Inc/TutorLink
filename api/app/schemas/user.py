@@ -32,11 +32,26 @@ class UserRead(BaseModel):
     is_active: bool
 
 
+class TutorProfileCreate(BaseModel):
+    # No `email`, deliberately: the profile takes the account's, so the address a tutor logs in
+    # with and the one the office reaches them on cannot drift apart. `phone_number` is a plain
+    # `str` for the reason `schemas/tutor.py` gives — the canonical form is `phone_service`'s to
+    # produce, and it needs a `Session` a validator does not have (CONSTITUTION §7).
+    name: str
+    phone_number: str
+    bio: str | None = None
+
+
 class UserCreate(BaseModel):
+    # Both fields are optional here and the pairing rule is the service's: a tutor account
+    # carries exactly one of them, any other role neither. Enforced in `user_service` next to
+    # the role/profile rule it completes, so one place decides what shape a tutor account has
+    # and the refusal carries this router's own message.
     email: Email
     password: str
     role: UserRole
     tutor_id: uuid.UUID | None = None
+    tutor: TutorProfileCreate | None = None
 
 
 class UserUpdate(BaseModel):

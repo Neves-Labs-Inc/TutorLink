@@ -29,17 +29,10 @@ type LayoutProps<T> = {
   columns: Column<T>[]
   rows: T[]
   rowKey: (row: T) => string
-  primaryColumn: Column<T>
   onRowSelect?: (row: T) => void
 }
 
 type TableLayoutProps<T> = LayoutProps<T> & { caption: string }
-
-type PrimaryCellProps<T> = {
-  column: Column<T>
-  row: T
-  onRowSelect?: (row: T) => void
-}
 
 const LOADING_ROWS = [0, 1, 2, 3]
 const ERROR_FALLBACK = 'Something went wrong. Please try again.'
@@ -55,7 +48,6 @@ export const DataTable = <T,>({
   emptyMessage,
   onRowSelect,
 }: DataTableProps<T>) => {
-  const primaryColumn = columns.find((column) => column.primary) ?? columns[0]
   let content: ReactNode
 
   if (status === 'pending') {
@@ -100,14 +92,12 @@ export const DataTable = <T,>({
           columns={columns}
           rows={rows}
           rowKey={rowKey}
-          primaryColumn={primaryColumn}
           onRowSelect={onRowSelect}
         />
         <CardLayout
           columns={columns}
           rows={rows}
           rowKey={rowKey}
-          primaryColumn={primaryColumn}
           onRowSelect={onRowSelect}
         />
       </>
@@ -122,7 +112,6 @@ const TableLayout = <T,>({
   columns,
   rows,
   rowKey,
-  primaryColumn,
   onRowSelect,
 }: TableLayoutProps<T>) => (
   <Card className="hidden md:block">
@@ -147,17 +136,15 @@ const TableLayout = <T,>({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={rowKey(row)} className="border-b border-border last:border-b-0">
+            <tr key={rowKey(row)} className="border-b border-border last:border-b-0 hover:bg-muted hover:cursor-pointer" onClick={() => onRowSelect?.(row)}>
               {columns.map((column) => (
                 <td
                   key={column.id}
                   className={cn('px-4 py-3 align-middle', column.align === 'end' && 'text-end')}
                 >
-                  {column.id === primaryColumn.id ? (
-                    <PrimaryCell column={column} row={row} onRowSelect={onRowSelect} />
-                  ) : (
+                  {
                     column.cell(row)
-                  )}
+                  }
                 </td>
               ))}
             </tr>
@@ -168,18 +155,19 @@ const TableLayout = <T,>({
   </Card>
 )
 
-const CardLayout = <T,>({ columns, rows, rowKey, primaryColumn, onRowSelect }: LayoutProps<T>) => (
+const CardLayout = <T,>({ columns, rows, rowKey, onRowSelect }: LayoutProps<T>) => (
   <ul className="space-y-3 md:hidden">
     {rows.map((row) => (
       <li key={rowKey(row)}>
-        <Card>
+        <Card onClick={() => onRowSelect?.(row)}>
           <CardContent className="space-y-3">
             <div className="text-sm font-medium text-foreground">
-              <PrimaryCell column={primaryColumn} row={row} onRowSelect={onRowSelect} />
+              {/* <PrimaryCell column={columns[0]} row={row} /> */}
+              {columns[0].cell(row)}
             </div>
             <dl className="space-y-1.5">
               {columns
-                .filter((column) => column.id !== primaryColumn.id && !column.hideOnMobile)
+                .filter((column) => column.id !== columns[0].id && !column.hideOnMobile)
                 .map((column) => (
                   <div key={column.id} className="flex items-baseline justify-between gap-4">
                     <dt className="text-xs text-muted-foreground">{column.header}</dt>
@@ -193,21 +181,3 @@ const CardLayout = <T,>({ columns, rows, rowKey, primaryColumn, onRowSelect }: L
     ))}
   </ul>
 )
-
-const PrimaryCell = <T,>({ column, row, onRowSelect }: PrimaryCellProps<T>) => {
-  let content: ReactNode = column.cell(row)
-
-  if (onRowSelect) {
-    content = (
-      <button
-        type="button"
-        onClick={() => onRowSelect(row)}
-        className="rounded-sm text-start font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      >
-        {content}
-      </button>
-    )
-  }
-
-  return content
-}

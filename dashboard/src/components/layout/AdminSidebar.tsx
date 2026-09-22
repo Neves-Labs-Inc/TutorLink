@@ -128,35 +128,45 @@ export const AdminSidebar = () => {
         <NavBody />
       </aside>
 
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
-          <div
-            className="absolute inset-0 bg-foreground/60"
-            onClick={closeMobileNav}
-            aria-hidden="true"
-          />
-          <div
-            ref={panelRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Navigation"
-            className="absolute inset-y-0 left-0 flex w-[17rem] max-w-[85%] flex-col border-r border-sidebar-border bg-sidebar shadow-xl"
-          >
-            <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-4">
-              <Brand />
-              <button
-                type="button"
-                onClick={closeMobileNav}
-                aria-label="Close navigation menu"
-                className={cn('-mr-2', iconButtonClasses)}
-              >
-                <X aria-hidden="true" className="size-5" />
-              </button>
-            </div>
-            <NavBody onNavigate={closeMobileNav} />
+      <div
+        className={cn(
+          'fixed inset-0 z-40 overflow-hidden transition-[visibility] duration-200 md:hidden',
+          mobileNavOpen ? 'visible' : 'invisible',
+        )}
+      >
+        <div
+          className={cn(
+            'absolute inset-0 bg-foreground/60 transition-opacity duration-200 ease-out motion-reduce:transition-none',
+            mobileNavOpen ? 'opacity-100' : 'opacity-0',
+          )}
+          onClick={closeMobileNav}
+          aria-hidden="true"
+        />
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
+          className={cn(
+            'absolute inset-y-0 left-0 flex w-68 max-w-[85%] flex-col border-r border-sidebar-border bg-sidebar shadow-xl',
+            'transition-transform duration-200 ease-out motion-reduce:transition-none',
+            mobileNavOpen ? 'translate-x-0' : '-translate-x-full',
+          )}
+        >
+          <div className="flex h-14 items-center justify-between border-b border-sidebar-border px-4">
+            <Brand />
+            <button
+              type="button"
+              onClick={closeMobileNav}
+              aria-label="Close navigation menu"
+              className={cn('-mr-2', iconButtonClasses)}
+            >
+              <X aria-hidden="true" className="size-5" />
+            </button>
           </div>
+          <NavBody onNavigate={closeMobileNav} />
         </div>
-      )}
+      </div>
     </>
   )
 }

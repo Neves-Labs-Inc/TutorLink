@@ -1,10 +1,24 @@
 export type RoleOption = { value: string; label: string; disabled?: boolean }
 
+export type NewTutorDraft = {
+  name: string
+  phoneNumber: string
+  bio: string
+}
+
 export type UserDraft = {
   email: string
   password: string
   role: string
   tutorId: string | null
+  tutorMode: 'link' | 'new'
+  newTutor: NewTutorDraft
+}
+
+export type TutorCreatePayload = {
+  name: string
+  phone_number: string
+  bio?: string
 }
 
 export type UserCreatePayload = {
@@ -12,6 +26,7 @@ export type UserCreatePayload = {
   password: string
   role: string
   tutor_id?: string
+  tutor?: TutorCreatePayload
 }
 
 export type UserUpdatePayload = {
@@ -68,8 +83,18 @@ export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): strin
     errors.push(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`)
   }
 
-  if (mode === 'create' && requiresTutorLink(draft.role) && draft.tutorId === null) {
-    errors.push('A tutor account requires a linked tutor.')
+  if (mode === 'create' && requiresTutorLink(draft.role)) {
+    if (draft.tutorMode === 'link' && draft.tutorId === null) {
+      errors.push('A tutor account requires a linked tutor.')
+    } else if (draft.tutorMode === 'new') {
+      if (draft.newTutor.name.trim() === '') {
+        errors.push('New tutor name is required.')
+      }
+
+      if (draft.newTutor.phoneNumber.trim() === '') {
+        errors.push('New tutor phone number is required.')
+      }
+    }
   }
 
   return errors
@@ -82,15 +107,26 @@ export const createUserPayload = (draft: UserDraft): UserCreatePayload => {
     role: draft.role,
   }
 
-  if (requiresTutorLink(draft.role) && draft.tutorId !== null) {
+  if (requiresTutorLink(draft.role) && draft.tutorMode === 'link' && draft.tutorId !== null) {
     payload.tutor_id = draft.tutorId
+  } else if (requiresTutorLink(draft.role) && draft.tutorMode === 'new') {
+    const tutor: TutorCreatePayload = {
+      name: draft.newTutor.name.trim(),
+      phone_number: draft.newTutor.phoneNumber.trim(),
+    }
+
+    if (draft.newTutor.bio.trim() !== '') {
+      tutor.bio = draft.newTutor.bio.trim()
+    }
+
+    payload.tutor = tutor
   }
 
   return payload
 }
 
 export const updateUserPayload = (
-  draft: Omit<UserDraft, 'tutorId'> & { isActive: boolean },
+  draft: Omit<UserDraft, 'tutorId' | 'tutorMode' | 'newTutor'> & { isActive: boolean },
 ): UserUpdatePayload => {
   const payload: UserUpdatePayload = {
     email: draft.email.trim(),

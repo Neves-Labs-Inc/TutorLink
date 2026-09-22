@@ -401,9 +401,9 @@ Returns user accounts, active by default. See [Soft deletes and the `is_active` 
 
 ### `POST /api/users`
 
-Create a new user account. When creating a tutor account, provide the `tutor_id` to link it to an existing tutor profile.
+Create a new user account. A tutor account names its tutor profile in exactly one of two ways — `tutor_id` to link a profile that already exists, or `tutor` to create one alongside the account. Sending both, or neither, is a **400**, and an `admin` or `developer` account may carry neither.
 
-**Request**
+**Request** — linking an existing profile
 ```json
 {
   "email": "sarah@example.com",
@@ -412,6 +412,22 @@ Create a new user account. When creating a tutor account, provide the `tutor_id`
   "tutor_id": "uuid"
 }
 ```
+
+**Request** — creating the profile with the account
+```json
+{
+  "email": "sarah@example.com",
+  "password": "temporary_password",
+  "role": "tutor",
+  "tutor": {
+    "name": "Sarah Chen",
+    "phone_number": "(202) 555-0180",
+    "bio": "Algebra and geometry"
+  }
+}
+```
+
+The nested `tutor` object carries **no email**: the profile takes the account's, so the address a tutor logs in with and the one their profile is found by cannot drift apart. `phone_number` is canonicalised like every other write path, so an unparseable number is a **400**. A profile already holding that email or that phone number is a **409** — for the email that means the profile exists and should be joined with `tutor_id` instead. Both rows are written in one transaction: a refused request leaves neither behind.
 
 ### `PATCH /api/users/{id}`
 

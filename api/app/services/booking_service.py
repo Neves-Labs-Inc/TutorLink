@@ -47,7 +47,7 @@ def list_bookings(
         statement = statement.where(Booking.tutor_id == tutor_id)
     statement = apply_booking_filters(statement, filters)
 
-    total = db.scalar(select(func.count()).select_from(statement.subquery()))
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     bookings = list(
         db.scalars(
             statement.options(
@@ -94,7 +94,7 @@ def list_client_bookings(
         raise ClientNotFound
 
     matching = _matching(client_id=client_id, filters=filters)
-    total = db.scalar(select(func.count()).select_from(matching.subquery()))
+    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     bookings = list(
         db.scalars(
             matching.options(

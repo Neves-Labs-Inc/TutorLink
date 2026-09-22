@@ -51,17 +51,17 @@ class InvalidTimeRange(AvailabilityServiceError):
 
 
 def list_availability(
-    db: Session, *, tutor_id: uuid.UUID | None, limit: int, offset: int
-) -> tuple[list[TutorAvailability], int | None]:
+    db: Session, *, tutor_id: uuid.UUID, limit: int, offset: int
+) -> tuple[list[TutorAvailability], int]:
     """Every slot for `tutor_id`, active and deactivated alike, plus the count before paging.
 
     No `is_active` filter (OQ-5, `docs/api-design.md:68`): the schedule editor needs to see a
     withdrawn slot in order to restore it, which is why this list is the documented exception to
     the otherwise-uniform soft-delete list rule (`CONSTITUTION.md` §9).
     """
-    
+
     matching = select(TutorAvailability).where(TutorAvailability.tutor_id == tutor_id)
-    total = db.scalar(select(func.count()).select_from(matching.subquery()))
+    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
     rows = list(
         db.scalars(

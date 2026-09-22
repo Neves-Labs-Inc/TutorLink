@@ -262,7 +262,7 @@ The tutor's weekly availability view.
 
 - Read-only weekly grid showing their recurring availability slots
 - Exceptions displayed as blocked-out dates with reason label — a partial-day exception blocks only its own hours, not the whole day
-- Cannot edit — directs tutor to contact admin for changes
+- The grid is not editable here. **Availability** changes are an admin action — the view directs the tutor to contact an admin. **Time off** is self-serve: the view directs the tutor to `/time-off`, where they request it themselves
 
 ---
 
@@ -271,8 +271,9 @@ The tutor's weekly availability view.
 The tutor's upcoming and past bookings.
 
 **List view:**
-- Upcoming sessions (default tab): date, time, child name, subject, address + access code
-- Past sessions (second tab): same fields + status
+- Upcoming sessions (default tab): date, time, child name, subject, address + access code, **status**
+- Past sessions (second tab): the same fields, including **status**
+- **Status is shown on both tabs, and Upcoming applies no status filter.** Upcoming is not live-only: a cancelled future session is bounded out of Past, so filtering it off Upcoming would leave it on neither tab and the tutor's only signal would be a row silently vanishing
 - Search by child name
 - Filter by date range
 

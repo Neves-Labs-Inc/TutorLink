@@ -14,6 +14,8 @@ import { Subjects } from '@/pages/admin/Subjects'
 import { Users } from '@/pages/admin/Users'
 import { Settings } from '@/pages/admin/Settings'
 import { Schedule } from '@/pages/tutor/Schedule'
+import { Sessions } from '@/pages/tutor/Sessions'
+import { TimeOff } from '@/pages/tutor/TimeOff'
 import { NotFound } from '@/pages/NotFound'
 
 export const App = () => (
@@ -117,6 +119,26 @@ export const App = () => (
             <RouteGuard allow={['tutor']}>
               <AppShell>
                 <Schedule />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/sessions"
+          element={
+            <RouteGuard allow={['tutor']}>
+              <AppShell>
+                <Sessions />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/time-off"
+          element={
+            <RouteGuard allow={['tutor']}>
+              <AppShell>
+                <TimeOff />
               </AppShell>
             </RouteGuard>
           }

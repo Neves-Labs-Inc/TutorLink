@@ -38,13 +38,22 @@ export type ExceptionDecision = Exclude<ExceptionStatus, 'pending'>
 
 const EXCEPTION_PAGE_SIZE = 100
 
+export type ExceptionListParams = { from?: string; to?: string; page?: number; page_size?: number }
+
+export const exceptionQueryKey = (tutorId: string) => ['exceptions', tutorId] as const
+
 export const exceptionQueries = {
-  forTutor: (tutorId: string) =>
+  forTutor: (tutorId: string, params: ExceptionListParams = {}) =>
     queryOptions({
-      queryKey: ['exceptions', tutorId],
+      queryKey: [...exceptionQueryKey(tutorId), params],
       queryFn: async () => {
         const response = await api.get<Page<TutorException>>(`/api/tutors/${tutorId}/exceptions`, {
-          params: { page_size: EXCEPTION_PAGE_SIZE },
+          params: {
+            from: params.from,
+            to: params.to,
+            page: params.page ?? 1,
+            page_size: params.page_size ?? EXCEPTION_PAGE_SIZE,
+          },
         })
 
         return response.data

@@ -897,6 +897,15 @@ Returns all exceptions for a tutor, including still-`pending` requests. A `pendi
 the tutor and admins but has no effect on availability until it is approved — see rule 2 in
 [Availability Query Logic](../docs/erd.md).
 
+Supports filtering: `?from=2026-08-18&to=2026-08-24`
+
+**`from` and `to` select rows that overlap the window, not rows contained by it**: a row matches when
+`end_date >= from` and `start_date <= to`. Either bound may be given without the other, and omitting
+both returns every row as before. This differs from [`GET /api/bookings`](#get-apibookings)'s `from`/`to`,
+which bound a single date column — an exception spans a range of its own, and a row that began before
+`from` and runs through the window must still be returned, since it is precisely the row a weekly grid
+exists to show.
+
 **Response**
 ```json
 {

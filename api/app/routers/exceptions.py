@@ -22,6 +22,7 @@ deliberately asymmetric about it:
   is still `pending`.
 """
 
+import datetime
 import uuid
 from typing import Annotated
 
@@ -59,6 +60,8 @@ router = APIRouter(prefix="/api", tags=["exceptions"])
 def list_tutor_exceptions(
     scope: TutorScope,
     db: DbSession,
+    date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
+    date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ExceptionRead]:
@@ -68,7 +71,12 @@ def list_tutor_exceptions(
     tutor_id = scope.tutor_id
 
     rows, total = list_exceptions(
-        db, tutor_id=tutor_id, limit=page_size, offset=(page - 1) * page_size
+        db,
+        tutor_id=tutor_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=page_size,
+        offset=(page - 1) * page_size,
     )
 
     return Page[ExceptionRead](

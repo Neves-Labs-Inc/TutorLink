@@ -408,6 +408,248 @@ def test_a_malformed_page_parameter_is_400_never_422(
     assert query.split("=")[0] in response.json()["detail"]
 
 
+# --- list window: overlap, not containment --------------------------------------------------
+
+
+def test_a_row_ending_exactly_on_from_is_included(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_exception(
+        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 9, 5)
+    )
+    row.end_date = datetime.date(2026, 9, 7)
+    db.flush()
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=2026-09-07", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(row.id)]
+
+
+def test_a_row_ending_the_day_before_from_is_excluded(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_exception(
+        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 9, 5)
+    )
+    row.end_date = datetime.date(2026, 9, 6)
+    db.flush()
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=2026-09-07", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+def test_a_row_starting_exactly_on_to_is_included(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_exception(
+        db,
+        tutor_id=tutor.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 10),
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?to=2026-09-10", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(row.id)]
+
+
+def test_a_row_starting_the_day_after_to_is_excluded(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    _make_exception(
+        db,
+        tutor_id=tutor.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 11),
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?to=2026-09-10", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+def test_a_row_spanning_the_whole_window_is_included(api: TestClient, db: Session) -> None:
+    """The case a containment predicate fails, and the reason this task exists: a row that
+    starts before the window and ends after it still overlaps every day the window covers."""
+    tutor = _make_tutor(db)
+    row = _make_exception(
+        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 9, 1)
+    )
+    row.end_date = datetime.date(2026, 9, 30)
+    db.flush()
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(
+        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-10&to=2026-09-20",
+        headers=_bearer(user),
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(row.id)]
+
+
+def test_from_and_to_together_narrow_to_the_overlapping_rows(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    inside = _make_exception(
+        db,
+        tutor_id=tutor.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 10),
+    )
+    _make_exception(
+        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 1, 1)
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(
+        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01&to=2026-09-30",
+        headers=_bearer(user),
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(inside.id)]
+
+
+def test_from_alone_excludes_rows_that_end_before_it(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    later = _make_exception(
+        db,
+        tutor_id=tutor.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 15),
+    )
+    _make_exception(
+        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 1, 1)
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(later.id)]
+
+
+def test_to_alone_excludes_rows_that_start_after_it(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    earlier = _make_exception(
+        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 1, 1)
+    )
+    _make_exception(
+        db,
+        tutor_id=tutor.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 15),
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?to=2026-09-01", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(earlier.id)]
+
+
+def test_neither_from_nor_to_returns_every_row_as_before(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    for exception_status in ExceptionStatus:
+        _make_exception(db, tutor_id=tutor.id, status=exception_status)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions", headers=_bearer(user))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["total"] == 3
+
+
+def test_windowed_total_counts_the_filtered_query_before_paging(
+    api: TestClient, db: Session
+) -> None:
+    tutor = _make_tutor(db)
+    for offset in range(3):
+        _make_exception(
+            db,
+            tutor_id=tutor.id,
+            status=ExceptionStatus.APPROVED,
+            start_date=datetime.date(2026, 9, 10 + offset),
+        )
+    for offset in range(2):
+        _make_exception(
+            db,
+            tutor_id=tutor.id,
+            status=ExceptionStatus.APPROVED,
+            start_date=datetime.date(2026, 1, 1 + offset),
+        )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(
+        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01&to=2026-09-30&page_size=2",
+        headers=_bearer(user),
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert len(body["items"]) == 2
+    assert body["total"] == 3
+
+
+def test_a_malformed_from_is_400_not_422(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=notadate", headers=_bearer(user))
+
+    _assert_detail_shape(response, 400)
+
+
+def test_windowing_another_tutors_exceptions_is_still_403(api: TestClient, db: Session) -> None:
+    own = _make_tutor(db)
+    other = _make_tutor(db)
+    _make_exception(db, tutor_id=other.id, status=ExceptionStatus.APPROVED)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    response = api.get(
+        f"/api/tutors/{other.id}/exceptions?from=2026-09-01&to=2026-09-30",
+        headers=_bearer(user),
+    )
+
+    _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
+
+
+def test_a_tutor_windowing_their_own_id_still_gets_their_rows(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_exception(
+        db,
+        tutor_id=tutor.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 15),
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(
+        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01&to=2026-09-30",
+        headers=_bearer(user),
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [item["id"] for item in body["items"]] == [str(row.id)]
+
+
 # --- delete: a tutor withdraws, an admin reverses --------------------------------------------
 
 

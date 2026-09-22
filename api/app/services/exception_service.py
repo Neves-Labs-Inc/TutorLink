@@ -114,7 +114,13 @@ def decide_exception(
 
 
 def list_exceptions(
-    db: Session, *, tutor_id: uuid.UUID, limit: int, offset: int
+    db: Session,
+    *,
+    tutor_id: uuid.UUID,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    limit: int,
+    offset: int,
 ) -> tuple[list[TutorAvailabilityException], int]:
     """One tutor's exceptions at every status, and the count before paging.
 
@@ -126,10 +132,22 @@ def list_exceptions(
     `tutor_id` is never `None`. The only caller binds it from a `{tutor_id}` path segment
     through `TutorScope`, which has already refused a cross-tutor reach with a 403, and there
     is no route that wants every tutor's exceptions at once.
+
+    `date_from`/`date_to`, when given, narrow the result to rows that **overlap** the window
+    rather than rows contained by it: `end_date >= date_from` and `start_date <= date_to`. A
+    containment test (`start_date >= date_from`) would drop an exception that began before the
+    window and runs through it — exactly the row a weekly grid exists to show, since the tutor
+    is unavailable for every day the row and the window share, not only the days the row starts
+    on.
     """
     matching = select(TutorAvailabilityException).where(
         TutorAvailabilityException.tutor_id == tutor_id
     )
+    if date_from is not None:
+        matching = matching.where(TutorAvailabilityException.end_date >= date_from)
+    if date_to is not None:
+        matching = matching.where(TutorAvailabilityException.start_date <= date_to)
+
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
     # `id` is the tiebreaker, not decoration: a tutor booking a week off in pieces has several

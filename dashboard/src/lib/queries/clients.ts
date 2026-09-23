@@ -50,6 +50,16 @@ export type ClientUpdate = {
   is_active?: boolean
 }
 
+export type ClientCreate = {
+  name: string
+  phone_number: string
+  home?: {
+    label?: string | null
+    address: string
+    access_code: string
+  }
+}
+
 export const clientQueries = {
   // Whole `Page<T>` rather than `.items` (unlike `settings.ts`): every list view here needs
   // `total` for its `Pager`, and `settings.ts` has no pager.
@@ -88,6 +98,12 @@ export const clientQueries = {
       },
       placeholderData: keepPreviousData,
     }),
+}
+
+export const createClient = async (data: ClientCreate): Promise<ClientDetail> => {
+  const response = await api.post<ClientDetail>('/api/clients', data)
+
+  return response.data
 }
 
 export const updateClient = async (clientId: string, data: ClientUpdate): Promise<ClientDetail> => {

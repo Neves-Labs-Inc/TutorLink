@@ -352,7 +352,7 @@ def _make_guardian(db: Session) -> Guardian:
 
 def _make_child(db: Session, *, guardians: list[Guardian]) -> Child:
     suffix = uuid.uuid4().hex[:12]
-    child = Child(name=f"Child {suffix}", age=12, grade_level=7, school_name="Test School")
+    child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])

@@ -26,8 +26,8 @@ import {
   exceptionPreviewLabel,
   exceptionReasonLabel,
   exceptionWindowLabel,
-} from '@/lib/availability'
-import { todayLocalIso } from '@/lib/dates'
+} from '@/lib/availability/availability'
+import { todayLocalIso } from '@/lib/dates/dates'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import {
   createException,
@@ -47,7 +47,7 @@ import {
   withdrawConfirmBody,
   type ExceptionDraft,
   type TimeOffTab,
-} from '@/lib/timeOff'
+} from '@/lib/time-off/timeOff'
 
 const FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const FORM_ID = 'time-off-form'

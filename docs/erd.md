@@ -105,19 +105,29 @@ Constraints: `UNIQUE (guardian_id, home_id)` · `INDEX (home_id)`
 ---
 
 ### `children`
-A child belongs to one or more guardians, through `child_guardians`, and is tutored at one or more homes, through `child_homes`. Neither is derivable from the other. The bot collects child info during intake and loops until all children are registered.
+A child belongs to one or more guardians, through `child_guardians`, and is tutored at one or more homes, through `child_homes`. Neither is derivable from the other. The bot collects child info during intake — name, date of birth, grade, school and optional notes — and loops until all children are registered. The admin dashboard collects the same fields.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | UUID | Primary key |
 | name | VARCHAR | Child's full name |
-| age | INT | Age at time of registration |
+| date_of_birth | DATE | nullable — required on every write; NULL only on rows registered before age was replaced (migration 0015) |
 | grade_level | INT | The child's grade, as a number — 7, not "Grade 7" |
 | school_name | VARCHAR | School the child attends |
+| notes | TEXT | nullable — learning needs, allergies, anything the office should know. Admin-only |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
 Constraints: none beyond the primary key — the guardian and home links live in their own tables
+
+`age` was dropped in favour of `date_of_birth` because an age at registration is wrong a year
+later. It could not be converted: rows registered before the change keep a NULL
+`date_of_birth` rather than an invented one, and an admin fills it in. A child's current age is
+derived for display and never stored.
+
+`notes` is visible to admins only. No response a tutor can reach carries it; a tutor sees a
+child as a name. It is never sent back to the model that parses WhatsApp messages once it has
+been collected.
 
 ---
 
@@ -260,6 +270,8 @@ One row per WhatsApp identity, created on the first inbound message. Holds who i
 | taken_over_at | TIMESTAMPTZ | nullable |
 | last_message_at | TIMESTAMPTZ | Ordering the conversation list |
 | last_read_at | TIMESTAMPTZ | nullable — shared admin-side read watermark |
+| flag_reason | ENUM `flag_reason` | nullable — `stuck`, `parse_error`, `guardian_link_request` |
+| flagged_at | TIMESTAMPTZ | nullable |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
@@ -287,6 +299,20 @@ The CHECK ties the two halves of the takeover state together, so `human` with no
 with the bot still running, are both unrepresentable rather than merely discouraged. This is the same
 reasoning as the paired NULL check on `tutor_availability_exceptions`: a state that has no coherent
 meaning should be rejected by the database, not left for the application to remember to avoid.
+
+`flag_reason` and `flagged_at` are set when the bot gives up rather than when it hands off — `status`
+already says who is answering, and `flag_reason` says why an admin needs to look, which is a different
+question with a different answer. `stuck` is two failed re-prompts in a row with no usable reply from
+the client; `parse_error` is the parser itself failing rather than the client's message being unclear,
+flagged immediately rather than burning a re-prompt on an outage that is not the client's fault; and
+`guardian_link_request` is not a failure at all — the bot worked, understood a second guardian asking to
+be linked to an existing child, and stopped because phone-alone identity cannot tell a real second
+guardian from anyone who knows a child's name. Keeping `flag_reason` off `status` rather than merging the
+two preserves a distinction an admin needs: a `bot` conversation can be flagged and unattended, and a
+`human` conversation someone has already taken over can carry a flag from before the takeover. Collapsing
+them into one column would lose whichever half is not currently true. There is no flag value for a
+reschedule or cancellation declined inside `cancellation_cutoff_hours` — that is a policy refusal, not a
+bot failure, and flagging it would bury the flags that mean the bot needs help.
 
 ---
 
@@ -318,8 +344,14 @@ already-recorded message conflicts on the unique index and is discarded, rather 
 the thread an admin is reading.
 
 An inbound message is written `received` and never changes state again — it has already arrived, and
-there is nothing further to report about it. An outbound one starts `queued` and is advanced by Twilio's
-delivery status callback, which is also what records `error_code` when the send ultimately fails.
+there is nothing further to report about it. An outbound message sent through Twilio's REST API — an
+admin's reply, typed on the socket — starts `queued` and is advanced by Twilio's delivery status
+callback, which is also what records `error_code` when the send ultimately fails. A bot reply is
+outbound too, but it is returned as TwiML in the webhook's own response rather than sent through the
+REST API, and Twilio does not mint a `MessageSid` for it until after it has read that response — so at
+the moment the row is written there is no SID for a later callback to match against. A bot reply is
+therefore recorded `status = 'sent'` with `twilio_sid` NULL: it has already left, and there is nothing
+`POST /webhook/whatsapp/status` could advance it to.
 
 ---
 

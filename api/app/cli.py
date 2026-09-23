@@ -25,6 +25,7 @@ from app.db import SessionLocal
 from app.models.enums import UserRole
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
+from app.services.retention_service import purge_expired_messages
 
 MIN_PASSWORD_LENGTH = 8
 
@@ -89,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser(
         "create-developer", help="Create a developer account. Never promotes an existing user."
     )
+    subparsers.add_parser(
+        "purge-messages", help="Delete messages past chat_retention_days, and empty threads."
+    )
 
     args = parser.parse_args(argv)
 
@@ -96,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         status = _run_seed_admin()
     elif args.command == "create-developer":
         status = _run_create_developer()
+    elif args.command == "purge-messages":
+        status = _run_purge_messages()
     else:
         parser.error(f"unknown command: {args.command}")
         status = 2
@@ -130,6 +136,25 @@ def _run_seed_admin() -> int:
                 status = 0
 
     return status
+
+
+def _run_purge_messages() -> int:
+    db = SessionLocal()
+    try:
+        result = purge_expired_messages(db)
+        db.commit()
+    finally:
+        db.close()
+
+    if not result.ran:
+        print("chat_retention_days is 0; purge disabled, nothing deleted")
+    else:
+        print(
+            f"purged {result.messages_deleted} message(s) and "
+            f"{result.conversations_deleted} conversation(s)"
+        )
+
+    return 0
 
 
 def _run_create_developer() -> int:

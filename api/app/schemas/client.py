@@ -21,6 +21,7 @@ validator, because the canonical form depends on a `system_settings` row and a v
 `Session` (CONSTITUTION §7, decision D-C).
 """
 
+import datetime
 import uuid
 
 from pydantic import BaseModel, ConfigDict
@@ -41,9 +42,10 @@ class ChildRead(BaseModel):
 
     id: uuid.UUID
     name: str
-    age: int
+    date_of_birth: datetime.date | None
     grade_level: int
     school_name: str
+    notes: str | None
 
 
 class ClientSummary(BaseModel):

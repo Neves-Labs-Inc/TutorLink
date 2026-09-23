@@ -27,7 +27,7 @@ import {
   exceptionWindowLabel,
   isDecidable,
   weekdaysInRange,
-} from '@/lib/availability'
+} from '@/lib/availability/availability'
 import {
   createException,
   decideException,

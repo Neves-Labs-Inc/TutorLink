@@ -291,8 +291,16 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `GET /api/settings` | All fields | Admin-visible fields only | ✗ |
 | `PATCH /api/settings` | All fields | Admin-visible fields only | ✗ |
 | `GET /api/stats/overview` | ✓ | ✓ | ✗ |
+| `POST /webhook/whatsapp` | No auth dependency — see below | | |
+| `POST /webhook/whatsapp/status` | No auth dependency — see below | | |
 
 > A `pending` exception is visible to both the tutor and admins but does not block bookings — only an `approved` one subtracts from availability. See [Availability](#availability) and `docs/erd.md`.
+
+> The two webhook rows carry no auth dependency and no role check — Twilio calls them directly, with no user session behind the request. The `X-Twilio-Signature` validation described under each endpoint is the control that stands in its place: it is not an omission for a future task to close by adding one.
+
+> A child's `date_of_birth` and `notes` appear only on `/api/children` and `/api/clients/*`, which
+> tutors cannot call. Every response a tutor can reach — bookings, sessions — carries a child as
+> `{id, name}` and nothing more.
 
 ### Settings
 
@@ -472,6 +480,42 @@ Form-encoded body:
 6. In both branches, broadcast the new message to connected admin sockets — see
    [WebSocket](#websocket).
 
+**When the bot cannot use the message**
+
+Two situations look alike from the client's side — no useful reply arrives — but are not the same
+failure and are handled differently.
+
+A message the parser returns but the flow cannot act on (an answer that doesn't match what was
+asked, an unrecognised choice) gets a re-prompt. A second consecutive one gets a second re-prompt.
+A third failure in the same step stops the bot from asking again: it replies that it couldn't
+follow along and an admin will reach out, leaves Redis's flow state untouched — it is left to expire
+on its own 30-minute TTL rather than cleared — and flags the conversation `stuck`. The reply still
+goes out; the flag brings an admin to look, it does not replace the answer the client is owed.
+
+A parser outage — the model call itself failing, rather than returning something the flow can't use
+— is not the client's fault and does not spend one of the two re-prompts. It flags the conversation
+`parse_error` immediately, on the first failure, and still replies that an admin will reach out.
+Burning a re-prompt on an outage would tell a client stuck behind a downed model to try rephrasing a
+message that was never the problem.
+
+Both flags are written to `flag_reason` and `flagged_at` as described in `docs/erd.md`, and neither
+changes the conversation's `status` — a flagged conversation is still `bot` until an admin takes it
+over.
+
+**Intake questions.** A new guardian is asked, in order: their name; the home's address,
+access code and an optional label; whether the child is already registered with another
+guardian; then, per child, the child's name, **date of birth**, grade, school, and an
+**optional notes question** that accepts "none" and never re-prompts. Nothing is written until
+the notes answer of the first child arrives, and then everything is written in one
+transaction. A date of birth that is not a real date between 1900-01-01 and today is
+re-asked. Once collected, the date of birth, the notes, the address and the access code are
+not sent to the parser again.
+
+**A guardian the bot recognises by phone number is linked to the conversation.** When a
+conversation has no `guardian_id` and the inbound number belongs to an existing guardian —
+one an admin created, or one who changed handsets — the bot's turn backfills
+`conversations.guardian_id`, exactly as a completed intake does.
+
 The message is recorded before the branch, not inside the `bot` arm. The whole point of a handoff is
 that the admin can read what the client said while the bot was silent, so a paused conversation has
 to be logged as fully as a running one. Recording as a side effect of bot processing would be the
@@ -524,9 +568,13 @@ Form-encoded body:
 ```
 
 The `MessageSid` is matched to a `messages` row and advances its `status`, recording `error_code`
-when the status is `failed`. An outbound message is written `queued` when it is sent and reaches
-`sent`, `delivered` or `failed` only through this callback; an inbound message is written `received`
-and never moves.
+when the status is `failed`. This callback advances messages sent through Twilio's REST API — an
+admin's reply, sent from the socket — which are written `queued` and reach `sent`, `delivered` or
+`failed` only through this callback. A bot reply is different: it is returned as TwiML in
+`POST /webhook/whatsapp`'s own response, and Twilio mints a `MessageSid` for it only after reading
+that response, so `twilio_sid` is NULL at the moment the row is written and this callback has nothing
+to match it against. A bot reply is recorded `status = 'sent'` with `twilio_sid` NULL and never
+reaches this endpoint. An inbound message is written `received` and never moves.
 
 **Response** — `204 No Content`, with no body.
 
@@ -679,13 +727,16 @@ Carries `is_active`, reporting the real state whatever it is — see [Soft delet
     {
       "id": "uuid",
       "name": "Tommy Doe",
-      "age": 12,
+      "date_of_birth": "2014-05-02",
       "grade_level": 7,
-      "school_name": "Lincoln Middle School"
+      "school_name": "Lincoln Middle School",
+      "notes": null
     }
   ]
 }
 ```
+
+A child registered before date of birth replaced age has `"date_of_birth": null`.
 
 The nested `homes` list carries `is_active` and returns **every** linked home, deactivated ones included — a nested list inside a single-resource response is not a list endpoint and the collection filter does not reach it, as [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) states. The field is what lets a caller tell which of these homes `home_count` on [`GET /api/clients`](#get-apiclients) left out, since that count excludes the inactive ones. `homes` is an entity table with its own identity and is not a junction: `child_homes` and `guardian_homes` are the junctions, and they correctly carry no flag.
 
@@ -747,15 +798,37 @@ Create a child, linked to one or more guardians and one or more homes. Called by
   "guardian_ids": ["uuid"],
   "home_ids": ["uuid"],
   "name": "Tommy Doe",
-  "age": 12,
+  "date_of_birth": "2014-05-02",
   "grade_level": 7,
-  "school_name": "Lincoln Middle School"
+  "school_name": "Lincoln Middle School",
+  "notes": "Peanut allergy"
+}
+```
+
+`date_of_birth` is required and must be a real calendar date between `1900-01-01` and today;
+anything else is **400** `date_of_birth must be a real date between 1900-01-01 and today`.
+`notes` is optional, at most 2000 characters, and a blank value is stored as `null`.
+`grade_level` stays an integer ≥ 1 and `school_name` stays required.
+
+**Response** (`201`, and the same shape from `PATCH`):
+```json
+{
+  "id": "uuid",
+  "name": "Tommy Doe",
+  "date_of_birth": "2014-05-02",
+  "grade_level": 7,
+  "school_name": "Lincoln Middle School",
+  "notes": "Peanut allergy",
+  "guardian_ids": ["uuid"],
+  "home_ids": ["uuid"]
 }
 ```
 
 ### `PATCH /api/children/{id}`
 
-Update child info.
+Update child info. Every field is optional and an absent field is left as it is. `notes: ""`
+clears the notes; `date_of_birth` can be corrected but not cleared. `guardian_ids` / `home_ids`,
+when present, replace the link set.
 
 ---
 
@@ -1434,6 +1507,7 @@ list reads as an inbox.
 |---|---|---|
 | status | No | `bot` or `human` — who is answering right now |
 | unread | No | `true` restricts to conversations with messages newer than `last_read_at` |
+| flagged | No | `true` restricts to conversations with a non-null `flag_reason` |
 | q | No | Free-text match over the phone number and the linked guardian's name |
 
 **Response**
@@ -1448,7 +1522,8 @@ list reads as an inbox.
       "taken_over_by": { "id": "uuid", "email": "admin@tutorlink.com" },
       "last_message_at": "2026-08-20T14:31:02Z",
       "last_message_preview": "Could we move Tommy to Thursday?",
-      "unread": true
+      "unread": true,
+      "flag_reason": null
     }
   ],
   "total": 42,
@@ -1462,6 +1537,11 @@ admin rather than one per admin. This is a shared inbox for a small team, and a 
 a shared act — the conversation is claimed by a person but visible to all of them. Per-admin unread
 state would need a junction row per admin per conversation to deliver a personal badge nobody has
 asked for.
+
+`flag_reason` is `stuck`, `parse_error`, `guardian_link_request` or `null`, independent of `status` —
+a flagged conversation can still be `bot` (unattended) or already `human` (an admin took over before
+reading why). `?flagged=true` restricts the list to conversations where it is not null, which is what
+lets an admin triage the queue instead of scanning the whole inbox for one.
 
 ### `GET /api/conversations/{id}`
 
@@ -1479,6 +1559,7 @@ returns **404**.
   "taken_over_at": "2026-08-20T14:29:40Z",
   "last_message_at": "2026-08-20T14:31:02Z",
   "last_read_at": "2026-08-20T14:30:00Z",
+  "flag_reason": null,
   "message_count": 412,
   "unread_count": 3,
   "created_at": "2026-06-02T09:14:00Z"

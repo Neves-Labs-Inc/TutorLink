@@ -13,6 +13,8 @@ from app.routers import (
     children,
     client_bookings,
     clients,
+    conversation_stream,
+    conversations,
     exceptions,
     health,
     settings,
@@ -22,6 +24,7 @@ from app.routers import (
     tutor_subjects,
     tutors,
     users,
+    webhook,
 )
 
 
@@ -76,6 +79,9 @@ def create_app() -> FastAPI:
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
     app.include_router(stats.router)
+    app.include_router(webhook.router)
+    app.include_router(conversations.router)
+    app.include_router(conversation_stream.router)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

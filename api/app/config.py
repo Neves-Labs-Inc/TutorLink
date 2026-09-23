@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_whatsapp_number: str | None = None
+    twilio_status_callback_url: str | None = None
+
+    # Nullable and defaulted for the same reason as the `twilio_*` block above: the app must
+    # still boot in a development or test environment with no credentials. The bot refuses to
+    # run without this rather than failing lazily at request time. Read from the environment
+    # only — never from a file, so Phase 8 can supply it from Secret Manager as an env var.
+    anthropic_api_key: str | None = None
 
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

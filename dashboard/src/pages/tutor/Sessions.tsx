@@ -12,8 +12,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/useAuth'
 import { errorDetail } from '@/lib/api'
-import { bookingTimeLabel } from '@/lib/bookings'
-import { formatIsoDate, todayLocalIso } from '@/lib/dates'
+import { bookingTimeLabel } from '@/lib/bookings/bookings'
+import { formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import {
@@ -25,7 +25,7 @@ import {
   windowLabel,
   type SessionFilterState,
   type SessionTab,
-} from '@/lib/tutorSessions'
+} from '@/lib/tutor-sessions/tutorSessions'
 import { cn } from '@/lib/utils'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'

@@ -12,8 +12,8 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { errorDetail } from '@/lib/api'
-import { bookingFilterSearchParams, EMPTY_FILTERS } from '@/lib/bookings'
-import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates'
+import { bookingFilterSearchParams, EMPTY_FILTERS } from '@/lib/bookings/bookings'
+import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
 
 type TutorBookingsSectionProps = { tutorId: string }

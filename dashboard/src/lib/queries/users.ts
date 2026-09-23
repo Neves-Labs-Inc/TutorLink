@@ -1,8 +1,8 @@
 import { keepPreviousData, queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { Role } from '@/lib/auth'
+import type { Role } from '@/lib/auth/auth'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
-import type { UserCreatePayload, UserUpdatePayload } from '@/lib/users'
+import type { UserCreatePayload, UserUpdatePayload } from '@/lib/users/users'
 
 export type User = {
   id: string

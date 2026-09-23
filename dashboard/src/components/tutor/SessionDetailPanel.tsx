@@ -5,8 +5,8 @@ import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { errorDetail } from '@/lib/api'
-import { bookingTimeLabel } from '@/lib/bookings'
-import { formatIsoDate } from '@/lib/dates'
+import { bookingTimeLabel } from '@/lib/bookings/bookings'
+import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries } from '@/lib/queries/bookings'
 
 type SessionDetailPanelProps = {

@@ -13,8 +13,8 @@ import {
   todaySessionsCaption,
   todaySessionsParams,
   upcomingWeekLabel,
-} from '@/lib/dashboard'
-import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates'
+} from '@/lib/dashboard/dashboard'
+import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
 import { statsQueries } from '@/lib/queries/stats'
 
@@ -28,7 +28,7 @@ const FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const ROLLOVER_CHECK_MS = 60_000
 const WIDGET_SKELETONS = [0, 1, 2, 3]
 
-const widgetGridClasses = 'grid gap-4 sm:grid-cols-2 lg:grid-cols-4'
+const widgetGridClasses = 'grid gap-4 sm:grid-cols-1 lg:grid-cols-2'
 
 const STATUS_COLUMN: Column<Booking> = {
   id: 'status',
@@ -115,7 +115,7 @@ export const Dashboard = () => {
           value={stats.data.upcoming_week_session_count}
           detail={upcomingWeekLabel(stats.data.date, stats.data.week_end)}
         />
-        <StatWidget
+        {/* <StatWidget
           label="Active tutors"
           value={stats.data.active_tutor_count}
           detail="Tutors currently active"
@@ -124,7 +124,7 @@ export const Dashboard = () => {
           label="Active clients"
           value={stats.data.active_client_count}
           detail="Guardians currently active"
-        />
+        /> */}
       </div>
     )
   }

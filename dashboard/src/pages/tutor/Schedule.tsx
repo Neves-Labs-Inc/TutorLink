@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/hooks/useAuth'
 import { errorDetail } from '@/lib/api'
-import { byDayOfWeek, slotRangeLabel } from '@/lib/availability'
-import { DAY_LABELS, todayLocalIso } from '@/lib/dates'
+import { byDayOfWeek, slotRangeLabel } from '@/lib/availability/availability'
+import { DAY_LABELS, todayLocalIso } from '@/lib/dates/dates'
 import { availabilityQueries, type AvailabilitySlot } from '@/lib/queries/availability'
 import { exceptionQueries, type TutorException } from '@/lib/queries/exceptions'
 import {
@@ -21,7 +21,7 @@ import {
   weekRangeLabel,
   weekStartIso,
   type SlotBlocking,
-} from '@/lib/tutorSchedule'
+} from '@/lib/tutor-schedule/tutorSchedule'
 import { cn } from '@/lib/utils'
 
 type ScheduleWeekProps = { tutorId: string }

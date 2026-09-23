@@ -12,8 +12,12 @@ passing response body cannot show on its own:
 
 Guardians and homes are made through the ORM rather than through `POST /api/clients`, so
 phone-number normalisation never runs and these tests do not inherit REQ-037's fixtures.
+
+REQ-095's date-of-birth bound is exercised at both ends, with `child_service._today()` frozen
+for the upper one: an unfrozen "tomorrow" would pass or fail depending on when the suite runs.
 """
 
+import datetime
 import uuid
 
 import pytest
@@ -21,15 +25,19 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.child import Child
+from app.models.child import NOTES_MAX_LENGTH, Child
 from app.models.enums import UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import create_access_token, hash_password
+from app.services import child_service
 
 PASSWORD = "correct horse battery staple"
+DATE_OF_BIRTH = "2014-05-02"
+FROZEN_TODAY = datetime.date(2026, 9, 23)
+INVALID_DATE_OF_BIRTH_ERROR = "date_of_birth must be a real date between 1900-01-01 and today"
 
 
 def _phone() -> str:
@@ -83,7 +91,7 @@ def _payload(*, guardians: list[Guardian], homes: list[Home]) -> dict[str, objec
         "guardian_ids": [str(one.id) for one in guardians],
         "home_ids": [str(one.id) for one in homes],
         "name": "Tommy Doe",
-        "age": 12,
+        "date_of_birth": DATE_OF_BIRTH,
         "grade_level": 7,
         "school_name": "Lincoln Middle School",
     }
@@ -367,19 +375,6 @@ def test_post_refuses_a_grade_level_below_one(
     assert db.scalar(select(func.count()).select_from(Child)) == before
 
 
-def test_post_refuses_an_age_below_one(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
-    payload["age"] = 0
-    before = db.scalar(select(func.count()).select_from(Child))
-
-    response = api.post("/api/children", headers=_auth(admin), json=payload)
-
-    assert response.status_code == 400
-    assert isinstance(response.json()["detail"], str)
-    assert db.scalar(select(func.count()).select_from(Child)) == before
-
-
 def test_post_accepts_a_grade_level_of_one(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
@@ -411,23 +406,6 @@ def test_patch_refuses_a_grade_level_below_one_and_writes_nothing(
     assert db.scalar(select(Child.grade_level).where(Child.id == child_id)) == 7
 
 
-def test_patch_refuses_an_age_below_one_and_writes_nothing(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    guardian, home = _make_guardian(db), _make_home(db)
-    child_id = _create_child(api, admin, guardians=[guardian], homes=[home])
-
-    response = api.patch(
-        f"/api/children/{child_id}",
-        headers=_auth(admin),
-        json={"name": "Renamed", "age": 0},
-    )
-
-    assert response.status_code == 400
-    assert isinstance(response.json()["detail"], str)
-    assert db.scalar(select(Child.name).where(Child.id == child_id)) == "Tommy Doe"
-    assert db.scalar(select(Child.age).where(Child.id == child_id)) == 12
-
-
 def test_patch_on_an_unknown_child_is_404(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
@@ -437,6 +415,241 @@ def test_patch_on_an_unknown_child_is_404(api: TestClient, db: Session) -> None:
 
     assert response.status_code == 404
     assert isinstance(response.json()["detail"], str)
+
+
+# --- REQ-095: date of birth and notes -------------------------------------------------------
+
+
+def test_the_response_carries_exactly_the_documented_keys(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/children",
+        headers=_auth(admin),
+        json=_payload(guardians=[_make_guardian(db)], homes=[_make_home(db)]),
+    )
+
+    assert response.status_code == 201
+    assert set(response.json()) == {
+        "id",
+        "name",
+        "date_of_birth",
+        "grade_level",
+        "school_name",
+        "notes",
+        "guardian_ids",
+        "home_ids",
+    }
+
+
+def test_post_without_a_date_of_birth_is_400_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    del payload["date_of_birth"]
+    before = db.scalar(select(func.count()).select_from(Child))
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(func.count()).select_from(Child)) == before
+
+
+@pytest.mark.parametrize("date_of_birth", ["2100-01-01", "1899-12-31"])
+def test_post_refuses_an_implausible_date_of_birth(
+    api: TestClient, db: Session, date_of_birth: str
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["date_of_birth"] = date_of_birth
+    before = db.scalar(select(func.count()).select_from(Child))
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": INVALID_DATE_OF_BIRTH_ERROR}
+    assert db.scalar(select(func.count()).select_from(Child)) == before
+
+
+@pytest.mark.parametrize("date_of_birth", ["2016-02-30", "23/04/2016", "nine"])
+def test_post_refuses_a_date_of_birth_that_is_not_a_calendar_date(
+    api: TestClient, db: Session, date_of_birth: str
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["date_of_birth"] = date_of_birth
+    before = db.scalar(select(func.count()).select_from(Child))
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(func.count()).select_from(Child)) == before
+
+
+@pytest.mark.parametrize("date_of_birth", ["1900-01-01", "2016-04-23"])
+def test_post_accepts_a_plausible_date_of_birth_and_echoes_it(
+    api: TestClient, db: Session, date_of_birth: str
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["date_of_birth"] = date_of_birth
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    child_id = uuid.UUID(response.json()["id"])
+    assert response.status_code == 201
+    assert response.json()["date_of_birth"] == date_of_birth
+    stored = db.scalar(select(Child.date_of_birth).where(Child.id == child_id))
+    assert stored == datetime.date.fromisoformat(date_of_birth)
+
+
+@pytest.mark.parametrize(
+    ("date_of_birth", "expected_status"),
+    [(FROZEN_TODAY, 201), (FROZEN_TODAY + datetime.timedelta(days=1), 400)],
+)
+def test_the_upper_bound_is_today_inclusive(
+    api: TestClient,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    date_of_birth: datetime.date,
+    expected_status: int,
+) -> None:
+    monkeypatch.setattr(child_service, "_today", lambda: FROZEN_TODAY)
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["date_of_birth"] = date_of_birth.isoformat()
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (datetime.date(1900, 1, 1), True),
+        (datetime.date(1899, 12, 31), False),
+        (FROZEN_TODAY, True),
+        (FROZEN_TODAY + datetime.timedelta(days=1), False),
+    ],
+)
+def test_date_of_birth_is_plausible(value: datetime.date, expected: bool) -> None:
+    assert child_service.date_of_birth_is_plausible(value, today=FROZEN_TODAY) is expected
+
+
+@pytest.mark.parametrize(
+    ("notes", "expected"),
+    [
+        (None, None),
+        ("   ", None),
+        ("Peanut allergy", "Peanut allergy"),
+        ("  Peanut allergy \n", "Peanut allergy"),
+        ("x" * NOTES_MAX_LENGTH, "x" * NOTES_MAX_LENGTH),
+    ],
+)
+def test_post_stores_notes_stripped_and_blank_as_null(
+    api: TestClient, db: Session, notes: str | None, expected: str | None
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    if notes is not None:
+        payload["notes"] = notes
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    child_id = uuid.UUID(response.json()["id"])
+    assert response.status_code == 201
+    assert response.json()["notes"] == expected
+    assert db.scalar(select(Child.notes).where(Child.id == child_id)) == expected
+
+
+def test_post_refuses_notes_over_the_limit_and_writes_nothing(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["notes"] = "x" * (NOTES_MAX_LENGTH + 1)
+    before = db.scalar(select(func.count()).select_from(Child))
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == 400
+    assert isinstance(response.json()["detail"], str)
+    assert db.scalar(select(func.count()).select_from(Child)) == before
+
+
+@pytest.mark.parametrize("cleared", ["", "   "])
+def test_patch_with_blank_notes_clears_them(api: TestClient, db: Session, cleared: str) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["notes"] = "Peanut allergy"
+    child_id = uuid.UUID(api.post("/api/children", headers=_auth(admin), json=payload).json()["id"])
+
+    response = api.patch(f"/api/children/{child_id}", headers=_auth(admin), json={"notes": cleared})
+
+    assert response.status_code == 200
+    assert response.json()["notes"] is None
+    assert db.scalar(select(Child.notes).where(Child.id == child_id)) is None
+
+
+@pytest.mark.parametrize(
+    "body", [{"name": "X"}, {"date_of_birth": None, "notes": None}], ids=["absent", "null"]
+)
+def test_patch_leaves_date_of_birth_and_notes_alone_unless_given(
+    api: TestClient, db: Session, body: dict[str, object]
+) -> None:
+    """`date_of_birth` can be corrected but never cleared, so an explicit null is "unchanged"
+    exactly as an absent key is."""
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    payload["notes"] = "Peanut allergy"
+    child_id = uuid.UUID(api.post("/api/children", headers=_auth(admin), json=payload).json()["id"])
+
+    response = api.patch(f"/api/children/{child_id}", headers=_auth(admin), json=body)
+
+    stored = db.get_one(Child, child_id)
+    db.refresh(stored)
+    assert response.status_code == 200
+    assert response.json()["date_of_birth"] == DATE_OF_BIRTH
+    assert response.json()["notes"] == "Peanut allergy"
+    assert stored.date_of_birth == datetime.date.fromisoformat(DATE_OF_BIRTH)
+    assert stored.notes == "Peanut allergy"
+
+
+def test_patch_corrects_the_date_of_birth(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"date_of_birth": "2015-06-01"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["date_of_birth"] == "2015-06-01"
+    stored = db.scalar(select(Child.date_of_birth).where(Child.id == child_id))
+    assert stored == datetime.date(2015, 6, 1)
+
+
+def test_patch_refuses_an_implausible_date_of_birth_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = api.patch(
+        f"/api/children/{child_id}",
+        headers=_auth(admin),
+        json={"name": "Renamed", "notes": "Changed", "date_of_birth": "2100-01-01"},
+    )
+
+    stored = db.get_one(Child, child_id)
+    db.refresh(stored)
+    assert response.status_code == 400
+    assert response.json() == {"detail": INVALID_DATE_OF_BIRTH_ERROR}
+    assert stored.name == "Tommy Doe"
+    assert stored.notes is None
+    assert stored.date_of_birth == datetime.date.fromisoformat(DATE_OF_BIRTH)
 
 
 # --- REQ-034.5: nothing here soft-deletes ---------------------------------------------------

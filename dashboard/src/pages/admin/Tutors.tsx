@@ -17,7 +17,7 @@ import {
   subjectSummary,
   tutorListParams,
   // type TutorDraft,
-} from '@/lib/tutors'
+} from '@/lib/tutors/tutors'
 
 // const EMPTY_DRAFT: TutorDraft = { name: '', email: '', phone: '', bio: '' }
 const SEARCH_DEBOUNCE_MS = 300

@@ -358,7 +358,7 @@ def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None
 
 def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
     suffix = uuid.uuid4().hex[:12]
-    child = Child(name=f"Child {suffix}", age=12, grade_level=7, school_name="Test School")
+    child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     subject = Subject(name=f"Subject {suffix}")
     home = Home(address="1 Test Street", access_code="0000")
     tutor = _make_tutor(db)

@@ -34,7 +34,15 @@ def _test_engine() -> Generator[Engine, None, None]:
     """
     from app.config import get_settings
     from app.models import metadata
-    from app.models.enums import booking_status_enum, exception_status_enum, user_role_enum
+    from app.models.enums import (
+        booking_status_enum,
+        conversation_status_enum,
+        exception_status_enum,
+        flag_reason_enum,
+        message_author_enum,
+        message_status_enum,
+        user_role_enum,
+    )
 
     url = make_url(get_settings().database_url)
     test_url = url.set(database=f"{url.database}_test")
@@ -62,6 +70,10 @@ def _test_engine() -> Generator[Engine, None, None]:
         user_role_enum.create(connection, checkfirst=True)
         booking_status_enum.create(connection, checkfirst=True)
         exception_status_enum.create(connection, checkfirst=True)
+        conversation_status_enum.create(connection, checkfirst=True)
+        message_author_enum.create(connection, checkfirst=True)
+        message_status_enum.create(connection, checkfirst=True)
+        flag_reason_enum.create(connection, checkfirst=True)
         # For the same reason: `excl_bookings_live_overlap` compares a UUID with `=` inside a
         # GiST index, which only `btree_gist` teaches PostgreSQL to do. Migration 0009 creates
         # the extension, and `create_all` will not, so the table would fail to create here.
@@ -75,7 +87,7 @@ def _test_engine() -> Generator[Engine, None, None]:
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migrations 0004, 0011, 0012 and 0013 seed.
+    """Insert the `system_settings` rows migrations 0004, 0011, 0012, 0013 and 0014 seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
     /auth/token` now reads the four rate-limit rows on every request — without them every login
@@ -98,6 +110,7 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         IP_MAX_ATTEMPTS_SETTING,
         IP_WINDOW_SECONDS_SETTING,
     )
+    from app.services.retention_service import CHAT_RETENTION_DAYS_SETTING
     from app.services.scheduling_service import (
         BOOKING_LOOKAHEAD_SETTING,
         MAX_SLOTS_OFFERED_SETTING,
@@ -117,6 +130,7 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         BOOKING_LOOKAHEAD_SETTING: "90",
         MIN_BOOKING_LEAD_SETTING: "0",
         MAX_SLOTS_OFFERED_SETTING: "5",
+        CHAT_RETENTION_DAYS_SETTING: "365",
     }
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"

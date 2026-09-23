@@ -17,8 +17,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
-import { byDayOfWeek, isTimeRangeOrdered, slotRangeLabel, timeInputValue } from '@/lib/availability'
-import { DAY_LABELS } from '@/lib/dates'
+import { byDayOfWeek, isTimeRangeOrdered, slotRangeLabel, timeInputValue } from '@/lib/availability/availability'
+import { DAY_LABELS } from '@/lib/dates/dates'
 import {
   availabilityQueries,
   createSlot,

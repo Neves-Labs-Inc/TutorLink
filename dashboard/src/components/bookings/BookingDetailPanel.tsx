@@ -6,8 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
-import { bookingTimeLabel, statusLabel, STATUS_OPTIONS, type BookingStatus } from '@/lib/bookings'
-import { formatIsoDate } from '@/lib/dates'
+import { bookingTimeLabel, statusLabel, STATUS_OPTIONS, type BookingStatus } from '@/lib/bookings/bookings'
+import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries, updateBookingStatus } from '@/lib/queries/bookings'
 
 type BookingDetailPanelProps = {

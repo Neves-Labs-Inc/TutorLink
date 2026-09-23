@@ -16,7 +16,7 @@ import {
   type Tutor,
   type TutorUpdate,
 } from '@/lib/queries/tutors'
-import { tutorBioPayload } from '@/lib/tutors'
+import { tutorBioPayload } from '@/lib/tutors/tutors'
 import { cn } from '@/lib/utils'
 
 type ProfileSectionProps = { tutorId: string }

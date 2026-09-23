@@ -23,9 +23,10 @@ export type Home = {
 export type ClientChild = {
   id: string
   name: string
-  age: number
+  date_of_birth: string | null
   grade_level: number
   school_name: string
+  notes: string | null
 }
 
 export type ClientDetail = {

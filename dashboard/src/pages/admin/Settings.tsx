@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
 import { settingQueries, updateSettings } from '@/lib/queries/settings'
-import { pendingUpdates, settingControl, settingLabel, type Setting } from '@/lib/settings'
+import { pendingUpdates, settingControl, settingLabel, type Setting } from '@/lib/settings/settings'
 
 type SettingRowProps = {
   setting: Setting

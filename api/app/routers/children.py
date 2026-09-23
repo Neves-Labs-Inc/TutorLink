@@ -18,12 +18,22 @@ from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.child import Child
 from app.schemas.child import ChildCreate, ChildRead, ChildUpdate
-from app.services.child_service import ChildNotFound, InvalidChildLinks, create_child, update_child
+from app.services.child_service import (
+    DATE_OF_BIRTH_EARLIEST,
+    ChildNotFound,
+    InvalidChildLinks,
+    InvalidDateOfBirth,
+    create_child,
+    update_child,
+)
 
 CHILD_NOT_FOUND_ERROR = "Child not found"
 INVALID_LINKS_ERROR = (
     "guardian_ids and home_ids must each name at least one guardian or home, and every id "
     "given must already exist"
+)
+INVALID_DATE_OF_BIRTH_ERROR = (
+    f"date_of_birth must be a real date between {DATE_OF_BIRTH_EARLIEST.isoformat()} and today"
 )
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -39,12 +49,15 @@ def create(payload: ChildCreate, user: AdminPrincipal, db: DbSession) -> ChildRe
             guardian_ids=payload.guardian_ids,
             home_ids=payload.home_ids,
             name=payload.name,
-            age=payload.age,
+            date_of_birth=payload.date_of_birth,
             grade_level=payload.grade_level,
             school_name=payload.school_name,
+            notes=payload.notes,
         )
     except InvalidChildLinks as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_LINKS_ERROR) from exc
+    except InvalidDateOfBirth as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_DATE_OF_BIRTH_ERROR) from exc
 
     db.commit()
 
@@ -62,14 +75,17 @@ def update(
             guardian_ids=payload.guardian_ids,
             home_ids=payload.home_ids,
             name=payload.name,
-            age=payload.age,
+            date_of_birth=payload.date_of_birth,
             grade_level=payload.grade_level,
             school_name=payload.school_name,
+            notes=payload.notes,
         )
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
     except InvalidChildLinks as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_LINKS_ERROR) from exc
+    except InvalidDateOfBirth as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_DATE_OF_BIRTH_ERROR) from exc
 
     db.commit()
 
@@ -80,9 +96,10 @@ def _as_read(child: Child) -> ChildRead:
     return ChildRead(
         id=child.id,
         name=child.name,
-        age=child.age,
+        date_of_birth=child.date_of_birth,
         grade_level=child.grade_level,
         school_name=child.school_name,
+        notes=child.notes,
         guardian_ids=[link.guardian_id for link in child.guardian_links],
         home_ids=[link.home_id for link in child.home_links],
     )

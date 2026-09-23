@@ -72,6 +72,9 @@ WINDOW = "from=2026-09-01&to=2026-12-31"
 # who the caller is.
 EXCEPTION_BODY = {"start_date": "2026-10-05", "end_date": "2026-10-06", "reason": "vacation"}
 
+CHILD_DATE_OF_BIRTH = datetime.date(2014, 5, 2)
+CHILD_NOTES = "Peanut allergy"
+
 
 @dataclass(frozen=True, slots=True)
 class World:
@@ -270,6 +273,23 @@ def test_a_tutor_reads_their_own_booking(api: TestClient, world: World) -> None:
     assert body["tutor"]["id"] == str(world.tutor.id)
     assert body["home"]["id"] == str(world.home_id)
     assert body["child"]["id"] == str(world.child_id)
+
+
+def test_a_tutor_sees_a_booked_child_as_a_name_and_nothing_more(
+    api: TestClient, world: World
+) -> None:
+    """A-43: a child's date of birth and notes are admin-only. The fixture child carries both,
+    so their absence from the tutor's responses is a filter, not an empty column."""
+    listed = api.get("/api/bookings", headers=world.tutor_headers)
+    detail = api.get(f"/api/bookings/{world.booking_id}", headers=world.tutor_headers)
+
+    assert listed.status_code == 200
+    assert detail.status_code == 200
+    assert [set(row["child"]) for row in listed.json()["items"]] == [{"id", "name"}]
+    assert set(detail.json()["child"]) == {"id", "name"}
+    for response in (listed, detail):
+        assert CHILD_NOTES not in response.text
+        assert CHILD_DATE_OF_BIRTH.isoformat() not in response.text
 
 
 def test_a_tutor_creating_their_own_time_off_lands_pending(
@@ -644,7 +664,13 @@ def _make_family(db: Session) -> tuple[uuid.UUID, uuid.UUID]:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
     home = Home(address=f"{suffix} Test Street", access_code="0000")
-    child = Child(name=f"Child {suffix}", age=12, grade_level=7, school_name="Test School")
+    child = Child(
+        name=f"Child {suffix}",
+        date_of_birth=CHILD_DATE_OF_BIRTH,
+        grade_level=7,
+        school_name="Test School",
+        notes=CHILD_NOTES,
+    )
     db.add_all([guardian, home, child])
     db.flush()
     db.add(ChildGuardian(child_id=child.id, guardian_id=guardian.id))

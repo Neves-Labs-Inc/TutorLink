@@ -739,7 +739,7 @@ def _make_world(
     subject_id = subject_id or _make_subject(db).id
     _assign(db, tutor_id=tutor.id, subject_id=subject_id, max_grade_level=max_grade_level)
 
-    child = Child(name=f"Child {suffix}", age=12, grade_level=7, school_name="Test School")
+    child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     home = Home(address="1 Test Street", access_code="0000")
     db.add_all([child, home])
     db.flush()

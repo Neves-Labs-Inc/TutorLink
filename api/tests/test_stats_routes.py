@@ -92,7 +92,7 @@ class Stage:
 def stage(db: Session) -> Stage:
     subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
     home = Home(address="1 Test Street", access_code="0000")
-    child = Child(name=f"Child {uuid.uuid4().hex[:12]}", age=12, grade_level=7, school_name="PS 1")
+    child = Child(name=f"Child {uuid.uuid4().hex[:12]}", grade_level=7, school_name="PS 1")
     db.add_all([subject, home, child])
     db.flush()
 

@@ -1,6 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { Setting, SettingUpdate } from '@/lib/settings'
+import type { Setting, SettingUpdate } from '@/lib/settings/settings'
 
 type Page<T> = {
   items: T[]

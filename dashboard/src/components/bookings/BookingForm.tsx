@@ -20,8 +20,8 @@ import {
   toCreateBody,
   weekdayName,
   type BookingDraft,
-} from '@/lib/bookingForm'
-import { formatTime } from '@/lib/dates'
+} from '@/lib/booking-form/bookingForm'
+import { formatTime } from '@/lib/dates/dates'
 import { bookingRefQueries } from '@/lib/queries/bookingRefs'
 import { createBooking } from '@/lib/queries/bookings'
 import { clientQueries } from '@/lib/queries/clients'

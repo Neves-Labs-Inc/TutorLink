@@ -793,7 +793,6 @@ def _make_home(db: Session, guardian: Guardian) -> Home:
 def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) -> Child:
     child = Child(
         name=f"Child {uuid.uuid4().hex[:8]}",
-        age=12,
         grade_level=CHILD_GRADE,
         school_name="Test School",
     )

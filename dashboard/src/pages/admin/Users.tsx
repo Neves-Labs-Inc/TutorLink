@@ -22,7 +22,7 @@ import {
   updateUserPayload,
   userFormErrors,
   type UserDraft,
-} from '@/lib/users'
+} from '@/lib/users/users'
 import { useAuthStore } from '@/stores/authStore'
 
 type FormState = UserDraft & { isActive: boolean }

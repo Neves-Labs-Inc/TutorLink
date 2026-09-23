@@ -136,7 +136,8 @@ View all guardian/client records.
 **Client detail (`/clients/{id}`):**
 - Guardian info: name, phone. No address here — see homes below
 - Homes: label, address, access code — a client may have more than one, and a home may be shared with another guardian
-- Children list: name, age, grade, school — each expandable, showing that child's guardians and homes
+- Children list: name, date of birth with the current age derived from it ("Not recorded" when
+  missing), grade, school, and notes — each expandable, showing that child's guardians and homes
 - Booking history across all children, filterable by status and date
 
 ---

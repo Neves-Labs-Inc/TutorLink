@@ -573,9 +573,7 @@ def _make_home(db: Session, *, guardian: Guardian, is_active: bool = True) -> Ho
 
 
 def _make_child(db: Session, *, guardians: list[Guardian]) -> Child:
-    child = Child(
-        name=f"Child {uuid.uuid4().hex[:12]}", age=12, grade_level=7, school_name="Test School"
-    )
+    child = Child(name=f"Child {uuid.uuid4().hex[:12]}", grade_level=7, school_name="Test School")
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])

@@ -559,7 +559,7 @@ def _make_slot(
 
 def _make_booking(db: Session, *, tutor_id: uuid.UUID, availability_id: uuid.UUID) -> Booking:
     home = Home(label="Home", address="1 Main St", access_code="1234")
-    child = Child(name="Kid", age=10, grade_level=5, school_name="Test School")
+    child = Child(name="Kid", grade_level=5, school_name="Test School")
     subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
     db.add_all([home, child, subject])
     db.flush()

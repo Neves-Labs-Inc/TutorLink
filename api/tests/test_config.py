@@ -143,3 +143,37 @@ def test_settings_error_names_the_rejected_trusted_proxy(
         Settings(secret_key=VALID_SECRET_KEY, trusted_proxies=trusted_proxies)
 
     assert offender in str(excinfo.value)
+
+
+def test_settings_defaults_anthropic_api_key_to_none_when_env_var_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    assert Settings(secret_key=VALID_SECRET_KEY).anthropic_api_key is None
+
+
+def test_settings_reads_anthropic_api_key_when_env_var_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    assert Settings(secret_key=VALID_SECRET_KEY).anthropic_api_key == "sk-ant-test"
+
+
+def test_settings_defaults_twilio_status_callback_url_to_none_when_env_var_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TWILIO_STATUS_CALLBACK_URL", raising=False)
+
+    assert Settings(secret_key=VALID_SECRET_KEY).twilio_status_callback_url is None
+
+
+def test_settings_reads_twilio_status_callback_url_when_env_var_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TWILIO_STATUS_CALLBACK_URL", "https://example.com/webhook/whatsapp/status")
+
+    settings = Settings(secret_key=VALID_SECRET_KEY)
+
+    assert settings.twilio_status_callback_url == "https://example.com/webhook/whatsapp/status"

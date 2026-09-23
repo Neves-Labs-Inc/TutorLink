@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { decodeAccessToken, type Role } from '@/lib/auth'
+import { decodeAccessToken, type Role } from '@/lib/auth/auth'
 
 export type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
 

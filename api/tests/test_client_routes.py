@@ -9,6 +9,7 @@ Every phone number below is a real, dialable US number in the 555-01xx fictional
 `phone_service` validates with `is_valid_number`, so `+15551234567` is *not* one.
 """
 
+import datetime
 import uuid
 
 import pytest
@@ -29,6 +30,7 @@ PASSWORD = "correct horse battery staple"
 PHONE = "+12025550123"
 OTHER_PHONE = "+12025550187"
 PHONE_TAKEN_ERROR = "A client with that phone number already exists"
+DATE_OF_BIRTH = datetime.date(2014, 5, 2)
 
 
 def _make_user(
@@ -81,8 +83,21 @@ def _make_home(db: Session, *, client: Guardian, label: str | None = "Mum's") ->
     return home
 
 
-def _make_child(db: Session, *, guardians: list[Guardian], name: str = "Tommy Doe") -> Child:
-    child = Child(name=name, age=12, grade_level=7, school_name="Lincoln Middle School")
+def _make_child(
+    db: Session,
+    *,
+    guardians: list[Guardian],
+    name: str = "Tommy Doe",
+    date_of_birth: datetime.date | None = DATE_OF_BIRTH,
+    notes: str | None = None,
+) -> Child:
+    child = Child(
+        name=name,
+        date_of_birth=date_of_birth,
+        grade_level=7,
+        school_name="Lincoln Middle School",
+        notes=notes,
+    )
     db.add(child)
     db.flush()
     for guardian in guardians:
@@ -251,7 +266,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
     admin = _make_user(db)
     client = _make_client(db)
     home = _make_home(db, client=client)
-    child = _make_child(db, guardians=[client])
+    child = _make_child(db, guardians=[client], notes="Peanut allergy")
 
     body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
 
@@ -269,11 +284,27 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
         {
             "id": str(child.id),
             "name": "Tommy Doe",
-            "age": 12,
+            "date_of_birth": "2014-05-02",
             "grade_level": 7,
             "school_name": "Lincoln Middle School",
+            "notes": "Peanut allergy",
         }
     ]
+
+
+def test_a_child_registered_before_date_of_birth_renders_it_as_null(
+    api: TestClient, db: Session
+) -> None:
+    """A-44: a child registered before migration 0015 has no date of birth, and still renders."""
+    admin = _make_user(db)
+    client = _make_client(db)
+    _make_child(db, guardians=[client], date_of_birth=None)
+
+    response = api.get(f"/api/clients/{client.id}", headers=_auth(admin))
+
+    assert response.status_code == 200
+    assert response.json()["children"][0]["date_of_birth"] is None
+    assert response.json()["children"][0]["notes"] is None
 
 
 def test_a_child_with_two_guardians_appears_under_both(api: TestClient, db: Session) -> None:

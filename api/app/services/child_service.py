@@ -8,8 +8,15 @@ exist, and one no later request could repair through this surface.
 An unresolvable `guardian_id` or `home_id` is a bad body rather than a missing resource, so it
 is 400 and not 404. The addressed resource is the child. Precedent:
 `user_service._assert_profile_matches_role` for a `tutor_id` that does not resolve.
+
+`date_of_birth_is_plausible` is the one date-of-birth rule (A-46): the router turns a refusal
+into a 400, the bot into a re-prompt. "Today" is the UTC date, read through `_today()` so a test
+can freeze it. `notes` is normalised here rather than in a validator (CONSTITUTION §7): stripped,
+and blank is stored as NULL. On update, an absent `notes` or `date_of_birth` is left alone, a
+blank `notes` clears it, and `date_of_birth` cannot be cleared (A-47).
 """
 
+import datetime
 import uuid
 from collections.abc import Callable, Sequence
 
@@ -19,6 +26,8 @@ from sqlalchemy.orm import Session
 from app.models.child import Child
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
+
+DATE_OF_BIRTH_EARLIEST = datetime.date(1900, 1, 1)
 
 
 class ChildServiceError(Exception):
@@ -33,20 +42,37 @@ class InvalidChildLinks(ChildServiceError):
     """An empty link set, or an id naming no existing guardian or home."""
 
 
+class InvalidDateOfBirth(ChildServiceError):
+    """A date of birth before `DATE_OF_BIRTH_EARLIEST` or after today."""
+
+
+def date_of_birth_is_plausible(value: datetime.date, *, today: datetime.date) -> bool:
+    """DATE_OF_BIRTH_EARLIEST <= value <= today. The one rule; the bot and the API both call it."""
+    return DATE_OF_BIRTH_EARLIEST <= value <= today
+
+
 def create_child(
     db: Session,
     *,
     guardian_ids: Sequence[uuid.UUID],
     home_ids: Sequence[uuid.UUID],
     name: str,
-    age: int,
+    date_of_birth: datetime.date,
     grade_level: int,
     school_name: str,
+    notes: str | None = None,
 ) -> Child:
+    _assert_plausible(date_of_birth)
     guardians = _validated_link_ids(db, Guardian, guardian_ids)
     homes = _validated_link_ids(db, Home, home_ids)
 
-    child = Child(name=name, age=age, grade_level=grade_level, school_name=school_name)
+    child = Child(
+        name=name,
+        date_of_birth=date_of_birth,
+        grade_level=grade_level,
+        school_name=school_name,
+        notes=None if notes is None else _stored_notes(notes),
+    )
     db.add(child)
     db.flush()
 
@@ -68,14 +94,18 @@ def update_child(
     guardian_ids: Sequence[uuid.UUID] | None,
     home_ids: Sequence[uuid.UUID] | None,
     name: str | None,
-    age: int | None,
+    date_of_birth: datetime.date | None,
     grade_level: int | None,
     school_name: str | None,
+    notes: str | None,
 ) -> Child:
     child = db.get(Child, child_id)
 
     if child is None:
         raise ChildNotFound
+
+    if date_of_birth is not None:
+        _assert_plausible(date_of_birth)
 
     guardians = None if guardian_ids is None else _validated_link_ids(db, Guardian, guardian_ids)
     homes = None if home_ids is None else _validated_link_ids(db, Home, home_ids)
@@ -83,14 +113,17 @@ def update_child(
     if name is not None:
         child.name = name
 
-    if age is not None:
-        child.age = age
+    if date_of_birth is not None:
+        child.date_of_birth = date_of_birth
 
     if grade_level is not None:
         child.grade_level = grade_level
 
     if school_name is not None:
         child.school_name = school_name
+
+    if notes is not None:
+        child.notes = _stored_notes(notes)
 
     if guardians is not None:
         guardian_links = db.scalars(
@@ -117,6 +150,15 @@ def update_child(
     return child
 
 
+def _assert_plausible(date_of_birth: datetime.date) -> None:
+    if not date_of_birth_is_plausible(date_of_birth, today=_today()):
+        raise InvalidDateOfBirth
+
+
+def _today() -> datetime.date:
+    return datetime.datetime.now(tz=datetime.UTC).date()
+
+
 def _validated_link_ids(
     db: Session, model: type[Guardian] | type[Home], requested: Sequence[uuid.UUID]
 ) -> set[uuid.UUID]:
@@ -136,6 +178,10 @@ def _validated_link_ids(
         raise InvalidChildLinks
 
     return wanted
+
+
+def _stored_notes(notes: str) -> str | None:
+    return notes.strip() or None
 
 
 def _replace_links[LinkT](

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { errorDetail } from '@/lib/api'
+import { formatDateOfBirth } from '@/lib/children/children'
 import { clientQueries, type ClientChild } from '@/lib/queries/clients'
 
 type ChildrenSectionProps = { clientId: string }
@@ -9,11 +10,28 @@ type ChildrenSectionProps = { clientId: string }
 // Deliberately no expansion (amendment A-3): nothing serves a child's own guardians and homes,
 // and the guardian's homes are not a substitute — a child of separated guardians has different
 // ones, so borrowing them would show an admin the wrong address and access code.
-const COLUMNS: Column<ClientChild>[] = [
+const columns = (today: Date): Column<ClientChild>[] => [
   { id: 'name', header: 'Name', primary: true, cell: (child) => child.name },
-  { id: 'age', header: 'Age', cell: (child) => child.age },
+  {
+    id: 'dob',
+    header: 'Date of birth',
+    cell: (child) => formatDateOfBirth(child.date_of_birth, today),
+  },
   { id: 'grade', header: 'Grade', cell: (child) => `Grade ${child.grade_level}` },
   { id: 'school', header: 'School', cell: (child) => child.school_name },
+  {
+    id: 'notes',
+    header: 'Notes',
+    cell: (child) => (
+      <span
+        tabIndex={0}
+        title={child.notes ?? undefined}
+        className="block max-w-[16rem] truncate"
+      >
+        {child.notes ?? '—'}
+      </span>
+    ),
+  },
 ]
 
 export const ChildrenSection = ({ clientId }: ChildrenSectionProps) => {
@@ -26,7 +44,7 @@ export const ChildrenSection = ({ clientId }: ChildrenSectionProps) => {
       </h2>
       <DataTable
         caption="Children linked to this guardian"
-        columns={COLUMNS}
+        columns={columns(new Date())}
         rows={data?.children ?? []}
         rowKey={(child) => child.id}
         status={isPending ? 'pending' : isError ? 'error' : 'ready'}

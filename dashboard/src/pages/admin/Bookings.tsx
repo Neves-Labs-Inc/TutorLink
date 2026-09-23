@@ -23,8 +23,8 @@ import {
   STATUS_OPTIONS,
   toggleStatus,
   type BookingFilterState,
-} from '@/lib/bookings'
-import { formatIsoDate } from '@/lib/dates'
+} from '@/lib/bookings/bookings'
+import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import { subjectQueries } from '@/lib/queries/subjects'

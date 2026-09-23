@@ -37,9 +37,9 @@ inside the 4300-digit interpreter limit rather than pinned to it, so this module
 if that limit ever moves, and it is a 400 with a clear reason instead of the read path
 discovering the problem later.
 
-**The five scheduling keys carry per-key bounds on top of that pattern.** The pattern accepts a
-leading `-`, and each of those five is arithmetic some other module performs on every scheduling
-request: a negative `session_gap_minutes` *shrinks* the overlap window `GET /api/slots/available`
+**Some keys carry per-key bounds on top of that pattern** (**P4-M**). The pattern accepts a
+leading `-`, and each of the five scheduling keys is arithmetic some other module performs on every
+scheduling request: a negative `session_gap_minutes` *shrinks* the overlap window `GET /api/slots/available`
 and `POST /api/bookings` share, so the offer surface starts handing out slots the write path then
 answers with a 409 — #44 item 1, reached through the settings surface rather than through a
 divergent comparison. A `max_slots_offered` of `0` reports `items: []` beside a non-zero `total`,
@@ -48,10 +48,23 @@ including today. The minimums differ because the values do: `session_gap_minutes
 back-to-back sessions and is a real configuration, while `session_length_minutes` of `0` is a grid
 with no slots in it. The maximums exist because `datetime.timedelta` overflows long before the
 18-digit pattern does — `timedelta(minutes=10**18)` raises, inside a request handler, on every
-slot query after the write. **Only those five are bounded**: a bound is a fact about how a value
-is used, and every other row here is used somewhere this module has no business guessing about.
-The keys are spelled out below rather than imported from `scheduling_service`, which imports this
-module.
+slot query after the write.
+
+`chat_retention_days` is bounded for a harsher reason than any of those five, and its floor is the
+only thing between an admin's typo and the whole chat archive. `purge_expired_messages` builds its
+cutoff as `now - timedelta(days=retention_days)`, so a negative value puts the cutoff in the
+*future* and `DELETE FROM messages WHERE created_at < cutoff` matches **every row in the table** —
+and then every conversation those messages emptied. There is no confirmation step and no undo. `0`
+stays inside the bounds because it is a documented setting rather than a mistake: `erd.md:378-380`
+gives it to a client on a records-retention obligation, and `PurgeResult.ran=False` is what keeps
+it distinguishable from a purge that ran and found nothing. The maximum is the same overflow
+argument as above, reached through `timedelta(days=...)` in the CLI instead of a request handler.
+
+**Only the keys below are bounded**: a bound is a fact about how a value is used, and every other
+row here is used somewhere this module has no business guessing about — the four
+`login_rate_limit_*` rows still accept a negative, which is #17/#18's and not this table's. The
+keys are spelled out rather than imported from the modules that own them, because
+`scheduling_service` and `retention_service` both import this one.
 
 **Which rows a caller may see is decided here, from `actor_role`** (D-010), rather than by the
 caller handing in a precomputed flag. One place answers "what may this role see", and it is
@@ -97,7 +110,7 @@ class _Bounds:
         )
 
 
-_SCHEDULING_BOUNDS = {
+_VALUE_BOUNDS = {
     # A slot length of zero emits no grid at all; a day is the longest slot that can fit inside
     # one `tutor_availability` range, all of which live within a single day.
     "session_length_minutes": _Bounds(minimum=1, maximum=24 * 60),
@@ -114,6 +127,11 @@ _SCHEDULING_BOUNDS = {
     # drop the last `n` slots instead of capping. No maximum: a cap larger than the day's grid
     # is simply not a cap, and nothing downstream does arithmetic with it.
     "max_slots_offered": _Bounds(minimum=1, maximum=None),
+    # Zero means never purge and is a real configuration (`erd.md:378-380`). Negative is the one
+    # value in this table that destroys data: it moves the purge's cutoff into the future, so the
+    # age-based DELETE matches every message ever recorded. A century is far past any retention
+    # obligation and far short of the `timedelta(days=...)` overflow the CLI would hit.
+    "chat_retention_days": _Bounds(minimum=0, maximum=365 * 100),
 }
 
 
@@ -241,7 +259,7 @@ def apply_setting_updates(
         if _INTEGER_VALUE_PATTERN.fullmatch(update.value.strip()) is None:
             raise SettingValueInvalid(f"system setting {update.key!r} rejects {update.value!r}")
 
-        bounds = _SCHEDULING_BOUNDS.get(update.key)
+        bounds = _VALUE_BOUNDS.get(update.key)
 
         if bounds is not None and not bounds.permits(int(update.value)):
             raise SettingValueInvalid(

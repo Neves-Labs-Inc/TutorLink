@@ -71,7 +71,7 @@ class BookingParents:
 def parents(db: Session) -> BookingParents:
     suffix = uuid.uuid4().hex[:12]
 
-    child = Child(name=f"Child {suffix}", age=12, grade_level=7, school_name="Test School")
+    child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     subject = Subject(name=f"Subject {suffix}")
     home = Home(address="1 Test Street", access_code="0000")
     db.add_all([child, subject, home])

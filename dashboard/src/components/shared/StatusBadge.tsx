@@ -11,6 +11,11 @@ const TONE_CLASSES: Record<string, string> = {
   completed: 'bg-status-completed-bg text-status-completed',
   active: 'bg-status-confirmed-bg text-status-confirmed',
   inactive: 'bg-status-cancelled-bg text-status-cancelled',
+  bot: 'bg-status-confirmed-bg text-status-confirmed',
+  human: 'bg-status-completed-bg text-status-completed',
+  stuck: 'bg-status-cancelled-bg text-status-cancelled',
+  parse_error: 'bg-status-cancelled-bg text-status-cancelled',
+  guardian_link_request: 'bg-status-pending-bg text-status-pending',
 }
 
 const badgeClasses =
@@ -18,8 +23,9 @@ const badgeClasses =
 
 export const StatusBadge = ({ status }: StatusBadgeProps) => (
   <span className={cn(badgeClasses, TONE_CLASSES[status] ?? TONE_CLASSES.completed)}>
-    {capitalise(status)}
+    {humanise(status)}
   </span>
 )
 
-const capitalise = (value: string): string => value.replace(/^./, (char) => char.toUpperCase())
+const humanise = (value: string): string =>
+  value.replace(/_/g, ' ').replace(/^./, (char) => char.toUpperCase())

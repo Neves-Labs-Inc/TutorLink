@@ -36,7 +36,7 @@ from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from twilio.request_validator import RequestValidator
@@ -45,6 +45,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.dependencies import get_current_user, get_tutor_scope, require_admin
 from app.main import app, create_app
+from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
@@ -65,7 +66,7 @@ from app.routers.webhook import (
 )
 from app.schemas.bot import BotTurn
 from app.security import hash_password
-from app.services import bot_service, message_service, webhook_service
+from app.services import bot_service, conversation_service, message_service, webhook_service
 from app.services.broadcast_service import CHANNEL
 
 AUTH_TOKEN = "an-auth-token-only-twilio-and-this-process-know"
@@ -97,7 +98,14 @@ def test_a_bot_conversation_gets_the_reply_back_as_twiml(
 
     assert response.status_code == 200
     assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
-    assert bot.calls == [{"phone_number": PHONE_NUMBER, "body": INBOUND_BODY, "guardian_id": None}]
+    assert bot.calls == [
+        {
+            "phone_number": PHONE_NUMBER,
+            "body": INBOUND_BODY,
+            "guardian_id": None,
+            "reactivation_pending": False,
+        }
+    ]
 
     reply = _messages(db, author_kind=MessageAuthor.BOT)[0]
 
@@ -324,6 +332,87 @@ def test_a_turn_carrying_a_guardian_backfills_the_conversation(
     assert conversation.guardian_id == guardian_id
 
 
+def test_a_turn_carrying_a_reactivation_request_records_and_flags_it(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    """REQ-132.3 through the webhook (P7-C): the bot reports the child, `_apply` records the
+    request, and the reply is recorded as usual."""
+    child_id = _inactive_child_id(db)
+    bot.turn = BotTurn(reply=BOT_REPLY, reactivation_child_id=child_id)
+
+    response = _post_inbound(webhook_client)
+    conversation = _conversation(db, phone_number=PHONE_NUMBER)
+
+    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
+    assert conversation is not None
+    assert conversation.reactivation_child_id == child_id
+    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert conversation.flagged_at is not None
+    assert [row.body for row in _messages(db, author_kind=MessageAuthor.BOT)] == [BOT_REPLY]
+    assert bot.calls[0]["reactivation_pending"] is False
+
+
+def test_a_pending_request_is_passed_to_the_bot(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.reactivation_child_id = _inactive_child_id(db)
+    db.flush()
+
+    _post_inbound(webhook_client)
+
+    assert bot.calls[0]["reactivation_pending"] is True
+
+
+def test_the_pending_request_is_read_from_the_row_not_the_identity_map(
+    webhook_client: TestClient, db: Session, bot: "BotDouble", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-130.4, P7D-I. A request recorded by an overlapping turn — here a Core `UPDATE` the
+    ORM cannot see, issued once the conversation is loaded — must still reach the bot as
+    pending. Fails when the `db.refresh` in `_turn` is removed."""
+    _bot_conversation(db)
+    child_id = _inactive_child_id(db)
+    real = conversation_service.resolve_or_create
+
+    def resolved_then_requested_elsewhere(session: Session, *, phone_number: str) -> Conversation:
+        conversation = real(session, phone_number=phone_number)
+        session.execute(
+            text("UPDATE conversations SET reactivation_child_id = :child WHERE id = :id"),
+            {"child": child_id, "id": conversation.id},
+        )
+
+        return conversation
+
+    monkeypatch.setattr(
+        conversation_service, "resolve_or_create", resolved_then_requested_elsewhere
+    )
+
+    _post_inbound(webhook_client)
+
+    assert bot.calls[0]["reactivation_pending"] is True
+
+
+def test_a_refused_second_request_leaves_the_pending_one_untouched(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    """REQ-132.6, OQ-74 — criterion 7, webhook level. The refusal carries nothing to apply, so
+    the first request, its flag and its flag time are exactly what they were."""
+    child_id = _inactive_child_id(db)
+    conversation = _bot_conversation(db)
+    conversation_service.request_reactivation(db, conversation=conversation, child_id=child_id)
+    db.refresh(conversation)
+    flagged_at = conversation.flagged_at
+    bot.turn = BotTurn(reply=f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}")
+
+    _post_inbound(webhook_client)
+    db.refresh(conversation)
+
+    assert bot.calls[0]["reactivation_pending"] is True
+    assert conversation.reactivation_child_id == child_id
+    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert conversation.flagged_at == flagged_at
+
+
 @pytest.mark.parametrize("field", ["From", "MessageSid"])
 def test_a_signed_request_missing_a_required_field_is_400(
     webhook_client: TestClient, field: str
@@ -472,9 +561,22 @@ class BotDouble:
         self.calls: list[dict[str, object]] = []
 
     def __call__(
-        self, db: Session, *, phone_number: str, body: str, guardian_id: uuid.UUID | None
+        self,
+        db: Session,
+        *,
+        phone_number: str,
+        body: str,
+        guardian_id: uuid.UUID | None,
+        reactivation_pending: bool = False,
     ) -> BotTurn:
-        self.calls.append({"phone_number": phone_number, "body": body, "guardian_id": guardian_id})
+        self.calls.append(
+            {
+                "phone_number": phone_number,
+                "body": body,
+                "guardian_id": guardian_id,
+                "reactivation_pending": reactivation_pending,
+            }
+        )
 
         return self.turn
 
@@ -677,6 +779,31 @@ def _admin_message(db: Session) -> Message:
         author_user_id=holder.id,
         twilio_sid=OUTBOUND_SID,
     )
+
+
+def _bot_conversation(db: Session) -> Conversation:
+    conversation = Conversation(
+        phone_number=PHONE_NUMBER,
+        last_message_at=datetime.datetime.now(tz=datetime.UTC),
+    )
+    db.add(conversation)
+    db.flush()
+
+    return conversation
+
+
+def _inactive_child_id(db: Session) -> uuid.UUID:
+    child = Child(
+        name="Sam Jones",
+        date_of_birth=datetime.date(2015, 3, 9),
+        grade_level=6,
+        school_name="Test School",
+        is_active=False,
+    )
+    db.add(child)
+    db.flush()
+
+    return child.id
 
 
 def _guardian_id(db: Session) -> uuid.UUID:

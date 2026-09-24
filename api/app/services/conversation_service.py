@@ -1,4 +1,5 @@
-"""One WhatsApp thread — opening it, reading the inbox, and the takeover that pauses the bot.
+"""One WhatsApp thread — opening it, reading the inbox, the takeover that pauses the bot, and
+the reactivation request an admin approves or denies.
 
 Same transaction contract as `client_service`: nothing here commits, the caller owns the
 boundary. `claim` and `release` take a row lock that is only released by that commit or
@@ -34,6 +35,21 @@ query so the constraint path is reachable by a test (**D-I**).
 process-side `datetime` on the other would make the watermark wrong by whatever the two clocks
 disagree by. `resolve_or_create` therefore sets `last_message_at` explicitly rather than letting
 the column's `now()` default fire.
+
+**A reactivation request is the column, not the flag** (OQ-71 (a), Phase 7D). Pending means
+`reactivation_child_id` is set; `flag_reason = 'reactivation_request'` only puts the thread in
+the flagged queue, and a later `flag()` may overwrite it without losing the request. There is at
+most one pending request per conversation (OQ-74): `request_reactivation` refuses a second
+rather than replacing the first. `resolve_reactivation` ends the request and clears the flag
+**only if** it still says `reactivation_request` — a `stuck` that arrived afterwards is a
+different problem the admin has not dealt with. Neither writes a message nor sends anything to
+the guardian (OQ-72).
+
+**Lock order is conversation → child** (P7D-E, the order `child_service` documents as P7C-S).
+The webhook's inbound insert flushes `last_message_at`, which locks the conversation row before
+the bot reads any child; `resolve_reactivation` locks the conversation first and only then the
+child, through `child_service.update_child`. Taken the other way round, an approval racing a
+guardian's turn on the same conversation could deadlock.
 """
 
 import datetime
@@ -44,11 +60,13 @@ from sqlalchemy import ColumnElement, ScalarSelect, Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus, FlagReason
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
+from app.services import child_service
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -73,13 +91,15 @@ class ConversationListItem:
 
 @dataclass(frozen=True, slots=True)
 class ConversationDetail:
-    """A conversation with the two counts the thread header shows."""
+    """A conversation with the two counts the thread header shows, and the child a pending
+    reactivation request names (`None` when nothing is pending)."""
 
     conversation: Conversation
     guardian: Guardian | None
     holder: User | None
     message_count: int
     unread_count: int
+    reactivation_child: Child | None
 
 
 class ConversationServiceError(Exception):
@@ -101,6 +121,22 @@ class ConversationHeldByAnother(ConversationServiceError):
     def __init__(self, holder: User) -> None:
         super().__init__(f"conversation is held by {holder.email}")
         self.holder = holder
+
+
+class NoReactivationPending(ConversationServiceError):
+    """Approve or deny on a conversation with no pending reactivation request."""
+
+
+class ReactivationAlreadyPending(ConversationServiceError):
+    """A second reactivation request on a conversation that already has one pending (OQ-74)."""
+
+
+class FlagChanged(ConversationServiceError):
+    """Mark handled with a `flagged_at` that is no longer the stored one (SA-38)."""
+
+
+class FlagNeedsReactivationDecision(ConversationServiceError):
+    """Mark handled on a `reactivation_request` flag, which only Approve or Deny ends (OQ-89)."""
 
 
 def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
@@ -313,15 +349,136 @@ def flag(db: Session, *, conversation: Conversation, reason: FlagReason) -> Conv
     than accumulating: the column answers "why does this need attention now", and a thread that
     failed to parse and later got stuck needs the admin to see the state it is actually in.
 
-    Nothing clears the flag here. Releasing a takeover does not, and neither does a later
-    successful turn — `status` already says who is answering, and `flag_reason` is the
-    independent question of why somebody had to look (`erd.md:290-299`, **P7-D**).
+    `flag()` never clears the flag. Exactly two paths do: `mark_handled` (an admin, for any
+    reason but `reactivation_request`) and `resolve_reactivation` (Approve or Deny, for that
+    reason only). Releasing a takeover does not, and neither does a later successful turn —
+    `status` already says who is answering, and `flag_reason` is the independent question of why
+    somebody had to look (`erd.md:290-299`, **P7-D**).
     """
     conversation.flag_reason = reason
     conversation.flagged_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
 
     return conversation
+
+
+def request_reactivation(
+    db: Session, *, conversation: Conversation, child_id: uuid.UUID
+) -> Conversation:
+    """Record that the guardian asked for `child_id` to be reactivated, and flag the thread.
+
+    The column is checked **first**, and a pending request is refused with
+    `ReactivationAlreadyPending` before anything is written: the column, `flag_reason` and
+    `flagged_at` are left exactly as they were, so the first request is never replaced and its
+    flag time is never re-stamped (OQ-74, P7D-I). Through the webhook this is unreachable — the
+    inbound insert holds the row lock from the bot's read of the column to the commit — so the
+    guard is this function's own, not the caller's.
+
+    Called by the webhook with the conversation it has already locked, as `flag` is.
+    """
+    if conversation.reactivation_child_id is not None:
+        raise ReactivationAlreadyPending(
+            f"conversation {conversation.id} already has a reactivation request pending"
+        )
+
+    conversation.reactivation_child_id = child_id
+
+    return flag(db, conversation=conversation, reason=FlagReason.REACTIVATION_REQUEST)
+
+
+def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bool) -> Conversation:
+    """End the pending reactivation request: `approve` reactivates the child, deny does not.
+
+    The conversation row is locked first and the child only afterwards, inside
+    `child_service.update_child` — the webhook's order, so an approval racing a guardian's turn
+    waits rather than deadlocks (P7D-E). Approving a child that is already active is a no-op on
+    the child and still ends the request.
+
+    The flag is cleared only while it is still `reactivation_request` (REQ-131.2): a later
+    `stuck` or `parse_error` overwrote it and is a separate reason for an admin to look, which
+    ending the request does not answer. No message is written and nothing is sent (OQ-72).
+    """
+    conversation = _locked(db, conversation_id=conversation_id)
+    child_id = conversation.reactivation_child_id
+
+    if child_id is None:
+        raise NoReactivationPending(f"conversation {conversation_id} has no request pending")
+
+    if approve:
+        child_service.update_child(
+            db,
+            child_id=child_id,
+            guardian_ids=None,
+            home_ids=None,
+            name=None,
+            date_of_birth=None,
+            grade_level=None,
+            school_name=None,
+            notes=None,
+            is_active=True,
+            expected_cancellations=None,
+        )
+
+    conversation.reactivation_child_id = None
+
+    if conversation.flag_reason is FlagReason.REACTIVATION_REQUEST:
+        conversation.flag_reason = None
+        conversation.flagged_at = None
+
+    db.flush()
+
+    return conversation
+
+
+def mark_handled(
+    db: Session, *, conversation_id: uuid.UUID, flagged_at: datetime.datetime
+) -> ConversationDetail:
+    """Clear the flag an admin has dealt with, provided it is still the flag they saw.
+
+    The user's OQ-54 answer (2026-09-23) reverses **P7-D**'s "nothing clears a flag": an admin
+    marks a flagged thread handled and it leaves the `?flagged=true` queue.
+
+    `flagged_at` is a compare token, not a value to write (SA-38). `flag()` re-stamps it on every
+    flag, the same reason included, so a mismatch means the bot flagged the thread again after
+    the admin looked — and a flag the admin never saw must not be cleared unseen. The comparison
+    is by instant: both sides are aware and microsecond-exact. It is made under the row lock, so
+    a re-flag that commits while this waits is the value compared against.
+
+    A conversation that is not flagged is a no-op success, before the token is looked at — the
+    `release` precedent: a double click or a second admin asks for the state already there.
+
+    A `reactivation_request` flag is refused (OQ-89): Approve and Deny are the only way to end a
+    request. When another reason is cleared while a request is still pending underneath it
+    (P7D-A), the request resurfaces through `flag()` with a fresh `flagged_at` instead of the
+    thread going unflagged. The invariant is `reactivation_child_id IS NOT NULL ⇒ flag_reason IS
+    NOT NULL`; without the fallback a pending request would drop out of the flagged queue and be
+    seen only by someone who happened to open the thread.
+
+    Lock order: the conversation row only, the same first lock the webhook, takeover and
+    `resolve_reactivation` take. No second row is locked, so this cannot join a cycle.
+
+    No message is written and nothing is sent; `status`, the takeover and `last_read_at` are
+    untouched.
+    """
+    conversation = _locked(db, conversation_id=conversation_id)
+
+    if conversation.flag_reason is not None:
+        if conversation.flagged_at != flagged_at:
+            raise FlagChanged(f"conversation {conversation_id} was flagged again")
+
+        if conversation.flag_reason is FlagReason.REACTIVATION_REQUEST:
+            raise FlagNeedsReactivationDecision(
+                f"conversation {conversation_id} has a reactivation request to decide"
+            )
+
+        if conversation.reactivation_child_id is not None:
+            flag(db, conversation=conversation, reason=FlagReason.REACTIVATION_REQUEST)
+        else:
+            conversation.flag_reason = None
+            conversation.flagged_at = None
+            db.flush()
+
+    return _detail(db, conversation)
 
 
 def _matching_conversations(
@@ -436,6 +593,7 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         holder=_holder_or_none(db, conversation),
         message_count=_message_count(db, conversation, unread_only=False),
         unread_count=_message_count(db, conversation, unread_only=True),
+        reactivation_child=_reactivation_child(db, conversation),
     )
 
 
@@ -455,6 +613,16 @@ def _guardian(db: Session, conversation: Conversation) -> Guardian | None:
         return None
 
     return db.get(Guardian, conversation.guardian_id)
+
+
+def _reactivation_child(db: Session, conversation: Conversation) -> Child | None:
+    # Read by id rather than through the `reactivation_child` relationship: `resolve_reactivation`
+    # clears the column in the same session, and an already-loaded relationship would still
+    # name the child until the next expire.
+    if conversation.reactivation_child_id is None:
+        return None
+
+    return db.get(Child, conversation.reactivation_child_id)
 
 
 def _holder_or_none(db: Session, conversation: Conversation) -> User | None:

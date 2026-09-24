@@ -154,8 +154,20 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
         reply = None
         twiml = twilio_service.twiml_empty()
     else:
+        # REQ-130.4 / P7D-I. Re-read the pending request from the row, never from the identity
+        # map, and under the row lock held to the commit: two overlapping turns must not both
+        # see "nothing pending" and both record one. The inbound insert above already holds
+        # the lock; `with_for_update` takes it here too, for a redelivery whose insert
+        # conflicted and so locked nothing. Conversation first, children after — the order
+        # `resolve_reactivation` takes them in (P7D-E), so an approval racing this turn waits
+        # rather than deadlocks.
+        db.refresh(conversation, attribute_names=["reactivation_child_id"], with_for_update=True)
         decided = bot_service.reply_for(
-            db, phone_number=phone_number, body=body, guardian_id=conversation.guardian_id
+            db,
+            phone_number=phone_number,
+            body=body,
+            guardian_id=conversation.guardian_id,
+            reactivation_pending=conversation.reactivation_child_id is not None,
         )
         _apply(db, conversation=conversation, decided=decided)
         reply = message_service.record_bot_reply(db, conversation=conversation, body=decided.reply)
@@ -171,6 +183,10 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn) -> None
 
     A flag does **not** suppress the reply (`docs/api-design.md:479-500`): the client is told
     an admin will reach out, and that reply is recorded and returned like any other.
+
+    A reactivation request is recorded last, and flags the thread `reactivation_request`
+    (REQ-132.3). The bot only returns one when the column read under the row lock said nothing
+    was pending, so `ReactivationAlreadyPending` cannot fire here; it is the service's own guard.
     """
     if decided.link_guardian_id is not None:
         conversation_service.link_guardian(
@@ -179,3 +195,8 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn) -> None
 
     if decided.flag_reason is not None:
         conversation_service.flag(db, conversation=conversation, reason=decided.flag_reason)
+
+    if decided.reactivation_child_id is not None:
+        conversation_service.request_reactivation(
+            db, conversation=conversation, child_id=decided.reactivation_child_id
+        )

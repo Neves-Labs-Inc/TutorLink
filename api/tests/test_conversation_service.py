@@ -16,6 +16,11 @@ Two properties here are easy to assert vacuously and are written to fail loudly 
   `test_a_concurrent_claim_is_serialized_by_the_row_lock` runs two real connections and asserts
   the contender *waited*, which is the only shape that can fail when the lock goes (**P4-N**,
   **OB-17**, and `test_booking_status_routes.py`'s own precedent).
+- **The reactivation lock order.** An approval racing a guardian's turn can only deadlock when
+  the two take the conversation and the child in opposite orders, and only when each already
+  holds its first lock as the other asks for it. The race tests stage exactly that overlap on
+  two real connections, in both orders, and the webhook side reads the child `FOR SHARE` as
+  `booking_write_service` does — a plain read would never block and would prove nothing.
 
 Timestamps that an assertion depends on are written explicitly rather than taken from the
 service's clock. `unread` is a comparison between two instants microseconds apart when both
@@ -33,12 +38,14 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
@@ -51,10 +58,12 @@ from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
 from app.security import hash_password
-from app.services import conversation_service
+from app.services import child_service, conversation_service
 from app.services.conversation_service import (
     ConversationHeldByAnother,
     ConversationNotFound,
+    NoReactivationPending,
+    ReactivationAlreadyPending,
     claim,
     flag,
     get,
@@ -63,7 +72,9 @@ from app.services.conversation_service import (
     list_conversations,
     mark_read,
     release,
+    request_reactivation,
     resolve_or_create,
+    resolve_reactivation,
 )
 
 # Well in the past, never "today": `mark_read` stamps the watermark from the real clock, and a
@@ -492,6 +503,236 @@ def test_a_flag_is_independent_of_who_is_answering(db: Session) -> None:
     assert detail.conversation.flag_reason is FlagReason.GUARDIAN_LINK_REQUEST
 
 
+def test_a_reactivation_request_sets_the_column_and_flags_the_thread(db: Session) -> None:
+    child = _make_child(db)
+    conversation = _make_conversation(db)
+
+    requested = request_reactivation(db, conversation=conversation, child_id=child.id)
+
+    row = _row(db, conversation.id)
+    assert requested.id == conversation.id
+    assert row.reactivation_child_id == child.id
+    assert row.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert row.flagged_at is not None
+
+
+def test_a_later_flag_overwrites_the_reason_but_not_the_request(db: Session) -> None:
+    """REQ-130.2: the request is the column, so a `stuck` after it cannot erase it."""
+    child = _make_child(db)
+    conversation = _make_conversation(db)
+    request_reactivation(db, conversation=conversation, child_id=child.id)
+
+    flag(db, conversation=conversation, reason=FlagReason.STUCK)
+
+    row = _row(db, conversation.id)
+    assert row.flag_reason is FlagReason.STUCK
+    assert row.reactivation_child_id == child.id
+
+
+def test_a_second_reactivation_request_is_refused_and_changes_nothing(db: Session) -> None:
+    """OQ-74: a pending request is never replaced, and its flag time is never re-stamped.
+
+    Asserted on the in-memory object before the re-read as well as after it: a service that
+    wrote the column and then raised would leave the change unflushed, and a re-read alone —
+    which expires the session — would discard it and pass.
+    """
+    first = _make_child(db)
+    second = _make_child(db)
+    conversation = _make_conversation(db)
+    request_reactivation(db, conversation=conversation, child_id=first.id)
+    flagged_at = conversation.flagged_at
+
+    with pytest.raises(ReactivationAlreadyPending):
+        request_reactivation(db, conversation=conversation, child_id=second.id)
+
+    assert conversation.reactivation_child_id == first.id
+    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert conversation.flagged_at == flagged_at
+    row = _row(db, conversation.id)
+    assert row.reactivation_child_id == first.id
+    assert row.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert row.flagged_at == flagged_at
+
+
+@pytest.mark.parametrize(("approve", "active_after"), [(True, True), (False, False)])
+def test_resolving_a_request_ends_it_and_clears_its_flag(
+    db: Session, approve: bool, active_after: bool
+) -> None:
+    child = _make_child(db)
+    conversation = _make_conversation(db)
+    request_reactivation(db, conversation=conversation, child_id=child.id)
+
+    resolve_reactivation(db, conversation_id=conversation.id, approve=approve)
+
+    row = _row(db, conversation.id)
+    assert row.reactivation_child_id is None
+    assert row.flag_reason is None
+    assert row.flagged_at is None
+    assert db.get_one(Child, child.id).is_active is active_after
+
+
+@pytest.mark.parametrize(("approve", "active_after"), [(True, True), (False, False)])
+def test_resolving_a_request_keeps_a_flag_that_came_after_it(
+    db: Session, approve: bool, active_after: bool
+) -> None:
+    """REQ-131.2: a `stuck` raised after the request is a separate reason to look, and ending
+    the request does not answer it."""
+    child = _make_child(db)
+    conversation = _make_conversation(db)
+    request_reactivation(db, conversation=conversation, child_id=child.id)
+    flag(db, conversation=conversation, reason=FlagReason.STUCK)
+    stuck_at = conversation.flagged_at
+
+    resolve_reactivation(db, conversation_id=conversation.id, approve=approve)
+
+    row = _row(db, conversation.id)
+    assert row.reactivation_child_id is None
+    assert row.flag_reason is FlagReason.STUCK
+    assert row.flagged_at == stuck_at
+    assert db.get_one(Child, child.id).is_active is active_after
+
+
+def test_approving_a_child_that_is_already_active_still_ends_the_request(db: Session) -> None:
+    child = _make_child(db)
+    conversation = _make_conversation(db)
+    request_reactivation(db, conversation=conversation, child_id=child.id)
+    child.is_active = True
+    db.flush()
+
+    resolve_reactivation(db, conversation_id=conversation.id, approve=True)
+
+    assert _row(db, conversation.id).reactivation_child_id is None
+    assert db.get_one(Child, child.id).is_active is True
+
+
+@pytest.mark.parametrize("approve", [True, False])
+def test_resolving_with_nothing_pending_is_refused(db: Session, approve: bool) -> None:
+    conversation = _make_conversation(db)
+    flag(db, conversation=conversation, reason=FlagReason.STUCK)
+
+    with pytest.raises(NoReactivationPending):
+        resolve_reactivation(db, conversation_id=conversation.id, approve=approve)
+
+    assert _row(db, conversation.id).flag_reason is FlagReason.STUCK
+
+
+@pytest.mark.parametrize("approve", [True, False])
+def test_resolving_an_unknown_conversation_is_not_found(db: Session, approve: bool) -> None:
+    with pytest.raises(ConversationNotFound):
+        resolve_reactivation(db, conversation_id=uuid.uuid4(), approve=approve)
+
+
+def test_the_detail_names_the_child_a_pending_request_is_for(db: Session) -> None:
+    child = _make_child(db)
+    conversation = _make_conversation(db)
+
+    before = get_detail(db, conversation_id=conversation.id)
+    request_reactivation(db, conversation=conversation, child_id=child.id)
+    pending = get_detail(db, conversation_id=conversation.id)
+    resolve_reactivation(db, conversation_id=conversation.id, approve=False)
+    after = get_detail(db, conversation_id=conversation.id)
+
+    assert before.reactivation_child is None
+    assert pending.reactivation_child is not None
+    assert pending.reactivation_child.id == child.id
+    assert after.reactivation_child is None
+
+
+def test_an_approval_waits_behind_a_guardians_turn_and_neither_deadlocks(
+    committed_sessions: sessionmaker[Session],
+) -> None:
+    """P7D-E, the webhook first. The turn's inbound insert has updated the conversation row, and
+    the approval is issued while it holds that lock and before it reads the child. The approval
+    has to block on the conversation without having touched the child; had it locked the child
+    first, the turn's `FOR SHARE` read would wait on it and PostgreSQL would kill one of the two
+    as a deadlock."""
+    committed = _make_committed_request(committed_sessions)
+    turn_locked = threading.Event()
+    errors: list[Exception] = []
+
+    def turn() -> None:
+        try:
+            with committed_sessions() as session:
+                _touch_conversation(session, committed.conversation_id)
+                turn_locked.set()
+                time.sleep(0.4)
+                _read_child_for_share(session, committed.child_id)
+                session.commit()
+        except Exception as error:
+            errors.append(error)
+            turn_locked.set()
+
+    def approval() -> None:
+        turn_locked.wait(timeout=5)
+        try:
+            with committed_sessions() as session:
+                resolve_reactivation(
+                    session, conversation_id=committed.conversation_id, approve=True
+                )
+                session.commit()
+        except Exception as error:
+            errors.append(error)
+
+    try:
+        _run_together(turn, approval)
+
+        assert errors == []
+        _assert_approved(committed_sessions, committed)
+    finally:
+        _delete_committed_request(committed_sessions, committed)
+
+
+def test_a_guardians_turn_waits_behind_an_approval_and_neither_deadlocks(
+    committed_sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P7D-E, the approval first. The approval has locked the conversation and is paused just
+    before it locks the child; the turn is issued then. The turn's update has to block on the
+    conversation until the approval commits, and then read the child it reactivated."""
+    committed = _make_committed_request(committed_sessions)
+    approval_locked = threading.Event()
+    errors: list[Exception] = []
+    seen_active: list[bool] = []
+    update_child = child_service.update_child
+
+    def update_child_after_a_pause(db: Session, **fields: Any) -> Child:
+        approval_locked.set()
+        time.sleep(0.4)
+        return update_child(db, **fields)
+
+    monkeypatch.setattr(child_service, "update_child", update_child_after_a_pause)
+
+    def approval() -> None:
+        try:
+            with committed_sessions() as session:
+                resolve_reactivation(
+                    session, conversation_id=committed.conversation_id, approve=True
+                )
+                session.commit()
+        except Exception as error:
+            errors.append(error)
+            approval_locked.set()
+
+    def turn() -> None:
+        approval_locked.wait(timeout=5)
+        try:
+            with committed_sessions() as session:
+                _touch_conversation(session, committed.conversation_id)
+                seen_active.append(_read_child_for_share(session, committed.child_id))
+                session.commit()
+        except Exception as error:
+            errors.append(error)
+
+    try:
+        _run_together(approval, turn)
+
+        assert errors == []
+        assert seen_active == [True]
+        _assert_approved(committed_sessions, committed)
+    finally:
+        _delete_committed_request(committed_sessions, committed)
+
+
 def test_the_service_owns_no_http_and_no_transaction() -> None:
     """CONSTITUTION §4 and §6, pinned rather than reviewed: the router commits and maps, and a
     service that imported FastAPI would be the first one in the codebase to."""
@@ -547,6 +788,67 @@ def _delete_committed_conversation(
         session.execute(delete(Conversation).where(Conversation.id == row.conversation_id))
         session.execute(delete(User).where(User.id.in_([row.holder_id, row.contender_id])))
         session.commit()
+
+
+@dataclass(frozen=True, slots=True)
+class _CommittedRequest:
+    conversation_id: uuid.UUID
+    child_id: uuid.UUID
+
+
+def _make_committed_request(sessions: sessionmaker[Session]) -> _CommittedRequest:
+    """An inactive child and a conversation with a pending request for it, committed on their
+    own connection so two further connections can contend for both rows."""
+    with sessions() as session:
+        child = _make_child(session)
+        conversation = _make_conversation(session)
+        request_reactivation(session, conversation=conversation, child_id=child.id)
+        session.commit()
+
+        return _CommittedRequest(conversation_id=conversation.id, child_id=child.id)
+
+
+def _delete_committed_request(sessions: sessionmaker[Session], row: _CommittedRequest) -> None:
+    with sessions() as session:
+        session.execute(delete(Conversation).where(Conversation.id == row.conversation_id))
+        session.execute(delete(Child).where(Child.id == row.child_id))
+        session.commit()
+
+
+def _touch_conversation(session: Session, conversation_id: uuid.UUID) -> None:
+    """The first write of a webhook turn: `message_service.record_inbound` moving
+    `last_message_at`, which is what takes the conversation's row lock."""
+    session.execute(
+        text("UPDATE conversations SET last_message_at = now() WHERE id = :id"),
+        {"id": conversation_id},
+    )
+
+
+def _read_child_for_share(session: Session, child_id: uuid.UUID) -> bool:
+    """The turn's read of a child, locked the way `booking_write_service._resolve` locks it."""
+    return session.execute(
+        text("SELECT is_active FROM children WHERE id = :id FOR SHARE"), {"id": child_id}
+    ).scalar_one()
+
+
+def _run_together(first: Callable[[], None], second: Callable[[], None]) -> None:
+    threads = [threading.Thread(target=first), threading.Thread(target=second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+
+
+def _assert_approved(sessions: sessionmaker[Session], row: _CommittedRequest) -> None:
+    with sessions() as session:
+        conversation = session.get_one(Conversation, row.conversation_id)
+        child = session.get_one(Child, row.child_id)
+
+        assert conversation.reactivation_child_id is None
+        assert conversation.flag_reason is None
+        assert child.is_active is True
 
 
 def _blind_once() -> Callable[..., Conversation | None]:
@@ -635,6 +937,18 @@ def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:
     db.add(guardian)
     db.flush()
     return guardian
+
+
+def _make_child(db: Session) -> Child:
+    child = Child(
+        name=f"Child {uuid.uuid4().hex[:8]}",
+        grade_level=3,
+        school_name="Elm Primary",
+        is_active=False,
+    )
+    db.add(child)
+    db.flush()
+    return child
 
 
 def _make_user(db: Session) -> User:

@@ -292,6 +292,8 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `GET /api/conversations/{id}/messages` | ✓ | ✓ | ✗ |
 | `POST/DELETE /api/conversations/{id}/takeover` | ✓ | ✓ | ✗ |
 | `POST /api/conversations/{id}/read` | ✓ | ✓ | ✗ |
+| `POST /api/conversations/{id}/reactivation/approve`, `.../deny` | ✓ | ✓ | ✗ |
+| `POST /api/conversations/{id}/handled` | ✓ | ✓ | ✗ |
 | `WS /api/conversations/stream` | ✓ | ✓ | ✗ |
 | `GET /api/subjects` | ✓ | ✓ | ✓ |
 | `POST/PATCH/DELETE /api/subjects` | ✓ | ✓ | ✗ |
@@ -527,6 +529,14 @@ not sent to the parser again.
 conversation has no `guardian_id` and the inbound number belongs to an existing guardian —
 one an admin created, or one who changed handsets — the bot's turn backfills
 `conversations.guardian_id`, exactly as a completed intake does.
+
+The bot lists only active children. When a guardian names one of their own inactive children —
+when asking to book, when answering which child a booking is for, or when giving a new child's
+name — the bot asks whether to request reactivation; "yes" records the request on the
+conversation and flags `reactivation_request`. A name is matched only against the guardian's own
+children. A conversation holds at most one pending request; while one is pending, the bot refuses
+another and says an earlier request is still waiting. A guardian whose children are all inactive
+is offered to add a child. The bot never reactivates a child itself.
 
 The message is recorded before the branch, not inside the `bot` arm. The whole point of a handoff is
 that the admin can read what the client said while the bot was silent, so a paused conversation has
@@ -1704,6 +1714,9 @@ GET    /api/conversations/{id}/messages
 POST   /api/conversations/{id}/takeover
 DELETE /api/conversations/{id}/takeover
 POST   /api/conversations/{id}/read
+POST   /api/conversations/{id}/reactivation/approve
+POST   /api/conversations/{id}/reactivation/deny
+POST   /api/conversations/{id}/handled
 ```
 
 Every WhatsApp conversation the bot has ever had, readable by an admin, and steppable into. A
@@ -1712,7 +1725,7 @@ before a guardian row exists — intake collects the name several messages in. A
 therefore means intake has not got that far, not that something went wrong, and those are the
 conversations an admin most wants to read.
 
-Admin or above on all six. A `tutor` token gets **403** on every one of them; chat is an admin
+Admin or above on all nine. A `tutor` token gets **403** on every one of them; chat is an admin
 surface and there is no tutor-scoped view of it to fall back to.
 
 ### `GET /api/conversations`
@@ -1757,10 +1770,12 @@ a shared act — the conversation is claimed by a person but visible to all of t
 state would need a junction row per admin per conversation to deliver a personal badge nobody has
 asked for.
 
-`flag_reason` is `stuck`, `parse_error`, `guardian_link_request` or `null`, independent of `status` —
-a flagged conversation can still be `bot` (unattended) or already `human` (an admin took over before
-reading why). `?flagged=true` restricts the list to conversations where it is not null, which is what
-lets an admin triage the queue instead of scanning the whole inbox for one.
+`flag_reason` is `stuck`, `parse_error`, `guardian_link_request`, `reactivation_request` or `null`,
+independent of `status` — a flagged conversation can still be `bot` (unattended) or already `human`
+(an admin took over before reading why). `?flagged=true` restricts the list to conversations where
+it is not null, which is what lets an admin triage the queue instead of scanning the whole inbox for
+one. A flag stays until an admin marks the conversation handled or, for `reactivation_request`,
+approves or denies the request; a later flag replaces an earlier one and re-stamps `flagged_at`.
 
 ### `GET /api/conversations/{id}`
 
@@ -1779,11 +1794,16 @@ returns **404**.
   "last_message_at": "2026-08-20T14:31:02Z",
   "last_read_at": "2026-08-20T14:30:00Z",
   "flag_reason": null,
+  "flagged_at": null,
+  "reactivation_request": null,
   "message_count": 412,
   "unread_count": 3,
   "created_at": "2026-06-02T09:14:00Z"
 }
 ```
+
+`reactivation_request` is `{"child": {"id", "name", "is_active"}}` while a request is pending on
+this conversation, `null` otherwise.
 
 ### `GET /api/conversations/{id}/messages`
 
@@ -1892,6 +1912,34 @@ The bot resumes from a fresh flow state, not from wherever it was when the takeo
 
 Sets `last_read_at` to now. No request body. Returns the conversation, so the caller gets the
 recomputed `unread_count` without a second request. An unknown `id` returns **404**.
+
+### `POST /api/conversations/{id}/reactivation/approve` and `.../reactivation/deny`
+
+Resolve a pending reactivation request. Approve sets the child active; deny leaves it inactive.
+Neither requires the caller to hold a takeover. No request body. Returns the conversation (**200**)
+and publishes `conversation.updated` after the commit, exactly as takeover/release do. An unknown
+conversation is **404** `Conversation not found`; no request pending is **409**
+`No reactivation request is pending`. Nothing is sent to the guardian.
+
+### `POST /api/conversations/{id}/handled`
+
+Clears `flag_reason` and `flagged_at` on a flagged conversation. Body:
+
+```json
+{ "flagged_at": "2026-09-23T10:15:02.418367Z" }
+```
+
+`flagged_at` is the value the admin is looking at, timezone-qualified, echoed exactly as
+`GET /api/conversations/{id}` returned it. The server compares it under a row lock: if the flag has
+changed since (the bot flagged the thread again), the request is refused **409** `The flag changed
+since you opened this conversation; review it and try again` and nothing changes, so a flag nobody
+has seen is never cleared. A conversation that is not flagged returns **200** unchanged. A
+`reactivation_request` flag is not cleared here — **409** `Approve or deny the reactivation request
+instead` — and when another reason is cleared while a reactivation request is still pending on the
+conversation, the flag returns to `reactivation_request` rather than to null, so a pending request
+never leaves the flagged list. No takeover is needed; nothing is sent to the client and no message
+is written. Returns the conversation (**200**) and publishes `conversation.updated`. An unknown
+conversation is **404**; a malformed or timezone-less `flagged_at` is **400**.
 
 ---
 

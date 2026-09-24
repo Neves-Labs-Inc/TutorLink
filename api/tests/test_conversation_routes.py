@@ -278,9 +278,11 @@ def test_the_detail_carries_the_counts_the_thread_header_shows(
         "last_message_at",
         "last_read_at",
         "flag_reason",
+        "flagged_at",
         "message_count",
         "unread_count",
         "created_at",
+        "reactivation_request",
     }
     assert body["message_count"] == 2
     assert body["unread_count"] == 1

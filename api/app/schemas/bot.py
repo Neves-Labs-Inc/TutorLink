@@ -41,10 +41,13 @@ class BotTurn(BaseModel):
     """One turn's result: what to say, and what the webhook should apply.
 
     P7-C: `bot_service` is pure with respect to the conversation row. It never mutates
-    `conversations` or `messages` itself — the webhook applies `link_guardian_id` and
-    `flag_reason` after this returns.
+    `conversations` or `messages` itself — the webhook applies `link_guardian_id`,
+    `flag_reason` and `reactivation_child_id` after this returns. `reactivation_child_id` is the
+    inactive child the guardian confirmed they want reactivated (REQ-132.3); the webhook records
+    it through `conversation_service.request_reactivation`.
     """
 
     reply: str
     link_guardian_id: uuid.UUID | None = None
     flag_reason: FlagReason | None = None
+    reactivation_child_id: uuid.UUID | None = None

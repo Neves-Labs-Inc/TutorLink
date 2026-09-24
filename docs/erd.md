@@ -133,7 +133,8 @@ never sent back to the model that parses WhatsApp messages once it has been coll
 A child who stops tutoring is deactivated, not deleted: its `child_guardians`, `child_homes` and
 bookings stay. Deactivating a child cancels its upcoming `pending`/`confirmed` sessions in the
 same change, and nobody is notified. An inactive child cannot be booked; the dashboard
-reactivates it first.
+reactivates it first. An inactive child is not offered for booking by the bot; a guardian can ask
+for it to be reactivated, and an admin decides.
 
 ---
 
@@ -276,8 +277,9 @@ One row per WhatsApp identity, created on the first inbound message. Holds who i
 | taken_over_at | TIMESTAMPTZ | nullable |
 | last_message_at | TIMESTAMPTZ | Ordering the conversation list |
 | last_read_at | TIMESTAMPTZ | nullable — shared admin-side read watermark |
-| flag_reason | ENUM `flag_reason` | nullable — `stuck`, `parse_error`, `guardian_link_request` |
+| flag_reason | ENUM `flag_reason` | nullable — `stuck`, `parse_error`, `guardian_link_request`, `reactivation_request` |
 | flagged_at | TIMESTAMPTZ | nullable |
+| reactivation_child_id | UUID | FK → children.id, nullable |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
@@ -319,6 +321,14 @@ two preserves a distinction an admin needs: a `bot` conversation can be flagged 
 them into one column would lose whichever half is not currently true. There is no flag value for a
 reschedule or cancellation declined inside `cancellation_cutoff_hours` — that is a policy refusal, not a
 bot failure, and flagging it would bury the flags that mean the bot needs help.
+
+A pending reactivation request is the `reactivation_child_id` column, not the flag: a later flag
+cannot erase it. Approve/Deny clear the column and clear the flag only if it is still
+`reactivation_request`. An admin clears a flag by marking the conversation handled, and only if the
+flag is still the one they saw — the request carries its `flagged_at`, which every new flag
+re-stamps. A `reactivation_request` flag is ended only by approving or denying the request.
+`reactivation_child_id` is never set on an unflagged conversation: clearing another reason while a
+request is pending puts the flag back to `reactivation_request`.
 
 ---
 

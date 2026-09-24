@@ -3,12 +3,16 @@ import { api } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
 
 export type ConversationStatus = 'bot' | 'human'
-export type FlagReason = 'stuck' | 'parse_error' | 'guardian_link_request'
+export type FlagReason = 'stuck' | 'parse_error' | 'guardian_link_request' | 'reactivation_request'
 export type MessageAuthorKind = 'client' | 'bot' | 'admin'
 export type MessageStatus = 'received' | 'queued' | 'sent' | 'delivered' | 'failed'
 
 export type ConversationGuardianRef = { id: string; name: string }
 export type ConversationAdminRef = { id: string; email: string }
+
+export type ReactivationRequest = {
+  child: { id: string; name: string; is_active: boolean }
+}
 
 export type Conversation = {
   id: string
@@ -28,6 +32,8 @@ export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'un
   message_count: number
   unread_count: number
   created_at: string
+  reactivation_request: ReactivationRequest | null
+  flagged_at: string | null
 }
 
 export type Message = {
@@ -52,6 +58,22 @@ export type ConversationMessageListParams = {
   before?: string
   page?: number
   page_size?: number
+}
+
+export const approveReactivation = async (conversationId: string): Promise<ConversationDetail> => {
+  const response = await api.post<ConversationDetail>(
+    `/api/conversations/${conversationId}/reactivation/approve`,
+  )
+
+  return response.data
+}
+
+export const denyReactivation = async (conversationId: string): Promise<ConversationDetail> => {
+  const response = await api.post<ConversationDetail>(
+    `/api/conversations/${conversationId}/reactivation/deny`,
+  )
+
+  return response.data
 }
 
 export const conversationQueries = {

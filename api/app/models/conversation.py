@@ -42,6 +42,7 @@ from app.models.enums import (
 from app.models.mixins import HasID, HasTimestamps
 
 if TYPE_CHECKING:
+    from app.models.child import Child
     from app.models.message import Message
 
 TAKEOVER_PAIR_PREDICATE = "(status = 'human') = (taken_over_by_user_id IS NOT NULL)"
@@ -98,5 +99,12 @@ class Conversation(HasID, HasTimestamps, Base):
     flagged_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The pending reactivation request, not the flag: `flag_reason` is one slot that a later
+    # `stuck` overwrites, and this column is what survives it. Set by the bot through the
+    # webhook, cleared only by an admin's approve or deny. At most one per conversation.
+    reactivation_child_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("children.id"), nullable=True
+    )
 
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation")
+    reactivation_child: Mapped["Child | None"] = relationship()

@@ -44,7 +44,10 @@ closed schema, and `parse_intent` folds it back into the `ParsedIntent` its call
 **Field names (P7-V).** `ParsedIntent.fields` is keyed in `lower_snake_case`, and the answer to
 the question the current step asked is returned under the step's own name. `bot_service`
 resolves every value against the database; nothing here validates one. The list-to-dict fold is
-total — `_fold_fields` decides, and states, what a repeated name and a nameless pair do.
+total — `_fold_fields` decides, and states, what a repeated name and a nameless pair do. A child
+the parent names is also returned under `child_name` (SA-28, Phase 7D), which is the same string
+as `bot_service.STEP_CHILD_NAME`, so at the intake name question the two rules agree; the bot
+resolves the name against the guardian's own children — this module still decides nothing.
 
 **Every vendor failure becomes `ParseFailed`.** CONSTITUTION §6 keeps HTTP out of anything below
 `app/routers/`, and #27 assigns all of them one behaviour anyway: flag `parse_error` at once and
@@ -83,8 +86,9 @@ registered with someone else, `unknown` when the message is chit-chat, unreadabl
 fit any of the others.
 - `fields`: the values the message supplies, as `name`/`value` pairs. Names are \
 lower_snake_case. The answer to the question the current step asked goes under that step's own \
-name. Add a pair only for a value the parent actually gave; never invent one and never repeat \
-a value already listed in the collected context.
+name. When the parent names one of their children, also give that name under `child_name`, \
+whatever the current step. Add a pair only for a value the parent actually gave; never invent \
+one and never repeat a value already listed in the collected context.
 - `confidence_is_low`: true when the message is ambiguous, contradicts the context, or could \
 reasonably mean more than one thing. Set it rather than guessing — a wrong guess books the \
 wrong child into the wrong slot, and a true here only costs the parent one clarifying \

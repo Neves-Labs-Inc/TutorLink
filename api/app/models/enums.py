@@ -101,14 +101,21 @@ class FlagReason(str, enum.Enum):
     tell a real second guardian from anyone who knows a child's name. It is listed beside the
     two failures but must be surfaced apart from them.
 
-    There are three values and there is no fourth. A reschedule or cancellation refused inside
-    `cancellation_cutoff_hours` is a policy refusal rather than a bot failure, and flagging it
-    would bury the flags that mean the bot needs help.
+    `REACTIVATION_REQUEST` is not a failure either: a guardian asked for one of their inactive
+    children to be reactivated, and only an admin can decide that. Like `GUARDIAN_LINK_REQUEST`
+    it is an admin action rather than a bot failure. It was added by the user's OQ-71 answer
+    (Phase 7D), which reversed the earlier three-values-only rule; the child it names is on
+    `conversations.reactivation_child_id`, which a later flag does not overwrite.
+
+    No value exists for a policy refusal. A reschedule or cancellation refused inside
+    `cancellation_cutoff_hours` is the bot working as intended rather than failing, and flagging
+    it would bury the flags that mean the bot needs help.
     """
 
     STUCK = "stuck"
     PARSE_ERROR = "parse_error"
     GUARDIAN_LINK_REQUEST = "guardian_link_request"
+    REACTIVATION_REQUEST = "reactivation_request"
 
 
 def _values(enum_class: type[enum.Enum]) -> list[str]:

@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import { api } from './api'
 import {
+  canMarkHandled,
   isHeldByAdmin,
   isHeldByOtherAdmin,
+  markConversationHandled,
   mergeMessagePages,
   messageAlignment,
   messageStatusLabel,
@@ -9,7 +12,7 @@ import {
   optimisticMessage,
   reconcileLiveMessage,
 } from './chatThread'
-import type { Conversation, Message } from './queries/conversations'
+import type { Conversation, ConversationDetail, FlagReason, Message } from './queries/conversations'
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id'>): Message => ({
   author_kind: 'client',
@@ -136,6 +139,52 @@ describe('isHeldByAdmin / isHeldByOtherAdmin', () => {
 
     expect(isHeldByAdmin(unheld, 'admin-1')).toBe(false)
     expect(isHeldByOtherAdmin(unheld, 'admin-1')).toBe(false)
+  })
+})
+
+describe('canMarkHandled', () => {
+  const detail = (
+    overrides: Partial<Pick<ConversationDetail, 'flag_reason' | 'flagged_at'>>,
+  ): Pick<ConversationDetail, 'flag_reason' | 'flagged_at'> => ({
+    flag_reason: null,
+    flagged_at: null,
+    ...overrides,
+  })
+
+  const handleableReasons: FlagReason[] = ['stuck', 'parse_error', 'guardian_link_request']
+
+  it.each(handleableReasons)('is true for %s with a flagged_at', (flagReason) => {
+    expect(canMarkHandled(detail({ flag_reason: flagReason, flagged_at: '2026-09-23T10:00:00Z' }))).toBe(
+      true,
+    )
+  })
+
+  it('is false for reactivation_request', () => {
+    expect(
+      canMarkHandled(detail({ flag_reason: 'reactivation_request', flagged_at: '2026-09-23T10:00:00Z' })),
+    ).toBe(false)
+  })
+
+  it('is false for no flag', () => {
+    expect(canMarkHandled(detail({}))).toBe(false)
+  })
+
+  it('is false when flagged_at is null despite a handleable reason', () => {
+    expect(canMarkHandled(detail({ flag_reason: 'stuck', flagged_at: null }))).toBe(false)
+  })
+})
+
+describe('markConversationHandled', () => {
+  it('sends the given flagged_at token unchanged', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+
+    await markConversationHandled('conversation-1', '2026-09-23T10:00:00.123456Z')
+
+    expect(post).toHaveBeenCalledWith('/api/conversations/conversation-1/handled', {
+      flagged_at: '2026-09-23T10:00:00.123456Z',
+    })
+
+    post.mockRestore()
   })
 })
 

@@ -16,6 +16,7 @@ const TONE_CLASSES: Record<string, string> = {
   stuck: 'bg-status-cancelled-bg text-status-cancelled',
   parse_error: 'bg-status-cancelled-bg text-status-cancelled',
   guardian_link_request: 'bg-status-pending-bg text-status-pending',
+  reactivation_request: 'bg-status-pending-bg text-status-pending',
 }
 
 const badgeClasses =

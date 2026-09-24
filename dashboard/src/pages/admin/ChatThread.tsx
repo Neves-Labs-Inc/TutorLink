@@ -3,8 +3,10 @@ import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 
+import { MarkHandledButton } from '@/components/chat/MarkHandledButton'
 import { MessageComposer } from '@/components/chat/MessageComposer'
 import { MessageThread } from '@/components/chat/MessageThread'
+import { ReactivationRequestPanel } from '@/components/chat/ReactivationRequestPanel'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -162,53 +164,59 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
     const heldByOther = currentUserId !== null && isHeldByOtherAdmin(detail, currentUserId)
 
     content = (
-      <div className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card">
-        {detail.status === 'human' && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm">
-            <p className="text-muted-foreground">
-              The bot is paused — held by {detail.taken_over_by?.email ?? 'another admin'}.
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setReleaseDialogOpen(true)}
-            >
-              Release to bot
-            </Button>
-          </div>
+      <div className="space-y-3">
+        {detail.reactivation_request && (
+          <ReactivationRequestPanel conversationId={id} request={detail.reactivation_request} />
         )}
 
-        <MessageThread
-          messages={thread}
-          hasMore={hasMore}
-          loadingMore={loadingMore}
-          onLoadMore={handleLoadMore}
-        />
-
-        {heldByMe && (
-          <>
-            {stream.error !== null && (
-              <p role="alert" className="border-t border-border px-3 pt-2 text-sm font-medium text-destructive">
-                {stream.error}
+        <div className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card">
+          {detail.status === 'human' && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm">
+              <p className="text-muted-foreground">
+                The bot is paused — held by {detail.taken_over_by?.email ?? 'another admin'}.
               </p>
-            )}
-            <MessageComposer disabled={stream.status !== 'connected'} onSend={handleSend} />
-          </>
-        )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setReleaseDialogOpen(true)}
+              >
+                Release to bot
+              </Button>
+            </div>
+          )}
 
-        {!heldByMe && !heldByOther && (
-          <div className="flex flex-col items-start gap-2 border-t border-border p-3">
-            <Button type="button" onClick={() => takeover.mutate()} disabled={takeover.isPending}>
-              {takeover.isPending ? 'Taking over…' : 'Take over'}
-            </Button>
-            {takeover.isError && (
-              <p role="alert" className="text-sm font-medium text-destructive">
-                {errorDetail(takeover.error) ?? TAKEOVER_FALLBACK_ERROR}
-              </p>
-            )}
-          </div>
-        )}
+          <MessageThread
+            messages={thread}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            onLoadMore={handleLoadMore}
+          />
+
+          {heldByMe && (
+            <>
+              {stream.error !== null && (
+                <p role="alert" className="border-t border-border px-3 pt-2 text-sm font-medium text-destructive">
+                  {stream.error}
+                </p>
+              )}
+              <MessageComposer disabled={stream.status !== 'connected'} onSend={handleSend} />
+            </>
+          )}
+
+          {!heldByMe && !heldByOther && (
+            <div className="flex flex-col items-start gap-2 border-t border-border p-3">
+              <Button type="button" onClick={() => takeover.mutate()} disabled={takeover.isPending}>
+                {takeover.isPending ? 'Taking over…' : 'Take over'}
+              </Button>
+              {takeover.isError && (
+                <p role="alert" className="text-sm font-medium text-destructive">
+                  {errorDetail(takeover.error) ?? TAKEOVER_FALLBACK_ERROR}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     )
   }
@@ -225,6 +233,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
             {conversation.data?.guardian?.name ?? conversation.data?.phone_number ?? 'Conversation'}
           </h1>
           {conversation.data?.flag_reason && <StatusBadge status={conversation.data.flag_reason} />}
+          {conversation.data && <MarkHandledButton conversation={conversation.data} />}
         </div>
         {conversation.data && (
           <p className="text-sm text-muted-foreground">

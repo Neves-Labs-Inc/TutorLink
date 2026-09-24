@@ -1,10 +1,11 @@
-"""The admin chat REST surface: listing conversations, a thread, and takeover/release.
+"""The admin chat REST surface: listing conversations, a thread, takeover/release, the
+approve/deny that ends a reactivation request, and marking a flagged thread handled.
 
 Two routers share the `/api/conversations` prefix on purpose (D-G, P4-F): this one and
 `conversation_stream.py`, so the two can be built concurrently. The paths do not shadow each
 other.
 
-**`AdminPrincipal` on all six, and the tutor-scope dependency on none of them** (§14, §15).
+**`AdminPrincipal` on all nine, and the tutor-scope dependency on none of them** (§14, §15).
 This is not the "a route that lists is scoped to a tutor" case: chat is an admin surface, the
 RBAC table (`docs/api-design.md:1423-1424`) answers a tutor token with 403 on every one of
 these, and there is no tutor-scoped view of a conversation to narrow to. Taking a scope
@@ -12,15 +13,23 @@ nobody reads would arm the unapplied-scope guard and turn every query in this mo
 500 — `client_bookings.py:36-37` documents that exact mistake. The name is deliberately
 absent from this file, prose included, so that the grep criterion 8 names is a real gate.
 
-**Takeover and release publish `conversation.updated` after the commit**, so the other admins'
-list screens move without a reload. `POST /read` publishes nothing: the watermark is shared,
+**Takeover, release, approve, deny and mark handled publish `conversation.updated` after the
+commit**, on every 200 including a no-op, so the other admins' list screens move without a
+reload. `POST /read` publishes nothing: the watermark is shared,
 but a read is not an event anybody else needs pushed. `broadcast_service.publish` fails open
 and logs rather than raising, deliberately — the write has already committed by the time it is
 reached, so raising would turn a Redis blip into a 500 on an action that succeeded, and it
 would not get the event to the admin either.
 
-There is no request body anywhere here, and no `POST /api/conversations/{id}/messages`:
-sending lives on the socket and `docs/api-design.md:1655-1660` refuses a REST twin outright.
+Exactly one route here takes a request body — `FlagHandled` on `POST /handled` — and it is a
+compare token rather than data: the `flagged_at` the admin saw, so that a flag the bot raised
+after they opened the thread is refused with a 409 instead of being cleared unseen
+(`07D-CONTEXT.md` §4b, SA-38). There is no `POST /api/conversations/{id}/messages`: sending
+lives on the socket and `docs/api-design.md:1655-1660` refuses a REST twin outright.
+
+**Approve, deny and mark handled need no takeover** (`07D-CONTEXT.md` §4, §4b): none of them
+answers the guardian, so there is nothing for the bot to be paused for. None writes a message or
+sends anything to the guardian (OQ-72); the only event is `conversation.updated`.
 """
 
 import datetime
@@ -34,11 +43,20 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.enums import ConversationStatus
+from app.models.child import Child
 from app.models.guardian import Guardian
 from app.models.user import User
 from app.redis_client import get_redis
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
-from app.schemas.conversation import ConversationRead, ConversationSummary, GuardianRef, UserRef
+from app.schemas.conversation import (
+    ConversationRead,
+    ConversationSummary,
+    FlagHandled,
+    GuardianRef,
+    ReactivationChildRef,
+    ReactivationRequestRead,
+    UserRef,
+)
 from app.schemas.message import MessageRead
 from app.services.broadcast_service import ConversationUpdated, publish
 from app.services.conversation_service import (
@@ -46,16 +64,24 @@ from app.services.conversation_service import (
     ConversationHeldByAnother,
     ConversationListItem,
     ConversationNotFound,
+    FlagChanged,
+    FlagNeedsReactivationDecision,
+    NoReactivationPending,
     claim,
     get_detail,
     list_conversations,
+    mark_handled,
     mark_read,
     release,
+    resolve_reactivation,
 )
 from app.services.message_service import ThreadMessage, list_thread
 
 CONVERSATION_NOT_FOUND_ERROR = "Conversation not found"
 HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {email}"
+NO_REACTIVATION_PENDING_ERROR = "No reactivation request is pending"
+FLAG_CHANGED_ERROR = "The flag changed since you opened this conversation; review it and try again"
+REACTIVATION_FLAG_ERROR = "Approve or deny the reactivation request instead"
 
 DbSession = Annotated[Session, Depends(get_db)]
 RedisClient = Annotated[Redis, Depends(get_redis)]
@@ -192,6 +218,62 @@ def mark_thread_read(
     return _read(detail)
 
 
+@router.post("/{conversation_id}/reactivation/approve", response_model=ConversationRead)
+def approve_reactivation(
+    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession, redis: RedisClient
+) -> ConversationRead:
+    return _resolve_reactivation(db, redis, conversation_id=conversation_id, approve=True)
+
+
+@router.post("/{conversation_id}/reactivation/deny", response_model=ConversationRead)
+def deny_reactivation(
+    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession, redis: RedisClient
+) -> ConversationRead:
+    return _resolve_reactivation(db, redis, conversation_id=conversation_id, approve=False)
+
+
+@router.post("/{conversation_id}/handled", response_model=ConversationRead)
+def mark_flag_handled(
+    conversation_id: uuid.UUID,
+    payload: FlagHandled,
+    user: AdminPrincipal,
+    db: DbSession,
+    redis: RedisClient,
+) -> ConversationRead:
+    try:
+        detail = mark_handled(db, conversation_id=conversation_id, flagged_at=payload.flagged_at)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+    except FlagChanged as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, FLAG_CHANGED_ERROR) from exc
+    except FlagNeedsReactivationDecision as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, REACTIVATION_FLAG_ERROR) from exc
+
+    db.commit()
+    conversation = _read(detail)
+    _publish_update(redis, conversation)
+
+    return conversation
+
+
+def _resolve_reactivation(
+    db: Session, redis: Redis, *, conversation_id: uuid.UUID, approve: bool
+) -> ConversationRead:
+    try:
+        resolve_reactivation(db, conversation_id=conversation_id, approve=approve)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+    except NoReactivationPending as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NO_REACTIVATION_PENDING_ERROR) from exc
+
+    detail = get_detail(db, conversation_id=conversation_id)
+    db.commit()
+    conversation = _read(detail)
+    _publish_update(redis, conversation)
+
+    return conversation
+
+
 def _publish_update(redis: Redis, conversation: ConversationRead) -> None:
     publish(redis, ConversationUpdated(conversation=conversation.model_dump(mode="json")))
 
@@ -224,9 +306,11 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         last_message_at=detail.conversation.last_message_at,
         last_read_at=detail.conversation.last_read_at,
         flag_reason=detail.conversation.flag_reason,
+        flagged_at=detail.conversation.flagged_at,
         message_count=detail.message_count,
         unread_count=detail.unread_count,
         created_at=detail.conversation.created_at,
+        reactivation_request=_reactivation_request(detail.reactivation_child),
     )
 
 
@@ -248,6 +332,17 @@ def _guardian_ref(guardian: Guardian | None) -> GuardianRef | None:
         reference = GuardianRef(id=guardian.id, name=guardian.name)
 
     return reference
+
+
+def _reactivation_request(child: Child | None) -> ReactivationRequestRead | None:
+    if child is None:
+        request = None
+    else:
+        request = ReactivationRequestRead(
+            child=ReactivationChildRef(id=child.id, name=child.name, is_active=child.is_active)
+        )
+
+    return request
 
 
 def _user_ref(user: User | None) -> UserRef | None:

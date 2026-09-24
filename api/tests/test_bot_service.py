@@ -46,6 +46,7 @@ from sqlalchemy.sql import visitors
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import NOTES_MAX_LENGTH, Child
+from app.models.conversation import Conversation
 from app.models.enums import BookingStatus, FlagReason
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
@@ -53,7 +54,13 @@ from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor, TutorSubject
 from app.schemas.bot import BotIntent, BotTurn, ParsedIntent
-from app.services import bot_service, booking_write_service, client_service, parser_service
+from app.services import (
+    bot_service,
+    booking_write_service,
+    client_service,
+    conversation_service,
+    parser_service,
+)
 from app.services.bot_state import FlowState, load_state, save_state
 from app.services.scheduling_service import MAX_SLOTS_OFFERED_SETTING
 
@@ -161,6 +168,7 @@ class Chat:
     parser: ScriptedParser
     phone_number: str = INBOUND_NUMBER
     guardian_id: uuid.UUID | None = None
+    reactivation_pending: bool = False
     replies: list[BotTurn] = field(default_factory=list)
 
     def say(
@@ -168,19 +176,29 @@ class Chat:
         body: str = "a message",
         *,
         value: object = None,
+        fields: dict[str, str] | None = None,
         intent: BotIntent = BotIntent.UNKNOWN,
         confidence_is_low: bool = False,
         fails: bool = False,
     ) -> BotTurn:
+        """`fields` replaces the step-keyed answer outright — for a field the parser gives
+        under another name than the current step's, such as `child_name` at the menu."""
         step = self.step
-        fields = {} if value is None or step is None else {step: str(value)}
+
+        if fields is None:
+            fields = {} if value is None or step is None else {step: str(value)}
+
         self.parser.script(
             parser_service.ParseFailed("scripted outage")
             if fails
             else ParsedIntent(intent=intent, fields=fields, confidence_is_low=confidence_is_low)
         )
         turn = bot_service.reply_for(
-            self.db, phone_number=self.phone_number, body=body, guardian_id=self.guardian_id
+            self.db,
+            phone_number=self.phone_number,
+            body=body,
+            guardian_id=self.guardian_id,
+            reactivation_pending=self.reactivation_pending,
         )
         self.replies.append(turn)
 
@@ -216,6 +234,14 @@ class ClientWorld:
     guardian_id: uuid.UUID
     child_id: uuid.UUID
     home_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class Family:
+    """One guardian on `CANONICAL_NUMBER` (by default) and exactly these children, by name."""
+
+    client: ClientWorld
+    children: dict[str, Child]
 
 
 @dataclass(frozen=True, slots=True)
@@ -896,12 +922,19 @@ def test_the_which_child_list_leaves_out_an_inactive_child(
     assert "Retired Child" not in turn.reply
 
 
-@pytest.mark.parametrize("retirement", ["unlinked", "deactivated"])
+@pytest.mark.parametrize(
+    ("retirement", "opener"),
+    [
+        ("unlinked", bot_service.NO_CHILDREN_YET),
+        ("deactivated", bot_service.NO_ACTIVE_CHILDREN),
+    ],
+)
 def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
-    chat: Chat, db: Session, client: ClientWorld, retirement: str
+    chat: Chat, db: Session, client: ClientWorld, retirement: str, opener: str
 ) -> None:
-    """REQ-114, P7C-Q: the `NO_CHILDREN_YET` add-a-child path, identical for both. Phase 7D
-    (REQ-132, SA-27) swaps the deactivated case's reply to `NO_ACTIVE_CHILDREN`."""
+    """REQ-114, P7C-Q: the add-a-child path for both. Phase 7D (REQ-132.7, SA-27) words the
+    deactivated case `NO_ACTIVE_CHILDREN`; a guardian with no linked child at all still hears
+    `NO_CHILDREN_YET`."""
     child = db.get_one(Child, client.child_id)
 
     if retirement == "unlinked":
@@ -918,7 +951,7 @@ def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
 
     turn = chat.say("book", intent=BotIntent.BOOK)
 
-    assert turn.reply == f"{bot_service.NO_CHILDREN_YET} {bot_service.ASK_CHILD_REGISTERED}"
+    assert turn.reply == f"{opener} {bot_service.ASK_CHILD_REGISTERED}"
     assert chat.step == bot_service.STEP_CHILD_REGISTERED
     assert child.name not in turn.reply
 
@@ -1287,6 +1320,570 @@ def test_a_parser_outage_still_attributes_a_recognised_guardian(
     assert turn.link_guardian_id == client.guardian_id
 
 
+# --- reactivation requests (REQ-132) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("intent", [BotIntent.BOOK, BotIntent.UNKNOWN])
+def test_naming_an_inactive_child_at_the_menu_offers_reactivation(
+    chat: Chat, db: Session, intent: BotIntent
+) -> None:
+    """REQ-132.2(a), .3 — criteria 2 and 3: "is Sam still with you?" is `unknown`, and still
+    the guardian naming Sam."""
+    family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+
+    turn = _name_at_menu(chat, "Sam", intent=intent)
+
+    assert turn.reply == _offer_for("Sam Jones")
+    assert chat.step == bot_service.STEP_REACTIVATION_CONFIRM
+    assert chat.state.collected_data["reactivation_child_id"] == str(
+        family.children["Sam Jones"].id
+    )
+    assert turn.reactivation_child_id is None
+    assert turn.flag_reason is None
+
+
+def test_yes_to_the_offer_returns_the_child_for_the_webhook_to_record(
+    chat: Chat, db: Session
+) -> None:
+    """REQ-132.3. The bot only reports the request (P7-C) and never reactivates the child
+    itself (P7D-C); the flow ends."""
+    family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    sam = family.children["Sam Jones"]
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == bot_service.REACTIVATION_REQUESTED.format(name="Sam Jones")
+    assert turn.reactivation_child_id == sam.id
+    assert turn.flag_reason is None
+    assert chat.step is None
+    assert sam.is_active is False
+
+
+def test_no_to_the_offer_goes_back_to_the_menu_and_records_nothing(chat: Chat, db: Session) -> None:
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+
+    turn = chat.say(value="no")
+
+    assert turn.reply == bot_service.ASK_MENU
+    assert chat.step == bot_service.STEP_MENU
+    assert turn.reactivation_child_id is None
+    assert turn.flag_reason is None
+    assert _reactivation_keys(chat) == set()
+
+
+def test_an_unclear_answer_to_the_offer_re_prompts_and_keeps_the_offer(
+    chat: Chat, db: Session
+) -> None:
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+
+    turn = chat.say(value="maybe later")
+
+    assert turn.reply == f"{bot_service.NOT_UNDERSTOOD}\n\n{_offer_for('Sam Jones')}"
+    assert chat.step == bot_service.STEP_REACTIVATION_CONFIRM
+    assert _reactivation_keys(chat) == {"reactivation_child_id", "reactivation_child_name"}
+
+
+def test_naming_an_inactive_child_while_cancelling_takes_the_cancel_path(
+    chat: Chat, db: Session
+) -> None:
+    """Criterion 3: cancel, reschedule and link-guardian never trigger an offer (§4a)."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+
+    turn = _name_at_menu(chat, "Sam", intent=BotIntent.CANCEL)
+
+    assert turn.reply == f"{bot_service.NO_UPCOMING} {bot_service.ASK_MENU}"
+    assert chat.step == bot_service.STEP_MENU
+
+
+@pytest.mark.parametrize(
+    ("answer", "picked"),
+    [("2", "Ben Cole"), ("Ann", "Ann Lee")],
+)
+def test_the_child_question_still_picks_an_active_child_as_before(
+    chat: Chat, db: Session, world: BotWorld, answer: str, picked: str
+) -> None:
+    """REQ-132.4 — criterion 4's "as today" half: a position and an active child's name."""
+    family = _family(db, active=("Ann Lee", "Ben Cole"), inactive=("Sam Jones",))
+    _reach_book_child(chat)
+
+    turn = chat.say(value=answer)
+
+    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert chat.state.collected_data["book_child_id"] == str(family.children[picked].id)
+
+
+@pytest.mark.parametrize(
+    "active",
+    [("Ann Lee", "Ben Cole"), ("Samantha Cole", "Ben Cole")],
+)
+def test_naming_an_inactive_child_at_the_child_question_offers_reactivation(
+    chat: Chat, db: Session, active: tuple[str, str]
+) -> None:
+    """REQ-132.2(b) — criterion 4. With an active "Samantha" offered, "Sam" still offers Sam:
+    the exact check runs before `_chosen`, whose substring match would pick Samantha."""
+    _family(db, active=active, inactive=("Sam Jones",))
+    _reach_book_child(chat)
+
+    turn = chat.say(value="Sam")
+
+    assert turn.reply == _offer_for("Sam Jones")
+    assert chat.step == bot_service.STEP_REACTIVATION_CONFIRM
+
+
+def test_a_returning_guardian_naming_an_inactive_child_at_the_name_question_is_offered_it(
+    chat: Chat, db: Session
+) -> None:
+    """REQ-132.2(c), .7 — criterion 5: the offer instead of a duplicate registration, and a
+    "no" writes no `children` row."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+    children_before = _count(db, Child)
+
+    offer = chat.say(value="Sam")
+    declined = chat.say(value="no")
+
+    assert offer.reply == _offer_for("Sam Jones")
+    assert declined.reply == bot_service.ASK_MENU
+    assert "child_name" not in chat.state.collected_data
+    assert _count(db, Child) == children_before
+
+
+def test_a_name_matching_none_of_the_guardians_children_continues_the_registration(
+    chat: Chat, db: Session
+) -> None:
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+
+    turn = chat.say(value="Tom")
+
+    assert turn.reply == bot_service.ASK_CHILD_DOB
+    assert chat.state.collected_data["child_name"] == "Tom"
+
+
+def test_a_new_guardian_is_never_offered_another_familys_inactive_child(
+    chat: Chat, db: Session
+) -> None:
+    """Criterion 5's last case: a new guardian has no children to match, and another family's
+    inactive Sam is never a candidate."""
+    _family(db, inactive=("Sam Jones",), phone_number="+12025550187")
+
+    _answer_up_to_the_child_name(chat)
+
+    assert chat.replies[-1].reply == bot_service.ASK_CHILD_DOB
+    assert chat.state.collected_data["child_name"] == "Sam"
+
+
+def test_two_inactive_matches_at_the_menu_ask_which_child_and_then_re_prompt(
+    chat: Chat, db: Session
+) -> None:
+    """REQ-132.5, OQ-78 — criterion 6. No child is picked by an ambiguous name: the child
+    question is asked even with one active child, it lists active children only, and the same
+    ambiguous name at it is a re-prompt."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones", "Sam Smith"))
+    chat.say("hi")
+
+    asked = _name_at_menu(chat, "Sam")
+    again = chat.say(value="Sam")
+
+    assert asked.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Ann Lee"
+    assert chat.step == bot_service.STEP_BOOK_CHILD
+    assert again.reply == f"{bot_service.NOT_UNDERSTOOD}\n\n{asked.reply}"
+    assert all("Sam " not in reply.reply for reply in chat.replies)
+
+
+def test_an_active_and_an_inactive_match_at_the_child_question_re_prompt(
+    chat: Chat, db: Session
+) -> None:
+    _family(db, active=("Ann Lee", "Sam Lee"), inactive=("Sam Jones",))
+    asked = _reach_book_child(chat)
+
+    turn = chat.say(value="Sam")
+
+    assert turn.reply == f"{bot_service.NOT_UNDERSTOOD}\n\n{asked.reply}"
+    assert chat.step == bot_service.STEP_BOOK_CHILD
+
+
+@pytest.mark.parametrize("point", ["menu", "book_child"])
+def test_the_full_name_resolves_an_ambiguous_first_name(
+    chat: Chat, db: Session, point: str
+) -> None:
+    _family(db, active=("Ann Lee", "Sam Lee"), inactive=("Sam Jones",))
+
+    if point == "menu":
+        chat.say("hi")
+        turn = _name_at_menu(chat, "Sam Jones")
+    else:
+        _reach_book_child(chat)
+        turn = chat.say(value="Sam Jones")
+
+    assert turn.reply == _offer_for("Sam Jones")
+
+
+@pytest.mark.parametrize("named", ["Ben Park", "Sam Jones"])
+@pytest.mark.parametrize("point", ["menu", "book_child", "child_name"])
+def test_a_second_request_is_refused_while_one_is_pending(
+    chat: Chat, db: Session, named: str, point: str
+) -> None:
+    """REQ-132.6, OQ-74 — criterion 7, bot level. With Sam's request pending, naming inactive
+    Ben — or Sam again — at any detection point is refused with no question asked, nothing to
+    record and no flag; the refusal names no child."""
+    _family(db, active=("Ann Lee", "Cleo Hart"), inactive=("Ben Park", "Sam Jones"))
+    chat.reactivation_pending = True
+
+    if point == "menu":
+        chat.say("hi")
+        turn = _name_at_menu(chat, named)
+    elif point == "book_child":
+        _reach_book_child(chat)
+        turn = chat.say(value=named)
+    else:
+        _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+        turn = chat.say(value=named)
+
+    assert turn.reply == f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}"
+    assert chat.step == bot_service.STEP_MENU
+    assert turn.reactivation_child_id is None
+    assert turn.flag_reason is None
+    assert _reactivation_keys(chat) == set()
+
+
+def test_a_request_that_became_pending_since_the_offer_is_refused_at_the_yes(
+    chat: Chat, db: Session
+) -> None:
+    """Criterion 8 — REQ-132.6's "the same holds when a request becomes pending between the
+    offer and the yes"."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+    chat.reactivation_pending = True
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}"
+    assert chat.step == bot_service.STEP_MENU
+    assert turn.reactivation_child_id is None
+    assert turn.flag_reason is None
+    assert _reactivation_keys(chat) == set()
+
+
+def test_a_child_reactivated_since_the_offer_needs_nothing_asked(chat: Chat, db: Session) -> None:
+    """Criterion 8 — REQ-132.3's last sentence."""
+    family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+    family.children["Sam Jones"].is_active = True
+    db.flush()
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == (
+        f"{bot_service.REACTIVATION_NOT_NEEDED.format(name='Sam Jones')} {bot_service.ASK_MENU}"
+    )
+    assert chat.step == bot_service.STEP_MENU
+    assert turn.reactivation_child_id is None
+
+
+def test_a_child_unlinked_since_the_offer_is_stuck_rather_than_requested(
+    chat: Chat, db: Session
+) -> None:
+    """Criterion 8: the "yes" re-reads the child through this guardian's links, so a child that
+    is no longer theirs is never asked about on their behalf."""
+    family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+    db.delete(
+        db.execute(
+            select(ChildGuardian).where(ChildGuardian.child_id == family.children["Sam Jones"].id)
+        ).scalar_one()
+    )
+    db.flush()
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.flag_reason is FlagReason.STUCK
+    assert turn.reactivation_child_id is None
+
+
+def test_a_guardian_whose_children_are_all_inactive_is_offered_one_named_at_registration(
+    chat: Chat, db: Session
+) -> None:
+    """REQ-132.7, SA-27 — criterion 9: `NO_ACTIVE_CHILDREN`, then the name question recognises
+    the returning child instead of registering a duplicate."""
+    _family(db, inactive=("Sam Jones",))
+    chat.say("hi")
+
+    booked = chat.say("book", intent=BotIntent.BOOK)
+    registered = chat.say(value="no")
+    named = chat.say(value="Sam")
+
+    assert booked.reply == f"{bot_service.NO_ACTIVE_CHILDREN} {bot_service.ASK_CHILD_REGISTERED}"
+    assert registered.reply == bot_service.ASK_CHILD_NAME
+    assert named.reply == _offer_for("Sam Jones")
+
+
+def test_an_approved_child_is_offered_for_booking_like_any_active_child(
+    chat: Chat, db: Session
+) -> None:
+    """Criterion 10: R0's approve makes the child active, and from the next turn it is an
+    ordinary choice — listed, and never offered for reactivation again."""
+    family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+    requested = chat.say(value="yes")
+    conversation = Conversation(
+        phone_number=chat.phone_number,
+        last_message_at=datetime.datetime.now(tz=datetime.UTC),
+        reactivation_child_id=requested.reactivation_child_id,
+    )
+    db.add(conversation)
+    db.flush()
+    conversation_service.resolve_reactivation(db, conversation_id=conversation.id, approve=True)
+
+    chat.say("hi")
+    turn = _name_at_menu(chat, "Sam")
+
+    assert family.children["Sam Jones"].is_active is True
+    assert turn.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Ann Lee\n2. Sam Jones"
+
+
+def test_a_stale_offer_missing_its_child_restarts_visibly(
+    chat: Chat, db: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Criterion 11 — the `_resumable` pattern for the new step, never a `KeyError`."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    _park_at(
+        chat,
+        bot_service.STEP_REACTIVATION_CONFIRM,
+        prompt=_offer_for("Sam Jones"),
+        collected_data={"reactivation_child_name": "Sam Jones"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=bot_service.__name__):
+        turn = chat.say(value="yes")
+
+    assert chat.step == bot_service.STEP_MENU
+    assert chat.state.collected_data == {}
+    assert bot_service.ASK_MENU in turn.reply
+    assert turn.reactivation_child_id is None
+    assert "reactivation_child_id" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("named", "offered"),
+    [("Olvia", True), ("Olva", False)],
+)
+def test_a_one_edit_typo_at_the_menu_offers_and_a_two_edit_one_does_not(
+    chat: Chat, db: Session, world: BotWorld, named: str, offered: bool
+) -> None:
+    """REQ-132.9 — criterion 14."""
+    _family(db, active=("Ann Lee",), inactive=("Olivia Brown",))
+    chat.say("hi")
+
+    turn = _name_at_menu(chat, named)
+
+    if offered:
+        assert turn.reply == _offer_for("Olivia Brown")
+    else:
+        assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+        assert "Olivia" not in turn.reply
+
+
+def test_a_typo_at_the_child_question_offers_when_nothing_is_picked(
+    chat: Chat, db: Session
+) -> None:
+    """Criterion 15, first half."""
+    _family(db, active=("Ann Lee", "Ben Cole"), inactive=("Olivia Brown",))
+    _reach_book_child(chat)
+
+    turn = chat.say(value="Olvia")
+
+    assert turn.reply == _offer_for("Olivia Brown")
+
+
+def test_a_pick_among_the_offered_children_beats_a_typo_on_an_inactive_one(
+    chat: Chat, db: Session, world: BotWorld
+) -> None:
+    """SA-33 — criterion 15, second half: "Anna" is `_chosen`'s substring pick of Annabel and
+    one edit from inactive Anne; the pick wins and Anne is never offered."""
+    family = _family(db, active=("Annabel Hart", "Ben Cole"), inactive=("Anne Cole",))
+    _reach_book_child(chat)
+
+    turn = chat.say(value="Anna")
+
+    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert chat.state.collected_data["book_child_id"] == str(family.children["Annabel Hart"].id)
+
+
+@pytest.mark.parametrize("point", ["menu", "book_child"])
+def test_an_exact_active_match_beats_a_typo_on_an_inactive_child(
+    chat: Chat, db: Session, world: BotWorld, point: str
+) -> None:
+    """§4a precedence — criterion 16: "Mark" is Mark Lee exactly, so Marc is never offered."""
+    family = _family(db, active=("Mark Lee", "Ben Cole"), inactive=("Marc Jones",))
+
+    if point == "menu":
+        chat.say("hi")
+        turn = _name_at_menu(chat, "Mark")
+
+        assert turn.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Ben Cole\n2. Mark Lee"
+    else:
+        _reach_book_child(chat)
+        turn = chat.say(value="Mark")
+
+        assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+        assert chat.state.collected_data["book_child_id"] == str(family.children["Mark Lee"].id)
+
+    assert all("Marc" not in reply.reply for reply in chat.replies)
+
+
+@pytest.mark.parametrize(
+    ("named", "offered"),
+    [("Sma", False), ("Sam", True)],
+)
+def test_a_short_name_matches_only_as_a_whole_word(
+    chat: Chat, db: Session, world: BotWorld, named: str, offered: bool
+) -> None:
+    """OQ-81 — criterion 17: three characters are never typo-matched."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+
+    turn = _name_at_menu(chat, named)
+
+    if offered:
+        assert turn.reply == _offer_for("Sam Jones")
+    else:
+        assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+
+
+@pytest.mark.parametrize("named", ["Samuel", "Samual"])
+def test_another_familys_inactive_child_never_matches_at_the_menu(
+    chat: Chat, db: Session, world: BotWorld, named: str
+) -> None:
+    """Criterion 18: only this guardian's links are candidates, exactly or by a typo."""
+    _family(db, active=("Ann Lee",))
+    _family(db, inactive=("Samuel Park",), phone_number="+12025550187")
+    chat.say("hi")
+
+    turn = _name_at_menu(chat, named)
+
+    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert all("Samuel" not in reply.reply for reply in chat.replies)
+
+
+def test_another_familys_inactive_child_never_matches_at_registration(
+    chat: Chat, db: Session
+) -> None:
+    _family(db, active=("Ann Lee",))
+    _family(db, inactive=("Samuel Park",), phone_number="+12025550187")
+    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+
+    turn = chat.say(value="Samual")
+
+    assert turn.reply == bot_service.ASK_CHILD_DOB
+
+
+def test_a_typo_hitting_an_active_and_an_inactive_child_picks_neither(
+    chat: Chat, db: Session
+) -> None:
+    """OQ-78 through a typo — criterion 19: "Anni" is one edit from Anna and from Anne, so the
+    child question lists Anna only, and "Anni" there is a re-prompt."""
+    _family(db, active=("Anna Lee",), inactive=("Anne Cole",))
+    chat.say("hi")
+
+    asked = _name_at_menu(chat, "Anni")
+    again = chat.say(value="Anni")
+
+    assert asked.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Anna Lee"
+    assert again.reply == f"{bot_service.NOT_UNDERSTOOD}\n\n{asked.reply}"
+    assert all("Anne" not in reply.reply for reply in chat.replies)
+
+
+def test_no_to_a_typo_only_offer_at_registration_resumes_it_with_the_typed_name(
+    chat: Chat, db: Session
+) -> None:
+    """SA-32, P7D-N — criterion 20: "Liam" beside an inactive "Lian" is as likely a sibling as
+    a typo, so declining the offer registers Liam rather than costing the registration."""
+    family = _family(db, inactive=("Lian Park",))
+    _reach_returning_child_name(chat)
+
+    offer = chat.say(value="Liam")
+    offered_data = dict(chat.state.collected_data)
+    resumed = chat.say(value="no")
+    resumed_data = dict(chat.state.collected_data)
+    chat.say(value=DATE_OF_BIRTH.isoformat())
+    chat.say(value=5)
+    chat.say(value="Test School")
+    chat.say(value="none")
+
+    liam = db.execute(select(Child).where(Child.name == "Liam")).scalar_one()
+
+    assert offer.reply == _offer_for("Lian Park")
+    assert offered_data["reactivation_resume_name"] == "Liam"
+    assert resumed.reply == bot_service.ASK_CHILD_DOB
+    assert resumed.reactivation_child_id is None
+    assert resumed_data["child_name"] == "Liam"
+    assert not any(key.startswith("reactivation_") for key in resumed_data)
+    assert liam.id != family.children["Lian Park"].id
+
+
+def test_yes_to_a_typo_only_offer_at_registration_requests_that_child(
+    chat: Chat, db: Session
+) -> None:
+    family = _family(db, inactive=("Lian Park",))
+    _reach_returning_child_name(chat)
+    chat.say(value="Liam")
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == bot_service.REACTIVATION_REQUESTED.format(name="Lian Park")
+    assert turn.reactivation_child_id == family.children["Lian Park"].id
+
+
+@pytest.mark.parametrize(
+    ("named", "expected"),
+    [
+        ("Liam", bot_service.ASK_CHILD_DOB),
+        ("Lian Park", f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}"),
+    ],
+)
+def test_while_pending_a_typo_at_registration_is_ignored_and_an_exact_name_refused(
+    chat: Chat, db: Session, named: str, expected: str
+) -> None:
+    """SA-32 — criterion 20's pending half, the one scoped departure from OQ-74's refusal."""
+    _family(db, inactive=("Lian Park",))
+    _reach_returning_child_name(chat)
+    chat.reactivation_pending = True
+
+    turn = chat.say(value=named)
+
+    assert turn.reply == expected
+    assert turn.reactivation_child_id is None
+
+
+def test_a_reactivation_request_never_touches_the_conversation_tables(
+    chat: Chat, db: Session, executed_sql: list[str]
+) -> None:
+    """REQ-132.8, P7-C: the request travels back in the `BotTurn`; the webhook writes it."""
+    _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
+    chat.say("hi")
+    _name_at_menu(chat, "Sam")
+    chat.say(value="yes")
+
+    touched = [sql for sql in executed_sql if _mentions_a_chat_table(sql)]
+
+    assert executed_sql != []
+    assert touched == []
+
+
 # --- P7-C and P7-T ------------------------------------------------------------------------------
 
 
@@ -1480,6 +2077,65 @@ def _book(
     chat.say(value="1")
 
     return chat.say(value="yes")
+
+
+def _name_at_menu(chat: Chat, name: str, *, intent: BotIntent = BotIntent.BOOK) -> BotTurn:
+    """The parser giving a named child under RP's `child_name` field at the menu (§4a (a))."""
+    return chat.say(f"{name} please", intent=intent, fields={bot_service.STEP_CHILD_NAME: name})
+
+
+def _reach_book_child(chat: Chat) -> BotTurn:
+    """Menu → "Which child is this for?", for a guardian with at least two active children."""
+    chat.say("hi")
+
+    return chat.say("book", intent=BotIntent.BOOK)
+
+
+def _reach_returning_child_name(chat: Chat) -> None:
+    """Menu → `NO_ACTIVE_CHILDREN` → the name question, for a guardian with no active child."""
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value="no")
+
+
+def _park_at(
+    chat: Chat, step: str, *, prompt: str, collected_data: dict[str, str] | None = None
+) -> None:
+    save_state(
+        chat.redis,
+        phone_number=chat.phone_number,
+        state=FlowState(step=step, collected_data=collected_data or {}, prompt=prompt),
+    )
+
+
+def _offer_for(name: str) -> str:
+    return bot_service.REACTIVATION_OFFER.format(name=name)
+
+
+def _reactivation_keys(chat: Chat) -> set[str]:
+    return {key for key in chat.state.collected_data if key.startswith("reactivation_")}
+
+
+def _family(
+    db: Session,
+    *,
+    active: tuple[str, ...] = (),
+    inactive: tuple[str, ...] = (),
+    phone_number: str = CANONICAL_NUMBER,
+) -> Family:
+    names = [*active, *inactive]
+    client = _make_client(db, phone_number=phone_number, child_name=names[0])
+    children = {names[0]: db.get_one(Child, client.child_id)}
+
+    for name in names[1:]:
+        children[name] = _add_child(db, client, name=name)
+
+    for name in inactive:
+        children[name].is_active = False
+
+    db.flush()
+
+    return Family(client=client, children=children)
 
 
 def _make_world(db: Session) -> BotWorld:

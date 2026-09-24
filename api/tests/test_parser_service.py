@@ -25,12 +25,13 @@ from anthropic.lib._parse._transform import transform_schema
 from pydantic import ValidationError
 
 from app.schemas.bot import BotIntent, ParsedIntent
-from app.services import parser_service
+from app.services import bot_service, parser_service
 from app.services.parser_service import (
     MAX_RETRIES,
     MAX_TOKENS,
     MODEL,
     REQUEST_TIMEOUT_SECONDS,
+    SYSTEM_PROMPT,
     ParseFailed,
     _ModelOutput,
     parse_intent,
@@ -174,6 +175,30 @@ def test_a_padded_field_name_is_stripped_rather_than_left_as_a_near_miss(
     )
 
     assert parse_intent(step=STEP, body=BODY, context=CONTEXT).fields == {"which_day": "tuesday"}
+
+
+def test_the_prompt_pins_child_name_as_the_key_for_a_named_child() -> None:
+    """The contract test: fails if either side of SA-28's agreement is renamed."""
+    assert "`child_name`" in SYSTEM_PROMPT
+    assert bot_service.STEP_CHILD_NAME == "child_name"
+
+
+def test_a_named_child_folds_under_child_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(
+        monkeypatch,
+        _StubClient(
+            text=(
+                '{"intent": "book",'
+                ' "fields": [{"name": "child_name", "value": "Sam"},'
+                ' {"name": "menu", "value": "book"}],'
+                ' "confidence_is_low": false}'
+            )
+        ),
+    )
+
+    parsed = parse_intent(step=STEP, body=BODY, context=CONTEXT)
+
+    assert parsed.fields == {"child_name": "Sam", "menu": "book"}
 
 
 def test_the_models_own_low_confidence_signal_is_passed_through_untouched(

@@ -208,6 +208,15 @@ Every WhatsApp conversation the bot has had, admin-only — tutors have no chat 
   bot** control next to it. Release opens a confirm dialog rather than acting immediately — releasing
   hands an in-progress conversation back to an automated flow that starts fresh, not from where the
   admin left it, so an accidental click should not be able to do that to a client mid-conversation
+- A pending reactivation request shows a panel above the thread: "Reactivation requested for
+  {name}" (a link to the child's page; "already active" when so), with **Approve** and **Deny**,
+  each behind a confirm dialog — Approve: "Reactivate {name}?"; Deny: "Deny the request? {name}
+  stays inactive. The guardian is not notified." Available without a takeover. The flag's badge
+  uses the routine (non-error) tone
+- A flagged thread shows its reason as a badge in the header with a **Mark handled** button beside
+  it — one click, no confirmation; the thread leaves the flagged list and the client is not
+  notified. A reactivation request has no Mark handled: Approve or Deny ends it. If the bot flagged
+  the thread again after it was opened, Mark handled is refused and the new flag is shown
 
 Live updates for both the list and the open thread arrive over the single admin WebSocket described in
 `docs/api-design.md`, not a per-conversation connection.

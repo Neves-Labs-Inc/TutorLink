@@ -1,7 +1,10 @@
+import axios from 'axios'
+
 import { api } from '@/lib/api'
 import type {
   Conversation,
   ConversationDetail,
+  FlagReason,
   Message,
   MessageAuthorKind,
 } from '@/lib/queries/conversations'
@@ -29,6 +32,33 @@ export const markConversationRead = async (conversationId: string): Promise<Conv
 
   return response.data
 }
+
+// `flaggedAt` is sent exactly as received from `ConversationRead.flagged_at`, never through
+// `new Date(…)` or `toISOString()`: JavaScript dates hold milliseconds and the server compares
+// microseconds, so a re-serialised token always mismatches.
+export const markConversationHandled = async (
+  conversationId: string,
+  flaggedAt: string,
+): Promise<ConversationDetail> => {
+  const response = await api.post<ConversationDetail>(
+    `/api/conversations/${conversationId}/handled`,
+    { flagged_at: flaggedAt },
+  )
+
+  return response.data
+}
+
+const HANDLEABLE_FLAG_REASONS: readonly FlagReason[] = ['stuck', 'parse_error', 'guardian_link_request']
+
+export const canMarkHandled = (
+  conversation: Pick<ConversationDetail, 'flag_reason' | 'flagged_at'>,
+): boolean =>
+  conversation.flag_reason !== null &&
+  conversation.flagged_at !== null &&
+  HANDLEABLE_FLAG_REASONS.includes(conversation.flag_reason)
+
+export const isFlagChangedError = (error: unknown): boolean =>
+  axios.isAxiosError(error) && error.response?.status === 409
 
 export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment =>
   authorKind === 'client' ? 'start' : 'end'

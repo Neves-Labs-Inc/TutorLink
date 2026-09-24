@@ -2,8 +2,11 @@
 
 **P7-C — this module is pure with respect to the conversation row.** It reads and writes
 neither of the two chat tables. Everything it would otherwise have written travels back in the
-`BotTurn`: `link_guardian_id` for the guardian backfill, `flag_reason` for the flag, and `reply`
-for the outbound row. The webhook (task W) applies all of it and owns
+`BotTurn`: `link_guardian_id` for the guardian backfill, `flag_reason` for the flag,
+`reactivation_child_id` for a reactivation request (REQ-132), and `reply` for the outbound row.
+Whether a request is already pending arrives the same way in the other direction — as the
+`reactivation_pending` argument, read by the webhook — so this module never reads the column
+either. The webhook (task W) applies all of it and owns
 the single `db.commit()`. Two consequences worth keeping: the whole flow machine is testable
 without a chat row existing at all, and this module never has to reason about the ordering the
 webhook's record-then-branch contract fixes.
@@ -52,6 +55,7 @@ nothing else pins them together; a step renamed here is a step the parser stops 
 """
 
 import datetime
+import enum
 import logging
 import uuid
 from collections.abc import Callable
@@ -80,6 +84,7 @@ from app.services import (
     slot_service,
 )
 from app.services.bot_state import FlowState, clear_state, load_state, save_state
+from app.services.name_matching import exact_matches, named_children, typo_matches
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
 from app.services.settings_service import get_int_setting
 
@@ -117,6 +122,7 @@ STEP_BOOK_SLOT = "book_slot"
 STEP_BOOK_CONFIRM = "book_confirm"
 STEP_CANCEL_PICK = "cancel_pick"
 STEP_RESCHEDULE_PICK = "reschedule_pick"
+STEP_REACTIVATION_CONFIRM = "reactivation_confirm"
 
 GREETING_NEW = "Hi! I'm the Ms Helping Hands booking assistant. I don't have you on file yet."
 GREETING_RETURNING = "Hi {name}! Good to hear from you."
@@ -158,15 +164,18 @@ BOOKING_MOVED = "All moved. Your new session is {label} on {date}."
 CANCELLED = "That session is cancelled. Let me know if you'd like to book another."
 NO_UPCOMING = "You don't have any upcoming sessions with us right now."
 NO_CHILDREN_YET = "I don't have any children on file for you yet, so let's add one."
+NO_ACTIVE_CHILDREN = (
+    "I don't have any children active with us for you at the moment, so let's add one."
+)
 NO_SLOTS = "I'm afraid there's nothing free on {date}."
 DATE_NOT_BOOKABLE = "I can't book that far ahead, or that date has already passed."
 SLOT_JUST_TAKEN = "Sorry — that slot was taken while we were talking. Here's what's still free:"
 NOT_UNDERSTOOD = "Sorry, I didn't quite catch that."
 
 # REQ-075.6 / OQ-24. A refusal inside `cancellation_cutoff_hours` is a **policy** outcome, not
-# a bot failure, so it carries no `flag_reason`: there are three reasons and there is no fourth,
-# and putting routine late cancellations in the flag queue would bury the flags that mean the
-# bot actually needs help.
+# a bot failure, so it carries no `flag_reason`: no flag reason exists for a policy refusal, and
+# putting routine late cancellations in the flag queue would bury the flags that mean the bot
+# actually needs help.
 CUTOFF_DECLINED = (
     "That session is too close to its start time for me to change it. "
     "I've let the office know and someone will be in touch shortly."
@@ -203,6 +212,22 @@ PARSER_UNAVAILABLE = (
 CANNOT_CONTINUE = (
     "I can't finish that from here. I've asked one of our team to pick this up and "
     "they'll be in touch shortly."
+)
+
+# REQ-132 (OQ-71 (a), OQ-73, OQ-74). The bot never reactivates a child itself (P7D-C): a "yes"
+# only asks the office, through `BotTurn.reactivation_child_id`, and an admin decides.
+REACTIVATION_OFFER = (
+    "{name} isn't active with us at the moment. "
+    "Would you like me to ask the office to reactivate them?"
+)
+REACTIVATION_REQUESTED = "I've asked the office to reactivate {name}. They'll be in touch."
+REACTIVATION_NOT_NEEDED = "{name} is active with us again, so there's nothing to ask the office."
+
+# OQ-74: at most one pending request per conversation, and a second is refused rather than
+# substituted. The refusal names no child, which is why the bot needs only a boolean.
+REACTIVATION_PENDING = (
+    "An earlier request is still waiting for our team, so I can't send another one yet. "
+    "They'll be in touch."
 )
 
 BOOKING_NOTE = "Booked by the WhatsApp assistant."
@@ -246,8 +271,23 @@ _GUARDIAN_STEPS = frozenset(
         STEP_BOOK_CONFIRM,
         STEP_CANCEL_PICK,
         STEP_RESCHEDULE_PICK,
+        STEP_REACTIVATION_CONFIRM,
     }
 )
+
+# What a reactivation offer parks in `collected_data`, popped on every exit from
+# `STEP_REACTIVATION_CONFIRM`. `reactivation_resume_name` is optional — present only for a
+# typo-only offer at the child-name question (SA-32) — and so is not in `_REQUIRED_KEYS`.
+_REACTIVATION_KEYS = (
+    "reactivation_child_id",
+    "reactivation_child_name",
+    "reactivation_resume_name",
+)
+
+# The intents at the menu whose `child_name` field is read for an inactive child (§4a (a)).
+# Cancel and reschedule have nothing to act on for an inactive child — deactivation cancelled
+# its sessions (REQ-110.3) — and a link request is P7-F's path.
+_NAMING_INTENTS = frozenset({BotIntent.BOOK, BotIntent.UNKNOWN})
 
 _BOOKING_KEYS = (
     "book_child_id",
@@ -276,6 +316,7 @@ _REQUIRED_KEYS: dict[str, frozenset[str]] = {
         {"book_date", "book_tutor_id", "book_subject_id", "book_grade_level"}
     ),
     STEP_BOOK_SLOT: frozenset({"book_date"}),
+    STEP_REACTIVATION_CONFIRM: frozenset({"reactivation_child_id", "reactivation_child_name"}),
     STEP_BOOK_CONFIRM: frozenset(
         {
             "chosen",
@@ -301,6 +342,7 @@ class _Turn:
     guardian: Guardian | None
     now: datetime.datetime
     state: FlowState
+    reactivation_pending: bool
 
     @property
     def data(self) -> dict[str, Any]:
@@ -320,9 +362,19 @@ class _Next:
     step: str | None
     link_guardian_id: uuid.UUID | None = None
     flag_reason: FlagReason | None = None
+    reactivation_child_id: uuid.UUID | None = None
 
+
+class _Ambiguity(enum.Enum):
+    """More than one child matched a name, and at least one of them is inactive (REQ-132.5)."""
+
+    INACTIVE_AMONG_SEVERAL = "inactive_among_several"
+
+
+_AMBIGUOUS = _Ambiguity.INACTIVE_AMONG_SEVERAL
 
 type _Handler = Callable[[_Turn, ParsedIntent], _Next | None]
+type _NameHit = Child | _Ambiguity | None
 
 
 def server_now() -> datetime.datetime:
@@ -336,7 +388,12 @@ def server_now() -> datetime.datetime:
 
 
 def reply_for(
-    db: Session, *, phone_number: str, body: str, guardian_id: uuid.UUID | None
+    db: Session,
+    *,
+    phone_number: str,
+    body: str,
+    guardian_id: uuid.UUID | None,
+    reactivation_pending: bool = False,
 ) -> BotTurn:
     """One inbound message in, one turn's decision out.
 
@@ -352,6 +409,11 @@ def reply_for(
     the recognition has already happened. Only intake used to report it, so every client created
     outside the bot chatted as a bare phone number for ever. The bot still only *reports* the
     link (P7-C); the webhook writes it.
+
+    **`reactivation_pending`** is whether the conversation already carries a reactivation
+    request (REQ-132.6, OQ-74). The webhook reads the column under the conversation's row lock
+    and passes it in, so this module stays off the conversation row (P7-C). While it is true the
+    bot refuses a second request rather than offering one.
     """
     redis = get_redis()
     state = load_state(redis, phone_number=phone_number)
@@ -359,7 +421,13 @@ def reply_for(
 
     if _resumable(state, guardian):
         decided = _take_turn(
-            db, redis=redis, phone_number=phone_number, body=body, guardian=guardian, state=state
+            db,
+            redis=redis,
+            phone_number=phone_number,
+            body=body,
+            guardian=guardian,
+            state=state,
+            reactivation_pending=reactivation_pending,
         )
     else:
         decided = _open(redis, phone_number=phone_number, guardian=guardian)
@@ -378,6 +446,7 @@ def _take_turn(
     body: str,
     guardian: Guardian | None,
     state: FlowState,
+    reactivation_pending: bool,
 ) -> BotTurn:
     turn = _Turn(
         db=db,
@@ -387,6 +456,7 @@ def _take_turn(
         guardian=guardian,
         now=server_now(),
         state=state,
+        reactivation_pending=reactivation_pending,
     )
 
     try:
@@ -476,6 +546,7 @@ def _apply(turn: _Turn, result: _Next) -> BotTurn:
         reply=result.reply,
         link_guardian_id=result.link_guardian_id,
         flag_reason=result.flag_reason,
+        reactivation_child_id=result.reactivation_child_id,
     )
 
 
@@ -579,6 +650,41 @@ def _child_registered(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
         )
     else:
         result = _Next(reply=ASK_CHILD_NAME, step=STEP_CHILD_NAME)
+
+    return result
+
+
+_collect_child_name = _collect_text("child_name", ASK_CHILD_DOB, STEP_CHILD_DOB, limit=NAME_LIMIT)
+
+
+def _child_name(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+    """The new child's name — and detection point (c) for a guardian who already exists (§4a).
+
+    A returning guardian naming one of their own inactive children is offered reactivation
+    rather than registering a duplicate (REQ-132.7). An exact or whole-word hit is offered, or
+    refused while a request is pending, and nothing is stored under `child_name`. A **typo-only**
+    hit is as likely a new sibling ("Liam" beside an inactive "Lian") as a typo, so its offer
+    keeps the name as typed in `reactivation_resume_name` for a "no" to resume with, and while a
+    request is pending it is ignored rather than refused (SA-32, P7D-N). Everything else is
+    `_collect_text`'s answer, unchanged. A new guardian has no children to match.
+    """
+    raw = _answer(turn, parsed)
+
+    if turn.guardian is None or raw is None:
+        result = _collect_child_name(turn, parsed)
+    else:
+        linked = _linked_children(turn.db, guardian_id=turn.guardian.id)
+        exact = exact_matches(linked, raw)
+        hit = _inactive_hit(exact) if exact else _inactive_hit(typo_matches(linked, raw))
+
+        if not isinstance(hit, Child):
+            result = _collect_child_name(turn, parsed)
+        elif exact:
+            result = _offer_reactivation(turn, child=hit)
+        elif turn.reactivation_pending:
+            result = _collect_child_name(turn, parsed)
+        else:
+            result = _offer_reactivation(turn, child=hit, resume_name=raw[:NAME_LIMIT])
 
     return result
 
@@ -704,7 +810,19 @@ def _child_more(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
 
 
 def _menu(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
-    if parsed.intent is BotIntent.BOOK:
+    """Dispatch on the intent — after detection point (a) has looked for an inactive child.
+
+    Only `book` and `unknown` are read for a name (§4a). A unique inactive hit is offered; an
+    ambiguous one picks nothing by that name, so a booking asks which child even when only one
+    is active and an `unknown` re-prompts (REQ-132.5). Anything else is today's dispatch.
+    """
+    named = _named_at_menu(turn, parsed)
+
+    if isinstance(named, Child):
+        result = _offer_reactivation(turn, child=named)
+    elif named is _AMBIGUOUS:
+        result = _begin_booking(turn, always_ask=True) if parsed.intent is BotIntent.BOOK else None
+    elif parsed.intent is BotIntent.BOOK:
         result = _begin_booking(turn)
     elif parsed.intent is BotIntent.CANCEL:
         result = _begin_change(turn, moving=False)
@@ -722,16 +840,24 @@ def _menu(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     return result
 
 
-def _begin_booking(turn: _Turn) -> _Next:
-    """REQ-074's first step. The child question is skipped when there is only one child."""
+def _begin_booking(turn: _Turn, *, always_ask: bool = False) -> _Next:
+    """REQ-074's first step. The child question is skipped when there is only one active child,
+    unless `always_ask`: the guardian named a child ambiguously with an inactive one among the
+    matches, and skipping would pick a child by that name after all (REQ-132.5).
+
+    With no active child the guardian takes the add-a-child path, and that fallback is **final,
+    not interim** (SA-27, REQ-114.3): `NO_ACTIVE_CHILDREN` when they have inactive children —
+    whose names detection point (c) then recognises at the name question (REQ-132.7) — and
+    `NO_CHILDREN_YET` when they have none at all.
+    """
     _reset_booking(turn.data)
     children = _children(turn.db, guardian_id=turn.guardian.id)
 
     if not children:
-        result = _Next(
-            reply=f"{NO_CHILDREN_YET} {ASK_CHILD_REGISTERED}", step=STEP_CHILD_REGISTERED
-        )
-    elif len(children) == 1:
+        has_inactive = bool(_linked_children(turn.db, guardian_id=turn.guardian.id))
+        opener = NO_ACTIVE_CHILDREN if has_inactive else NO_CHILDREN_YET
+        result = _Next(reply=f"{opener} {ASK_CHILD_REGISTERED}", step=STEP_CHILD_REGISTERED)
+    elif len(children) == 1 and not always_ask:
         result = _ask_subject(turn, child=children[0])
     else:
         options = [{"id": str(child.id), "label": child.name} for child in children]
@@ -771,7 +897,7 @@ def _cancel_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     """REQ-075.3, and `cancellation_cutoff_hours`'s first consumer.
 
     Inside the window the bot declines and does **not** flag: a policy refusal is not a bot
-    failure, and there is no fourth `flag_reason`.
+    failure, and no flag reason exists for one.
     """
     booking = _picked_booking(turn, parsed)
 
@@ -824,6 +950,39 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
 
 
 def _book_child(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+    """The child pick — and detection point (b) when the answer is a name rather than a list
+    position (§4a).
+
+    The order is pinned (SA-33): exact and whole-word hits first, so an inactive "Sam" is not
+    swallowed by `_chosen`'s substring hit on an active "Samantha"; then `_chosen` exactly as
+    before; and a typo only when `_chosen` found nothing, so a typo never overrides a pick among
+    the offered children. A typo serves only the reactivation offer and never selects an active
+    child.
+    """
+    raw = _answer(turn, parsed)
+
+    if raw is None or raw.isdigit():
+        return _pick_child(turn, parsed)
+
+    linked = _linked_children(turn.db, guardian_id=turn.guardian.id)
+    exact = exact_matches(linked, raw)
+    hit = _inactive_hit(exact)
+
+    if isinstance(hit, Child):
+        result = _offer_reactivation(turn, child=hit)
+    elif hit is _AMBIGUOUS:
+        result = None
+    else:
+        result = _pick_child(turn, parsed)
+
+    if result is None and not exact:
+        typo_hit = _inactive_hit(typo_matches(linked, raw))
+        result = _offer_reactivation(turn, child=typo_hit) if isinstance(typo_hit, Child) else None
+
+    return result
+
+
+def _pick_child(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     option = _chosen(turn, parsed)
     child = None if option is None else turn.db.get(Child, uuid.UUID(option["id"]))
 
@@ -1087,6 +1246,138 @@ def _write_booking(turn: _Turn) -> _Next:
     return _Next(reply=BOOKING_MOVED.format(**summary), step=None)
 
 
+# --- reactivation requests (REQ-132) -----------------------------------------------------------
+
+
+def _named_at_menu(turn: _Turn, parsed: ParsedIntent) -> _NameHit:
+    """Detection point (a): the parser's `child_name` field, on a `book` or `unknown` intent.
+
+    The field is RP's pinned key, which is `STEP_CHILD_NAME` — the parser gives a named child
+    under it whatever the step (SA-28). `named_children` applies the whole precedence: exact or
+    whole-word first, a typo only when those find nothing.
+    """
+    raw = parsed.fields.get(STEP_CHILD_NAME, "")
+
+    if parsed.intent in _NAMING_INTENTS and raw.strip():
+        linked = _linked_children(turn.db, guardian_id=turn.guardian.id)
+        hit = _inactive_hit(named_children(linked, raw))
+    else:
+        hit = None
+
+    return hit
+
+
+def _inactive_hit(hits: list[Child]) -> _NameHit:
+    """§4a's outcome table, shared by the three detection points.
+
+    One hit, inactive → that child, to offer. Several with at least one inactive →
+    `_AMBIGUOUS`: no child is picked by that name (REQ-132.5). Anything else — no hit, one
+    active hit, several all active — is `None`, and the point carries on as it did before 7D.
+    """
+    if len(hits) == 1 and not hits[0].is_active:
+        result: _NameHit = hits[0]
+    elif len(hits) > 1 and any(not child.is_active for child in hits):
+        result = _AMBIGUOUS
+    else:
+        result = None
+
+    return result
+
+
+def _offer_reactivation(turn: _Turn, *, child: Child, resume_name: str | None = None) -> _Next:
+    """Ask whether to request `child`'s reactivation — or refuse, while one is pending.
+
+    The refusal (OQ-74, REQ-132.6) asks nothing, names no child and records nothing: the menu
+    question follows it, and the pending request, its flag and its flag time stay exactly as
+    they were. `resume_name` is set only for a typo-only offer at the child-name question
+    (SA-32), which never reaches here while a request is pending.
+    """
+    if turn.reactivation_pending:
+        result = _refuse_while_pending()
+    else:
+        turn.data["reactivation_child_id"] = str(child.id)
+        turn.data["reactivation_child_name"] = child.name
+
+        if resume_name is not None:
+            turn.data["reactivation_resume_name"] = resume_name
+
+        result = _Next(
+            reply=REACTIVATION_OFFER.format(name=child.name), step=STEP_REACTIVATION_CONFIRM
+        )
+
+    return result
+
+
+def _reactivation_confirm(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+    """The answer to `REACTIVATION_OFFER`.
+
+    "No" records nothing and goes back to the menu — or, after a typo-only offer at the
+    child-name question, resumes the registration with the name as typed, exactly where
+    `_collect_text` would have gone (SA-32). Neither answer → the usual re-prompt, and the
+    offer's keys stay for it. Every other exit pops them.
+    """
+    answer = _yes_no(turn, parsed)
+    resume_name = turn.data.get("reactivation_resume_name")
+
+    if answer is None:
+        result = None
+    elif answer:
+        result = _request_reactivation(turn)
+    elif resume_name is None:
+        result = _Next(reply=ASK_MENU, step=STEP_MENU)
+    else:
+        turn.data["child_name"] = resume_name
+        result = _Next(reply=ASK_CHILD_DOB, step=STEP_CHILD_DOB)
+
+    if result is not None:
+        for key in _REACTIVATION_KEYS:
+            turn.data.pop(key, None)
+
+    return result
+
+
+def _request_reactivation(turn: _Turn) -> _Next:
+    """The "yes": ask the office, unless something changed since the offer.
+
+    A request that became pending in between is refused exactly as at a detection point, and
+    first — REQ-132.6 holds the pending request's flag and flag time unchanged, which a `stuck`
+    here would overwrite. Otherwise the child is re-read **through this guardian's links**: one
+    unlinked since the offer is not theirs to ask about (`_stuck`), and one an admin has already
+    reactivated needs nothing asked. Only a child still linked and still inactive is returned
+    for the webhook to record; the bot never reactivates it itself (P7D-C).
+    """
+    child = None if turn.reactivation_pending else _linked_child(turn)
+
+    if turn.reactivation_pending:
+        result = _refuse_while_pending()
+    elif child is None:
+        result = _stuck(turn)
+    elif child.is_active:
+        result = _Next(
+            reply=f"{REACTIVATION_NOT_NEEDED.format(name=child.name)} {ASK_MENU}", step=STEP_MENU
+        )
+    else:
+        result = _Next(
+            reply=REACTIVATION_REQUESTED.format(name=child.name),
+            step=None,
+            reactivation_child_id=child.id,
+        )
+
+    return result
+
+
+def _linked_child(turn: _Turn) -> Child | None:
+    """The offered child, read again through this guardian's links — `None` once unlinked."""
+    child_id = uuid.UUID(turn.data["reactivation_child_id"])
+    linked = _linked_children(turn.db, guardian_id=turn.guardian.id)
+
+    return next((child for child in linked if child.id == child_id), None)
+
+
+def _refuse_while_pending() -> _Next:
+    return _Next(reply=f"{REACTIVATION_PENDING} {ASK_MENU}", step=STEP_MENU)
+
+
 # --- reads, all of them from the guardian's side (P7-T) ----------------------------------------
 
 
@@ -1122,17 +1413,34 @@ def _recognise(db: Session, *, phone_number: str, guardian_id: uuid.UUID | None)
 def _children(db: Session, *, guardian_id: uuid.UUID) -> list[Child]:
     """REQ-075.2: through `child_guardians`, so a guardian sees their children and no others.
 
-    Active children only (REQ-114): an inactive child is never offered for booking. A guardian
-    whose children are all inactive therefore reads as one with none and takes the same
-    `NO_CHILDREN_YET` add-a-child path. That fallback is final, not interim — the bot lists only
-    active children. Phase 7D (REQ-132) only rewords the reply to `NO_ACTIVE_CHILDREN` and
-    recognises a guardian naming an inactive child; it does not change this read.
+    Active children only (REQ-114, REQ-132.1): every child choice the bot presents comes from
+    here, so an inactive child is never listed or offered for booking. A guardian whose children
+    are all inactive reads as one with none and takes the add-a-child path, which is final, not
+    interim (SA-27) — `_begin_booking` says `NO_ACTIVE_CHILDREN` rather than `NO_CHILDREN_YET`
+    for them (REQ-132.7).
     """
     return list(
         db.scalars(
             select(Child)
             .join(ChildGuardian, ChildGuardian.child_id == Child.id)
             .where(ChildGuardian.guardian_id == guardian_id, Child.is_active.is_(True))
+            .order_by(Child.name, Child.id)
+        ).all()
+    )
+
+
+def _linked_children(db: Session, *, guardian_id: uuid.UUID) -> list[Child]:
+    """Every child linked to this guardian, active **and** inactive (§4a).
+
+    The candidates a named child is matched against, and nothing else: a name is only ever
+    resolved against this guardian's own links, so another family's child can never match,
+    exactly or by a typo. Never used to list or offer a child — that is `_children`.
+    """
+    return list(
+        db.scalars(
+            select(Child)
+            .join(ChildGuardian, ChildGuardian.child_id == Child.id)
+            .where(ChildGuardian.guardian_id == guardian_id)
             .order_by(Child.name, Child.id)
         ).all()
     )
@@ -1363,7 +1671,7 @@ _HANDLERS: dict[str, _Handler] = {
     ),
     STEP_INTAKE_LABEL: _intake_label,
     STEP_CHILD_REGISTERED: _child_registered,
-    STEP_CHILD_NAME: _collect_text("child_name", ASK_CHILD_DOB, STEP_CHILD_DOB, limit=NAME_LIMIT),
+    STEP_CHILD_NAME: _child_name,
     STEP_CHILD_DOB: _child_date_of_birth,
     STEP_CHILD_GRADE: _collect_number(
         "child_grade",
@@ -1387,4 +1695,5 @@ _HANDLERS: dict[str, _Handler] = {
     STEP_BOOK_CONFIRM: _book_confirm,
     STEP_CANCEL_PICK: _cancel_pick,
     STEP_RESCHEDULE_PICK: _reschedule_pick,
+    STEP_REACTIVATION_CONFIRM: _reactivation_confirm,
 }

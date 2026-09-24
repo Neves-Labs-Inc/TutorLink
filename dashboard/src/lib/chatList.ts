@@ -60,9 +60,11 @@ export const conversationDisplayName = (conversation: Conversation): string =>
 export const conversationHolderLabel = (conversation: Conversation): string | null =>
   conversation.status === 'human' ? (conversation.taken_over_by?.email ?? null) : null
 
-// `guardian_link_request` is a routine handoff, not the bot breaking (P7-E) — `StatusBadge`
-// gives it a tone distinct from the shared destructive tone `stuck`/`parse_error` render in.
-export const isErrorFlag = (reason: FlagReason): boolean => reason !== 'guardian_link_request'
+// `guardian_link_request` and `reactivation_request` are routine handoffs, not the bot
+// breaking (P7-E) — `StatusBadge` gives them a tone distinct from the shared destructive
+// tone `stuck`/`parse_error` render in.
+export const isErrorFlag = (reason: FlagReason): boolean =>
+  reason !== 'guardian_link_request' && reason !== 'reactivation_request'
 
 export const relativeTimeLabel = (iso: string, now: Date): string => {
   const deltaMs = now.getTime() - new Date(iso).getTime()

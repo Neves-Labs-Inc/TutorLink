@@ -121,6 +121,10 @@ describe('isErrorFlag', () => {
   it('treats guardian_link_request as not an error', () => {
     expect(isErrorFlag('guardian_link_request')).toBe(false)
   })
+
+  it('treats reactivation_request as not an error', () => {
+    expect(isErrorFlag('reactivation_request')).toBe(false)
+  })
 })
 
 describe('relativeTimeLabel', () => {

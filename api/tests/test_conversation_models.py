@@ -248,6 +248,60 @@ def test_migration_0014_round_trips(_migration_engine: Engine) -> None:
         assert _existing_enum_types(connection) == set()
 
 
+def test_migration_0017_downgrade_forgets_a_pending_request_and_restores_the_type(
+    _migration_engine: Engine,
+) -> None:
+    """`downgrade 0016` on a database holding a pending reactivation request, then `upgrade head`.
+
+    PostgreSQL cannot drop an enum value, so the downgrade rebuilds `flag_reason` — and a row
+    still carrying `reactivation_request` would make that rebuild fail its cast, which is why the
+    downgrade clears those flags first. The rows are committed on their own connection before
+    the downgrade runs: `env.py` runs a whole command in one transaction, and a row written
+    through it would test nothing. The type is compared value by value against the literal
+    three, because a downgrade that rebuilt it from the model's enum would restore four.
+    """
+    config = _alembic_config()
+    command.upgrade(config, "head")
+
+    with _migration_engine.begin() as connection:
+        child_id = connection.execute(
+            text(
+                "INSERT INTO children (name, grade_level, school_name, is_active)"
+                " VALUES ('Sam Jones', 3, 'Elm Primary', false) RETURNING id"
+            )
+        ).scalar_one()
+        conversation_id = connection.execute(
+            text(
+                "INSERT INTO conversations"
+                " (phone_number, flag_reason, flagged_at, reactivation_child_id)"
+                " VALUES (:phone_number, 'reactivation_request', :flagged_at, :child_id)"
+                " RETURNING id"
+            ),
+            {"phone_number": _phone_number(), "flagged_at": FLAGGED_AT, "child_id": child_id},
+        ).scalar_one()
+
+    command.downgrade(config, "0016")
+
+    columns = {column["name"] for column in inspect(_migration_engine).get_columns("conversations")}
+    assert "reactivation_child_id" not in columns
+    with _migration_engine.connect() as connection:
+        flag_reason, flagged_at = connection.execute(
+            text("SELECT flag_reason, flagged_at FROM conversations WHERE id = :id"),
+            {"id": conversation_id},
+        ).one()
+        values = connection.execute(
+            text("SELECT enum_range(NULL::flag_reason)::text[]")
+        ).scalar_one()
+    assert flag_reason is None
+    assert flagged_at is None
+    assert values == ["stuck", "parse_error", "guardian_link_request"]
+
+    command.upgrade(config, "head")
+
+    columns = {column["name"] for column in inspect(_migration_engine).get_columns("conversations")}
+    assert "reactivation_child_id" in columns
+
+
 @pytest.fixture
 def _migration_engine(monkeypatch: pytest.MonkeyPatch) -> Generator[Engine, None, None]:
     """An `Engine` bound to a throwaway, genuinely empty database, dropped when the test ends.

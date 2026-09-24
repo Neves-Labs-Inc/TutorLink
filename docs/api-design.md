@@ -129,7 +129,7 @@ failure — a successful login returns its own slot, a refused one returns whate
 claim. Recording the failure afterwards instead sounds equivalent and is not: the endpoint runs
 on a worker threadpool, so every request arriving during one bcrypt round would read the same
 count and be admitted, making the configured number a floor rather than a ceiling. Measured
-against a live Redis, thirty-two simultaneous attempts at a limit of five were all admitted
+against the original implementation, thirty-two simultaneous attempts at a limit of five were all admitted
 under the record-afterwards form and exactly five under this one.
 
 **Only failures ultimately count**, so a shared address signing in correctly all morning is
@@ -145,10 +145,11 @@ would tell an unauthenticated caller whether it was their account or their netwo
 and a message that appeared only for real accounts would reintroduce the enumeration oracle the
 shared 401 exists to close.
 
-Counting is backed by Redis, and **an unreachable Redis fails open** — the request is allowed
-through unthrottled rather than refused. Making Redis a hard dependency of login would turn a
-Redis blip into a total authentication outage, which is worse and far likelier than the
-unthrottled state that preceded the limiter. Setting either `max_attempts` to `0` disables that
+Counting is backed by the `login_attempts` table in PostgreSQL — the same database the login
+already reads the user from — so there is no separate store whose outage the limiter would have to
+fail open around: if the database is down, login is down regardless. The reservation is committed
+before the password is checked, so a refused attempt is counted even though the request then fails.
+Concurrent attempts on one bucket are serialized with an advisory lock on the bucket key. Setting either `max_attempts` to `0` disables that
 bucket outright; both at `0` is the kill switch, and it is an integer rather than a boolean
 because `integer` is the only `value_type` the settings table has.
 
@@ -165,20 +166,23 @@ because `integer` is the only `value_type` the settings table has.
 > the header from any peer and restore full spoofability, which is worse than the collapsed
 > bucket because it looks like it is working. The setting refuses them at startup. A hostname
 > does not work either, and does not warn: trust is matched against the peer address and nothing
-> resolves a name, so `TRUSTED_PROXIES=caddy` would trust nothing while looking configured — the
+> resolves a name, so `TRUSTED_PROXIES=my-load-balancer` would trust nothing while looking configured — the
 > setting refuses that too. The value must be an IP address or a CIDR block.
 >
 > uvicorn's own proxy-header handling stays off (`--no-proxy-headers` in
-> `docker/api.Dockerfile`), so that exactly one place decides trust. Caddy from #2 proxies to
-> `api:8000` by Docker service name, so it is a container on the compose network and the peer is
-> a container address — not loopback, and not the same host. `X-Forwarded-Proto` is honored on
-> the same terms; it has no consumer today, since the refresh cookie keys off `COOKIE_SECURE`
-> rather than the scheme, but the Phase 7 Twilio webhook will validate signatures over the full
-> request URL, scheme included, and will be its first reader.
+> `docker/api.Dockerfile`), so that exactly one place decides trust. In production the API runs on
+> ECS behind an Application Load Balancer. The peer is always one of the load balancer's nodes,
+> whose private addresses sit inside the VPC, so `TRUSTED_PROXIES` is that VPC's CIDR (the default
+> VPC is `172.31.0.0/16`). The load balancer **appends** the client address to any
+> `X-Forwarded-For` it receives, and the middleware walks the header right to left, returning the
+> first hop that is not trusted. A client-supplied `X-Forwarded-For` therefore sits to the left of
+> the real address and is never picked. `X-Forwarded-Proto` is honored on the same terms, and the
+> Twilio webhook reads it, because signatures are validated over the full request URL, scheme
+> included.
 >
-> `TRUSTED_PROXIES` ships unset. This repository contains no Caddy service and no fixed network,
-> so the value cannot be chosen here. Whoever stands Caddy up sets it to Caddy's address on the
-> network the two containers share, and confirms Caddy is setting both headers.
+> `TRUSTED_PROXIES` ships unset for local development. The production value is confirmed against
+> the live service before it is trusted: failed logins from two different networks must appear as
+> two separate per-IP buckets, and neither may carry a VPC address (`deploy/RUNBOOK.md`).
 
 ### `POST /auth/refresh`
 
@@ -502,8 +506,8 @@ failure and are handled differently.
 A message the parser returns but the flow cannot act on (an answer that doesn't match what was
 asked, an unrecognised choice) gets a re-prompt. A second consecutive one gets a second re-prompt.
 A third failure in the same step stops the bot from asking again: it replies that it couldn't
-follow along and an admin will reach out, leaves Redis's flow state untouched — it is left to expire
-on its own 30-minute TTL rather than cleared — and flags the conversation `stuck`. The reply still
+follow along and an admin will reach out, leaves the flow state untouched — it expires 30 minutes
+after its last write rather than being cleared — and flags the conversation `stuck`. The reply still
 goes out; the flag brings an admin to look, it does not replace the answer the client is owed.
 
 A parser outage — the model call itself failing, rather than returning something the flow can't use
@@ -567,9 +571,9 @@ stream of retries against an endpoint that will keep declining to answer. An emp
 valid instruction to send no reply, which is precisely the semantics of a paused bot: the webhook
 succeeded, the message is recorded, and there is no outbound message to make.
 
-Redis is untouched by a takeover. Live bot flow state keeps its 30-minute TTL and will usually
-expire during a handoff of any length, so when the bot is released the client resumes from a fresh
-state — the same behaviour as any other client who went quiet for half an hour. Freezing the TTL for
+`bot_flow_state` is untouched by a takeover. Live bot flow state keeps its 30-minute expiry and will
+usually expire during a handoff of any length, so when the bot is released the client resumes from a
+fresh state — the same behaviour as any other client who went quiet for half an hour. Freezing the expiry for
 the duration of the handoff was the alternative and is worse: it restores a half-finished intake
 that the admin has by then completed by hand, and the client is asked again for details already on
 file.

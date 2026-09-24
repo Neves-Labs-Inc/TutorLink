@@ -2,7 +2,7 @@
 
 ## Overview
 
-TutorLink uses a PostgreSQL relational database as the single source of truth for all business data, including the full history of every WhatsApp conversation the bot has had. Redis holds only the live flow state of a conversation currently in progress — which step the bot is on and what it has collected so far — and that state is still ephemeral and expires on its own. What was said, by whom, and when is relational and retained; see [`conversations`](#conversations) and [`messages`](#messages).
+TutorLink uses a PostgreSQL relational database as the single source of truth for all business data, including the full history of every WhatsApp conversation the bot has had. The [`bot_flow_state`](#bot_flow_state) table holds only the live flow state of a conversation currently in progress — which step the bot is on and what it has collected so far — and a row expires 30 minutes after its last write. What was said, by whom, and when is relational and retained; see [`conversations`](#conversations) and [`messages`](#messages).
 
 ---
 
@@ -400,11 +400,18 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 | login_rate_limit_ip_window_seconds | 900 | no |
 | login_rate_limit_email_max_attempts | 5 | no |
 | login_rate_limit_email_window_seconds | 900 | no |
+| retention_purge_hour_utc | 3 | no |
 
 `chat_retention_days` is how long a message is kept. A nightly job deletes `messages` older than the
 window, and a `conversations` row left with no surviving messages goes with them rather than lingering as
 an empty thread in the list. A value of `0` means never purge, which is the setting a client on a
 records-retention obligation will want.
+
+`retention_purge_hour_utc` is the UTC hour, 0–23, at which that nightly job runs. The job runs inside
+the API process, ticks at the top of every hour, and reads this row at each tick, so a changed hour
+takes effect the same day without a restart. When more than one API task is running, a PostgreSQL
+advisory lock lets exactly one of them purge; the others log that they skipped. The same run reaps
+expired `bot_flow_state` and `login_attempts` rows.
 
 It is a setting rather than a constant for the same reason `session_gap_minutes` is: the answer is a
 business policy, it differs from one client to the next, and it changes for reasons that have nothing to
@@ -419,6 +426,52 @@ a limit tuned for a home connection, and discovering that during an incident mus
 than a boolean because `integer` is the only `value_type` in use, and adding one to express "off" would be
 a schema change to say what `0` already says. `POST /auth/token` is the only reader of these, and the only
 reader of `system_settings` at all today — see `docs/api-design.md`.
+
+### `bot_flow_state`
+The live flow state of a bot session in progress — which step the bot is on and what it has collected so far. One row per phone number with a flow under way.
+
+| Column | Type | Notes |
+|---|---|---|
+| phone_number | VARCHAR(32) | Primary key — same type as `conversations.phone_number`; deliberately **no FK** |
+| step | TEXT | The flow step the bot is waiting on |
+| collected_data | JSONB | Answers gathered so far |
+| misses | INTEGER | Consecutive unusable answers in the current step |
+| prompt | TEXT | The last question asked, for a re-prompt |
+| expires_at | TIMESTAMPTZ | 30 minutes after the last write |
+
+A missing row and an expired row read the same: a fresh start. If a client goes idle mid-conversation,
+they start fresh next time they message. Expired rows are reaped by the nightly retention purge; there
+is no index on `expires_at` because the table only ever holds live flows.
+
+This table is not the record of the conversation, and the division is worth stating. `bot_flow_state`
+answers "where is this client up to in the flow right now", holds nothing once the flow ends, and is
+safe to lose — losing it costs a client one restarted intake. [`conversations`](#conversations) and
+[`messages`](#messages) answer "what was said, by whom, when, and did it get delivered", are the source
+of truth for the admin chat screens, and are retained for `chat_retention_days`. Nothing is written to
+both, which is why there is no foreign key between them.
+
+A takeover touches `bot_flow_state` not at all. Flow state keeps its 30-minute expiry and will usually
+expire during a handoff of any length, so when the admin releases the conversation the client resumes
+from a fresh state — the same behaviour as any other client who went idle. Freezing the expiry for the
+duration of a handoff was the alternative, and it is worse: it would restore a half-finished intake
+that the admin has by then completed by hand, and the bot would ask again for answers the client has
+already given.
+
+### `login_attempts`
+The counting store behind the `POST /auth/token` brute-force limiter. One row per reserved attempt per bucket.
+
+| Column | Type | Notes |
+|---|---|---|
+| bucket_key | TEXT | Primary key part 1 — e.g. `ratelimit:login:ip:203.0.113.7`, `ratelimit:login:email:<email>` |
+| attempt_id | UUID | Primary key part 2 — one per request, shared by every bucket that request reserved |
+| attempted_at | TIMESTAMPTZ | Written by the application, not defaulted |
+
+Constraints: `PRIMARY KEY (bucket_key, attempt_id)`. Index: `(bucket_key, attempted_at)`.
+
+A bucket's count is its rows inside the window. Rows older than the window are pruned on every touch of
+their bucket and reaped by the nightly retention purge. Concurrent attempts on the same bucket are
+serialized with a transaction-scoped advisory lock on the bucket key, so the count a request reads is
+the count it reserves against. Like `bot_flow_state`, this is not a system of record.
 
 ---
 
@@ -526,28 +579,3 @@ booking the tutor 09:30–10:30 starts at neither 09:00 nor 10:15, yet takes the
 slot and the first 15 of the second. Matching on equality would find no slot to remove and offer both,
 double-booking the tutor. Overlap alone is enough to drop both here; the widening extends the same
 subtraction to the slots such a booking only abuts.
-
----
-
-## Redis — Conversation State
-
-Not part of the relational schema. Redis stores the live flow state of a bot session in progress — which step the bot is on and what it has collected so far.
-
-| Key | Value | TTL |
-|---|---|---|
-| `phone_number` | `{ step, collected_data }` | 30 minutes |
-
-The state is discarded automatically when the TTL expires. If a client goes idle mid-conversation, they start fresh next time they message.
-
-Redis is not the record of the conversation and never was, but the division is worth stating now that
-there is a second store. Redis answers "where is this client up to in the flow right now", holds nothing
-once the flow ends, and is safe to lose — losing it costs a client one restarted intake.
-[`conversations`](#conversations) and [`messages`](#messages) answer "what was said, by whom, when, and
-did it get delivered", are the source of truth for the admin chat screens, and are retained for
-`chat_retention_days`. Nothing is written to both.
-
-A takeover touches Redis not at all. Flow state keeps its 30-minute TTL and will usually expire during a
-handoff of any length, so when the admin releases the conversation the client resumes from a fresh state
-— the same behaviour as any other client who went idle. Freezing the TTL for the duration of a handoff
-was the alternative, and it is worse: it would restore a half-finished intake that the admin has by then
-completed by hand, and the bot would ask again for answers the client has already given.

@@ -1,8 +1,33 @@
 name: Deploy
 
-# Tag push and manual dispatch only. There is deliberately no branch trigger: OQ-35 holds `main`
-# promotion until MVP scope, and a workflow that deployed on push to a branch would quietly
-# contradict a standing decision.
+# Tag push and manual dispatch only (OQ-35): `main` promotion is held until MVP scope, and a branch
+# trigger would quietly contradict that decision.
+#
+# Credentials come from GitHub's OIDC provider; no AWS access key may be added to this repository
+# (issue #29). The deploy role's trust policy must condition on both claims:
+#
+#   StringEquals "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+#   StringLike   "token.actions.githubusercontent.com:sub" = "repo:Siraneves/TutorLink:ref:refs/tags/v*"
+#
+# plus "repo:Siraneves/TutorLink:ref:refs/heads/*" if manual dispatch is allowed, since
+# workflow_dispatch presents the branch it ran from. A `sub` of "repo:*", or none, lets any
+# repository on GitHub assume the role.
+#
+# VERIFY at provisioning, both confirmed against GitHub and AWS documentation on 2026-09-22:
+# repositories created after 2026-07-15 get an immutable subject embedding owner and repository IDs
+# ("repo:Siraneves@<owner-id>/TutorLink@<repo-id>:ref:refs/tags/v1"); this repository predates that,
+# but read the token's own claims rather than assuming. AWS no longer checks the thumbprint on the
+# token.actions.githubusercontent.com provider.
+#
+# Minimum permissions for the role, and nothing wider:
+#   ecr:GetAuthorizationToken                                   on *
+#   ecr:BatchCheckLayerAvailability, InitiateLayerUpload, UploadLayerPart, CompleteLayerUpload,
+#   PutImage, BatchGetImage                                     on the tutorlink-api repository only
+#   ecs:DescribeServices, DescribeTaskDefinition, RegisterTaskDefinition, RunTask, DescribeTasks,
+#   ListServiceDeployments, DescribeServiceDeployments,
+#   DescribeExpressGatewayService, UpdateExpressGatewayService  (VERIFY the Express action names)
+#   iam:PassRole on exactly TASK_EXECUTION_ROLE_ARN and INFRASTRUCTURE_ROLE_ARN (plus the task role,
+#   if the service is ever given one)
 on:
   push:
     tags:
@@ -18,31 +43,43 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The instance is Graviton (OQ-33, t4g.small), so the images must be arm64. An amd64 image
-  # builds and pushes cleanly and then fails on the box with `exec format error`. This is the one
-  # place the platform is written down; the runner label below has to agree with it, and the
-  # smoke step asserts the built artifact's architecture rather than trusting either.
   BUILD_PLATFORM: linux/arm64
   IMAGE_TAG: ${{ github.sha }}
-  SSM_EXECUTION_TIMEOUT: "1800"
+  ECS_CLUSTER: default
+  ECS_SERVICE: tutorlink
+  CONTAINER_NAME: Main
+  MIGRATION_TASK_FAMILY: tutorlink-migrate
+  MIGRATION_TIMEOUT: "1800"
   DEPLOY_POLL_TIMEOUT: "1800"
+  DEPLOY_NO_OP_GRACE: "60"
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-24.04-arm
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      ECS_SUBNETS: ${{ vars.ECS_SUBNETS }}
+      ECS_SECURITY_GROUP: ${{ vars.ECS_SECURITY_GROUP }}
+      APP_SECRET_ARN: ${{ vars.APP_SECRET_ARN }}
+      TASK_EXECUTION_ROLE_ARN: ${{ vars.TASK_EXECUTION_ROLE_ARN }}
+      INFRASTRUCTURE_ROLE_ARN: ${{ vars.INFRASTRUCTURE_ROLE_ARN }}
+      TRUSTED_PROXIES: ${{ vars.TRUSTED_PROXIES }}
+      TWILIO_WHATSAPP_NUMBER: ${{ vars.TWILIO_WHATSAPP_NUMBER }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check the deployment variables are configured
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
         run: |
-          set -euo pipefail
           missing=""
-          for name in AWS_REGION AWS_DEPLOY_ROLE_ARN EC2_INSTANCE_ID BACKUP_BUCKET; do
+          for name in AWS_REGION AWS_DEPLOY_ROLE_ARN ECS_SUBNETS ECS_SECURITY_GROUP APP_SECRET_ARN \
+            TASK_EXECUTION_ROLE_ARN INFRASTRUCTURE_ROLE_ARN TRUSTED_PROXIES TWILIO_WHATSAPP_NUMBER \
+            PUBLIC_BASE_URL; do
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
@@ -50,29 +87,6 @@ jobs:
             exit 1
           fi
 
-      # Short-lived credentials from GitHub's OIDC provider. No AWS access key exists anywhere in
-      # this repository, and none may be added — that is the whole of issue #29.
-      #
-      # The role itself is created by hand per task R's runbook; this workflow only assumes it.
-      # Its trust policy must condition on BOTH claims, and the `sub` condition must name this
-      # repository and the refs this workflow can run from:
-      #
-      #   StringEquals "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-      #   StringLike   "token.actions.githubusercontent.com:sub" = "repo:Siraneves/TutorLink:ref:refs/tags/v*"
-      #
-      # and, if manual dispatch is to be allowed, a second `sub` value
-      # "repo:Siraneves/TutorLink:ref:refs/heads/*" — workflow_dispatch presents the branch it was
-      # dispatched from, not the tag. A `sub` of "repo:*", or no `sub` condition at all, lets any
-      # repository on GitHub assume this role and push to this account's ECR.
-      #
-      # VERIFY at provisioning time, both confirmed against GitHub and AWS documentation on
-      # 2026-09-22 and both cheap to re-check: repositories created after 2026-07-15 are issued an
-      # immutable subject that embeds owner and repository IDs
-      # ("repo:Siraneves@<owner-id>/TutorLink@<repo-id>:ref:refs/tags/v1") — this repository
-      # predates that date, so the plain form above applies, but read the token's own claims
-      # rather than assuming. A certificate thumbprint is no longer required on the
-      # token.actions.githubusercontent.com identity provider: AWS trusts GitHub's root CA and
-      # ignores whatever thumbprint is configured.
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -82,166 +96,332 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      # No `cache-from`, no `cache-to`, no `--mount=type=cache`. A hosted runner starts with an
-      # empty build cache every run, so the images are built from the checked-out lockfiles and
-      # nothing else; adding a shared cache here is what would let a dependency layer outlive a
-      # `uv.lock` bump and ship a container whose venv predates its own dependencies.
-      - name: Build the API image
+      - name: Resolve the Express service
+        id: service
+        run: |
+          service_arn="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].serviceArn' \
+            --output text)"
+          if [ "$service_arn" = None ]; then
+            echo "::error::no service $ECS_SERVICE in cluster $ECS_CLUSTER; create it per deploy/RUNBOOK.md"
+            exit 1
+          fi
+
+          aws ecs describe-express-gateway-service --service-arn "$service_arn" --output json \
+            | jq '.service.activeConfigurations | max_by(.createdAt)' \
+            >"$RUNNER_TEMP/active-configuration.json"
+
+          echo "service_arn=$service_arn" >>"$GITHUB_OUTPUT"
+          echo "task_definition=$(jq -r '.taskDefinitionArn' "$RUNNER_TEMP/active-configuration.json")" \
+            >>"$GITHUB_OUTPUT"
+
+      - name: Render the primary container
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          set -euo pipefail
+          jq \
+            --arg IMAGE "$REGISTRY/tutorlink-api:$IMAGE_TAG" \
+            --arg APP_SECRET_ARN "$APP_SECRET_ARN" \
+            --arg TRUSTED_PROXIES "$TRUSTED_PROXIES" \
+            --arg TWILIO_WHATSAPP_NUMBER "$TWILIO_WHATSAPP_NUMBER" \
+            --arg TWILIO_STATUS_CALLBACK_URL "${PUBLIC_BASE_URL%/}/webhook/whatsapp/status" \
+            --slurpfile active "$RUNNER_TEMP/active-configuration.json" \
+            '
+              walk(
+                if type == "string" then
+                  gsub("\\$\\{(?<name>[A-Z_]+)\\}"; $ARGS.named[.name] // error("no value for ${\(.name)}"))
+                else . end
+              )
+              | ($active[0].primaryContainer.awsLogsConfiguration) as $logs
+              | if $logs then .awsLogsConfiguration = $logs else . end
+            ' \
+            deploy/ecs/primary-container.json >"$RUNNER_TEMP/primary-container.json"
+          cat "$RUNNER_TEMP/primary-container.json"
+
+      # No `cache-from`, no `cache-to`, no `--mount=type=cache`. A hosted runner starts with an
+      # empty build cache, so the image is built from the checked-out lockfiles and nothing else; a
+      # shared cache is what would let a dependency layer outlive a `uv.lock` bump and ship a
+      # container whose venv predates its own dependencies.
+      - name: Build the image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
           docker buildx build \
             --platform "$BUILD_PLATFORM" \
             --file docker/api.Dockerfile \
             --tag "$REGISTRY/tutorlink-api:$IMAGE_TAG" \
             --load \
-            api
+            .
 
-      # Smokes the artifact, not the recipe. Phase 7 added `anthropic` and `twilio` to
-      # api/pyproject.toml and regenerated uv.lock, and two test modules then failed to collect in
-      # a running container whose venv predated the lock change. That is the shape of a green
-      # pipeline shipping a broken container: the runner's own tests pass because they installed
-      # from the current lock, and the thing that actually runs in production cannot import half
-      # its dependencies. These two commands run inside the built image and cost seconds.
-      - name: Smoke the API image before pushing it
+      - name: Smoke the image before pushing it
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          set -euo pipefail
           image="$REGISTRY/tutorlink-api:$IMAGE_TAG"
           expected="${BUILD_PLATFORM#linux/}"
           actual="$(docker image inspect --format '{{.Architecture}}' "$image")"
           if [ "$actual" != "$expected" ]; then
-            echo "::error::API image is $actual, expected $expected"
+            echo "::error::image is $actual, expected $expected"
             exit 1
           fi
           docker run --rm "$image" python -c "import anthropic, twilio"
+          docker run --rm "$image" test -s /opt/dashboard/index.html
           docker run --rm "$image" pytest --collect-only -q
 
-      - name: Push the API image
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-        run: docker push "$REGISTRY/tutorlink-api:$IMAGE_TAG"
-
-      # Repository root as the context, and deliberately no --target: docker/dashboard.Dockerfile
-      # copies docker/Caddyfile into the final stage, which a ./dashboard context cannot reach,
-      # and its untargeted final stage is the production image. `dev` is the stage that has to be
-      # asked for by name, so a job that forgets a target cannot ship the Vite dev server.
-      - name: Build the dashboard image
+      - name: Push the image
+        id: push
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          set -euo pipefail
-          docker buildx build \
-            --platform "$BUILD_PLATFORM" \
-            --file docker/dashboard.Dockerfile \
-            --tag "$REGISTRY/tutorlink-web:$IMAGE_TAG" \
-            --load \
-            .
+          image="$REGISTRY/tutorlink-api:$IMAGE_TAG"
+          docker push "$image"
+          echo "digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")" \
+            >>"$GITHUB_OUTPUT"
 
-      - name: Smoke the dashboard image and push it
+      # Must stay before the service update and must fail the job on a non-zero exit: a failed
+      # migration then leaves the old tasks serving against the unchanged schema.
+      - name: Run the database migration
+        id: migrate
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          SERVICE_TASK_DEFINITION: ${{ steps.service.outputs.task_definition }}
         run: |
-          set -euo pipefail
-          image="$REGISTRY/tutorlink-web:$IMAGE_TAG"
-          expected="${BUILD_PLATFORM#linux/}"
-          actual="$(docker image inspect --format '{{.Architecture}}' "$image")"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::dashboard image is $actual, expected $expected"
+          aws ecs describe-task-definition \
+            --task-definition "$SERVICE_TASK_DEFINITION" \
+            --query taskDefinition \
+            --output json \
+            | jq \
+              --arg family "$MIGRATION_TASK_FAMILY" \
+              --arg container "$CONTAINER_NAME" \
+              --arg execution_role "$TASK_EXECUTION_ROLE_ARN" \
+              --slurpfile primary "$RUNNER_TEMP/primary-container.json" \
+              '
+                if any(.containerDefinitions[]; .name == $container) then .
+                else error("task definition has no \($container) container") end
+                | del(
+                    .taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                    .registeredAt, .registeredBy, .deregisteredAt
+                  )
+                | .family = $family
+                | .executionRoleArn = $execution_role
+                | .containerDefinitions |= map(
+                    if .name == $container then . + ($primary[0] | {image, environment, secrets})
+                    else . end
+                  )
+              ' \
+            >"$RUNNER_TEMP/migration-task-definition.json"
+
+          task_definition="$(aws ecs register-task-definition \
+            --cli-input-json "file://$RUNNER_TEMP/migration-task-definition.json" \
+            --query taskDefinition.taskDefinitionArn \
+            --output text)"
+          echo "registered $task_definition"
+
+          network="$(jq -cn \
+            --arg subnets "$ECS_SUBNETS" \
+            --arg security_group "$ECS_SECURITY_GROUP" \
+            '{awsvpcConfiguration: {
+              subnets: ($subnets | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))),
+              securityGroups: [$security_group],
+              assignPublicIp: "ENABLED"
+            }}')"
+          overrides="$(jq -cn --arg container "$CONTAINER_NAME" \
+            '{containerOverrides: [{name: $container, command: ["alembic", "upgrade", "head"]}]}')"
+
+          run="$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$task_definition" \
+            --launch-type FARGATE \
+            --network-configuration "$network" \
+            --overrides "$overrides" \
+            --started-by "$MIGRATION_TASK_FAMILY" \
+            --output json)"
+          task_arn="$(jq -r '.tasks[0].taskArn // empty' <<<"$run")"
+          if [ -z "$task_arn" ]; then
+            echo "::error::the migration task did not start: $(jq -c '.failures' <<<"$run")"
             exit 1
           fi
-          # The compiled bundle and the Caddyfile are the whole payload of this image, and an
-          # empty /srv serves a blank page that looks like a frontend bug rather than a bad build.
-          docker run --rm --entrypoint sh "$image" -c 'test -s /srv/index.html && test -s /etc/caddy/Caddyfile'
-          docker push "$image"
+          echo "task_arn=$task_arn" >>"$GITHUB_OUTPUT"
 
-      # The compose files are versioned with the release and fetched by deploy.sh, because a box
-      # whose compose file predates a change to a service's `environment:` pulls the new image, runs
-      # the old compose and boots a container missing a variable the image now needs — and
-      # deploy.sh's assert_compose_variables_resolved cannot catch that, because a file that never
-      # mentions the new variable leaves nothing unresolved. Phase 7 made exactly that change when
-      # it added ANTHROPIC_API_KEY to the api service.
-      #
-      # This runs after both pushes so that a release prefix only ever exists for a tag whose images
-      # exist, and it uses the backup bucket under a separate prefix rather than a second bucket.
-      # BACKUP_BUCKET is a repository variable here and an SSM parameter on the box, as every other
-      # deployment coordinate in this workflow is; the two disagreeing is not silent, because
-      # deploy.sh then aborts naming the tag it could not find.
-      - name: Upload the compose files as release artifacts
-        env:
-          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
-        run: |
-          set -euo pipefail
-          for file in docker-compose.yml docker-compose.prod.yml; do
-            aws s3 cp "$file" "s3://$BACKUP_BUCKET/releases/$IMAGE_TAG/$file" --only-show-errors
+          jq -r --arg container "$CONTAINER_NAME" --arg task_id "${task_arn##*/}" '
+            .containerDefinitions[] | select(.name == $container) | .logConfiguration.options
+            | "migration logs: group \(.["awslogs-group"]), stream \(.["awslogs-stream-prefix"])/\($container)/\($task_id)"
+          ' "$RUNNER_TEMP/migration-task-definition.json"
+
+          deadline=$(( SECONDS + MIGRATION_TIMEOUT ))
+          last_status=""
+          while [ "$last_status" != STOPPED ] && [ "$last_status" != DELETED ] \
+            && [ "$SECONDS" -lt "$deadline" ]; do
+            sleep 15
+            task="$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$task_arn" \
+              --query 'tasks[0]' \
+              --output json)"
+            last_status="$(jq -r '.lastStatus' <<<"$task")"
+            echo "migration task $last_status"
           done
 
-      # SSM Run Command, not SSH (OQ-34): no inbound port 22 on the box and no key material in
-      # GitHub. The invocation is polled to a terminal state and the job fails on anything but
-      # Success — a send-and-forget step turns a failed deploy into a green build, which leaves
-      # the operator believing new code is running when the old code is.
-      - name: Deploy on the box
+          if [ "$last_status" != STOPPED ] && [ "$last_status" != DELETED ]; then
+            echo "exit_code=none" >>"$GITHUB_OUTPUT"
+            echo "::error::migration task $task_arn is still $last_status after ${MIGRATION_TIMEOUT}s and was left running; the service was not updated"
+            exit 1
+          fi
+
+          exit_code="$(jq -r --arg container "$CONTAINER_NAME" \
+            '.containers[] | select(.name == $container) | .exitCode // "none"' <<<"$task")"
+          echo "exit_code=$exit_code" >>"$GITHUB_OUTPUT"
+
+          if [ "$exit_code" != 0 ]; then
+            echo "::error::migration exited $exit_code ($(jq -r '"\(.stopCode): \(.stoppedReason)"' <<<"$task")); the service was not updated"
+            exit 1
+          fi
+
+      # Polls the service deployment rather than `aws ecs wait services-stable`: an alarm-triggered
+      # canary rollback also ends with a stable service, on the previous revision, and would read
+      # as a successful deploy.
+      #
+      # A re-run for a tag that is already live (the rollback procedure) may start no deployment at
+      # all, so the wait also recognises a service that is already on the target image. The creation
+      # window only has to contain this run's update, so it tolerates hours of runner clock skew.
+      #
+      # VERIFY at OP-6: the update's targetConfiguration.serviceRevisionArn and a deployment's
+      # targetServiceRevisionArn are both documented as "the ARN of the service revision", but no AWS
+      # page states they are the same ARN, nor whether an update that changes nothing starts a
+      # deployment. Hence the fallbacks: any deployment absent before the update, then the unchanged
+      # check. A "::warning::" below means the ARNs differ and the revision match is dead weight.
+      - name: Update the Express service
         id: deploy
         env:
-          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          SERVICE_ARN: ${{ steps.service.outputs.service_arn }}
         run: |
-          set -euo pipefail
-          parameters="$(jq -n \
-            --arg command "/opt/tutorlink/deploy.sh $IMAGE_TAG" \
-            --arg timeout "$SSM_EXECUTION_TIMEOUT" \
-            '{commands: [$command], executionTimeout: [$timeout]}')"
+          target_image="$(jq -r '.image' "$RUNNER_TEMP/primary-container.json")"
+          previous_revision="$(jq -r '.serviceRevisionArn' "$RUNNER_TEMP/active-configuration.json")"
+          window="$(jq -cn --arg after "$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)" '{after: $after}')"
 
-          command_id="$(aws ssm send-command \
-            --instance-ids "$EC2_INSTANCE_ID" \
-            --document-name AWS-RunShellScript \
-            --comment "tutorlink deploy ${IMAGE_TAG:0:12}" \
-            --parameters "$parameters" \
-            --query Command.CommandId \
+          list_deployments() {
+            aws ecs list-service-deployments \
+              --cluster "$ECS_CLUSTER" \
+              --service "$SERVICE_ARN" \
+              --max-results 100 \
+              --output json \
+              "$@"
+          }
+
+          list_deployments --created-at "$window" \
+            | jq '[.serviceDeployments[].serviceDeploymentArn]' \
+            >"$RUNNER_TEMP/prior-deployments.json"
+
+          revision="$(aws ecs update-express-gateway-service \
+            --service-arn "$SERVICE_ARN" \
+            --execution-role-arn "$TASK_EXECUTION_ROLE_ARN" \
+            --primary-container "file://$RUNNER_TEMP/primary-container.json" \
+            --health-check-path /health \
+            --cpu-architecture ARM64 \
+            --cpu 512 \
+            --memory 1024 \
+            --scaling-target minTaskCount=1,maxTaskCount=3,autoScalingMetric=AVERAGE_CPU,autoScalingTargetValue=70 \
+            --query service.targetConfiguration.serviceRevisionArn \
             --output text)"
-          echo "SSM command $command_id"
+          echo "target service revision $revision, previously $previous_revision"
 
+          started=$SECONDS
           deadline=$(( SECONDS + DEPLOY_POLL_TIMEOUT ))
-          status=Pending
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            status="$(aws ssm get-command-invocation \
-              --command-id "$command_id" \
-              --instance-id "$EC2_INSTANCE_ID" \
-              --query Status --output text 2>/dev/null || echo Pending)"
-            case "$status" in
-              Success|Failed|Cancelled|TimedOut|Undeliverable|Terminated) break ;;
-            esac
-            sleep 5
+          deployment=""
+          unchanged=false
+          while [ -z "$deployment" ] && [ "$unchanged" = false ] && [ "$SECONDS" -lt "$deadline" ]; do
+            sleep 10
+            recent="$(list_deployments --created-at "$window")"
+            in_flight="$(list_deployments \
+              --status PENDING IN_PROGRESS STOP_REQUESTED ROLLBACK_REQUESTED ROLLBACK_IN_PROGRESS)"
+            selected="$(jq -rn \
+              --argjson recent "$recent" \
+              --argjson in_flight "$in_flight" \
+              --slurpfile prior "$RUNNER_TEMP/prior-deployments.json" \
+              --arg revision "$revision" \
+              '
+                [$recent.serviceDeployments[] | select(.serviceDeploymentArn | IN($prior[0][]) | not)] as $new
+                | ($new | map(select(.targetServiceRevisionArn == $revision)) | max_by(.createdAt))
+                  // ($new | max_by(.createdAt))
+                  // ($in_flight.serviceDeployments
+                      | map(select(.targetServiceRevisionArn == $revision))
+                      | max_by(.createdAt))
+                | select(. != null)
+                | "\(.serviceDeploymentArn) \(.targetServiceRevisionArn)"
+              ')"
+            read -r deployment deployment_revision <<<"$selected"
+
+            if [ -z "$deployment" ] && [ "$(jq '.serviceDeployments | length' <<<"$in_flight")" = 0 ]; then
+              unchanged="$(aws ecs describe-express-gateway-service --service-arn "$SERVICE_ARN" --output json \
+                | jq \
+                  --arg image "$target_image" \
+                  --arg revision "$revision" \
+                  --arg previous_revision "$previous_revision" \
+                  --argjson elapsed "$(( SECONDS - started ))" \
+                  --argjson grace "$DEPLOY_NO_OP_GRACE" \
+                  '
+                    .service.activeConfigurations
+                    | length > 0
+                      and all(.[]; .primaryContainer.image == $image)
+                      and (($revision | startswith("arn:")) and $revision == $previous_revision
+                        or $elapsed >= $grace)
+                  ')"
+            fi
           done
 
-          invocation="$(aws ssm get-command-invocation \
-            --command-id "$command_id" \
-            --instance-id "$EC2_INSTANCE_ID" \
-            --output json)"
-          echo "--- deploy.sh stdout (SSM truncates at 24000 characters) ---"
-          jq -r '.StandardOutputContent' <<<"$invocation"
-          echo "--- deploy.sh stderr ---"
-          jq -r '.StandardErrorContent' <<<"$invocation"
-          status="$(jq -r '.Status' <<<"$invocation")"
+          if [ -z "$deployment" ] && [ "$unchanged" = false ]; then
+            echo "::error::no service deployment appeared for revision $revision within ${DEPLOY_POLL_TIMEOUT}s"
+            exit 1
+          fi
 
-          if [ "$status" != Success ]; then
-            echo "::error::deploy.sh on $EC2_INSTANCE_ID ended with SSM status $status"
+          status=UNCHANGED
+          if [ -n "$deployment" ]; then
+            echo "deployment_arn=$deployment" >>"$GITHUB_OUTPUT"
+            echo "service deployment $deployment, targeting $deployment_revision"
+            if [ "$deployment_revision" != "$revision" ]; then
+              echo "::warning::deployment targets $deployment_revision, not the updated revision $revision"
+            fi
+
+            status=PENDING
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              status="$(aws ecs describe-service-deployments \
+                --service-deployment-arns "$deployment" \
+                --query 'serviceDeployments[0].status' \
+                --output text)"
+              case "$status" in
+                SUCCESSFUL|STOPPED|ROLLBACK_SUCCESSFUL|ROLLBACK_FAILED) break ;;
+              esac
+              echo "deployment $status"
+              sleep 15
+            done
+          else
+            echo "::notice::no service deployment was started; every active configuration already runs $target_image"
+          fi
+          echo "status=$status" >>"$GITHUB_OUTPUT"
+
+          if [ "$status" != SUCCESSFUL ] && [ "$status" != UNCHANGED ]; then
+            reason="$(aws ecs describe-service-deployments \
+              --service-deployment-arns "$deployment" \
+              --query 'serviceDeployments[0].statusReason' \
+              --output text)"
+            echo "::error::deployment ended $status: $reason"
             exit 1
           fi
 
       - name: Summarise
         if: always()
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          MIGRATION_TASK_ARN: ${{ steps.migrate.outputs.task_arn }}
+          MIGRATION_EXIT_CODE: ${{ steps.migrate.outputs.exit_code }}
+          DEPLOYMENT_ARN: ${{ steps.deploy.outputs.deployment_arn }}
+          DEPLOYMENT_STATUS: ${{ steps.deploy.outputs.status }}
         run: |
-          set -euo pipefail
           {
             echo "### Deploy $IMAGE_TAG"
             echo
-            for repository in tutorlink-api tutorlink-web; do
-              image="$REGISTRY/$repository:$IMAGE_TAG"
-              digest="$(docker image inspect --format '{{join .RepoDigests " "}}' "$image" 2>/dev/null || echo "not built")"
-              echo "- \`$repository\` — $digest"
-            done
+            echo "- Image: \`${IMAGE_DIGEST:-not pushed}\`"
+            echo "- Migration task: \`${MIGRATION_TASK_ARN:-not started}\`, exit code ${MIGRATION_EXIT_CODE:-none}"
+            echo "- Deployment: \`${DEPLOYMENT_ARN:-not started}\`, ${DEPLOYMENT_STATUS:-no status}"
           } >>"$GITHUB_STEP_SUMMARY"

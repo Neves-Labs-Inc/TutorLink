@@ -7,37 +7,48 @@ or leaking which limit tripped. None of those are visible from inside the servic
 
 Every test rewrites its thresholds through `set_int_setting` rather than accepting the seeded
 20/5. Small numbers keep the bcrypt rounds down, and reading a rewritten row back is also what
-proves the limiter reads `system_settings` per request instead of caching it.
+proves the limiter reads `system_settings` per request instead of caching it. The buckets are
+observed as `login_attempts` rows read back through the same rolled-back `db` session the
+route wrote them in, and time is moved by replacing `rate_limit_service._now` — the one read of
+the database's clock per reservation — rather than by sleeping.
 
 The buckets are isolated by turning the *other* one off with a `max_attempts` of 0, so a test
 named for one bucket cannot pass because the other one refused the request.
 
-Two tests here are not like the others and should not be folded in.
-`test_concurrent_attempts_never_exceed_the_configured_maximum` calls the service directly under
-threads, because the property it asserts is invisible to any sequential test and the `api`
-fixture's single rolled-back `Session` is not safe to drive from several threads at once.
+Three tests here are not like the others and should not be folded in.
+`test_concurrent_attempts_never_exceed_the_configured_maximum` and its lockless twin call the
+service directly under threads, each thread on its own committed session, because the property
+they assert is invisible to any sequential test and the `api` fixture's single rolled-back
+`Session` can neither be driven from several threads nor contend for a lock with itself.
 `test_a_throttled_request_never_reaches_the_password_hash` is what pins the ordering that makes
 the reservation worth anything.
+
+The two lock-order tests also call the service directly, on the rolled-back `db`, and record
+the hashes it locks. A deadlock between two requests is as nondeterministic to provoke as the
+overshoot above, but it has only one cause — two requests locking the same values in different
+orders — and that is deterministic to observe.
 """
 
 import threading
 import uuid
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from redis import Redis
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import RedisError
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.models.enums import UserRole
+from app.models.login_attempt import LoginAttempt
 from app.models.user import User
 from app.routers.auth import RATE_LIMITED_ERROR
 from app.security import hash_password
-from app.services import auth_service
+from app.services import auth_service, rate_limit_service
 from app.services.rate_limit_service import (
     EMAIL_BUCKET_PREFIX,
     EMAIL_MAX_ATTEMPTS_SETTING,
@@ -49,7 +60,6 @@ from app.services.rate_limit_service import (
     RateLimitPolicy,
     reserve_login_attempt,
 )
-from tests.conftest import FakeRedis
 
 EMAIL = "admin@example.com"
 PASSWORD = "correct horse battery staple"
@@ -58,9 +68,36 @@ WRONG_PASSWORD = "not the password"
 # Wider than the limit by enough that a read-then-write-later limiter admits visibly too many.
 CONCURRENT_CALLERS = 32
 CONCURRENT_MAX_ATTEMPTS = 5
+BARRIER_TIMEOUT_SECONDS = 10
+
+# Each pair's email and IP bucket keys share a `hashtext` value on PostgreSQL 17 (little-endian),
+# found by searching generated keys. The tests assert the collision before relying on it.
+FIRST_COLLISION = ("u22250@example.com", "10.0.199.46")
+SECOND_COLLISION = ("u42311@example.com", "10.3.12.26")
+
+BOTH_ARMED = LoginRateLimitPolicies(
+    ip=RateLimitPolicy(max_attempts=5, window_seconds=60),
+    email=RateLimitPolicy(max_attempts=5, window_seconds=60),
+)
 
 SetIntSetting = Callable[[str, int], None]
 ClientFrom = Callable[[str], TestClient]
+
+
+class Clock:
+    """Stands in for `rate_limit_service._now`, so the window can slide without a `sleep`.
+
+    `read` takes the session only because the real `_now` reads the database's clock through it.
+    """
+
+    def __init__(self) -> None:
+        self.now = datetime.now(UTC)
+
+    def read(self, db: Session) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
 
 
 def test_the_ip_bucket_refuses_the_attempt_after_its_configured_count(
@@ -92,7 +129,7 @@ def test_the_email_bucket_refuses_the_attempt_independently_of_the_ip_bucket(
 
 
 def test_a_successful_login_gives_back_only_its_own_slot(
-    db: Session, client_from: ClientFrom, redis_double: FakeRedis
+    db: Session, client_from: ClientFrom
 ) -> None:
     _make_user(db)
     caller = client_from("203.0.113.12")
@@ -103,8 +140,8 @@ def test_a_successful_login_gives_back_only_its_own_slot(
     assert success.status_code == 200
     # One real failure went in and one real failure remains, in both buckets. A successful
     # login costs nothing, and — the part that matters — clears nothing it did not put there.
-    assert _bucket_size(redis_double, EMAIL_BUCKET_PREFIX + EMAIL) == 1
-    assert _bucket_size(redis_double, IP_BUCKET_PREFIX + "203.0.113.12") == 1
+    assert _bucket_size(db, EMAIL_BUCKET_PREFIX + EMAIL) == 1
+    assert _bucket_size(db, IP_BUCKET_PREFIX + "203.0.113.12") == 1
 
 
 def test_a_successful_login_does_not_reset_another_callers_budget(
@@ -134,7 +171,7 @@ def test_a_successful_login_does_not_reset_another_callers_budget(
 
 
 def test_a_zero_max_attempts_turns_the_limiter_off(
-    client_from: ClientFrom, set_int_setting: SetIntSetting, redis_double: FakeRedis
+    db: Session, client_from: ClientFrom, set_int_setting: SetIntSetting
 ) -> None:
     set_int_setting(IP_MAX_ATTEMPTS_SETTING, 0)
     set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 0)
@@ -144,8 +181,9 @@ def test_a_zero_max_attempts_turns_the_limiter_off(
 
     assert codes == [401] * 6
     # A disabled bucket is not merely unenforced: nothing is written for it at all, so turning
-    # the limiter off does not quietly keep filling Redis.
-    assert redis_double.sorted_sets == {}
+    # the limiter off does not quietly keep filling the table.
+    assert _bucket_size(db, EMAIL_BUCKET_PREFIX + EMAIL) == 0
+    assert _bucket_size(db, IP_BUCKET_PREFIX + "203.0.113.13") == 0
 
 
 def test_disabling_one_bucket_leaves_the_other_armed(
@@ -158,28 +196,6 @@ def test_disabling_one_bucket_leaves_the_other_armed(
     codes = [_login(caller).status_code for _attempt in range(3)]
 
     assert codes == [401, 401, 429]
-
-
-def test_an_unreachable_redis_fails_open_and_login_still_works(
-    db: Session,
-    client_from: ClientFrom,
-    set_int_setting: SetIntSetting,
-    redis_double: FakeRedis,
-) -> None:
-    _make_user(db)
-    set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 1)
-    caller = client_from("203.0.113.15")
-    redis_double.fail_with = RedisConnectionError("connection refused")
-
-    first = _login(caller)
-    second = _login(caller)
-    success = _login(caller, password=PASSWORD)
-
-    assert first.status_code == 401
-    # A 429 here would mean the outage failed closed, which is the regression this asserts
-    # against: an unreachable Redis must not lock every user out of the system.
-    assert second.status_code == 401
-    assert success.status_code == 200
 
 
 def test_the_429_carries_retry_after_and_one_message_for_any_email(
@@ -204,8 +220,43 @@ def test_the_429_carries_retry_after_and_one_message_for_any_email(
     assert 1 <= int(known.headers["retry-after"]) <= 60
 
 
+@pytest.mark.parametrize(
+    ("ip_window_seconds", "email_window_seconds"),
+    [(60, 120), (120, 60)],
+    ids=["the email bucket waits longer", "the ip bucket waits longer"],
+)
+def test_a_refusal_writes_nothing_and_reports_the_longest_wait(
+    db: Session,
+    client_from: ClientFrom,
+    set_int_setting: SetIntSetting,
+    clock: Clock,
+    ip_window_seconds: int,
+    email_window_seconds: int,
+) -> None:
+    """Both buckets full, so the answer has to be the later of the two, whichever that is.
+
+    Reporting the first bucket's wait would send the client back while the second still
+    refuses it. And the refusal must leave both buckets exactly as full as it found them: a
+    request that never reached the password check is not a failed attempt.
+    """
+    set_int_setting(IP_MAX_ATTEMPTS_SETTING, 1)
+    set_int_setting(IP_WINDOW_SECONDS_SETTING, ip_window_seconds)
+    set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 1)
+    set_int_setting(EMAIL_WINDOW_SECONDS_SETTING, email_window_seconds)
+    caller = client_from("203.0.113.23")
+    _login(caller)
+    clock.advance(10)
+
+    refused = _login(caller)
+
+    assert refused.status_code == 429
+    assert refused.headers["retry-after"] == "110"
+    assert _bucket_size(db, EMAIL_BUCKET_PREFIX + EMAIL) == 1
+    assert _bucket_size(db, IP_BUCKET_PREFIX + "203.0.113.23") == 1
+
+
 def test_every_casing_of_an_address_shares_one_bucket(
-    client_from: ClientFrom, set_int_setting: SetIntSetting, redis_double: FakeRedis
+    db: Session, client_from: ClientFrom, set_int_setting: SetIntSetting
 ) -> None:
     set_int_setting(IP_MAX_ATTEMPTS_SETTING, 0)
     set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 2)
@@ -218,11 +269,11 @@ def test_every_casing_of_an_address_shares_one_bucket(
     ]
 
     assert codes == [401, 401, 429]
-    assert list(redis_double.sorted_sets) == [EMAIL_BUCKET_PREFIX + EMAIL]
+    assert _bucket_keys_matching(db, f"%{EMAIL}%") == [EMAIL_BUCKET_PREFIX + EMAIL]
 
 
 def test_the_window_sliding_forward_lets_attempts_through_again(
-    client_from: ClientFrom, set_int_setting: SetIntSetting, redis_double: FakeRedis
+    db: Session, client_from: ClientFrom, set_int_setting: SetIntSetting, clock: Clock
 ) -> None:
     set_int_setting(IP_MAX_ATTEMPTS_SETTING, 0)
     set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 2)
@@ -232,17 +283,18 @@ def test_the_window_sliding_forward_lets_attempts_through_again(
     _login(caller)
 
     blocked = _login(caller)
-    redis_double.advance(61)
+    clock.advance(61)
     after_the_window = _login(caller)
 
     assert blocked.status_code == 429
     assert after_the_window.status_code == 401
-    # The key is armed to reap itself, so an address nobody retries stops occupying Redis.
-    assert redis_double.expirations[EMAIL_BUCKET_PREFIX + EMAIL] == 60
+    # The two expired rows are pruned by the touch that found them expired, so a live bucket
+    # holds only what is inside its window rather than every attempt it has ever seen.
+    assert _bucket_size(db, EMAIL_BUCKET_PREFIX + EMAIL) == 1
 
 
 def test_a_request_with_no_socket_peer_still_counts_against_the_email_bucket(
-    api: TestClient, set_int_setting: SetIntSetting, redis_double: FakeRedis
+    api: TestClient, db: Session, set_int_setting: SetIntSetting
 ) -> None:
     """`request.client` is None-able in ASGI, and the route must not crash on it."""
     from app.main import app
@@ -255,7 +307,9 @@ def test_a_request_with_no_socket_peer_still_counts_against_the_email_bucket(
     assert codes == [401, 401, 429]
     # No IP bucket at all rather than a shared "unknown" key that would throttle every such
     # caller as though they were one attacker.
-    assert list(redis_double.sorted_sets) == [EMAIL_BUCKET_PREFIX + EMAIL]
+    assert _keys_reserved_alongside(db, EMAIL_BUCKET_PREFIX + EMAIL) == [
+        EMAIL_BUCKET_PREFIX + EMAIL
+    ]
 
 
 def test_a_throttled_request_never_reaches_the_password_hash(
@@ -281,9 +335,8 @@ def test_a_throttled_request_never_reaches_the_password_hash(
     assert throttled.status_code == 429
 
 
-@pytest.mark.parametrize("live", [False, True], ids=["against the double", "against real Redis"])
 def test_concurrent_attempts_never_exceed_the_configured_maximum(
-    live: bool, redis_double: FakeRedis, live_redis_factory: Callable[[], Redis]
+    committed_sessions: sessionmaker[Session],
 ) -> None:
     """The regression that motivated reserving at check time, and the only test that catches it.
 
@@ -292,64 +345,115 @@ def test_concurrent_attempts_never_exceed_the_configured_maximum(
     it on the anyio worker threadpool, and a burst wide enough to fill that pool used to be
     admitted in full because every request read the same count before any of them wrote.
 
-    Run against both clients on purpose. The double models the script's atomicity with a lock,
-    which is what makes it a fair target — but a double can only ever prove that the double is
-    right, so the same assertion runs against a live Redis and proves the Lua.
+    Thirty-two real connections, each already open before the barrier releases them, each
+    reserving and committing in its own transaction exactly as `login` does — so they really do
+    contend for the bucket's advisory lock, and the count each one reads is only as good as that
+    lock makes it.
     """
-    redis = live_redis_factory() if live else redis_double
-    policies = LoginRateLimitPolicies(
-        ip=RateLimitPolicy(max_attempts=0, window_seconds=60),
-        email=RateLimitPolicy(max_attempts=CONCURRENT_MAX_ATTEMPTS, window_seconds=60),
-    )
-    # A fresh address per run, so a live Redis carries nothing in from the last one.
-    email = f"burst-{uuid.uuid4().hex}@example.com"
-    ready = threading.Barrier(CONCURRENT_CALLERS)
-
-    def attempt() -> bool:
-        # Every thread waits here and is released together, which is what turns a sequence of
-        # reservations into an actual race.
-        ready.wait(timeout=10)
-        return reserve_login_attempt(redis, client_ip=None, email=email, policies=policies).allowed
-
-    try:
-        with ThreadPoolExecutor(max_workers=CONCURRENT_CALLERS) as pool:
-            futures = [pool.submit(attempt) for _ in range(CONCURRENT_CALLERS)]
-            admitted = [future.result() for future in futures]
-    finally:
-        if live:
-            # The double is thrown away with the test; a real server is not.
-            redis.delete(EMAIL_BUCKET_PREFIX + email)
+    admitted = _race(committed_sessions, hold_every_transaction_open=False)
 
     assert sum(admitted) == CONCURRENT_MAX_ATTEMPTS
 
 
-@pytest.fixture
-def live_redis_factory() -> Generator[Callable[[], Redis], None, None]:
-    """A real client on `REDIS_URL`, or a clean skip when nothing is listening.
+def test_without_the_advisory_lock_the_same_race_admits_everyone(
+    committed_sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proves the lock, not luck or the thread scheduler, is what makes the test above pass.
 
-    The concurrency assertion is worthless against a double alone, and equally worthless as a
-    test that quietly disappears — so this skips loudly rather than passing vacuously.
+    The lock statement is replaced with `SELECT 1`, and every transaction is held open until all
+    thirty-two have reserved. That forces the worst interleaving deterministically rather than
+    hoping the scheduler produces it: each request prunes and counts while every other
+    request's row is still uncommitted and invisible to it, so every one of them sees an empty
+    bucket and is admitted. With the lock in place that interleaving cannot happen at all — the
+    second request would block on the lock until the first committed, which is why the test
+    above cannot hold its transactions open the same way.
     """
-    clients: list[Redis] = []
 
-    def build() -> Redis:
-        from app.config import get_settings
+    def select_one_instead_of_locking(db: Session, *, key_hash: int) -> None:
+        db.execute(select(1))
 
-        client = Redis.from_url(get_settings().redis_url, decode_responses=True)
-        try:
-            client.ping()
-        except RedisError:
-            client.close()
-            pytest.skip("no Redis on REDIS_URL; the atomicity assertion needs a real server")
-        clients.append(client)
+    monkeypatch.setattr(rate_limit_service, "_lock_bucket_hash", select_one_instead_of_locking)
 
-        return client
+    admitted = _race(committed_sessions, hold_every_transaction_open=True)
 
+    assert sum(admitted) == CONCURRENT_CALLERS
+
+
+def test_requests_whose_keys_collide_crosswise_take_their_locks_in_the_same_order(
+    db: Session, locked_hashes: list[int]
+) -> None:
+    """The deadlock a key-string lock order allows, built from two real `hashtext` collisions.
+
+    Each request's email key shares a hash with the other request's IP key. Sorted by key string
+    — every email key sorts before every IP key — the first request would lock A then B and the
+    second B then A: each holds what the other waits for, and PostgreSQL aborts one as a 500.
+    """
+    first_email, first_ip = FIRST_COLLISION
+    second_email, second_ip = SECOND_COLLISION
+    first_hash = _hashtext(db, EMAIL_BUCKET_PREFIX + first_email)
+    second_hash = _hashtext(db, EMAIL_BUCKET_PREFIX + second_email)
+    assert _hashtext(db, IP_BUCKET_PREFIX + first_ip) == first_hash
+    assert _hashtext(db, IP_BUCKET_PREFIX + second_ip) == second_hash
+
+    reserve_login_attempt(db, client_ip=second_ip, email=first_email, policies=BOTH_ARMED)
+    reserve_login_attempt(db, client_ip=first_ip, email=second_email, policies=BOTH_ARMED)
+
+    in_hash_order = sorted([first_hash, second_hash])
+    assert locked_hashes == in_hash_order + in_hash_order
+
+
+def test_two_buckets_sharing_one_hash_take_one_lock_and_both_reserve(
+    db: Session, locked_hashes: list[int]
+) -> None:
+    email, ip = FIRST_COLLISION
+    shared_hash = _hashtext(db, EMAIL_BUCKET_PREFIX + email)
+    assert _hashtext(db, IP_BUCKET_PREFIX + ip) == shared_hash
+
+    reservation = reserve_login_attempt(db, client_ip=ip, email=email, policies=BOTH_ARMED)
+
+    assert locked_hashes == [shared_hash]
+    assert sorted(reservation.reserved_keys) == [
+        EMAIL_BUCKET_PREFIX + email,
+        IP_BUCKET_PREFIX + ip,
+    ]
+
+
+@pytest.fixture
+def locked_hashes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Every hash `rate_limit_service` locks, in the order it locks them, still locking for real."""
+    locked: list[int] = []
+    lock = rate_limit_service._lock_bucket_hash
+
+    def record_then_lock(db: Session, *, key_hash: int) -> None:
+        locked.append(key_hash)
+        lock(db, key_hash=key_hash)
+
+    monkeypatch.setattr(rate_limit_service, "_lock_bucket_hash", record_then_lock)
+
+    return locked
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    frozen = Clock()
+    monkeypatch.setattr(rate_limit_service, "_now", frozen.read)
+
+    return frozen
+
+
+@pytest.fixture
+def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session], None, None]:
+    """Sessions on their own engine, one real connection each, committing for real.
+
+    `NullPool` rather than `_test_engine`'s pool: that pool hands out at most fifteen
+    connections, so the other seventeen threads would queue for one and the "concurrent" run
+    would quietly serialise into a sequential one that any limiter passes.
+    """
+    engine = create_engine(_test_engine.url, poolclass=NullPool)
     try:
-        yield build
+        yield sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     finally:
-        for client in clients:
-            client.close()
+        engine.dispose()
 
 
 @pytest.fixture
@@ -366,6 +470,46 @@ def client_from(api: TestClient) -> ClientFrom:
         return TestClient(app, client=(ip, 51000))
 
     return build
+
+
+def _race(sessions: sessionmaker[Session], *, hold_every_transaction_open: bool) -> list[bool]:
+    policies = LoginRateLimitPolicies(
+        ip=RateLimitPolicy(max_attempts=0, window_seconds=60),
+        email=RateLimitPolicy(max_attempts=CONCURRENT_MAX_ATTEMPTS, window_seconds=60),
+    )
+    # A fresh address per run: these rows are committed, so nothing may be carried in from the
+    # last run or from the other variant.
+    email = f"burst-{uuid.uuid4().hex}@example.com"
+    started = threading.Barrier(CONCURRENT_CALLERS)
+    all_reserved = threading.Barrier(CONCURRENT_CALLERS)
+
+    def attempt() -> bool:
+        with sessions() as session:
+            session.connection()
+            # Every thread waits here with its connection already open and is released
+            # together, which is what turns a sequence of reservations into an actual race.
+            started.wait(timeout=BARRIER_TIMEOUT_SECONDS)
+            reservation = reserve_login_attempt(
+                session, client_ip=None, email=email, policies=policies
+            )
+            if hold_every_transaction_open:
+                all_reserved.wait(timeout=BARRIER_TIMEOUT_SECONDS)
+            session.commit()
+
+        return reservation.allowed
+
+    try:
+        with ThreadPoolExecutor(max_workers=CONCURRENT_CALLERS) as pool:
+            futures = [pool.submit(attempt) for _ in range(CONCURRENT_CALLERS)]
+            admitted = [future.result() for future in futures]
+    finally:
+        with sessions() as cleanup:
+            cleanup.execute(
+                delete(LoginAttempt).where(LoginAttempt.bucket_key == EMAIL_BUCKET_PREFIX + email)
+            )
+            cleanup.commit()
+
+    return admitted
 
 
 def _login(client: TestClient, *, email: str = EMAIL, password: str = WRONG_PASSWORD) -> Response:
@@ -386,5 +530,35 @@ def _make_user(db: Session) -> User:
     return user
 
 
-def _bucket_size(redis_double: FakeRedis, key: str) -> int:
-    return len(redis_double.sorted_sets.get(key, {}))
+def _bucket_size(db: Session, key: str) -> int:
+    return db.execute(
+        select(func.count()).select_from(LoginAttempt).where(LoginAttempt.bucket_key == key)
+    ).scalar_one()
+
+
+def _hashtext(db: Session, key: str) -> int:
+    return db.execute(select(func.hashtext(key))).scalar_one()
+
+
+def _bucket_keys_matching(db: Session, pattern: str) -> list[str]:
+    return list(
+        db.execute(
+            select(LoginAttempt.bucket_key)
+            .where(LoginAttempt.bucket_key.ilike(pattern))
+            .distinct()
+            .order_by(LoginAttempt.bucket_key)
+        ).scalars()
+    )
+
+
+def _keys_reserved_alongside(db: Session, key: str) -> list[str]:
+    attempt_ids = select(LoginAttempt.attempt_id).where(LoginAttempt.bucket_key == key)
+
+    return list(
+        db.execute(
+            select(LoginAttempt.bucket_key)
+            .where(LoginAttempt.attempt_id.in_(attempt_ids))
+            .distinct()
+            .order_by(LoginAttempt.bucket_key)
+        ).scalars()
+    )

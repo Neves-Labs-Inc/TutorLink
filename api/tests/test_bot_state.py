@@ -1,167 +1,182 @@
-"""`bot_state` — the 30-minute Redis flow state (REQ-072, REQ-076).
+"""`bot_state` — the 30-minute flow state, kept in `bot_flow_state` (REQ-072, REQ-076).
 
-Pure units against a double. The double is local rather than `conftest.py`'s `FakeRedis`,
-which models only the login reservation script; the four operations this module issues are
-`GET`, `SET … EX`, `DEL` and nothing else, and a double that records the TTL it was given is
-what makes REQ-072.1's thirty minutes assertable at all.
+Against the rolled-back `db` fixture and a real PostgreSQL, rather than a double: the two
+mechanisms this module leans on — the upsert's `ON CONFLICT` and the database clock's `now()` —
+are exactly the things a fake session would have to reimplement to be worth trusting.
 
-The two tests that matter beyond their own assertion:
+Two tests matter beyond their own assertion:
 
-- `test_a_missing_key_reads_as_no_state_rather_than_raising` is REQ-076. Expiry mid-flow is the
-  normal case, not an error case, and a `KeyError` here would 500 the webhook and hand Twilio a
-  retry loop over a message the parent sent thirty-one minutes after the last one.
-- `test_the_flow_prefix_shares_no_ground_with_any_other_redis_key` is epic #9's Traps section.
-  Four concerns live in one Redis, on four different clocks, and the failure of sharing a
-  prefix is silent in both directions.
+- `test_an_expired_row_reads_as_no_state_rather_than_raising` is REQ-076. Expiry mid-flow is the
+  normal case, not an error case, and an unreaped row surfacing here would hand the parent's
+  thirty-one-minutes-later message a stale flow instead of a fresh start.
+- `test_loading_a_state_does_not_touch_the_row` backs the takeover rule at `erd.md:501-504`: a
+  read has no business refreshing the expiry a write is the only thing meant to restart.
 """
 
-import json
+import datetime
 
-import pytest
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
 
+from app.models.bot_flow_state import BotFlowState
 from app.services.bot_state import (
-    FLOW_STATE_PREFIX,
     FLOW_STATE_TTL_SECONDS,
     FlowState,
     clear_state,
     load_state,
     save_state,
-    state_key,
 )
-from app.services.broadcast_service import CHANNEL as BROADCAST_CHANNEL
-from app.services.rate_limit_service import EMAIL_BUCKET_PREFIX, IP_BUCKET_PREFIX
 
 PHONE_NUMBER = "+15555550123"
 
-# Task W's `MessageSid` dedupe key, as `07-RESEARCH.md` §2 and epic #9 spell it. A literal
-# rather than an import because the webhook is built concurrently with this module and has no
-# constant to name yet; the broadcast channel above is imported, so a rename there that
-# collided with the flow prefix would fail here rather than in production.
-DEDUPE_PREFIX = "twilio:msg:"
+
+def _db_now(db: Session) -> datetime.datetime:
+    """`now()`'s value for the fixture's transaction — fixed at its start and therefore stable
+    across every statement in one test, which is what makes an exact expiry assertion possible."""
+    return db.execute(select(func.now())).scalar_one()
 
 
-class FakeFlowRedis:
-    """`GET` / `SET … EX` / `DEL`, in memory, recording the TTL each key was written with."""
-
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-        self.ttls: dict[str, int | None] = {}
-
-    def get(self, key: str) -> str | None:
-        return self.values.get(key)
-
-    def set(self, key: str, value: str, ex: int | None = None) -> None:
-        self.values[key] = value
-        self.ttls[key] = ex
-
-    def delete(self, *keys: str) -> None:
-        for key in keys:
-            self.values.pop(key, None)
-            self.ttls.pop(key, None)
-
-    def expire_everything(self) -> None:
-        """Stand in for the wall clock passing the TTL, without a `sleep`."""
-        self.values.clear()
-        self.ttls.clear()
+def _expires_at(db: Session, *, phone_number: str) -> datetime.datetime:
+    return db.execute(
+        select(BotFlowState.expires_at).where(BotFlowState.phone_number == phone_number)
+    ).scalar_one()
 
 
-@pytest.fixture
-def redis() -> FakeFlowRedis:
-    return FakeFlowRedis()
+def _expire(db: Session, *, phone_number: str) -> None:
+    """Push a row's `expires_at` into the past, against the same clock `load_state` reads —
+    the database's, not Python's, which the fixture's transaction can be seconds behind."""
+    db.execute(
+        update(BotFlowState)
+        .where(BotFlowState.phone_number == phone_number)
+        .values(expires_at=func.now() - func.make_interval(0, 0, 0, 0, 1))
+    )
 
 
-def test_a_saved_state_round_trips_through_redis(redis: FakeFlowRedis) -> None:
+def test_a_saved_state_round_trips_through_the_table(db: Session) -> None:
     save_state(
-        redis,
+        db,
         phone_number=PHONE_NUMBER,
         state=FlowState(step="book_date", collected_data={"book_subject_id": "x"}, misses=1),
     )
 
-    loaded = load_state(redis, phone_number=PHONE_NUMBER)
+    loaded = load_state(db, phone_number=PHONE_NUMBER)
 
     assert loaded == FlowState(
         step="book_date", collected_data={"book_subject_id": "x"}, misses=1, prompt=""
     )
 
 
-def test_a_missing_key_reads_as_no_state_rather_than_raising(redis: FakeFlowRedis) -> None:
+def test_a_missing_row_reads_as_no_state_rather_than_raising(db: Session) -> None:
+    assert load_state(db, phone_number=PHONE_NUMBER) is None
+
+
+def test_an_expired_row_reads_as_no_state_rather_than_raising(db: Session) -> None:
     """REQ-076.1. A message arriving after the TTL starts the flow over, with no error."""
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="book_date"))
-    redis.expire_everything()
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="book_date"))
+    _expire(db, phone_number=PHONE_NUMBER)
 
-    assert load_state(redis, phone_number=PHONE_NUMBER) is None
+    assert load_state(db, phone_number=PHONE_NUMBER) is None
 
 
-def test_every_write_carries_the_thirty_minute_ttl(redis: FakeFlowRedis) -> None:
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+def test_every_write_sets_the_expiry_thirty_minutes_from_now(db: Session) -> None:
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+
+    expires_at = _expires_at(db, phone_number=PHONE_NUMBER)
 
     assert FLOW_STATE_TTL_SECONDS == 30 * 60
-    assert redis.ttls[state_key(PHONE_NUMBER)] == FLOW_STATE_TTL_SECONDS
+    assert expires_at == _db_now(db) + datetime.timedelta(seconds=FLOW_STATE_TTL_SECONDS)
 
 
-def test_a_second_write_restarts_the_ttl_rather_than_leaving_the_first_one_running(
-    redis: FakeFlowRedis,
+def test_a_second_write_restarts_the_expiry_rather_than_leaving_the_first_one_running(
+    db: Session,
 ) -> None:
     """The window is thirty minutes of silence, which is what makes a long intake possible."""
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="intake_name"))
-    redis.ttls[state_key(PHONE_NUMBER)] = 12
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="intake_name"))
+    _expire(db, phone_number=PHONE_NUMBER)
 
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="intake_address"))
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="intake_address"))
 
-    assert redis.ttls[state_key(PHONE_NUMBER)] == FLOW_STATE_TTL_SECONDS
+    expires_at = _expires_at(db, phone_number=PHONE_NUMBER)
 
-
-def test_clearing_removes_the_key_so_the_next_message_opens_a_new_flow(
-    redis: FakeFlowRedis,
-) -> None:
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
-
-    clear_state(redis, phone_number=PHONE_NUMBER)
-
-    assert redis.values == {}
-    assert load_state(redis, phone_number=PHONE_NUMBER) is None
+    assert expires_at == _db_now(db) + datetime.timedelta(seconds=FLOW_STATE_TTL_SECONDS)
 
 
-def test_two_phone_numbers_hold_two_independent_flows(redis: FakeFlowRedis) -> None:
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
-    save_state(redis, phone_number="+15555550999", state=FlowState(step="book_date"))
+def test_loading_a_state_does_not_touch_the_row(db: Session) -> None:
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+    expires_at = _expires_at(db, phone_number=PHONE_NUMBER)
 
-    clear_state(redis, phone_number=PHONE_NUMBER)
+    load_state(db, phone_number=PHONE_NUMBER)
 
-    assert load_state(redis, phone_number=PHONE_NUMBER) is None
-    assert load_state(redis, phone_number="+15555550999").step == "book_date"
+    assert _expires_at(db, phone_number=PHONE_NUMBER) == expires_at
 
 
-def test_the_stored_record_is_step_and_collected_data(redis: FakeFlowRedis) -> None:
-    """REQ-072.1's payload, plus the machine's own counters — and nothing from Postgres."""
+def test_clearing_removes_the_row_so_the_next_message_opens_a_new_flow(db: Session) -> None:
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+
+    clear_state(db, phone_number=PHONE_NUMBER)
+
+    assert load_state(db, phone_number=PHONE_NUMBER) is None
+
+
+def test_loading_after_a_save_does_not_return_a_stale_held_instance(db: Session) -> None:
+    """A `BotFlowState` fetched through the identity map before the save must not leak its
+    now-stale attributes, or its `collected_data` dict, into what `load_state` returns."""
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+    held = db.get(BotFlowState, PHONE_NUMBER)
+
     save_state(
-        redis,
+        db,
+        phone_number=PHONE_NUMBER,
+        state=FlowState(step="book_date", collected_data={"book_subject_id": "x"}),
+    )
+
+    loaded = load_state(db, phone_number=PHONE_NUMBER)
+
+    assert loaded.step == "book_date"
+    assert loaded.collected_data == {"book_subject_id": "x"}
+    assert loaded.collected_data is not held.collected_data
+
+
+def test_two_phone_numbers_hold_two_independent_flows(db: Session) -> None:
+    save_state(db, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+    save_state(db, phone_number="+15555550999", state=FlowState(step="book_date"))
+
+    clear_state(db, phone_number=PHONE_NUMBER)
+
+    assert load_state(db, phone_number=PHONE_NUMBER) is None
+    assert load_state(db, phone_number="+15555550999").step == "book_date"
+
+
+def test_the_stored_row_holds_step_and_collected_data(db: Session) -> None:
+    """REQ-072.1's payload, plus the machine's own counters — and nothing from anywhere else."""
+    save_state(
+        db,
         phone_number=PHONE_NUMBER,
         state=FlowState(step="menu", collected_data={"guardian_name": "Ada"}),
     )
 
-    record = json.loads(redis.values[state_key(PHONE_NUMBER)])
+    row = db.get(BotFlowState, PHONE_NUMBER)
 
-    assert record["step"] == "menu"
-    assert record["collected_data"] == {"guardian_name": "Ada"}
-    assert set(record) == {"step", "collected_data", "misses", "prompt"}
-
-
-@pytest.mark.parametrize(
-    "other_prefix",
-    [IP_BUCKET_PREFIX, EMAIL_BUCKET_PREFIX, DEDUPE_PREFIX, BROADCAST_CHANNEL],
-)
-def test_the_flow_prefix_shares_no_ground_with_any_other_redis_key(other_prefix: str) -> None:
-    """REQ-072.2. Sharing a prefix is silent both ways: the dedupe key's 24-hour TTL would keep
-    a dead flow alive, and a `DEL` on one concern would wipe another."""
-    assert not FLOW_STATE_PREFIX.startswith(other_prefix)
-    assert not other_prefix.startswith(FLOW_STATE_PREFIX)
+    assert row.step == "menu"
+    assert row.collected_data == {"guardian_name": "Ada"}
 
 
-def test_the_key_is_the_prefix_and_the_phone_number(
-    redis: FakeFlowRedis,
-) -> None:
-    save_state(redis, phone_number=PHONE_NUMBER, state=FlowState(step="menu"))
+def test_a_re_prompt_leaves_step_and_collected_data_untouched(db: Session) -> None:
+    """REQ-078.2's bail-out is `bot_service`'s to drive, but the guarantee it rests on is that
+    a save carrying the same `step` and `collected_data` leaves both exactly as they were."""
+    collected = {"book_subject_id": "x"}
+    save_state(
+        db, phone_number=PHONE_NUMBER, state=FlowState(step="book_date", collected_data=collected)
+    )
 
-    assert state_key(PHONE_NUMBER) == f"{FLOW_STATE_PREFIX}{PHONE_NUMBER}"
-    assert list(redis.values) == [f"{FLOW_STATE_PREFIX}{PHONE_NUMBER}"]
+    save_state(
+        db,
+        phone_number=PHONE_NUMBER,
+        state=FlowState(step="book_date", collected_data=collected, misses=1),
+    )
+
+    reloaded = load_state(db, phone_number=PHONE_NUMBER)
+
+    assert reloaded.step == "book_date"
+    assert reloaded.collected_data == collected
+    assert reloaded.misses == 1

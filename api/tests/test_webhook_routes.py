@@ -5,10 +5,9 @@ wrong implementation**, not merely green against the right one (**P7-X**).
 
 **REQ-071 is an ordering property, not a validation property.** It is not enough that a forged
 signature is refused: nothing may have happened before the refusal. Every 403 case therefore
-asserts the absence of the Redis delivery claim, of the `conversations` row, of the
-`messages` row, and of the call into `bot_service` — a handler that claimed the idempotency key
-first and validated second would pass a status-code-only test and would be a security
-regression.
+asserts the absence of the `conversations` row, of the `messages` row, of any published event,
+and of the call into `bot_service` — a handler that inserted the message first and validated
+second would pass a status-code-only test and would be a security regression.
 
 **The signature is computed over the full URL, scheme included.**
 `test_the_forwarded_scheme_is_what_the_signature_validates_against` drives a request through a
@@ -26,7 +25,7 @@ calls Anthropic; this file tests the webhook's ordering, idempotency, branching 
 """
 
 import datetime
-import json
+import threading
 import uuid
 from collections.abc import Generator, Iterator
 from typing import Any
@@ -36,8 +35,9 @@ from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 from twilio.request_validator import RequestValidator
 
@@ -57,7 +57,7 @@ from app.models.enums import (
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.redis_client import get_redis
+from app.routers import webhook
 from app.routers.webhook import (
     INVALID_SIGNATURE_ERROR,
     MISSING_FIELD_ERROR,
@@ -66,8 +66,8 @@ from app.routers.webhook import (
 )
 from app.schemas.bot import BotTurn
 from app.security import hash_password
-from app.services import bot_service, conversation_service, message_service, webhook_service
-from app.services.broadcast_service import CHANNEL
+from app.services import bot_service, conversation_service, message_service
+from app.services.broadcast_service import BroadcastEvent, MessageCreated
 
 AUTH_TOKEN = "an-auth-token-only-twilio-and-this-process-know"
 AUTH_TOKEN_ENV = "TWILIO_AUTH_TOKEN"
@@ -92,7 +92,7 @@ EMPTY_TWIML = "<Response></Response>"
 
 
 def test_a_bot_conversation_gets_the_reply_back_as_twiml(
-    webhook_client: TestClient, db: Session, webhook_redis: "WebhookRedis", bot: "BotDouble"
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
 ) -> None:
     response = _post_inbound(webhook_client)
 
@@ -112,7 +112,6 @@ def test_a_bot_conversation_gets_the_reply_back_as_twiml(
     assert reply.status is MessageStatus.SENT
     assert reply.twilio_sid is None
     assert reply.body == BOT_REPLY
-    assert webhook_redis.claimed == {f"{webhook_service.DELIVERY_KEY_PREFIX}{INBOUND_SID}": "1"}
 
 
 def test_the_whatsapp_prefix_is_stripped_and_the_number_is_stored_verbatim(
@@ -135,11 +134,11 @@ def test_the_whatsapp_prefix_is_stripped_and_the_number_is_stored_verbatim(
 def test_a_bad_signature_is_403_and_nothing_at_all_is_written(
     webhook_client: TestClient,
     db: Session,
-    webhook_redis: "WebhookRedis",
+    published: list[BroadcastEvent],
     bot: "BotDouble",
     case: str,
 ) -> None:
-    """REQ-071 in its exact form: the check precedes every side effect, the claim included."""
+    """REQ-071 in its exact form: the check precedes every side effect, the insert included."""
     form = _form()
     signature = {
         "missing": None,
@@ -152,8 +151,7 @@ def test_a_bad_signature_is_403_and_nothing_at_all_is_written(
 
     assert response.status_code == 403
     assert response.json() == {"detail": INVALID_SIGNATURE_ERROR}
-    assert webhook_redis.claimed == {}
-    assert webhook_redis.published == []
+    assert published == []
     assert bot.calls == []
     assert _conversation(db, phone_number=PHONE_NUMBER) is None
     assert db.scalar(select(func.count()).select_from(Message)) == 0
@@ -238,10 +236,15 @@ def test_signed_request_url_takes_the_scheme_from_the_scope(scheme: str, expecte
 
 
 def test_a_redelivered_sid_answers_empty_twiml_and_repeats_no_side_effect(
-    webhook_client: TestClient, db: Session, webhook_redis: "WebhookRedis", bot: "BotDouble"
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent], bot: "BotDouble"
 ) -> None:
+    """The unique index on `messages.twilio_sid` is the only redelivery guard (REQ-144).
+
+    A second POST with the same `MessageSid` conflicts on that insert, `record_inbound` returns
+    `None`, and `_turn` stops there: no row, no bot call, nothing published.
+    """
     first = _post_inbound(webhook_client)
-    published_once = len(webhook_redis.published)
+    published_once = len(published)
 
     second = _post_inbound(webhook_client)
 
@@ -250,11 +253,62 @@ def test_a_redelivered_sid_answers_empty_twiml_and_repeats_no_side_effect(
     assert second.text == EMPTY_TWIML
     assert len(bot.calls) == 1
     assert db.scalar(select(func.count()).select_from(Message)) == 2
-    assert len(webhook_redis.published) == published_once
+    assert len(published) == published_once
+
+
+def test_a_concurrent_redelivery_still_runs_the_bot_exactly_once(
+    session_per_request_client: TestClient,
+    committed_sessions: sessionmaker[Session],
+    bot: "BotDouble",
+    published: list[BroadcastEvent],
+) -> None:
+    """REQ-144.3: the same guard, proved against two connections actually contending for it.
+
+    Every other test in this module shares the rolled-back `db` fixture, whose one transaction
+    can never produce a real unique-index conflict — two requests through it just run one after
+    another. Here two threads each open their own committed session and post the identical
+    signed delivery behind a `Barrier`, so the second's insert genuinely blocks on the first's
+    uncommitted row and then conflicts once it commits, the way two overlapping Twilio retries
+    of one delivery would.
+    """
+    barrier = threading.Barrier(2)
+    responses: list[Response] = []
+    responses_lock = threading.Lock()
+
+    def post_one() -> None:
+        barrier.wait(timeout=5)
+        response = _post_inbound(session_per_request_client)
+        with responses_lock:
+            responses.append(response)
+
+    threads = [threading.Thread(target=post_one) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert [response.status_code for response in responses] == [200, 200]
+        assert len(bot.calls) == 1
+        assert _published(published) == [
+            ("message.created", INBOUND_BODY, "client"),
+            ("message.created", BOT_REPLY, "bot"),
+        ]
+        with committed_sessions() as session:
+            rows = session.scalars(select(Message).where(Message.twilio_sid == INBOUND_SID)).all()
+        assert len(rows) == 1
+    finally:
+        with committed_sessions() as session:
+            conversation_ids = select(Conversation.id).where(
+                Conversation.phone_number == PHONE_NUMBER
+            )
+            session.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
+            session.execute(delete(Conversation).where(Conversation.phone_number == PHONE_NUMBER))
+            session.commit()
 
 
 def test_a_human_conversation_answers_empty_twiml_and_still_records_and_broadcasts(
-    webhook_client: TestClient, db: Session, webhook_redis: "WebhookRedis", bot: "BotDouble"
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent], bot: "BotDouble"
 ) -> None:
     """The takeover feature's whole point. Asserting only the empty body would miss it."""
     _taken_over_conversation(db)
@@ -267,15 +321,15 @@ def test_a_human_conversation_answers_empty_twiml_and_still_records_and_broadcas
     assert [row.body for row in recorded] == [INBOUND_BODY]
     assert recorded[0].status is MessageStatus.RECEIVED
     assert _messages(db, author_kind=MessageAuthor.BOT) == []
-    assert _published(webhook_redis) == [("message.created", INBOUND_BODY, "client")]
+    assert _published(published) == [("message.created", INBOUND_BODY, "client")]
 
 
 def test_a_bot_conversation_broadcasts_the_client_message_and_the_reply(
-    webhook_client: TestClient, webhook_redis: "WebhookRedis"
+    webhook_client: TestClient, published: list[BroadcastEvent]
 ) -> None:
     _post_inbound(webhook_client)
 
-    assert _published(webhook_redis) == [
+    assert _published(published) == [
         ("message.created", INBOUND_BODY, "client"),
         ("message.created", BOT_REPLY, "bot"),
     ]
@@ -525,34 +579,6 @@ def test_an_unauthenticated_request_succeeds(webhook_client: TestClient) -> None
     assert response.status_code == 200
 
 
-class WebhookRedis:
-    """The two commands this surface issues: the `SET … NX EX` claim and `PUBLISH`.
-
-    A double rather than `conftest.FakeRedis`, which models the login reservation script and
-    nothing else. `published` is the assertion target for the fan-out: it proves the event left
-    through `broadcast_service` onto the real channel rather than through a stub the test
-    installed, which is what **P7-X** asks of a gate.
-    """
-
-    def __init__(self) -> None:
-        self.claimed: dict[str, str] = {}
-        self.published: list[tuple[str, str]] = []
-
-    def set(self, name: str, value: str, *, nx: bool = False, ex: int | None = None) -> bool | None:
-        if nx and name in self.claimed:
-            claimed = None
-        else:
-            self.claimed[name] = value
-            claimed = True
-
-        return claimed
-
-    def publish(self, channel: str, message: str) -> int:
-        self.published.append((channel, message))
-
-        return 1
-
-
 class BotDouble:
     """`bot_service.reply_for` with its call log — no LLM ever runs in pytest (**P7-I**)."""
 
@@ -582,8 +608,17 @@ class BotDouble:
 
 
 @pytest.fixture
-def webhook_redis() -> WebhookRedis:
-    return WebhookRedis()
+def published(monkeypatch: pytest.MonkeyPatch) -> list[BroadcastEvent]:
+    """Captures every event handed to `broadcast_service.publish`, patched on the router.
+
+    This is the assertion target for the fan-out: it proves the event left the handler through
+    `publish` itself rather than through a stub the test installed, which is what **P7-X** asks
+    of a gate.
+    """
+    recorded: list[BroadcastEvent] = []
+    monkeypatch.setattr(webhook, "publish", recorded.append)
+
+    return recorded
 
 
 @pytest.fixture
@@ -610,16 +645,45 @@ def twilio_auth_token(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, 
 
 
 @pytest.fixture
-def webhook_client(
-    db: Session, webhook_redis: WebhookRedis, bot: BotDouble, twilio_auth_token: None
+def committed_sessions(_test_engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)
+
+
+@pytest.fixture
+def session_per_request_client(
+    committed_sessions: sessionmaker[Session], bot: BotDouble, twilio_auth_token: None
 ) -> Generator[TestClient, None, None]:
-    yield from _wired(app, db, webhook_redis)
+    """One committed session per request, in place of the shared, rolled-back `db` fixture.
+
+    Only `test_a_concurrent_redelivery_still_runs_the_bot_exactly_once` needs this: it is the
+    one test in this module where two requests must genuinely contend for a row lock, which a
+    single rolled-back transaction can never do.
+    """
+
+    def open_and_close_one_session_per_request() -> Generator[Session, None, None]:
+        session = committed_sessions()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = open_and_close_one_session_per_request
+    try:
+        yield TestClient(app)
+    finally:
+        del app.dependency_overrides[get_db]
+
+
+@pytest.fixture
+def webhook_client(
+    db: Session, bot: BotDouble, twilio_auth_token: None
+) -> Generator[TestClient, None, None]:
+    yield from _wired(app, db)
 
 
 @pytest.fixture
 def proxied_client(
     db: Session,
-    webhook_redis: WebhookRedis,
     bot: BotDouble,
     twilio_auth_token: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -633,23 +697,20 @@ def proxied_client(
     monkeypatch.setenv(TRUSTED_PROXIES_ENV, PROXY)
     get_settings.cache_clear()
 
-    yield from _wired(create_app(), db, webhook_redis, peer=(PROXY, PEER_PORT))
+    yield from _wired(create_app(), db, peer=(PROXY, PEER_PORT))
 
 
 def _wired(
     built: FastAPI,
     db: Session,
-    redis: WebhookRedis,
     *,
     peer: tuple[str, int] | None = None,
 ) -> Generator[TestClient, None, None]:
     built.dependency_overrides[get_db] = lambda: db
-    built.dependency_overrides[get_redis] = lambda: redis
     try:
         yield TestClient(built, client=peer) if peer else TestClient(built)
     finally:
         del built.dependency_overrides[get_db]
-        del built.dependency_overrides[get_redis]
 
 
 def _form(**overrides: str) -> dict[str, str]:
@@ -726,12 +787,11 @@ def _messages(db: Session, *, author_kind: MessageAuthor) -> list[Message]:
     )
 
 
-def _published(redis: WebhookRedis) -> list[tuple[str, str, str]]:
-    frames = [json.loads(payload) for channel, payload in redis.published if channel == CHANNEL]
-
+def _published(events: list[BroadcastEvent]) -> list[tuple[str, str, str]]:
     return [
-        (frame["type"], frame["message"]["body"], frame["message"]["author_kind"])
-        for frame in frames
+        (event.type, event.message["body"], event.message["author_kind"])
+        for event in events
+        if isinstance(event, MessageCreated)
     ]
 
 

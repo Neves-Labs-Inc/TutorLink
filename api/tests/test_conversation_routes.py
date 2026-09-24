@@ -57,6 +57,7 @@ from app.routers.conversations import CONVERSATION_NOT_FOUND_ERROR, HELD_BY_ANOT
 from app.security import create_access_token, hash_password
 from app.services.broadcast_service import ConversationUpdated
 from app.services.conversation_service import claim
+
 PASSWORD = "correct horse battery staple"
 
 # Well in the past, never "today": `POST /read` stamps the watermark from the real clock, and a

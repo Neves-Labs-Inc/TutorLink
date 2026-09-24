@@ -1,60 +1,80 @@
-"""`broadcast_service`: the Redis pub/sub fan-out behind the admin socket (REQ-P7.4).
+"""`broadcast_service`: the PostgreSQL `LISTEN`/`NOTIFY` fan-out behind the admin socket (REQ-P7.4).
 
 **The first test here is the whole point of the module and the one way to get this file
-wrong.** A test that publishes and subscribes on a single connection passes against an
-in-process `set[WebSocket]` registry, which is exactly the design P7-K exists to refuse — so it
-would prove nothing while looking like proof. Every cross-process assertion below therefore
-publishes through one client and receives through another, and runs against a live Redis or
-skips loudly; a double modelling pub/sub in memory would be the single-connection test wearing
-a costume.
+wrong.** A test that notifies and listens inside one process passes against an in-process
+`set[WebSocket]` registry, which is exactly the design P7-K exists to refuse — so it would prove
+nothing while looking like proof. The first test therefore notifies from a **second
+interpreter**, and every other channel assertion notifies on one connection and listens on
+another, against the real test database. `LISTEN`/`NOTIFY` are per-database, so every party —
+this process's listener, its `publish`, and the second interpreter — is pointed at the same
+`<database>_test`; a double modelling the channel in memory would be the single-connection test
+wearing a costume.
 
-The registry tests are the other half: pub/sub carries an event between processes, and the
-per-process registry carries it to the sockets inside one. Those run against fake sinks,
-because the property under test — a socket that raises is dropped and the others still get the
-event — is one no healthy WebSocket will produce on demand.
+**A notice carries ids, never the payload,** so the wire format is asserted on a raw `psycopg`
+listener rather than through `listen()`: what crosses the channel is the pinned
+`{"type", "message_id" | "conversation_id", "client_message_id"}` and nothing else, and a
+20 000-character message still fits because its body never travels.
+
+The registry tests are the other half: the channel carries a notice between processes, and the
+per-process registry carries the rebuilt event to the sockets inside one. Those run against fake
+sinks, because the property under test — a socket that raises is dropped and the others still
+get the event — is one no healthy WebSocket will produce on demand.
 """
 
 import asyncio
+import json
+import logging
+import os
 import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator, Callable, Generator
 from pathlib import Path
+from types import SimpleNamespace
 
+import psycopg
 import pytest
-from redis import Redis
-from redis.asyncio import Redis as AsyncRedis
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import RedisError
+from psycopg import sql
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
 from app.services import broadcast_service
 from app.services.broadcast_service import (
     CHANNEL,
+    LIVENESS_SECONDS,
     BroadcastEvent,
+    ConversationNotice,
     ConversationUpdated,
     MessageCreated,
+    MessageNotice,
+    Notice,
     deliver,
-    get_async_redis,
+    listen,
+    listen_dsn,
     publish,
     register,
     registered,
-    subscribe,
     unregister,
 )
 
 RECEIVE_TIMEOUT_SECONDS = 5.0
 
+# PostgreSQL's own cap on a NOTIFY payload: "shorter than 8000 bytes".
+NOTIFY_PAYLOAD_CAP_BYTES = 8000
+
+LISTENER_NAME = "tutorlink-broadcast-test-listener"
+
 CONVERSATION_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+MESSAGE_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 # The other process. It imports the same module and calls the same `publish`, so what crosses
 # the boundary is the real wire format and not a payload this test wrote by hand.
 PUBLISH_SCRIPT = """
 import sys
 
-from app.redis_client import get_redis
 from app.services.broadcast_service import MessageCreated, publish
 
-publish(get_redis(), MessageCreated.model_validate_json(sys.argv[1]))
+publish(MessageCreated.model_validate_json(sys.argv[1]))
 """
 
 
@@ -72,10 +92,12 @@ class FakeSink:
         self.received.append(data)
 
 
-def _message_created(*, client_message_id: str | None = None) -> MessageCreated:
+def _message_created(
+    *, client_message_id: str | None = None, body: str = "hello"
+) -> MessageCreated:
     return MessageCreated(
         conversation_id=CONVERSATION_ID,
-        message={"id": "abcd", "body": "hello", "twilio_sid": None},
+        message={"id": str(MESSAGE_ID), "body": body, "twilio_sid": None},
         client_message_id=client_message_id,
     )
 
@@ -90,108 +112,221 @@ def _empty_registry() -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def live_redis() -> Generator[Redis, None, None]:
-    """A real publisher on `REDIS_URL`, or a clean skip when nothing is listening.
+def test_database(_test_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Engine:
+    """Both ends of the channel on the test database.
 
-    Mirrors `test_auth_rate_limit.py`'s `live_redis_factory`, for the same reason: the
-    assertion is worthless against a double and equally worthless as a test that quietly
-    disappears.
+    `publish` notifies through `_notify_engine` and `listen` connects through `listen_dsn`, and
+    both default to the application's database. A notice sent on one database is never seen by
+    a listener on another, so pointing only one of them here would make every test time out.
+    The listener carries an `application_name` so a test can find its backend and kill it.
     """
-    from app.config import get_settings
+    monkeypatch.setattr(broadcast_service, "_notify_engine", lambda: _test_engine)
+    monkeypatch.setattr(broadcast_service, "listen_dsn", lambda: _listener_dsn(_test_engine))
 
-    client = Redis.from_url(get_settings().redis_url, decode_responses=True)
-    try:
-        client.ping()
-    except RedisError:
-        client.close()
-        pytest.skip("no Redis on REDIS_URL; the cross-connection assertion needs a real server")
-
-    try:
-        yield client
-    finally:
-        client.close()
+    return _test_engine
 
 
-def test_an_event_published_by_another_process_is_received_here(live_redis: Redis) -> None:
+@pytest.fixture
+def raw_listener(test_database: Engine) -> Generator[psycopg.Connection, None, None]:
+    """A plain `psycopg` connection listening on the channel, to read the notice as sent."""
+    dsn = test_database.url.set(drivername="postgresql").render_as_string(hide_password=False)
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("LISTEN {}").format(sql.Identifier(CHANNEL)))
+        yield connection
+
+
+def test_an_event_published_by_another_process_is_received_here(test_database: Engine) -> None:
     """P7-K, and the only test in the suite that can fail when this is an in-process registry.
 
-    `live_redis` is taken for its skip, not its connection: the publisher here is a **second
-    interpreter**, calling the same `publish` against the same Redis, which is what the Twilio
-    webhook and an admin's WebSocket landing on two `uvicorn --workers` processes — or on the
-    outgoing and incoming containers of a rolling deploy — actually look like. A registry held
-    in module state passes every other test in this file and fails this one.
+    The publisher here is a **second interpreter**, calling the same `publish` against the same
+    database, which is what the Twilio webhook and an admin's WebSocket landing on two
+    `uvicorn --workers` processes — or on the outgoing and incoming tasks of a canary deploy —
+    actually look like. A registry held in module state passes every other test in this file
+    and fails this one.
     """
     event = _message_created()
 
-    received = asyncio.run(_receive(1, while_publishing=lambda: _publish_from_a_subprocess(event)))
+    received = asyncio.run(
+        _receive(1, while_publishing=lambda: _publish_from_a_subprocess(test_database, event))
+    )
 
-    assert received == [event]
-
-
-def test_an_event_published_on_one_connection_is_received_on_another(live_redis: Redis) -> None:
-    """The same property at connection granularity, cheaply enough to parametrise over.
-
-    Two clients, two connections, one interpreter. It is the subprocess test above that rules
-    out an in-process registry; this one guards the serialisation either way.
-    """
-    event = _message_created()
-
-    received = asyncio.run(_publish_and_receive(live_redis, [event]))
-
-    assert received == [event]
+    assert received == [MessageNotice(message_id=MESSAGE_ID, client_message_id=None)]
 
 
 @pytest.mark.parametrize(
-    "event",
+    ("event", "expected"),
     [
-        _message_created(),
-        _message_created(client_message_id="composer-1"),
-        ConversationUpdated(conversation={"id": str(CONVERSATION_ID), "status": "human"}),
+        (
+            _message_created(),
+            {"type": "message.created", "message_id": str(MESSAGE_ID), "client_message_id": None},
+        ),
+        (
+            _message_created(client_message_id="composer-1"),
+            {
+                "type": "message.created",
+                "message_id": str(MESSAGE_ID),
+                "client_message_id": "composer-1",
+            },
+        ),
+        (
+            ConversationUpdated(conversation={"id": str(CONVERSATION_ID), "status": "human"}),
+            {"type": "conversation.updated", "conversation_id": str(CONVERSATION_ID)},
+        ),
     ],
     ids=["message.created", "message.created echoing a send", "conversation.updated"],
 )
-def test_every_event_shape_survives_the_round_trip(
-    live_redis: Redis, event: BroadcastEvent
+def test_publish_sends_exactly_the_pinned_notice(
+    raw_listener: psycopg.Connection, event: BroadcastEvent, expected: dict[str, object]
 ) -> None:
-    """Three call sites serialise through this module; none of them may lose a field."""
-    received = asyncio.run(_publish_and_receive(live_redis, [event]))
+    """The notice is the seam between B1 and every publisher, and between two task versions
+    during a canary deploy: ids and the echo, nothing a reader could not get back from the row."""
+    publish(event)
 
-    assert received == [event]
-
-
-def test_an_unreadable_payload_is_skipped_and_the_pump_keeps_serving(live_redis: Redis) -> None:
-    """The rolling-deploy case, arriving from the other side.
-
-    Two containers overlap for the seconds it takes to cut over, so one of them can publish a
-    shape the other has never seen. Ending the pump there would leave every socket in this
-    process open, registered and silently receiving nothing — which is the failure this whole
-    module exists to prevent, reintroduced one layer up.
-    """
-    event = _message_created()
-
-    def publish_both() -> None:
-        live_redis.publish(CHANNEL, '{"type":"message.created"}')
-        publish(live_redis, event)
-
-    received = asyncio.run(_receive(1, while_publishing=publish_both))
-
-    assert received == [event]
+    assert [json.loads(payload) for payload in _payloads(raw_listener, 1)] == [expected]
 
 
-def test_publish_drops_the_event_when_redis_is_unreachable() -> None:
+def test_a_message_too_long_for_a_notice_still_fits_in_one(
+    raw_listener: psycopg.Connection,
+) -> None:
+    """REQ-141.4. Twenty thousand two-byte characters are 40 000 bytes of UTF-8 — five times
+    PostgreSQL's cap — and the notice is still a few dozen, because the body never travels."""
+    publish(_message_created(body="é" * 20_000))
+
+    [payload] = _payloads(raw_listener, 1)
+
+    assert len(payload.encode()) < NOTIFY_PAYLOAD_CAP_BYTES
+    assert json.loads(payload)["message_id"] == str(MESSAGE_ID)
+
+
+def test_an_oversized_client_message_id_is_dropped_with_a_warning(
+    raw_listener: psycopg.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The echo is the one unbounded field that travels. Refusing the whole notice would cost
+    every other admin the message; dropping the echo costs the sender a bubble that reconciles
+    on refetch."""
+    with caplog.at_level(logging.WARNING, logger=broadcast_service.__name__):
+        publish(_message_created(client_message_id="x" * NOTIFY_PAYLOAD_CAP_BYTES))
+
+    [payload] = _payloads(raw_listener, 1)
+
+    assert json.loads(payload) == {
+        "type": "message.created",
+        "message_id": str(MESSAGE_ID),
+        "client_message_id": None,
+    }
+    assert "oversized client_message_id" in caplog.text
+
+
+def test_publish_logs_and_drops_the_event_when_the_database_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Fail open, on purpose.
 
-    Every publisher calls this after its write is committed, so raising would turn a Redis blip
-    into a 500 on a webhook Twilio then retries for hours, or on a takeover that succeeded.
-    Failing closed would not get the event to the admin either.
+    Every publisher calls this after its write is committed, so raising would turn a database
+    error on the notify into a 500 on a webhook Twilio then retries for hours, or on a takeover
+    that succeeded. Failing closed would not get the event to the admin either. It logs,
+    because the dropped event is otherwise untraceable.
     """
-    publish(_UnreachableRedis(), _message_created())
+    unreachable = create_engine(
+        "postgresql+psycopg://nobody@127.0.0.1:1/nothing", connect_args={"connect_timeout": 1}
+    )
+    monkeypatch.setattr(broadcast_service, "_notify_engine", lambda: unreachable)
+
+    try:
+        with caplog.at_level(logging.ERROR, logger=broadcast_service.__name__):
+            publish(_message_created())
+    finally:
+        unreachable.dispose()
+
+    assert "dropped a message.created broadcast" in caplog.text
 
 
-def test_publish_does_not_swallow_a_failure_that_is_not_redis() -> None:
-    """The fail-open clause is `RedisError` and nothing wider; a bug still travels."""
-    with pytest.raises(TypeError):
-        publish(_BrokenRedis(), _message_created())
+def test_publish_does_not_swallow_a_failure_that_is_not_the_database(
+    test_database: Engine,
+) -> None:
+    """The fail-open clause is `SQLAlchemyError` and nothing wider; a bug still travels."""
+    malformed = MessageCreated(conversation_id=CONVERSATION_ID, message={"body": "no id"})
+
+    with pytest.raises(KeyError):
+        publish(malformed)
+
+
+def test_an_unreadable_notice_is_skipped_and_the_listener_keeps_serving(
+    test_database: Engine,
+) -> None:
+    """The canary-deploy case, arriving from the other side.
+
+    Two task versions overlap for the whole deploy, so one of them can notify a shape the other
+    has never seen. Ending the listener there would leave every socket in this process open,
+    registered and silently receiving nothing — which is the failure this whole module exists
+    to prevent, reintroduced one layer up.
+    """
+    event = ConversationUpdated(conversation={"id": str(CONVERSATION_ID)})
+
+    def publish_all() -> None:
+        for payload in ["not json", '{"type": "message.created"}', '{"type": "shout"}']:
+            _notify_raw(test_database, payload)
+        publish(event)
+
+    received = asyncio.run(_receive(1, while_publishing=publish_all))
+
+    assert received == [ConversationNotice(conversation_id=CONVERSATION_ID)]
+
+
+def test_a_quiet_listener_probes_its_connection_and_keeps_serving(
+    test_database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection that died without a word raises nothing on its own, so a listener that
+    only ever waited would sit on it forever. The probe is what turns silence into a check —
+    and it must not cost a notice: one sent after several quiet periods still arrives."""
+    monkeypatch.setattr(broadcast_service, "LIVENESS_SECONDS", 0.05)
+
+    async def wait_out_the_quiet_then_publish() -> tuple[list[Notice], str | None]:
+        async with listen() as notices:
+            taking = asyncio.create_task(_take(notices, 1))
+            await asyncio.sleep(0.3)
+            last_query = _listener_query(test_database)
+            publish(ConversationUpdated(conversation={"id": str(CONVERSATION_ID)}))
+            received = await asyncio.wait_for(taking, timeout=RECEIVE_TIMEOUT_SECONDS)
+
+        return received, last_query
+
+    received, last_query = asyncio.run(wait_out_the_quiet_then_publish())
+
+    assert received == [ConversationNotice(conversation_id=CONVERSATION_ID)]
+    assert last_query == "SELECT 1"
+
+
+def test_the_listener_raises_when_its_connection_is_killed(test_database: Engine) -> None:
+    """A dropped connection must end the iterator with an error, never quietly.
+
+    The pump turns that error into closing every socket in the process; a listener that simply
+    returned, or kept waiting on a dead connection, would leave them open and receiving nothing.
+    The wait is bounded by the liveness period and some slack: a terminated backend is noticed
+    at once, and a silently dropped one by the next probe.
+    """
+
+    async def kill_while_listening() -> None:
+        async with listen() as notices:
+            _terminate_listener(test_database)
+            await asyncio.wait_for(anext(notices), timeout=LIVENESS_SECONDS + 5)
+
+    with pytest.raises(psycopg.OperationalError):
+        asyncio.run(kill_while_listening())
+
+
+def test_the_listener_keeps_the_query_string_of_the_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production carries `sslmode=require` there; a listener that dropped it would connect in
+    the clear or not at all. Only the driver name may change, because libpq refuses
+    SQLAlchemy's `postgresql+psycopg`."""
+    settings = SimpleNamespace(
+        database_url="postgresql+psycopg://app:s3cret@db.example.com:5432/tutorlink?sslmode=require"
+    )
+    monkeypatch.setattr(broadcast_service, "get_settings", lambda: settings)
+
+    assert listen_dsn() == "postgresql://app:s3cret@db.example.com:5432/tutorlink?sslmode=require"
 
 
 def test_every_registered_sink_receives_the_event() -> None:
@@ -228,11 +363,6 @@ def test_unregistering_stops_delivery_and_leaves_nothing_behind() -> None:
     assert registered() == frozenset()
 
 
-def test_the_subscriber_client_is_one_per_process() -> None:
-    """A client is a handle onto a pool; one per connected admin would be one connection each."""
-    assert get_async_redis() is get_async_redis()
-
-
 def test_unregistering_a_sink_that_is_already_gone_is_a_no_op() -> None:
     """The fan-out drops a failing sink itself, so the socket's own cleanup arrives second."""
     sink = FakeSink(fail_with=RuntimeError("socket is closed"))
@@ -252,7 +382,7 @@ def test_unregistering_a_sink_that_is_already_gone_is_a_no_op() -> None:
             {
                 "type": "message.created",
                 "conversation_id": str(CONVERSATION_ID),
-                "message": {"id": "abcd", "body": "hello", "twilio_sid": None},
+                "message": {"id": str(MESSAGE_ID), "body": "hello", "twilio_sid": None},
             },
         ),
         (
@@ -260,7 +390,7 @@ def test_unregistering_a_sink_that_is_already_gone_is_a_no_op() -> None:
             {
                 "type": "message.created",
                 "conversation_id": str(CONVERSATION_ID),
-                "message": {"id": "abcd", "body": "hello", "twilio_sid": None},
+                "message": {"id": str(MESSAGE_ID), "body": "hello", "twilio_sid": None},
                 "client_message_id": "composer-1",
             },
         ),
@@ -291,63 +421,91 @@ def test_the_module_imports_no_web_framework() -> None:
     assert "starlette" not in source.replace("starlette.websockets.WebSocket", "")
 
 
-async def _publish_and_receive(redis: Redis, events: list[BroadcastEvent]) -> list[BroadcastEvent]:
-    return await _receive(
-        len(events), while_publishing=lambda: [publish(redis, event) for event in events]
-    )
+async def _receive(count: int, *, while_publishing: Callable[[], object]) -> list[Notice]:
+    """Listen, publish, and collect `count` notices, or fail rather than hang.
 
-
-async def _receive(count: int, *, while_publishing: Callable[[], object]) -> list[BroadcastEvent]:
-    """Subscribe, publish, and collect `count` events, or fail rather than hang.
-
-    The async client is built inside the running loop and closed with it: `asyncio.run` gives
-    every test its own loop, and a connection pooled on a loop that has ended is not reusable.
+    `listen` has executed its `LISTEN` before the body runs, so publishing inside it cannot
+    race the subscription.
     """
-    from app.config import get_settings
+    async with listen() as notices:
+        while_publishing()
+        received = await asyncio.wait_for(_take(notices, count), timeout=RECEIVE_TIMEOUT_SECONDS)
 
-    redis = AsyncRedis.from_url(get_settings().redis_url, decode_responses=True)
-    try:
-        async with subscribe(redis) as events:
-            while_publishing()
-
-            return await asyncio.wait_for(_take(events, count), timeout=RECEIVE_TIMEOUT_SECONDS)
-    finally:
-        await redis.aclose()
+    return received
 
 
-async def _take(events: AsyncIterator[BroadcastEvent], count: int) -> list[BroadcastEvent]:
+async def _take(notices: AsyncIterator[Notice], count: int) -> list[Notice]:
     received = []
-    async for event in events:
-        received.append(event)
+    async for notice in notices:
+        received.append(notice)
         if len(received) == count:
             break
 
     return received
 
 
-def _publish_from_a_subprocess(event: BroadcastEvent) -> None:
-    """Run the real `publish` in a second interpreter, against the same Redis.
+def _payloads(connection: psycopg.Connection, count: int) -> list[str]:
+    notifies = connection.notifies(timeout=RECEIVE_TIMEOUT_SECONDS, stop_after=count)
+    payloads = [notify.payload for notify in notifies if notify.channel == CHANNEL]
+
+    assert len(payloads) == count, f"expected {count} notices, received {len(payloads)}"
+
+    return payloads
+
+
+def _notify_raw(engine: Engine, payload: str) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT pg_notify(:channel, :payload)"), {"channel": CHANNEL, "payload": payload}
+        )
+
+
+def _listener_dsn(engine: Engine) -> str:
+    url = engine.url.set(drivername="postgresql").update_query_dict(
+        {"application_name": LISTENER_NAME}
+    )
+
+    return url.render_as_string(hide_password=False)
+
+
+def _listener_query(engine: Engine) -> str | None:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT query FROM pg_stat_activity WHERE application_name = :name"),
+            {"name": LISTENER_NAME},
+        ).scalar_one_or_none()
+
+
+def _terminate_listener(engine: Engine) -> None:
+    with engine.connect() as connection:
+        terminated = connection.execute(
+            text(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+                " WHERE application_name = :name"
+            ),
+            {"name": LISTENER_NAME},
+        ).all()
+
+    assert terminated, "no listener backend to terminate"
+
+
+def _publish_from_a_subprocess(engine: Engine, event: BroadcastEvent) -> None:
+    """Run the real `publish` in a second interpreter, against the test database.
 
     The child inherits this process's environment, which `conftest.py` has already filled with
-    the settings `app.config` requires, and runs from the `api/` directory so `app` imports.
+    the settings `app.config` requires, with `DATABASE_URL` replaced by the test database's —
+    `NOTIFY` reaches only listeners on the same database — and runs from the `api/` directory
+    so `app` imports.
     """
     api_directory = Path(broadcast_service.__file__).parents[2]
+    environment = {**os.environ, "DATABASE_URL": engine.url.render_as_string(hide_password=False)}
     completed = subprocess.run(
         [sys.executable, "-c", PUBLISH_SCRIPT, event.model_dump_json()],
         cwd=api_directory,
+        env=environment,
         capture_output=True,
         text=True,
         timeout=RECEIVE_TIMEOUT_SECONDS * 2,
     )
 
     assert completed.returncode == 0, completed.stderr
-
-
-class _UnreachableRedis:
-    def publish(self, channel: str, payload: str) -> int:
-        raise RedisConnectionError("connection refused")
-
-
-class _BrokenRedis:
-    def publish(self, channel: str, payload: str) -> int:
-        raise TypeError("publish() takes no keyword arguments")

@@ -70,6 +70,7 @@ from app.services.conversation_service import (
     resolve_reactivation,
     touch_last_message,
 )
+
 PASSWORD = "correct horse battery staple"
 
 NOON = datetime.datetime(2026, 1, 5, 12, 0, tzinfo=datetime.UTC)
@@ -352,7 +353,10 @@ def test_the_resurfaced_request_is_back_on_the_flagged_list(api: TestClient, db:
     ids=["no body", "no flagged_at", "null", "malformed", "naive", "not json"],
 )
 def test_an_invalid_body_is_400_never_422_or_500(
-    api: TestClient, db: Session, broadcasts: list[ConversationUpdated], request_body: dict[str, Any]
+    api: TestClient,
+    db: Session,
+    broadcasts: list[ConversationUpdated],
+    request_body: dict[str, Any],
 ) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db, reason=FlagReason.STUCK)

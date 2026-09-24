@@ -62,7 +62,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from redis import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -72,7 +71,6 @@ from app.models.enums import BookingStatus, FlagReason
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
-from app.redis_client import get_redis
 from app.schemas.bot import BotIntent, BotTurn, ParsedIntent
 from app.services import (
     booking_status_service,
@@ -336,7 +334,6 @@ class _Turn:
     """Everything one turn of one flow is allowed to see."""
 
     db: Session
-    redis: Redis
     phone_number: str
     body: str
     guardian: Guardian | None
@@ -353,7 +350,7 @@ class _Turn:
 class _Next:
     """A handler's verdict: what to say, and where the flow goes.
 
-    `step is None` ends the flow and clears the Redis key — the next message opens a new one.
+    `step is None` ends the flow and clears the row — the next message opens a new one.
     It is **not** how the bail-out ends a turn: REQ-078.2 requires the state to survive there,
     so `_miss` writes the state back itself and never builds one of these.
     """
@@ -415,14 +412,12 @@ def reply_for(
     and passes it in, so this module stays off the conversation row (P7-C). While it is true the
     bot refuses a second request rather than offering one.
     """
-    redis = get_redis()
-    state = load_state(redis, phone_number=phone_number)
+    state = load_state(db, phone_number=phone_number)
     guardian = _recognise(db, phone_number=phone_number, guardian_id=guardian_id)
 
     if _resumable(state, guardian):
         decided = _take_turn(
             db,
-            redis=redis,
             phone_number=phone_number,
             body=body,
             guardian=guardian,
@@ -430,7 +425,7 @@ def reply_for(
             reactivation_pending=reactivation_pending,
         )
     else:
-        decided = _open(redis, phone_number=phone_number, guardian=guardian)
+        decided = _open(db, phone_number=phone_number, guardian=guardian)
 
     if guardian_id is None and guardian is not None and decided.link_guardian_id is None:
         decided = decided.model_copy(update={"link_guardian_id": guardian.id})
@@ -441,7 +436,6 @@ def reply_for(
 def _take_turn(
     db: Session,
     *,
-    redis: Redis,
     phone_number: str,
     body: str,
     guardian: Guardian | None,
@@ -450,7 +444,6 @@ def _take_turn(
 ) -> BotTurn:
     turn = _Turn(
         db=db,
-        redis=redis,
         phone_number=phone_number,
         body=body,
         guardian=guardian,
@@ -510,7 +503,7 @@ def _resumable(state: FlowState | None, guardian: Guardian | None) -> bool:
     return usable
 
 
-def _open(redis: Redis, *, phone_number: str, guardian: Guardian | None) -> BotTurn:
+def _open(db: Session, *, phone_number: str, guardian: Guardian | None) -> BotTurn:
     """Greet, and ask the first question. This turn's message is not consumed.
 
     A fresh flow answers the opening prompt rather than trying to interpret "hi" as a step it
@@ -524,7 +517,7 @@ def _open(redis: Redis, *, phone_number: str, guardian: Guardian | None) -> BotT
         step = STEP_MENU
 
     save_state(
-        redis,
+        db,
         phone_number=phone_number,
         state=FlowState(step=step, collected_data={}, misses=0, prompt=reply),
     )
@@ -535,12 +528,12 @@ def _open(redis: Redis, *, phone_number: str, guardian: Guardian | None) -> BotT
 def _apply(turn: _Turn, result: _Next) -> BotTurn:
     """Persist the advanced flow and turn the handler's verdict into the webhook's instructions."""
     if result.step is None:
-        clear_state(turn.redis, phone_number=turn.phone_number)
+        clear_state(turn.db, phone_number=turn.phone_number)
     else:
         turn.state.step = result.step
         turn.state.prompt = result.reply
         turn.state.misses = 0
-        save_state(turn.redis, phone_number=turn.phone_number, state=turn.state)
+        save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
 
     return BotTurn(
         reply=result.reply,
@@ -558,7 +551,7 @@ def _miss(turn: _Turn) -> BotTurn:
     the bot *can* use carries on from the same question.
     """
     turn.state.misses += 1
-    save_state(turn.redis, phone_number=turn.phone_number, state=turn.state)
+    save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
 
     if turn.state.misses > MAX_REPROMPTS:
         result = BotTurn(reply=BAILED_OUT, flag_reason=FlagReason.STUCK)
@@ -717,8 +710,8 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
 
     **Every row #39 names lands here, in one transaction** (REQ-073.2/.3, P7-AA): a `guardians`
     row, a `homes` row and a `guardian_homes` link on the first child, then a `children` row plus
-    a `child_homes` and a `child_guardians` link for each. Holding the guardian in Redis until a
-    child exists is what makes "a refused intake leaves none of it behind" true of the whole
+    a `child_homes` and a `child_guardians` link for each. Holding the guardian in flow state
+    until a child exists is what makes "a refused intake leaves none of it behind" true of the whole
     intake rather than only of its tail — and it is what lets P7-F's refusal write *nothing at
     all*.
 

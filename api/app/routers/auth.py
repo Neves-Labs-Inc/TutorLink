@@ -2,12 +2,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from redis import Redis
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.redis_client import get_redis
 from app.schemas.auth import RefreshRequest, TokenPair
 from app.services.auth_service import (
     InvalidCredentials,
@@ -38,7 +36,6 @@ RATE_LIMITED_ERROR = "Too many login attempts. Try again later."
 SECONDS_PER_DAY = 24 * 60 * 60
 
 DbSession = Annotated[Session, Depends(get_db)]
-RedisClient = Annotated[Redis, Depends(get_redis)]
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -49,7 +46,6 @@ def login(
     request: Request,
     response: Response,
     db: DbSession,
-    redis: RedisClient,
 ) -> TokenPair:
     policies = load_login_policies(db)
 
@@ -57,20 +53,26 @@ def login(
     # Reserving after would leave the endpoint's real cost — a deliberately slow hash — fully
     # available to an attacker, which is most of what the limit is protecting, and would let
     # every request arriving during one hash read the same stale count and be admitted.
-    attempt = reserve_login_attempt(
-        redis, client_ip=_client_ip(request), email=form_data.username, policies=policies
+    reservation = reserve_login_attempt(
+        db, client_ip=_client_ip(request), email=form_data.username, policies=policies
     )
-    if not attempt.allowed:
+    # Committed here, before the password check, and not folded into the commit below. The 401
+    # path raises without committing, so without this the reservation would be rolled back with
+    # it and no failure would ever be counted. It also ends the transaction holding the bucket's
+    # advisory lock, so concurrent attempts wait on it for milliseconds rather than a bcrypt round.
+    db.commit()
+
+    if not reservation.allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=RATE_LIMITED_ERROR,
-            headers={"Retry-After": str(attempt.retry_after_seconds)},
+            headers={"Retry-After": str(reservation.retry_after_seconds)},
         )
 
     try:
         user = authenticate_user(db, email=form_data.username, password=form_data.password)
     except InvalidCredentials as exc:
-        # Nothing to record: the reservation taken above already is this failure. Adding a
+        # Nothing to record: the reservation committed above already is this failure. Adding a
         # write here would double-count it.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -78,7 +80,7 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    release_login_attempt(redis, attempt=attempt)
+    release_login_attempt(db, reservation=reservation)
 
     issued = issue_token_pair(db, user=user)
     db.commit()

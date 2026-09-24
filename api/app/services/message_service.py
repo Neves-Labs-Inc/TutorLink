@@ -272,6 +272,30 @@ def list_thread(
     return items, total
 
 
+def get_thread_message(db: Session, *, message_id: uuid.UUID) -> ThreadMessage | None:
+    """One message and its author, in the shape `list_thread` carries it. `None` if it is gone.
+
+    The live-update socket rebuilds every `message.created` frame from this rather than from
+    what the publisher had in hand, so the frame is the object the thread's refetch returns.
+    A missing row is an ordinary outcome on that path, not an error: the notice that names it
+    crosses processes after the commit, and retention may have deleted the row by the time it
+    is read. Unlike `list_thread` it does not go through `conversation_service.get` — the
+    message's own id is the whole lookup, and its conversation is the row's foreign key.
+    """
+    row = db.execute(
+        select(Message, User)
+        .outerjoin(User, User.id == Message.author_user_id)
+        .where(Message.id == message_id)
+    ).one_or_none()
+
+    if row is None:
+        found = None
+    else:
+        found = ThreadMessage(message=row[0], author=row[1])
+
+    return found
+
+
 def _insert(
     db: Session,
     *,

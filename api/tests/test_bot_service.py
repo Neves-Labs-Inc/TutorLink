@@ -39,12 +39,13 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 
 import pytest
-from sqlalchemy import Column, event, func, select
+from sqlalchemy import Column, event, func, select, update
 from sqlalchemy.orm import ORMExecuteState, Session
 from sqlalchemy.sql import visitors
 
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
+from app.models.bot_flow_state import BotFlowState
 from app.models.child import NOTES_MAX_LENGTH, Child
 from app.models.conversation import Conversation
 from app.models.enums import BookingStatus, FlagReason
@@ -103,28 +104,14 @@ _SERVICE_DIRECTORY = os.path.dirname(bot_service.__file__)
 # --- the harness ------------------------------------------------------------------------------
 
 
-class FakeFlowRedis:
-    """`GET` / `SET … EX` / `DEL`, in memory. Mirrors `test_bot_state.py`'s double."""
-
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-        self.ttls: dict[str, int | None] = {}
-
-    def get(self, key: str) -> str | None:
-        return self.values.get(key)
-
-    def set(self, key: str, value: str, ex: int | None = None) -> None:
-        self.values[key] = value
-        self.ttls[key] = ex
-
-    def delete(self, *keys: str) -> None:
-        for key in keys:
-            self.values.pop(key, None)
-            self.ttls.pop(key, None)
-
-    def expire_everything(self) -> None:
-        self.values.clear()
-        self.ttls.clear()
+def _expire_flow_state(db: Session, *, phone_number: str) -> None:
+    """Stand in for the wall clock passing the TTL, without a `sleep`. Against the database's
+    own clock, not Python's, which the test's transaction can be seconds behind."""
+    db.execute(
+        update(BotFlowState)
+        .where(BotFlowState.phone_number == phone_number)
+        .values(expires_at=func.now() - func.make_interval(0, 0, 0, 0, 1))
+    )
 
 
 class ScriptedParser:
@@ -160,11 +147,10 @@ class Chat:
 
     `say` answers whatever question the flow is currently on, because the answer to a step's
     question is keyed by that step's own name — so the driver reads the pending step out of
-    Redis instead of every test spelling it out.
+    the table instead of every test spelling it out.
     """
 
     db: Session
-    redis: FakeFlowRedis
     parser: ScriptedParser
     phone_number: str = INBOUND_NUMBER
     guardian_id: uuid.UUID | None = None
@@ -206,7 +192,7 @@ class Chat:
 
     @property
     def state(self) -> FlowState | None:
-        return load_state(self.redis, phone_number=self.phone_number)
+        return load_state(self.db, phone_number=self.phone_number)
 
     @property
     def step(self) -> str | None:
@@ -251,14 +237,6 @@ class OrmQuery:
     origin: str | None
     sql: str
     filtered_columns: frozenset[str]
-
-
-@pytest.fixture
-def redis(monkeypatch: pytest.MonkeyPatch) -> FakeFlowRedis:
-    fake = FakeFlowRedis()
-    monkeypatch.setattr(bot_service, "get_redis", lambda: fake)
-
-    return fake
 
 
 @pytest.fixture(autouse=True)
@@ -306,8 +284,8 @@ def cutoff(db: Session) -> Callable[[int], None]:
 
 
 @pytest.fixture
-def chat(db: Session, redis: FakeFlowRedis, parser: ScriptedParser) -> Chat:
-    return Chat(db=db, redis=redis, parser=parser)
+def chat(db: Session, parser: ScriptedParser) -> Chat:
+    return Chat(db=db, parser=parser)
 
 
 @pytest.fixture
@@ -1180,13 +1158,13 @@ def test_three_parse_failures_still_never_reach_the_stuck_bail_out(
 
 
 def test_an_expired_flow_restarts_with_no_stale_collected_data(
-    chat: Chat, redis: FakeFlowRedis, client: ClientWorld
+    chat: Chat, client: ClientWorld
 ) -> None:
     """REQ-076.1 and acceptance criterion 10. Expiry mid-flow is the normal case: the parent
     put their phone down. It restarts, it does not error, and it carries nothing forward."""
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
-    redis.expire_everything()
+    _expire_flow_state(chat.db, phone_number=chat.phone_number)
 
     turn = chat.say("hello again")
 
@@ -1198,13 +1176,13 @@ def test_an_expired_flow_restarts_with_no_stale_collected_data(
 
 @pytest.mark.parametrize("step", ["a_step_that_was_removed", "child_age"])
 def test_a_state_naming_a_step_this_build_does_not_know_restarts_cleanly(
-    chat: Chat, redis: FakeFlowRedis, client: ClientWorld, step: str
+    chat: Chat, client: ClientWorld, step: str
 ) -> None:
-    """A rolling deploy can leave a renamed step in a live key — `child_age` is exactly that,
+    """A rolling deploy can leave a renamed step in a live row — `child_age` is exactly that,
     from the build before date of birth replaced it. It restarts rather than raising, which is
     the same treatment REQ-076 gives an expired one."""
     save_state(
-        redis,
+        chat.db,
         phone_number=chat.phone_number,
         state=FlowState(step=step, collected_data={"stale": "value"}),
     )
@@ -1216,13 +1194,11 @@ def test_a_state_naming_a_step_this_build_does_not_know_restarts_cleanly(
     assert bot_service.ASK_MENU in turn.reply
 
 
-def test_a_step_needing_a_guardian_restarts_rather_than_raising(
-    chat: Chat, redis: FakeFlowRedis
-) -> None:
+def test_a_step_needing_a_guardian_restarts_rather_than_raising(chat: Chat) -> None:
     """A stored `menu` for a number with no client row — a turn whose commit failed, or a
     client an admin removed. Every step after intake dereferences the guardian, so this has to
     restart rather than raise: a raise here is a 500 and a Twilio retry loop."""
-    save_state(redis, phone_number=chat.phone_number, state=FlowState(step=bot_service.STEP_MENU))
+    save_state(chat.db, phone_number=chat.phone_number, state=FlowState(step=bot_service.STEP_MENU))
 
     turn = chat.say("still here")
 
@@ -1231,7 +1207,7 @@ def test_a_step_needing_a_guardian_restarts_rather_than_raising(
 
 
 def test_a_state_with_a_payload_missing_a_key_its_handler_reads_restarts_visibly(
-    chat: Chat, redis: FakeFlowRedis, client: ClientWorld, caplog: pytest.LogCaptureFixture
+    chat: Chat, client: ClientWorld, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A genuinely stale payload rather than a synthetic one: `child_notes` is a step this
     build still knows, for a guardian who still exists, but its handler now reads
@@ -1239,7 +1215,7 @@ def test_a_state_with_a_payload_missing_a_key_its_handler_reads_restarts_visibly
     was — never carried it. Trusting the step name alone would raise `KeyError`; this restarts
     the flow instead, and logs it, so the recovery is not indistinguishable from a bug."""
     save_state(
-        redis,
+        chat.db,
         phone_number=chat.phone_number,
         state=FlowState(
             step=bot_service.STEP_CHILD_NOTES,
@@ -2102,7 +2078,7 @@ def _park_at(
     chat: Chat, step: str, *, prompt: str, collected_data: dict[str, str] | None = None
 ) -> None:
     save_state(
-        chat.redis,
+        chat.db,
         phone_number=chat.phone_number,
         state=FlowState(step=step, collected_data=collected_data or {}, prompt=prompt),
     )

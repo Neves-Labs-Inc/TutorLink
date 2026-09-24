@@ -2,9 +2,6 @@
 .env
 .env.*
 !.env.example
-# Documentation of the production variable set, not secrets: every value is a placeholder or an
-# SSM path. The real production .env is generated on the box and stays covered by the line above.
-!.env.prod.example
 
 # Python
 __pycache__/

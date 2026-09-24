@@ -23,15 +23,15 @@ from collections.abc import Callable, Generator
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import get_settings
 from app.db import get_db
 from app.main import create_app
-from app.redis_client import get_redis
+from app.models.login_attempt import LoginAttempt
 from app.services.rate_limit_service import EMAIL_MAX_ATTEMPTS_SETTING, IP_BUCKET_PREFIX
-from tests.conftest import FakeRedis
 
 TRUSTED_PROXIES_ENV = "TRUSTED_PROXIES"
 PROXY = "10.1.2.3"
@@ -46,7 +46,7 @@ FORGED = "203.0.113.77"
 PEER_PORT = 51000
 
 AppTrusting = Callable[[str | None], FastAPI]
-LoginApp = Callable[[str | None], tuple[FastAPI, FakeRedis]]
+LoginApp = Callable[[str | None], FastAPI]
 SetIntSetting = Callable[[str, int], None]
 
 
@@ -190,7 +190,7 @@ def test_a_scheme_outside_the_allowlist_is_ignored_even_from_a_trusted_peer(
 
 
 def test_two_clients_behind_one_trusted_proxy_occupy_two_ip_buckets(
-    login_app: LoginApp, set_int_setting: SetIntSetting
+    login_app: LoginApp, db: Session, set_int_setting: SetIntSetting
 ) -> None:
     """The outage in #33, through the real consumer rather than the probe.
 
@@ -200,7 +200,7 @@ def test_two_clients_behind_one_trusted_proxy_occupy_two_ip_buckets(
     before `authenticate_user`, so a login against an unknown address still writes the bucket.
     """
     set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 0)
-    built, redis = login_app(PROXY)
+    built = login_app(PROXY)
 
     codes = [
         _failed_login(built, peer=PROXY, forwarded_for=FORWARDED_CLIENT),
@@ -208,14 +208,14 @@ def test_two_clients_behind_one_trusted_proxy_occupy_two_ip_buckets(
     ]
 
     assert codes == [401, 401]
-    assert set(redis.sorted_sets) == {
+    assert _ip_buckets_written(db) == {
         IP_BUCKET_PREFIX + FORWARDED_CLIENT,
         IP_BUCKET_PREFIX + OTHER_FORWARDED_CLIENT,
     }
 
 
 def test_the_same_two_clients_collapse_into_one_bucket_with_no_proxy_trusted(
-    login_app: LoginApp, set_int_setting: SetIntSetting
+    login_app: LoginApp, db: Session, set_int_setting: SetIntSetting
 ) -> None:
     """The failure mode #33 reports, asserted rather than skipped.
 
@@ -223,7 +223,7 @@ def test_the_same_two_clients_collapse_into_one_bucket_with_no_proxy_trusted(
     proxy's own address — so every user behind the proxy shares one login budget.
     """
     set_int_setting(EMAIL_MAX_ATTEMPTS_SETTING, 0)
-    built, redis = login_app(None)
+    built = login_app(None)
 
     codes = [
         _failed_login(built, peer=PROXY, forwarded_for=FORWARDED_CLIENT),
@@ -231,7 +231,7 @@ def test_the_same_two_clients_collapse_into_one_bucket_with_no_proxy_trusted(
     ]
 
     assert codes == [401, 401]
-    assert set(redis.sorted_sets) == {IP_BUCKET_PREFIX + PROXY}
+    assert _ip_buckets_written(db) == {IP_BUCKET_PREFIX + PROXY}
 
 
 @pytest.fixture
@@ -264,20 +264,19 @@ def app_trusting(monkeypatch: pytest.MonkeyPatch) -> Generator[AppTrusting, None
 
 @pytest.fixture
 def login_app(monkeypatch: pytest.MonkeyPatch, db: Session) -> Generator[LoginApp, None, None]:
-    """An app built the same way, wired to the rolled-back session and a per-test `FakeRedis`.
+    """An app built the same way, wired to the rolled-back session.
 
-    `conftest.py`'s `api` and `redis_double` fixtures install their overrides on the module-level
-    app and cannot help here, so this installs its own. The `FakeRedis` comes back with the app
-    because its `sorted_sets` is the assertion target: it names the buckets a request landed in.
+    `conftest.py`'s `api` fixture installs its override on the module-level app and cannot help
+    here, so this installs its own. The `login_attempts` rows the request writes land in that
+    same session, which is what makes them the assertion target: their `bucket_key`s name the
+    buckets a request landed in.
     """
 
-    def build(trusted_proxies: str | None) -> tuple[FastAPI, FakeRedis]:
+    def build(trusted_proxies: str | None) -> FastAPI:
         built = _build_app(monkeypatch, trusted_proxies)
-        redis = FakeRedis()
         built.dependency_overrides[get_db] = lambda: db
-        built.dependency_overrides[get_redis] = lambda: redis
 
-        return built, redis
+        return built
 
     try:
         yield build
@@ -310,3 +309,17 @@ def _failed_login(built: FastAPI, *, peer: str, forwarded_for: str) -> int:
     )
 
     return response.status_code
+
+
+def _ip_buckets_written(db: Session) -> set[str]:
+    # Scoped to the addresses these tests put on the wire, so a stray committed row in the
+    # long-lived test database cannot turn an exact-set assertion into a false failure.
+    candidates = [
+        IP_BUCKET_PREFIX + address for address in (PROXY, FORWARDED_CLIENT, OTHER_FORWARDED_CLIENT)
+    ]
+
+    return set(
+        db.execute(
+            select(LoginAttempt.bucket_key).where(LoginAttempt.bucket_key.in_(candidates))
+        ).scalars()
+    )

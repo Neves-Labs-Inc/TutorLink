@@ -20,17 +20,30 @@ access token behind it expires. **The token is never read from the query string*
 (`api-design.md:1624`): a credential there is written into every proxy log, access log and
 browser history entry along the path, and it is the workaround this handshake exists to refuse.
 
-**The pump is one per process, and its death closes every socket in that process.**
-`broadcast_service.subscribe` raises rather than returning quietly, and this module has to
-translate that into closed sockets: a pump that ends while its sockets stay open, registered and
-silently receiving nothing looks perfectly healthy from the browser, and the contract's safety
-net (`api-design.md:1668-1673` — the socket is not a delivery guarantee, the client refetches on
-reconnect) only fires if something makes the client reconnect. Closing is what turns a silent
-stall into a reconnect-and-refetch.
+**The pump is one per process, and its death closes every socket in that process.** It holds
+this process's single `broadcast_service.listen()` — one dedicated PostgreSQL connection with
+`LISTEN chat_broadcast` on it — for as long as any socket is open here, and stops it when the
+last one goes. `listen` raises rather than returning quietly when that connection drops, and
+this module has to translate that into closed sockets: a pump that ends while its sockets stay
+open, registered and silently receiving nothing looks perfectly healthy from the browser, and
+the contract's safety net (`api-design.md:1668-1673` — the socket is not a delivery guarantee,
+the client refetches on reconnect) only fires if something makes the client reconnect. Closing
+is what turns a silent stall into a reconnect-and-refetch.
 
 `_sockets` is a lifecycle handle, not a fan-out registry: the fan-out is
-`broadcast_service`'s and reaches this process through Redis (**P7-K**), and what is kept here
-is only what `close()` needs, since an `EventSink` has no close.
+`broadcast_service`'s and reaches this process through PostgreSQL `LISTEN`/`NOTIFY` (**P7-K**),
+and what is kept here is only what `close()` needs, since an `EventSink` has no close.
+
+**Every frame the pump delivers is rebuilt here from the database.** A notice carries ids and
+not the payload — PostgreSQL refuses a `NOTIFY` of 8000 bytes or more and a WhatsApp body can
+exceed that on its own — so the pump reads the row the notice names and serialises it with
+`conversations.py`'s own `_read` and `_message`. The socket frame is therefore the object the
+REST refetch returns, by construction. The read runs off the event loop through
+`run_in_threadpool`, on a fresh session per notice for the reason given below, and ends its
+transaction before the session closes. A row that is gone by the time it is read (retention, a
+race with a delete) is skipped and the pump keeps serving; a read that **fails** is a database
+the pump cannot reach, and it ends the pump like a dropped `LISTEN` does — closing every socket
+is what sends the client to the refetch, where skipping would drop the event silently.
 
 **A `Session` per operation, not one per socket — divergence from §3's `DbSession` idiom.**
 That idiom is request-scoped and this route is not a request: a `Depends(get_db)` here holds
@@ -51,21 +64,21 @@ import contextlib
 import datetime
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
-from redis import Redis
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.dependencies import ADMIN_REQUIRED_ERROR, ADMIN_ROLES, CREDENTIALS_ERROR
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus
 from app.models.user import User
-from app.redis_client import get_redis
+from app.routers.conversations import _message, _read
 from app.schemas.conversation import UserRef
 from app.schemas.message import MessageRead
 from app.schemas.stream import (
@@ -77,17 +90,26 @@ from app.schemas.stream import (
 )
 from app.security import ACCESS_TOKEN_TYPE, TokenError, decode_token
 from app.services.broadcast_service import (
+    BroadcastEvent,
+    ConversationNotice,
+    ConversationUpdated,
     MessageCreated,
+    MessageNotice,
+    Notice,
     deliver,
-    get_async_redis,
+    listen,
     publish,
     register,
-    subscribe,
     unregister,
 )
 from app.services import conversation_service
 from app.services.conversation_service import ConversationNotFound
-from app.services.message_service import attach_twilio_sid, mark_failed, record_admin_message
+from app.services.message_service import (
+    attach_twilio_sid,
+    get_thread_message,
+    mark_failed,
+    record_admin_message,
+)
 from app.services.twilio_service import TwilioServiceError, send_whatsapp_message
 
 AUTH_REQUIRED_ERROR = "The first frame must be an auth frame"
@@ -106,7 +128,6 @@ PUMP_STOPPED_ERROR = "The live-update subscription stopped"
 AUTH_TIMEOUT_SECONDS = 10.0
 
 DbSession = Annotated[Session, Depends(get_db)]
-RedisClient = Annotated[Redis, Depends(get_redis)]
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +136,10 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 _sockets: set[WebSocket] = set()
 _pump: asyncio.Task[None] | None = None
 _subscribed: asyncio.Event | None = None
+
+# Where the pump's reads get their session. A seam so a test can hand it sessions that see the
+# rows the test wrote inside its own rolled-back transaction.
+_session_factory: Callable[[], Session] = SessionLocal
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,13 +159,13 @@ class _Admin:
 
 
 @router.websocket("/stream")
-async def conversation_stream(websocket: WebSocket, db: DbSession, redis: RedisClient) -> None:
+async def conversation_stream(websocket: WebSocket, db: DbSession) -> None:
     """Authenticate, then carry every broadcast event until the client or the token goes."""
     await websocket.accept()
     admin = await _authenticate(websocket, db)
 
     if admin is not None:
-        await _serve(websocket, db, redis, admin)
+        await _serve(websocket, db, admin)
 
 
 async def _authenticate(websocket: WebSocket, db: Session) -> _Admin | None:
@@ -217,14 +242,15 @@ def _resolve_admin(db: Session, token: str) -> _Admin | str:
     return resolved
 
 
-async def _serve(websocket: WebSocket, db: Session, redis: Redis, admin: _Admin) -> None:
+async def _serve(websocket: WebSocket, db: Session, admin: _Admin) -> None:
     """Register, subscribe, say `ready`, read frames, and leave nothing behind however it ends.
 
-    **`ready` is sent only once this process's subscription is confirmed.** `SUBSCRIBE` is
-    written to Redis without waiting for the server, so a socket told it was ready before the
-    confirmation came back would silently miss everything published in that window — the race
-    `broadcast_service.subscribe` exists to close, arriving one level up. `ready` means the
-    socket is receiving, and the first socket in a process is the one this matters to.
+    **`ready` is sent only once this process's `LISTEN` has executed.** PostgreSQL delivers a
+    notice only to a connection that was already listening when it was sent, so a socket told
+    it was ready before the `LISTEN` took effect would silently miss everything published in
+    that window — the race `broadcast_service.listen` closes by not yielding until then,
+    arriving one level up. `ready` means the socket is receiving, and the first socket in a
+    process is the one this matters to.
 
     The order is load-bearing on both sides. The socket is registered **before** the pump is
     ensured, so a socket that arrives while a dying pump is tearing down is one the pump's own
@@ -243,7 +269,7 @@ async def _serve(websocket: WebSocket, db: Session, redis: Redis, admin: _Admin)
             await _close(websocket, PUMP_STOPPED_ERROR, code=status.WS_1011_INTERNAL_ERROR)
         else:
             await websocket.send_json(ReadyFrame().model_dump())
-            await _read_frames(websocket, db, redis, admin)
+            await _read_frames(websocket, db, admin)
     except WebSocketDisconnect:
         pass
     finally:
@@ -251,7 +277,7 @@ async def _serve(websocket: WebSocket, db: Session, redis: Redis, admin: _Admin)
         await _stop_pump_if_idle()
 
 
-async def _read_frames(websocket: WebSocket, db: Session, redis: Redis, admin: _Admin) -> None:
+async def _read_frames(websocket: WebSocket, db: Session, admin: _Admin) -> None:
     """Read `send` frames until the client goes or the access token expires.
 
     The remaining lifetime of the token is the receive timeout, so an expired credential closes
@@ -271,7 +297,7 @@ async def _read_frames(websocket: WebSocket, db: Session, redis: Redis, admin: _
         frame = _parse(raw)
 
         if isinstance(frame, SendFrame):
-            failure = await run_in_threadpool(_send, db, redis, admin=admin, frame=frame)
+            failure = await run_in_threadpool(_send, db, admin=admin, frame=frame)
         elif isinstance(frame, AuthFrame):
             failure = UNEXPECTED_FRAME_ERROR
         else:
@@ -281,7 +307,7 @@ async def _read_frames(websocket: WebSocket, db: Session, redis: Redis, admin: _
             await websocket.send_json(ErrorFrame(detail=failure).model_dump())
 
 
-def _send(db: Session, redis: Redis, *, admin: _Admin, frame: SendFrame) -> str | None:
+def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> str | None:
     """Handle one `send`. Returns the `error` frame's detail, or `None` when it went out.
 
     A conversation the bot is still answering is refused and **nothing is recorded**: an admin
@@ -303,7 +329,7 @@ def _send(db: Session, redis: Redis, *, admin: _Admin, frame: SendFrame) -> str 
     elif conversation.status is not ConversationStatus.HUMAN:
         failure = NOT_TAKEN_OVER_ERROR
     else:
-        failure = _record_and_send(db, redis, admin=admin, frame=frame, conversation=conversation)
+        failure = _record_and_send(db, admin=admin, frame=frame, conversation=conversation)
 
     db.commit()
 
@@ -312,7 +338,6 @@ def _send(db: Session, redis: Redis, *, admin: _Admin, frame: SendFrame) -> str 
 
 def _record_and_send(
     db: Session,
-    redis: Redis,
     *,
     admin: _Admin,
     frame: SendFrame,
@@ -338,9 +363,11 @@ def _record_and_send(
     who were not looking, so a row left `queued` would be the system's only lasting answer to
     "did this go out" and it would be the wrong one.
 
-    The outbound frame is built **after** the send, so the status it carries is the status the
-    refetch will produce. The order of the writes is unchanged; only the moment the payload is
-    read off the row moves, and it moves to the last moment before the broadcast announces it.
+    **The broadcast goes out after the last commit, and that is what fixes the frame's
+    status.** The notice carries only the message's id and the pump rebuilds the frame from the
+    row, so whatever the row says when the pump reads it is what every admin sees — which is
+    the status the refetch will produce. Announcing before the final commit would let a pump in
+    another process read the row still `queued`, or not see the `failed` it is about to become.
     """
     message = record_admin_message(
         db,
@@ -374,7 +401,6 @@ def _record_and_send(
     db.commit()
 
     publish(
-        redis,
         MessageCreated(
             conversation_id=conversation_id,
             message=read.model_dump(mode="json"),
@@ -416,10 +442,11 @@ def _ensure_pump() -> asyncio.Event:
 async def _pump_events(subscribed: asyncio.Event) -> None:
     """Carry every published event to the sockets in this process, and close them when it ends.
 
-    Whatever ends this loop — a dropped Redis connection, a subscription Redis never confirmed,
-    or the iterator returning — every socket registered here is closed on the way out. See the
-    module docstring: a dead pump that leaves them open is the failure P7-K exists to prevent,
-    arriving from the other direction, and it is invisible from the browser.
+    Whatever ends this loop — the `LISTEN` connection dropping or failing its liveness probe, a
+    `LISTEN` that never executed, a rebuild whose read failed, or the iterator returning — every
+    socket registered here is closed on the way out. See the module docstring: a dead pump that
+    leaves them open is the failure P7-K exists to prevent, arriving from the other direction,
+    and it is invisible from the browser.
 
     Cancellation is the one ending that does not go through that, and must not: it is this
     module stopping its own pump because the last socket left, and there is nothing to close.
@@ -427,22 +454,74 @@ async def _pump_events(subscribed: asyncio.Event) -> None:
     never reached.
     """
     try:
-        async with subscribe(get_async_redis()) as events:
+        async with listen() as notices:
             subscribed.set()
 
-            async for event in events:
-                await deliver(event)
+            async for notice in notices:
+                event = await run_in_threadpool(_rebuild, notice)
+
+                if event is not None:
+                    await deliver(event)
 
         logger.error("the broadcast subscription ended; closing every socket in this process")
     except Exception:
         logger.exception("the broadcast subscription failed; closing every socket in this process")
 
-    # Set again in case the subscription never came up: a socket waiting to be told it is ready
+    # Set again in case the `LISTEN` never executed: a socket waiting to be told it is ready
     # must not wait on a pump that has already stopped. It reads the cleared handle below and
     # closes itself rather than serving nobody.
     subscribed.set()
     _forget_pump()
     await _close_every_socket()
+
+
+def _rebuild(notice: Notice) -> BroadcastEvent | None:
+    """The event a notice names, read back from the database. `None` if its row is gone.
+
+    Runs in a worker thread, on a session of its own, for the reasons the module docstring
+    gives. The commit persists nothing — this is a read — and is here to **end the
+    transaction** before the session closes, for `_resolve_admin`'s reason.
+    """
+    with _session_factory() as db:
+        if isinstance(notice, MessageNotice):
+            event = _message_created(db, notice)
+        else:
+            event = _conversation_updated(db, notice)
+
+        db.commit()
+
+    return event
+
+
+def _message_created(db: Session, notice: MessageNotice) -> MessageCreated | None:
+    row = get_thread_message(db, message_id=notice.message_id)
+
+    if row is None:
+        logger.info("skipped a broadcast for message %s, which no longer exists", notice.message_id)
+        event = None
+    else:
+        event = MessageCreated(
+            conversation_id=row.message.conversation_id,
+            message=_message(row).model_dump(mode="json"),
+            client_message_id=notice.client_message_id,
+        )
+
+    return event
+
+
+def _conversation_updated(db: Session, notice: ConversationNotice) -> ConversationUpdated | None:
+    try:
+        detail = conversation_service.get_detail(db, conversation_id=notice.conversation_id)
+    except ConversationNotFound:
+        logger.info(
+            "skipped a broadcast for conversation %s, which no longer exists",
+            notice.conversation_id,
+        )
+        event = None
+    else:
+        event = ConversationUpdated(conversation=_read(detail).model_dump(mode="json"))
+
+    return event
 
 
 def _forget_pump() -> None:
@@ -455,7 +534,7 @@ def _forget_pump() -> None:
 async def _stop_pump_if_idle() -> None:
     """Stop the subscriber once the last socket in this process has gone.
 
-    A subscription nobody is listening for is a held Redis connection and a task that outlives
+    A `LISTEN` nobody is reading for is a held database connection and a task that outlives
     every reason it existed, so the pump's lifetime is the sockets' lifetime.
     """
     if not _sockets and _pump is not None:

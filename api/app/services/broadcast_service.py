@@ -28,7 +28,7 @@ buy no filtering and would add a subscription lifecycle to get wrong.
 **A notice carries ids, never the payload.** PostgreSQL refuses a `NOTIFY` payload of 8000
 bytes or more, and a WhatsApp body alone can exceed that once it is UTF-8 encoded, so a
 `MessageCreated` that carried its message would be refused for exactly the long messages an
-admin most needs to see. `publish` sends `{type, id, client_message_id}` instead, and the one
+admin most needs to see. `publish` sends `{type, message_id, client_message_id}` or `{type, conversation_id}` instead, and the one
 subscriber in each process — the socket route's pump — reads the row back and rebuilds the
 event with the same functions `GET /api/conversations/...` serialises with. That makes the
 socket frame identical to what the REST refetch returns, by construction rather than by two
@@ -164,9 +164,7 @@ class ConversationNotice(_Notice):
 
 type Notice = MessageNotice | ConversationNotice
 
-_notice_adapter: TypeAdapter[Notice] = TypeAdapter(
-    Annotated[Notice, Field(discriminator="type")]
-)
+_notice_adapter: TypeAdapter[Notice] = TypeAdapter(Annotated[Notice, Field(discriminator="type")])
 
 
 class EventSink(Protocol):
@@ -194,7 +192,9 @@ def publish(event: BroadcastEvent) -> None:
         with _notify_engine().begin() as connection:
             connection.execute(_NOTIFY, {"channel": CHANNEL, "payload": payload})
     except SQLAlchemyError:
-        logger.exception("dropped a %s broadcast: the notify did not reach the database", event.type)
+        logger.exception(
+            "dropped a %s broadcast: the notify did not reach the database", event.type
+        )
 
 
 @asynccontextmanager

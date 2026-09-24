@@ -162,9 +162,7 @@ def read_thread(
 
 
 @router.post("/{conversation_id}/takeover", response_model=ConversationRead)
-def take_over(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
-) -> ConversationRead:
+def take_over(conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> ConversationRead:
     try:
         detail = claim(db, conversation_id=conversation_id, user_id=user.id)
     except ConversationNotFound as exc:

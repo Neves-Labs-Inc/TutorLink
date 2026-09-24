@@ -36,6 +36,7 @@ from app.services.conversation_service import ConversationNotFound
 from app.services.message_service import (
     advance_status,
     attach_twilio_sid,
+    get_thread_message,
     list_thread,
     mark_failed,
     record_admin_message,
@@ -301,6 +302,41 @@ def test_a_thread_for_an_unknown_conversation_is_not_found(db: Session) -> None:
     """An empty page would be a 200 for a conversation nobody has; the route owes a 404."""
     with pytest.raises(ConversationNotFound):
         list_thread(db, conversation_id=uuid.uuid4(), before=None, limit=20, offset=0)
+
+
+def test_one_message_reads_back_with_the_admin_who_typed_it(db: Session) -> None:
+    """The socket rebuilds `message.created` from this, so it must carry what `list_thread`
+    carries for the same row — the author included — or the frame and the refetch disagree."""
+    conversation = _make_conversation(db)
+    admin = _make_user(db)
+    message = record_admin_message(
+        db, conversation=conversation, body="typed", author_user_id=admin.id, twilio_sid=None
+    )
+
+    found = get_thread_message(db, message_id=message.id)
+    items, _ = list_thread(db, conversation_id=conversation.id, before=None, limit=20, offset=0)
+
+    assert found is not None
+    assert (found.message.id, found.author) == (message.id, admin)
+    assert found == items[0]
+
+
+def test_a_clients_message_reads_back_with_no_author(db: Session) -> None:
+    conversation = _make_conversation(db)
+    message = record_inbound(
+        db, conversation=conversation, body="question", twilio_sid=_twilio_sid()
+    )
+
+    found = get_thread_message(db, message_id=message.id)
+
+    assert found is not None
+    assert (found.message.id, found.author) == (message.id, None)
+
+
+def test_an_unknown_message_reads_back_as_none(db: Session) -> None:
+    """A notice can name a row retention deleted after it was sent; that is a value, not a
+    `ConversationNotFound`-style error the pump would have to catch."""
+    assert get_thread_message(db, message_id=uuid.uuid4()) is None
 
 
 def test_the_service_owns_no_http_and_no_transaction() -> None:

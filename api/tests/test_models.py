@@ -19,6 +19,8 @@ EXPECTED_TABLES = {
     "system_settings",
     "conversations",
     "messages",
+    "login_attempts",
+    "bot_flow_state",
 }
 
 NON_ERD_TABLES = {

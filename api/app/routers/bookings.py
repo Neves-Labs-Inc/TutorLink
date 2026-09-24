@@ -15,7 +15,7 @@ from app.db import get_db
 from app.dependencies import Principal, TutorScope, assert_can_access_tutor
 from app.models.booking import Booking
 from app.models.enums import BookingStatus
-from app.schemas.booking import BookingDetail, BookingSummary, HomeRef, NamedRef
+from app.schemas.booking import BookingChild, BookingDetail, BookingSummary, HomeRef, NamedRef
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.booking_service import (
     BookingFilters,
@@ -37,6 +37,7 @@ def list_bookings_route(
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     subject_id: uuid.UUID | None = None,
+    child_id: uuid.UUID | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -52,6 +53,7 @@ def list_bookings_route(
         date_from=date_from,
         date_to=date_to,
         subject_id=subject_id,
+        child_id=child_id,
     )
 
     bookings, total = list_bookings(
@@ -99,7 +101,7 @@ def _summary(row: Booking) -> BookingSummary:
 def _detail(row: Booking) -> BookingDetail:
     return BookingDetail(
         id=row.id,
-        child=NamedRef(id=row.child.id, name=row.child.name),
+        child=BookingChild(id=row.child.id, name=row.child.name, notes=row.child.notes),
         tutor=NamedRef(id=row.tutor.id, name=row.tutor.name),
         subject=NamedRef(id=row.subject.id, name=row.subject.name),
         scheduled_date=row.scheduled_date,

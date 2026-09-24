@@ -541,7 +541,9 @@ def test_declining_the_notes_question_stores_null_without_a_re_prompt(
 
 
 def test_the_notes_question_does_not_promise_a_tutor_will_read_it() -> None:
-    """A-43: notes are admin-only, so the copy must not tell a parent a tutor will see them."""
+    """A-43 is reversed — the assigned tutor now sees a child's notes on the session detail
+    (7C TN) — but the parent-facing copy is deliberately left neutral (OQ-88), so it still
+    names no tutor."""
     assert "tutor" not in bot_service.ASK_CHILD_NOTES.casefold()
 
 
@@ -860,6 +862,90 @@ def test_a_guardian_sees_only_the_children_they_are_linked_to(
 
     assert "Someone Elses Child" not in turn.reply
     assert db.get(Child, other.child_id).name == "Someone Elses Child"
+
+
+def test_an_inactive_child_beside_an_active_one_is_never_offered(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """REQ-114. One active child left means the child question is skipped outright, so the
+    inactive one is neither listed nor silently picked."""
+    _add_child(db, client, name="Retired Child", is_active=False)
+    chat.say("hi")
+
+    turn = chat.say("book", intent=BotIntent.BOOK)
+
+    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert chat.step == bot_service.STEP_BOOK_SUBJECT
+    assert chat.state.collected_data["book_child_id"] == str(client.child_id)
+    assert all("Retired Child" not in reply.reply for reply in chat.replies)
+
+
+def test_the_which_child_list_leaves_out_an_inactive_child(
+    chat: Chat, db: Session, client: ClientWorld
+) -> None:
+    """REQ-114 where there is a list to leave it out of."""
+    _add_child(db, client, name="Robin Guardian")
+    _add_child(db, client, name="Retired Child", is_active=False)
+    chat.say("hi")
+
+    turn = chat.say("book", intent=BotIntent.BOOK)
+
+    assert turn.reply.startswith(bot_service.ASK_WHICH_CHILD)
+    assert "Sam Guardian" in turn.reply
+    assert "Robin Guardian" in turn.reply
+    assert "Retired Child" not in turn.reply
+
+
+@pytest.mark.parametrize("retirement", ["unlinked", "deactivated"])
+def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
+    chat: Chat, db: Session, client: ClientWorld, retirement: str
+) -> None:
+    """REQ-114, P7C-Q: the `NO_CHILDREN_YET` add-a-child path, identical for both. Phase 7D
+    (REQ-132, SA-27) swaps the deactivated case's reply to `NO_ACTIVE_CHILDREN`."""
+    child = db.get_one(Child, client.child_id)
+
+    if retirement == "unlinked":
+        db.delete(
+            db.execute(
+                select(ChildGuardian).where(ChildGuardian.child_id == client.child_id)
+            ).scalar_one()
+        )
+    else:
+        child.is_active = False
+
+    db.flush()
+    chat.say("hi")
+
+    turn = chat.say("book", intent=BotIntent.BOOK)
+
+    assert turn.reply == f"{bot_service.NO_CHILDREN_YET} {bot_service.ASK_CHILD_REGISTERED}"
+    assert chat.step == bot_service.STEP_CHILD_REGISTERED
+    assert child.name not in turn.reply
+
+
+def test_a_child_deactivated_after_the_offer_is_refused_at_the_write_without_raising(
+    chat: Chat, db: Session, monkeypatch: pytest.MonkeyPatch, world: BotWorld, client: ClientWorld
+) -> None:
+    """The race between the offer and the booking write. `booking_write_service` refuses a
+    retired child with `BookingReferenceNotFound`, which the bot catches through the
+    `BookingWriteError` base: a reply, a stuck flag for an admin, and nothing written."""
+
+    def retired(
+        session: Session,
+        *,
+        request: booking_write_service.BookingRequest,
+        now: datetime.datetime,
+    ) -> Booking:
+        raise booking_write_service.BookingReferenceNotFound()
+
+    monkeypatch.setattr(booking_write_service, "create_booking", retired)
+
+    turn = _book(chat, world)
+
+    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.flag_reason is FlagReason.STUCK
+    assert chat.step is None
+    assert _count(db, Booking) == 0
 
 
 # --- cancel and reschedule (REQ-075, P7-O) ------------------------------------------------------
@@ -1487,6 +1573,28 @@ def _make_client(
     db.flush()
 
     return ClientWorld(guardian_id=guardian.id, child_id=child.id, home_id=home.id)
+
+
+def _add_child(db: Session, client: ClientWorld, *, name: str, is_active: bool = True) -> Child:
+    """A sibling linked to the same guardian and home as `client`'s child."""
+    child = Child(
+        name=name,
+        date_of_birth=datetime.date(2015, 3, 9),
+        grade_level=6,
+        school_name="Test School",
+        is_active=is_active,
+    )
+    db.add(child)
+    db.flush()
+    db.add_all(
+        [
+            ChildHome(child_id=child.id, home_id=client.home_id),
+            ChildGuardian(child_id=child.id, guardian_id=client.guardian_id),
+        ]
+    )
+    db.flush()
+
+    return child
 
 
 def _add_home(db: Session, client: ClientWorld, *, label: str, address: str) -> Home:

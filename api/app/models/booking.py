@@ -4,12 +4,15 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
+    ColumnElement,
     Date,
     ForeignKey,
     Index,
     Text,
     Time,
+    and_,
     literal_column,
+    or_,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID, ExcludeConstraint
@@ -33,6 +36,17 @@ LIVE_BOOKING_STATUS_PREDICATE = "status IN ({})".format(
 )
 BOOKING_RANGE_EXPRESSION = "tsrange(scheduled_date + start_time, scheduled_date + end_time)"
 BOOKING_TIME_ORDER_PREDICATE = "end_time > start_time"
+
+
+def upcoming_live_bookings(now: datetime.datetime) -> ColumnElement[bool]:
+    """Live, and starting after `now` (naive UTC). The one definition of "upcoming" (P7C-T)."""
+    return and_(
+        Booking.status.in_(LIVE_BOOKING_STATUSES),
+        or_(
+            Booking.scheduled_date > now.date(),
+            and_(Booking.scheduled_date == now.date(), Booking.start_time > now.time()),
+        ),
+    )
 
 
 class Booking(HasID, HasTimestamps, Base):

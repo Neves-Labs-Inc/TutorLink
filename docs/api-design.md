@@ -59,16 +59,19 @@ A value that is not a boolean is **400**, with the usual `{"detail": "<string>"}
 
 `total` counts matches of the **filtered** query, before paging. A default request reporting `"total": 42` is reporting 42 *active* rows — a dashboard rendering that number is showing a count of active clients, not of clients. This follows from the envelope section's own `total` rule above; it is worth stating separately because it is the sentence a dashboard bug comes from.
 
-**The four collection endpoints this governs, named:** `GET /api/users`, `GET /api/tutors`, `GET /api/subjects`, `GET /api/clients` — every collection whose resource carries an `is_active` column. It is stated once here rather than on each because a rule written four times reads four different ways, and a dashboard table cannot explain to a user why one screen hides deactivated rows and another does not.
+**The five collection endpoints this governs, named:** `GET /api/users`, `GET /api/tutors`, `GET /api/subjects`, `GET /api/clients`, `GET /api/children` — every collection whose resource carries an `is_active` column. It is stated once here rather than on each because a rule written five times reads five different ways, and a dashboard table cannot explain to a user why one screen hides deactivated rows and another does not.
 
 **Fetching one row by id ignores the flag.** `GET /api/{resource}/{id}` takes no `?is_active` and returns the row whatever its flag, and where the response carries `is_active` it reports the real state (not every by-id response documents the field today, so a caller that must distinguish a deactivated row needs it added to that endpoint's schema first). Three reasons: an id is an address and not a query, so there is no set to filter; the admin surface that deactivated a row is the surface that must be able to open it again in order to reactivate it; and a 404 for a deactivated row would make a soft delete indistinguishable from a hard one, which is the entire distinction the flag exists to draw. This is not the 403-not-404 rule from [Role-Based Access Control](#role-based-access-control-rbac) wearing a different hat — that rule is about *denial*, and a deactivated row is a state the response reports rather than something withheld.
 
 **Two resources carry `is_active` and are deliberately outside this rule:**
 
 - `tutor_availability` — `GET /api/tutors/{id}/availability` returns the tutor's full weekly schedule, inactive slots included, because this endpoint's purpose is to feed an availability editor, and an editor that hid disabled slots by default would leave them unreachable for re-enabling. Unlike the four collection endpoints above, this one deliberately does not filter. `PATCH /api/availability/{id}` toggles the flag.
-- `homes` — homes are returned nested inside `GET /api/clients/{id}` and have no collection endpoint of their own. A nested list inside a single-resource response is not a list endpoint and this rule does not reach it.
+- `homes` — homes are returned nested inside `GET /api/clients/{id}` and have no collection endpoint of their own; they are written through `POST /api/clients/{id}/homes` and `PATCH /api/homes/{id}`. A nested list inside a single-resource response is not a list endpoint and this rule does not reach it.
+- `GET /api/households` is not a soft-delete list: it has no `?is_active` and always includes inactive guardians and children, each carrying its flag.
 
-**Some resources carry no flag at all, and that is also deliberate: junctions, plus these entities.** Junction tables are hard deleted and carry no `is_active`: `child_guardians`, `child_homes`, `guardian_homes`, `tutor_subjects`. A junction is a link rather than an entity, so unlinking a guardian after a custody change is a `DELETE` that takes effect immediately. `children` carries no flag either. Neither does `tutor_availability_exceptions`: `DELETE /api/exceptions/{id}` really erases the row, because a time-off request that was withdrawn or refused has no state worth keeping. Do not add one to any of them to make the rule look uniform — the rule is about entities an admin retires, and a link that still exists is a claim that is still true.
+**Some resources carry no flag at all, and that is also deliberate: junctions, plus `tutor_availability_exceptions`.** Junction tables are hard deleted and carry no `is_active`: `child_guardians`, `child_homes`, `guardian_homes`, `tutor_subjects`. A junction is a link rather than an entity, so unlinking a guardian after a custody change is a `DELETE` that takes effect immediately. Neither does `tutor_availability_exceptions` carry one: `DELETE /api/exceptions/{id}` really erases the row, because a time-off request that was withdrawn or refused has no state worth keeping. Do not add one to the junctions or to `tutor_availability_exceptions` to make the rule look uniform — the rule is about entities an admin retires, and a link that still exists is a claim that is still true.
+
+`children` gained `is_active` by decision on 2026-09-23: a child who stops tutoring is retired, not deleted — its links and booking history stay.
 
 ---
 
@@ -278,6 +281,12 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `POST/PATCH /api/bookings` | ✓ | ✓ | ✗ |
 | `GET /api/slots/available` | ✓ | ✓ | ✗ |
 | `GET /api/clients` | ✓ | ✓ | ✗ |
+| `POST/PATCH /api/clients` | ✓ | ✓ | ✗ |
+| `POST /api/clients/{id}/homes`, `PATCH /api/homes/{id}` | ✓ | ✓ | ✗ |
+| `GET /api/children` | ✓ | ✓ | ✗ |
+| `GET /api/children/{id}` | ✓ | ✓ | ✗ |
+| `POST/PATCH /api/children`, `POST /api/children/{id}/guardians` | ✓ | ✓ | ✗ |
+| `GET /api/households` | ✓ | ✓ | ✗ |
 | `GET /api/conversations` | ✓ | ✓ | ✗ |
 | `GET /api/conversations/{id}` | ✓ | ✓ | ✗ |
 | `GET /api/conversations/{id}/messages` | ✓ | ✓ | ✗ |
@@ -298,9 +307,12 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 
 > The two webhook rows carry no auth dependency and no role check — Twilio calls them directly, with no user session behind the request. The `X-Twilio-Signature` validation described under each endpoint is the control that stands in its place: it is not an omission for a future task to close by adding one.
 
-> A child's `date_of_birth` and `notes` appear only on `/api/children` and `/api/clients/*`, which
-> tutors cannot call. Every response a tutor can reach — bookings, sessions — carries a child as
-> `{id, name}` and nothing more.
+> A child's `date_of_birth` appears only on `/api/children` and `/api/clients/*`, which tutors
+> cannot call. A child's `notes` appear there and in exactly one place a tutor can reach:
+> `child.notes` on [`GET /api/bookings/{id}`](#get-apibookingsid), for the tutor assigned to that
+> booking — learning needs and allergies are what the person in the room needs to know. Every
+> other response a tutor can reach, the bookings list included, carries a child as `{id, name}`.
+> No response a tutor can reach carries a date of birth or an age.
 
 ### Settings
 
@@ -695,7 +707,7 @@ The value is normalised the same way a `POST`/`PATCH` body is before it is compa
 
 `home_count` and `child_count` are additive fields carried on every item, always present and `0` when there are none — the same shape `tutor_count` takes on [`GET /api/subjects`](#get-apisubjects). The dashboard's client list renders them as columns.
 
-**The two counts apply different predicates, and that is deliberate.** `home_count` counts only homes with `is_active = true`; `child_count` counts every linked child, because `children` carries no `is_active` column at all and [must not be given one](#soft-deletes-and-the-is_active-filter). Making the two "consistent" is not possible in one direction and not correct in the other.
+**The two counts apply different predicates, and that is deliberate.** `child_count` counts every linked child, active or inactive; `home_count` counts only active homes. The asymmetry is deliberate: the count answers "how many children has this guardian had registered", and no screen reads it as "how many can be booked".
 
 Both are computed as correlated scalar subqueries rather than joins. A join over `guardian_homes` would multiply the guardian row and turn `total` into a count of links rather than of clients, which [List responses — the page envelope](#list-responses--the-page-envelope) does not permit. A future count added here follows the same rule.
 
@@ -730,7 +742,8 @@ Carries `is_active`, reporting the real state whatever it is — see [Soft delet
       "date_of_birth": "2014-05-02",
       "grade_level": 7,
       "school_name": "Lincoln Middle School",
-      "notes": null
+      "notes": null,
+      "is_active": true
     }
   ]
 }
@@ -740,7 +753,7 @@ A child registered before date of birth replaced age has `"date_of_birth": null`
 
 The nested `homes` list carries `is_active` and returns **every** linked home, deactivated ones included — a nested list inside a single-resource response is not a list endpoint and the collection filter does not reach it, as [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) states. The field is what lets a caller tell which of these homes `home_count` on [`GET /api/clients`](#get-apiclients) left out, since that count excludes the inactive ones. `homes` is an entity table with its own identity and is not a junction: `child_homes` and `guardian_homes` are the junctions, and they correctly carry no flag.
 
-`homes` and `children` are two flat, uncorrelated lists: this response does not say which home a given child is tutored at. That is a known limitation of the shape rather than an omission from it — a caller choosing a home for a booking must let `POST /api/bookings` rule 6 adjudicate, which refuses a home the child does not live at with **422**.
+The nested lists do not say which home a given child is tutored at or which other guardians it has; [`GET /api/children/{id}`](#get-apichildrenid) does. A caller choosing a home for a booking reads the child, and `POST /api/bookings` rule 6 still adjudicates.
 
 ### `POST /api/clients`
 
@@ -769,7 +782,7 @@ A 409 here is a bug or a lost race, not a normal path: the bot resolves returnin
 
 ### `PATCH /api/clients/{id}`
 
-Update client info (name, active status, phone number). Address and access code belong to a home and are edited through the home, not here.
+Update client info (name, active status, phone number). Address and access code belong to a home and are edited through [`PATCH /api/homes/{id}`](#patch-apihomesid), not here.
 
 `phone_number` may be updated — a guardian changes handset, or the number was mistyped at intake. The edit moves `guardians.phone_number` only. It does **not** move the client's existing conversation thread, which stays on the number it was actually held with; the next inbound message from the new number opens a second thread carrying the same client. See [`conversations`](../docs/erd.md#conversations).
 
@@ -781,11 +794,107 @@ Returns all bookings for a client across all their children, in the standard pag
 
 ---
 
+## Homes
+
+```
+POST   /api/clients/{id}/homes
+PATCH  /api/homes/{id}
+```
+
+### `POST /api/clients/{id}/homes`
+
+Add a home to an existing client — a guardian who moved, or a separated guardian's second
+address — and optionally say which of the client's children are tutored there.
+
+**Request**
+```json
+{ "label": "Dad's", "address": "9 Elm St", "access_code": "4321", "child_ids": ["uuid"] }
+```
+
+`label` is optional and a blank one is stored as `null`; `address` and `access_code` must not
+be blank (**400**). `child_ids` is optional; each must be a child linked to this client, or the
+request is **400** and nothing is written. The home is created active and linked to the client
+and to each named child. An unknown client is **404**. Returns the home, `201`, in the nested
+home shape.
+
+### `PATCH /api/homes/{id}`
+
+Edit a home's `label`, `address` or `access_code`, or deactivate and reactivate it with
+`is_active`. There is no `DELETE`: a home is deactivated, never erased, because bookings point
+at it.
+
+An absent field is left alone. `label: ""` clears the label; a blank `address` or
+`access_code` is **400**. Deactivating a home that still has a `pending` or `confirmed`
+booking that starts after now (UTC) is refused with **409**
+`Home has upcoming bookings; cancel or move them first`, and nothing in the request is
+applied — a deactivated home cannot be booked, and a live session would otherwise send a tutor
+to an address the family has left. Links to children and guardians are never changed here. An
+unknown home is **404**.
+
+---
+
 ## Children
 
 ```
+GET    /api/children
+GET    /api/children/{id}
 POST   /api/children
 PATCH  /api/children/{id}
+POST   /api/children/{id}/guardians
+```
+
+### `GET /api/children`
+
+Returns children, active by default. See [Soft deletes and the `is_active` filter](#soft-deletes-and-the-is_active-filter) for `?is_active=`. Also supports `?q=` and paging.
+
+`q` is trimmed; blank means no filter. It is a case-insensitive substring match against the
+child's name or the name of any linked guardian. `%`, `_` and `\` typed by a user match
+themselves rather than acting as wildcards, the same rule `?q=` follows on
+[`GET /api/clients`](#get-apiclients).
+
+Ordered by `Child.name`, then `Child.id`.
+
+`guardians` lists every linked guardian, active or not, ordered by name then id. `homes` lists
+only the child's **active** homes, ordered by creation. `next_session` is the child's earliest
+booking that is live and starts after now (UTC) — `null` when there is none.
+
+**Response**
+```json
+{
+  "items": [
+    {
+      "id": "uuid", "name": "Tommy Doe", "grade_level": 7, "school_name": "Lincoln Middle School",
+      "is_active": true,
+      "guardians": [{ "id": "uuid", "name": "Jane Doe" }, { "id": "uuid", "name": "John Doe" }],
+      "homes": [{ "id": "uuid", "label": "Mum's", "address": "123 Main St", "is_active": true }],
+      "next_session": {
+        "id": "uuid", "scheduled_date": "2026-10-05", "start_time": "09:00:00", "end_time": "10:00:00",
+        "tutor": { "id": "uuid", "name": "Sarah Miller" }, "subject": { "id": "uuid", "name": "Math" }
+      }
+    }
+  ],
+  "total": 1, "page": 1, "page_size": 20
+}
+```
+
+### `GET /api/children/{id}`
+
+An unknown id is **404** `Child not found`. The flag is ignored, as with every by-id fetch.
+
+`upcoming_session_count` is the number of the child's bookings that are live and start after now
+(UTC) — exactly the set a deactivation would cancel.
+
+`guardians` is ordered by name then id. `homes` lists **every** linked home, deactivated ones
+included, each carrying `is_active` and `access_code`, ordered by creation.
+
+**Response**
+```json
+{
+  "id": "uuid", "name": "Tommy Doe", "date_of_birth": "2014-05-02", "grade_level": 7,
+  "school_name": "Lincoln Middle School", "notes": null, "is_active": true, "upcoming_session_count": 2,
+  "guardians": [{ "id": "uuid", "name": "Jane Doe", "phone_number": "+12025550123", "is_active": true }],
+  "homes": [{ "id": "uuid", "label": "Mum's", "address": "123 Main St", "access_code": "1234", "is_active": true }]
+}
 ```
 
 ### `POST /api/children`
@@ -808,7 +917,8 @@ Create a child, linked to one or more guardians and one or more homes. Called by
 `date_of_birth` is required and must be a real calendar date between `1900-01-01` and today;
 anything else is **400** `date_of_birth must be a real date between 1900-01-01 and today`.
 `notes` is optional, at most 2000 characters, and a blank value is stored as `null`.
-`grade_level` stays an integer ≥ 1 and `school_name` stays required.
+`grade_level` stays an integer ≥ 1 and `school_name` stays required. A new child is always
+active — there is no `is_active` field on this request.
 
 **Response** (`201`, and the same shape from `PATCH`):
 ```json
@@ -819,6 +929,7 @@ anything else is **400** `date_of_birth must be a real date between 1900-01-01 a
   "grade_level": 7,
   "school_name": "Lincoln Middle School",
   "notes": "Peanut allergy",
+  "is_active": true,
   "guardian_ids": ["uuid"],
   "home_ids": ["uuid"]
 }
@@ -829,6 +940,109 @@ anything else is **400** `date_of_birth must be a real date between 1900-01-01 a
 Update child info. Every field is optional and an absent field is left as it is. `notes: ""`
 clears the notes; `date_of_birth` can be corrected but not cleared. `guardian_ids` / `home_ids`,
 when present, replace the link set.
+
+`is_active: false` deactivates the child; `true` reactivates it.
+
+**Deactivation cancels the child's upcoming sessions.** With `is_active: false`, the child's
+bookings that are live and start after now (UTC) are found. If there are any and
+`expected_cancellations` is absent or does not match their number, the request is refused with
+**409** `Upcoming sessions changed; review them and confirm again` and nothing is applied.
+Otherwise each of those bookings is cancelled in the same transaction as the deactivation. **No
+notification of any kind is sent** — no WhatsApp to the guardians, no notice to the tutor. With
+no upcoming sessions, `expected_cancellations` is ignored. Deactivating a child that is already
+inactive cancels nothing.
+
+**Removing a home a child has an upcoming session at is refused.** A `home_ids` set that drops a
+home at which the child has a booking that is live and starts after now (UTC) is **409**
+`Child has upcoming bookings at a home being removed; cancel or move them first`, and nothing is
+applied. Removing a guardian is not guarded beyond the existing "at least one guardian, at least
+one home" rule.
+
+**Check order:** unknown child (404) → `date_of_birth` (400) → an unknown guardian or home id
+(400) → the home-unlink guard (409) → the deactivation count check (409) → apply, cancelling
+sessions before assigning fields and links. Nothing is written before every check has passed.
+
+Response: `ChildRead`, with `is_active`.
+
+### `POST /api/children/{id}/guardians`
+
+Link another guardian to an existing child — the second parent of a separated family. This is
+how an admin fulfils a `guardian_link_request` flag: the bot never links a second guardian
+itself (see [`POST /webhook/whatsapp`](#post-webhookwhatsapp)).
+
+**Request** — exactly one of `guardian_id` or `guardian`:
+```json
+{ "guardian_id": "uuid", "home_ids": ["uuid"] }
+{ "guardian": { "name": "John Doe", "phone_number": "+1987654321" }, "home_ids": [] }
+```
+
+`guardian_id` names an existing client (**400** if it does not). `guardian` creates one in the
+same request, under the rules of `POST /api/clients` — an unparseable number is **400** and a
+number any client already holds is **409** `A client with that phone number already exists`;
+it is never an upsert. Both or neither is **400**. A guardian already linked to the child is
+**409**. An unknown child is **404**.
+
+`home_ids` chooses which of the child's **active** homes also become this guardian's own
+homes (`guardian_homes`); any other id is **400**. It may be empty. It does not change which
+homes the child is tutored at, and it does not limit where this guardian may book the child:
+[booking rule 6](#post-apibookings) checks a booking's home against the child, never against the
+booking guardian.
+
+Everything is one transaction. Returns the child, `201`, in the `POST /api/children` response
+shape.
+
+---
+
+## Households
+
+```
+GET    /api/households
+```
+
+### `GET /api/households`
+
+Admin-only, and **not** a [soft-delete list](#soft-deletes-and-the-is_active-filter): there is no
+`?is_active` parameter and inactive guardians and children are always included, each carrying its
+own flag.
+
+**Household** = a connected component of the bipartite graph guardians ⟷ children over
+`child_guardians`. A guardian with no links is a household of one. A child enters only through a
+link — the API refuses a child with no guardian.
+
+Within a household, guardians are ordered by `(name, id)` case-insensitively and children the
+same way. `key` is the first guardian's id — a render key for the card, not an address to fetch
+by. Households themselves are ordered by their first guardian's name, case-insensitively, then id.
+
+`q` is trimmed; blank means no filter. A household matches when **any** member matches: a
+guardian's or a child's name contains `q` case-insensitively, or — when `q` with spaces, `+`,
+`-`, `(`, `)` and `.` removed is non-empty and all digits — a guardian's phone number, with every
+non-digit removed, contains those digits. The whole matching household is returned. `%` and `_`
+have no special meaning here; the match happens in Python, not in SQL.
+
+`total` counts matching households, before paging, and a household is never split across a page
+boundary.
+
+Computed on the server, in memory, per request, from three narrow reads (guardians, children,
+`child_guardians`) rather than stored on a `household_id` column: the value is fully derivable,
+and a stored column would need merge/split maintenance on every link write. This stays
+comfortable at the system's realistic scale.
+
+**Response**
+```json
+{
+  "items": [
+    {
+      "key": "uuid",
+      "guardians": [
+        { "id": "uuid", "name": "Jane Doe", "phone_number": "+12025550123", "is_active": true },
+        { "id": "uuid", "name": "John Doe", "phone_number": "+12025550199", "is_active": false }
+      ],
+      "children": [{ "id": "uuid", "name": "Tommy Doe", "grade_level": 7, "is_active": true }]
+    }
+  ],
+  "total": 1, "page": 1, "page_size": 20
+}
+```
 
 ---
 
@@ -1204,7 +1418,10 @@ PATCH  /api/bookings/{id}
 
 ### `GET /api/bookings`
 
-Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&from=2026-08-01&to=2026-08-31`
+Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&child_id=uuid&from=2026-08-01&to=2026-08-31`
+
+`?child_id=` filters to one child's bookings. It composes with every filter above and with the
+tutor scope on a tutor token; an unknown id returns an empty page, never a **404**.
 
 **`?status=` may be repeated**, and repeated values are ORed: `?status=pending&status=confirmed` returns every booking in either status. A single `?status=confirmed` is the one-element case and means what it has always meant, and omitting `status` still returns every status. Repetition rather than a comma-separated list, because every filter in this contract carries one value per key: a comma inside a value slot would need an escaping rule that then has to be documented for every parameter, and a repeated key needs none. This is the first multi-value parameter in this contract, and the form is chosen here rather than improvised later.
 
@@ -1237,6 +1454,8 @@ Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&from=
 ### `GET /api/bookings/{id}`
 
 Returns full detail for a single booking, including the address and access code of **the booking's home** — not the guardian's. Once a child has two homes those are different things, and resolving through the guardian returns the wrong house whenever a session is at the other one.
+
+`child` carries the child's current `notes` as well as `id` and `name` — `{ "id": "uuid", "name": "Tommy Doe", "notes": "Peanut allergy" }` — so the tutor assigned to the session knows about learning needs and allergies before arriving. It is the child's notes as they are now, not a copy taken when the booking was made, whatever the booking's status, and the same for every caller who may read the booking. The date of birth is not included. A tutor reading another tutor's booking is refused with **403**, as everywhere else. [`GET /api/bookings`](#get-apibookings) does not carry notes.
 
 ### `POST /api/bookings`
 
@@ -1334,7 +1553,7 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
 
 `home_id` is **required** — `bookings.home_id` is `NOT NULL` and rule 6 validates it against the child's `child_homes` rows. It is not derivable once a child has two homes, which is the case the column exists for. `booked_by_guardian_id` is optional and `null` is the admin path; when present, rule 7 validates it against `child_guardians`.
 
-**Which `is_active` this endpoint honours.** A `tutor_id`, `subject_id`, `home_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a tutor `GET /api/slots/available` has already stopped offering. That 400 is deliberately not one of the 422s below — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `children` is absent from this list because it carries no `is_active` at all, and `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
+**Which `is_active` this endpoint honours.** A `tutor_id`, `subject_id`, `home_id`, `child_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a tutor `GET /api/slots/available` has already stopped offering. That 400 is deliberately not one of the 422s below — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
 
 **Response**
 ```json

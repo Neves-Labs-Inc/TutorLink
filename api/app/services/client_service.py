@@ -239,8 +239,8 @@ def _substring_pattern(raw: str | None) -> str | None:
     return pattern
 
 
-# `homes` carries `is_active`, so a deactivated home is not counted; `children` has no such
-# column (`models/child.py`), so every linked child is. The two subqueries are scalar and
+# `homes` carries `is_active`, so a deactivated home is not counted; `child_count` counts every
+# linked child, active or not, by decision P7C-N. The two subqueries are scalar and
 # correlated rather than joined: a join over `guardian_homes` would multiply the guardian row
 # and turn `total` into a count of links (CONSTITUTION §8).
 #

@@ -114,7 +114,8 @@ A child belongs to one or more guardians, through `child_guardians`, and is tuto
 | date_of_birth | DATE | nullable — required on every write; NULL only on rows registered before age was replaced (migration 0015) |
 | grade_level | INT | The child's grade, as a number — 7, not "Grade 7" |
 | school_name | VARCHAR | School the child attends |
-| notes | TEXT | nullable — learning needs, allergies, anything the office should know. Admin-only |
+| notes | TEXT | nullable — learning needs, allergies, anything the office should know. Admins, and the assigned tutor on the session detail |
+| is_active | BOOLEAN | Soft delete flag — default true (migration 0016) |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
@@ -125,9 +126,14 @@ later. It could not be converted: rows registered before the change keep a NULL
 `date_of_birth` rather than an invented one, and an admin fills it in. A child's current age is
 derived for display and never stored.
 
-`notes` is visible to admins only. No response a tutor can reach carries it; a tutor sees a
-child as a name. It is never sent back to the model that parses WhatsApp messages once it has
-been collected.
+`notes` is visible to admins and, on the session detail only, to the tutor assigned to that
+session. No other response a tutor can reach carries it, and none carries `date_of_birth`. It is
+never sent back to the model that parses WhatsApp messages once it has been collected.
+
+A child who stops tutoring is deactivated, not deleted: its `child_guardians`, `child_homes` and
+bookings stay. Deactivating a child cancels its upcoming `pending`/`confirmed` sessions in the
+same change, and nobody is notified. An inactive child cannot be booked; the dashboard
+reactivates it first.
 
 ---
 

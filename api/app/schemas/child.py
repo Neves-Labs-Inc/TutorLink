@@ -9,8 +9,16 @@ never stored, so a string is refused rather than coerced.
 
 `date_of_birth` is required on create and nullable on read: a child registered before migration
 0015 has none, and nothing stored then could be turned into one (A-44). The plausibility bound
-is the service's, not a validator's, so the bot and the API share one rule (A-46). `notes` is
-admin-only (A-43) and must never be added to a shape a tutor can reach.
+is the service's, not a validator's, so the bot and the API share one rule (A-46). `notes`
+reaches a tutor in exactly one place — `child.notes` on `GET /api/bookings/{id}` for the tutor
+assigned to that booking (OQ-52 answered (b), 2026-09-23; A-43 reversed). `date_of_birth` is
+admin-only and must never be added to a shape a tutor can reach.
+
+`is_active` exists from migration 0016 on (P7C-1), reversing `docs/api-design.md:71`'s "children
+carries no flag": a child can be deactivated without being deleted. `ChildSummary` and
+`ChildDetail` serve `GET /api/children` and `GET /api/children/{id}` (CR). The
+`GuardianLinkCreate` exactly-one-of `guardian_id`/`guardian` rule belongs to the service, not a
+validator, because resolving it may mean creating a guardian row (07B P7B-A).
 """
 
 import datetime
@@ -19,6 +27,7 @@ import uuid
 from pydantic import BaseModel, Field
 
 from app.models.child import NOTES_MAX_LENGTH
+from app.schemas.booking import NamedRef
 
 
 class ChildRead(BaseModel):
@@ -28,6 +37,7 @@ class ChildRead(BaseModel):
     grade_level: int
     school_name: str
     notes: str | None
+    is_active: bool
     guardian_ids: list[uuid.UUID]
     home_ids: list[uuid.UUID]
 
@@ -53,3 +63,67 @@ class ChildUpdate(BaseModel):
     grade_level: int | None = Field(default=None, ge=1)
     school_name: str | None = None
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
+    is_active: bool | None = None
+    expected_cancellations: int | None = Field(default=None, ge=0)
+
+
+class ChildHomeRef(BaseModel):
+    id: uuid.UUID
+    label: str | None
+    address: str
+    is_active: bool
+
+
+class ChildHomeRead(ChildHomeRef):
+    access_code: str
+
+
+class NextSession(BaseModel):
+    id: uuid.UUID
+    scheduled_date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    tutor: NamedRef
+    subject: NamedRef
+
+
+class ChildSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    grade_level: int
+    school_name: str
+    is_active: bool
+    guardians: list[NamedRef]
+    homes: list[ChildHomeRef]
+    next_session: NextSession | None
+
+
+class ChildGuardianRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    phone_number: str
+    is_active: bool
+
+
+class ChildDetail(BaseModel):
+    id: uuid.UUID
+    name: str
+    date_of_birth: datetime.date | None
+    grade_level: int
+    school_name: str
+    notes: str | None
+    is_active: bool
+    upcoming_session_count: int
+    guardians: list[ChildGuardianRead]
+    homes: list[ChildHomeRead]
+
+
+class NewGuardian(BaseModel):
+    name: str
+    phone_number: str
+
+
+class GuardianLinkCreate(BaseModel):
+    guardian_id: uuid.UUID | None = None
+    guardian: NewGuardian | None = None
+    home_ids: list[uuid.UUID] = []

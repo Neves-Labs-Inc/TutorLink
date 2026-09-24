@@ -5,7 +5,7 @@ from sqlalchemy import Date, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.mixins import HasID, HasTimestamps
+from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 NOTES_MAX_LENGTH = 2000
 
 
-class Child(HasID, HasTimestamps, Base):
+class Child(HasID, HasTimestamps, HasActiveFlag, Base):
     __tablename__ = "children"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)

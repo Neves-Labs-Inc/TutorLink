@@ -3,8 +3,9 @@ import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft } from 'lucide-react'
 
-import { BookingHistorySection } from '@/components/clients/BookingHistorySection'
-import { ChildrenSection } from '@/components/clients/ChildrenSection'
+import { GuardianBookingsSection } from '@/components/guardians/GuardianBookingsSection'
+import { GuardianChildrenSection } from '@/components/guardians/GuardianChildrenSection'
+import { HomesSection } from '@/components/guardians/HomesSection'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -12,16 +13,15 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
-import { clientQueries, updateClient, type ClientUpdate } from '@/lib/queries/clients'
+import { guardianQueries, updateGuardian, type GuardianUpdate } from '@/lib/queries/guardians'
 
-type GuardianDraft = Required<ClientUpdate>
+type GuardianDraft = Required<GuardianUpdate>
 
 type DetailFieldProps = {
   label: string
@@ -33,17 +33,17 @@ const FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const LOADING_ROWS = [0, 1, 2]
 const GUARDIAN_FORM_ID = 'guardian-form'
 
-export const ClientDetail = () => {
+export const GuardianDetail = () => {
   const { id = '' } = useParams()
   const queryClient = useQueryClient()
-  const { data, isPending, isError, error, refetch } = useQuery(clientQueries.detail(id))
+  const { data, isPending, isError, error, refetch } = useQuery(guardianQueries.detail(id))
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<GuardianDraft>(EMPTY_DRAFT)
 
   const save = useMutation({
-    mutationFn: (values: GuardianDraft) => updateClient(id, values),
+    mutationFn: (values: GuardianDraft) => updateGuardian(id, values),
     onSuccess: (updated) => {
-      queryClient.setQueryData(clientQueries.detail(id).queryKey, updated)
+      queryClient.setQueryData(guardianQueries.detail(id).queryKey, updated)
       setEditing(false)
     },
   })
@@ -73,7 +73,7 @@ export const ClientDetail = () => {
     content = (
       <Card>
         <CardContent aria-busy="true" className="space-y-3">
-          <p className="text-sm text-muted-foreground">Loading client…</p>
+          <p className="text-sm text-muted-foreground">Loading guardian…</p>
           {LOADING_ROWS.map((row) => (
             <div key={row} className="h-8 animate-pulse rounded-lg bg-muted" />
           ))}
@@ -123,47 +123,16 @@ export const ClientDetail = () => {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Homes</CardTitle>
-            <CardDescription>
-              A guardian may have more than one home, and a home may be shared with another
-              guardian. A deactivated home stays listed here; the client list counts only the
-              active ones.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {data.homes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No homes are linked to this guardian.</p>
-            ) : (
-              <ul className="space-y-3">
-                {data.homes.map((home) => (
-                  <li key={home.id} className="rounded-lg border border-border p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-medium text-foreground">{home.label ?? 'Home'}</p>
-                      <StatusBadge status={home.is_active ? 'active' : 'inactive'} />
-                    </div>
-                    <dl className="mt-2 grid gap-3 sm:grid-cols-2">
-                      <DetailField label="Address">{home.address}</DetailField>
-                      <DetailField label="Access code">
-                        <span className="font-mono">{home.access_code}</span>
-                      </DetailField>
-                    </dl>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+        <HomesSection guardianId={id} guardian={data} />
 
-        <ChildrenSection clientId={id} />
-        <BookingHistorySection clientId={id} />
+        <GuardianChildrenSection guardianId={id} />
+        <GuardianBookingsSection guardianId={id} />
 
         <SlideOver
           open={editing}
           onOpenChange={handleOpenChange}
           title="Edit guardian"
-          description="Homes and children are managed elsewhere."
+          description="Homes and children are managed on this page."
           footer={
             <div className="flex flex-wrap items-center gap-3">
               <Button type="submit" form={GUARDIAN_FORM_ID} disabled={save.isPending}>
@@ -239,15 +208,15 @@ export const ClientDetail = () => {
     <div className="space-y-6">
       <div className="space-y-2">
         <Link
-          to="/clients"
+          to="/guardians"
           className="inline-flex items-center gap-1 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           <ChevronLeft aria-hidden="true" className="size-4" />
-          Back to clients
+          Back to guardians
         </Link>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            {data?.name ?? 'Client'}
+            {data?.name ?? 'Guardian'}
           </h1>
           {data && <StatusBadge status={data.is_active ? 'active' : 'inactive'} />}
         </div>

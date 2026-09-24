@@ -1120,12 +1120,19 @@ def _recognise(db: Session, *, phone_number: str, guardian_id: uuid.UUID | None)
 
 
 def _children(db: Session, *, guardian_id: uuid.UUID) -> list[Child]:
-    """REQ-075.2: through `child_guardians`, so a guardian sees their children and no others."""
+    """REQ-075.2: through `child_guardians`, so a guardian sees their children and no others.
+
+    Active children only (REQ-114): an inactive child is never offered for booking. A guardian
+    whose children are all inactive therefore reads as one with none and takes the same
+    `NO_CHILDREN_YET` add-a-child path. That fallback is final, not interim — the bot lists only
+    active children. Phase 7D (REQ-132) only rewords the reply to `NO_ACTIVE_CHILDREN` and
+    recognises a guardian naming an inactive child; it does not change this read.
+    """
     return list(
         db.scalars(
             select(Child)
             .join(ChildGuardian, ChildGuardian.child_id == Child.id)
-            .where(ChildGuardian.guardian_id == guardian_id)
+            .where(ChildGuardian.guardian_id == guardian_id, Child.is_active.is_(True))
             .order_by(Child.name, Child.id)
         ).all()
     )

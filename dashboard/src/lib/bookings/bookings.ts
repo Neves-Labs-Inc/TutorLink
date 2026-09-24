@@ -7,6 +7,7 @@ export type BookingFilterState = {
   statuses: BookingStatus[]
   tutorId: string
   subjectId: string
+  childId: string
   from: string
   to: string
 }
@@ -31,6 +32,7 @@ export const EMPTY_FILTERS: BookingFilterState = {
   statuses: [],
   tutorId: '',
   subjectId: '',
+  childId: '',
   from: '',
   to: '',
 }
@@ -38,6 +40,7 @@ export const EMPTY_FILTERS: BookingFilterState = {
 const STATUS_PARAM = 'status'
 const TUTOR_PARAM = 'tutor_id'
 const SUBJECT_PARAM = 'subject_id'
+const CHILD_PARAM = 'child_id'
 const FROM_PARAM = 'from'
 const TO_PARAM = 'to'
 
@@ -48,6 +51,7 @@ export const bookingFiltersFromSearchParams = (search: URLSearchParams): Booking
     statuses: STATUS_OPTIONS.filter((option) => statuses.includes(option)),
     tutorId: search.get(TUTOR_PARAM) ?? '',
     subjectId: search.get(SUBJECT_PARAM) ?? '',
+    childId: search.get(CHILD_PARAM) ?? '',
     from: search.get(FROM_PARAM) ?? '',
     to: search.get(TO_PARAM) ?? '',
   }
@@ -67,6 +71,9 @@ export const bookingFilterSearchParams = (state: BookingFilterState): URLSearchP
   }
   if (state.subjectId !== '') {
     search.append(SUBJECT_PARAM, state.subjectId)
+  }
+  if (state.childId !== '') {
+    search.append(CHILD_PARAM, state.childId)
   }
   if (state.from !== '') {
     search.append(FROM_PARAM, state.from)
@@ -91,6 +98,9 @@ export const bookingListParams = (state: BookingFilterState): BookingListParams 
   }
   if (state.subjectId !== '') {
     params.subject_id = state.subjectId
+  }
+  if (state.childId !== '') {
+    params.child_id = state.childId
   }
   if (state.from !== '') {
     params.from = state.from

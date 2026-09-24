@@ -4,7 +4,7 @@
 
 The TutorLink dashboard is a Vite + React web application. It serves three types of users with different views and access levels:
 
-- **Admin** — full control over tutors, clients, bookings, availability, and user accounts
+- **Admin** — full control over tutors, guardians and children, bookings, availability, and user accounts
 - **Tutor** — read-only view of their own schedule, sessions, and time off
 - **Developer** — a superset of admin: the same views and the same access, plus system-level fields an admin does not see
 
@@ -51,7 +51,8 @@ TutorLink
 ─────────────
 Dashboard
 Tutors
-Clients
+Children
+Guardians
 Chats
 Bookings
 Subjects
@@ -81,7 +82,7 @@ Overview page with key metrics at a glance.
 - Today's sessions (count + list)
 - Upcoming sessions this week
 - Total active tutors
-- Total active clients
+- Total active guardians
 - Recent bookings (last 5)
 
 **Data:**
@@ -124,20 +125,59 @@ Manage the tutor roster.
 
 ---
 
-### Clients (`/clients`)
+### Children (`/children`)
 
-View all guardian/client records.
+Every child in the system, organised around the child rather than the guardian.
 
 **List view:**
-- Table: guardian name, phone number, number of homes, number of children, active status
-- Search by name or phone number
-- Filter by active status
+- Table: name, grade, school, guardian name(s), home(s), next session (the child's next upcoming booking)
+- Hides inactive children by default, with a "show inactive" toggle — the same convention as
+  Tutors and Guardians
+- Search by child or guardian name
+- Deactivate / reactivate is a row action on the list, not on the child's detail page.
+  Deactivating a child with upcoming sessions shows "this will cancel N sessions" before the
+  admin confirms; confirming cancels them and notifies nobody — no WhatsApp to the guardians, no
+  notice to the tutor
+- "Add child" opens a slide-over: pick **one or more** guardians first, then a home from all of
+  the selected guardians' active homes, then the child's own fields (name, date of birth, grade,
+  school, notes)
 
-**Client detail (`/clients/{id}`):**
+**Child detail (`/children/{id}`):**
+- Info: name, date of birth with the current age derived from it ("Not recorded" when missing),
+  grade, school, notes — all editable
+- Guardians and homes, with links that can be added and removed — at least one guardian and one
+  home are required
+- Upcoming and past bookings
+- "Book a session" opens the booking form with this child pre-selected. Disabled only when the
+  child has no active home; an inactive child shows **Reactivate and book** instead of a plain
+  submit — reactivate, then book
+- No deactivate control here — that lives on the `/children` list
+
+### Guardians (`/guardians`)
+
+Household cards — every guardian and child reachable through a chain of guardian–child links.
+
+**List view:**
+- A household is a connected component of guardian–child links: separated parents sharing a
+  child, plus one parent's new partner and her own child linked to that parent, are all one
+  household. A guardian with no children is a household of one
+- A card shows: guardians with phone numbers; children (name and grade, linking to
+  `/children/{id}`). No homes and no upcoming sessions on the card
+- Inactive guardians are always shown, with an "inactive" badge — no hide toggle. An inactive
+  child on a card carries its own badge
+- A search box matches any guardian name, child name, or phone number, and returns the whole
+  household
+- "Add guardian" opens the same form as today's create-client flow: name, phone, optional home.
+  The new guardian appears as a solo household, and submitting opens that guardian's own page
+
+**Guardian detail (`/guardians/{id}`)** — today's Client detail page, renamed:
 - Guardian info: name, phone. No address here — see homes below
-- Homes: label, address, access code — a client may have more than one, and a home may be shared with another guardian
-- Children list: name, date of birth with the current age derived from it ("Not recorded" when
-  missing), grade, school, and notes — each expandable, showing that child's guardians and homes
+- Homes: label, address, access code — a guardian may have more than one, and a home may be
+  shared with another guardian. Homes can be added (choosing which of the guardian's children are
+  tutored there), edited, and deactivated or reactivated
+- Children: name, date of birth with the current age derived from it ("Not recorded" when
+  missing), grade, school, and notes. "Add child" here pre-fills this guardian; children can also
+  be added from the `/children` page
 - Booking history across all children, filterable by status and date
 
 ---
@@ -180,13 +220,17 @@ View and manage all sessions.
 
 **List/Table view:**
 - Columns: date, time, child name, tutor name, subject, status
-- Filters: date range, tutor, subject, status
+- Filters: date range, tutor, subject, child, status
 - Status badge with colour coding: pending (yellow), confirmed (green), cancelled (red), completed (grey)
 - Click a row to open booking detail slide-over
-- "Create Booking" button for manual bookings → opens a slide-over form
+- "Create Booking" button for manual bookings → opens a slide-over form. When opened from a
+  child's page, that child is pre-selected
 
 **Create Booking form:**
-- Child selector (searchable, across all clients)
+- Child selector (searchable, across all guardians). Inactive children are listed too and marked
+  as such; choosing one turns the submit button into **Reactivate and book** — the form
+  reactivates the child, then books. If the booking then fails, the child stays active and the
+  form keeps the draft
 - Tutor selector
 - Subject selector
 - Date, start time, end time
@@ -284,6 +328,11 @@ The tutor's upcoming and past bookings.
 - Date + time
 - Address + access code (tap to reveal) — **from the booking's home**, not the guardian's. A child with separated guardians has two, and the session is at one of them
 
+**Session detail** (opening a session): the session, the home it is at (address and access code,
+tap to reveal), the session's own notes under **Session notes**, and the child's notes — learning
+needs, allergies — under **Child notes**. The child's date of birth and age are never shown to a
+tutor.
+
 ---
 
 ### Time Off (`/time-off`)
@@ -326,8 +375,10 @@ dashboard/src/
 │   │   ├── Dashboard.jsx
 │   │   ├── Tutors.jsx
 │   │   ├── TutorDetail.jsx
-│   │   ├── Clients.jsx
-│   │   ├── ClientDetail.jsx
+│   │   ├── Children.jsx
+│   │   ├── ChildDetail.jsx
+│   │   ├── Guardians.jsx
+│   │   ├── GuardianDetail.jsx
 │   │   ├── Chats.jsx
 │   │   ├── ChatThread.jsx
 │   │   ├── Bookings.jsx
@@ -362,7 +413,8 @@ dashboard/src/
 │   ├── useAuth.js
 │   ├── useTutors.js
 │   ├── useBookings.js
-│   ├── useClients.js
+│   ├── useGuardians.js
+│   ├── useChildren.js
 │   └── useConversations.js
 ├── lib/
 │   ├── api.js          # Axios instance with JWT interceptor

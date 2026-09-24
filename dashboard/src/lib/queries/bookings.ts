@@ -16,7 +16,10 @@ export type Booking = {
   notes: string | null
 }
 
-export type BookingDetail = Booking & {
+export type BookingChild = NamedRef & { notes: string | null }
+
+export type BookingDetail = Omit<Booking, 'child'> & {
+  child: BookingChild
   home: { id: string; label: string | null; address: string; access_code: string }
   booked_by_guardian: NamedRef | null
 }
@@ -25,6 +28,7 @@ export type BookingListParams = {
   status?: Booking['status'][]
   tutor_id?: string
   subject_id?: string
+  child_id?: string
   from?: string
   to?: string
   page?: number
@@ -105,6 +109,9 @@ export const bookingSearchParams = (params: BookingListParams): string => {
   }
   if (params.subject_id !== undefined) {
     search.append('subject_id', params.subject_id)
+  }
+  if (params.child_id !== undefined) {
+    search.append('child_id', params.child_id)
   }
   if (params.from !== undefined) {
     search.append('from', params.from)

@@ -1,11 +1,4 @@
-import type { ClientCreate, ClientListParams } from '@/lib/queries/clients'
-
-export type ClientFilterState = {
-  q: string
-  isActive: boolean
-  page: number
-  pageSize: number
-}
+import type { GuardianCreate } from '@/lib/queries/guardians'
 
 export type HomeDraft = {
   label: string
@@ -13,7 +6,7 @@ export type HomeDraft = {
   accessCode: string
 }
 
-export type ClientDraft = {
+export type GuardianDraft = {
   name: string
   phoneNumber: string
   home: HomeDraft
@@ -24,28 +17,13 @@ export type ClientDraft = {
 // must never be sent back in a request.
 const NANP_PATTERN = /^\+1(\d{3})(\d{3})(\d{4})$/
 
-export const clientListParams = (state: ClientFilterState): ClientListParams => {
-  const params: ClientListParams = {
-    is_active: state.isActive,
-    page: state.page,
-    page_size: state.pageSize,
-  }
-  const term = state.q.trim()
-
-  if (term !== '') {
-    params.q = term
-  }
-
-  return params
-}
-
 export const formatPhoneForDisplay = (e164: string): string => {
   const parts = NANP_PATTERN.exec(e164)
 
   return parts === null ? e164 : `+1 (${parts[1]}) ${parts[2]}-${parts[3]}`
 }
 
-export const clientFormErrors = (draft: ClientDraft): string[] => {
+export const guardianFormErrors = (draft: GuardianDraft): string[] => {
   const errors: string[] = []
 
   if (draft.name.trim() === '') {
@@ -66,8 +44,8 @@ export const clientFormErrors = (draft: ClientDraft): string[] => {
   return errors
 }
 
-export const createClientPayload = (draft: ClientDraft): ClientCreate => {
-  const payload: ClientCreate = {
+export const createGuardianPayload = (draft: GuardianDraft): GuardianCreate => {
+  const payload: GuardianCreate = {
     name: draft.name.trim(),
     phone_number: draft.phoneNumber.trim(),
   }

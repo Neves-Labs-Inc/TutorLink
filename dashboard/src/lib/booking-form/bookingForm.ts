@@ -1,10 +1,11 @@
 import { dayOfWeekFromIso } from '@/lib/availability/availability'
 import type { AvailabilitySlot } from '@/lib/queries/availability'
 import type { BookingCreate } from '@/lib/queries/bookings'
+import type { ChildDetail, ChildHome, ChildSummary } from '@/lib/queries/children'
 
 export type BookingDraft = {
-  clientId: string
   childId: string
+  childInactive: boolean
   homeId: string
   tutorId: string
   subjectId: string
@@ -14,6 +15,20 @@ export type BookingDraft = {
   endTime: string
   notes: string
 }
+
+export type ChildPickerOption = {
+  id: string
+  label: string
+  description: string
+  inactive: boolean
+}
+
+export type ChildChoice = {
+  id: string
+  inactive?: boolean
+}
+
+export type SubmitPlan = 'book' | 'reactivate-then-book'
 
 const WEEKDAY_NAMES = [
   'Monday',
@@ -26,8 +41,8 @@ const WEEKDAY_NAMES = [
 ]
 
 export const EMPTY_DRAFT: BookingDraft = {
-  clientId: '',
   childId: '',
+  childInactive: false,
   homeId: '',
   tutorId: '',
   subjectId: '',
@@ -38,17 +53,39 @@ export const EMPTY_DRAFT: BookingDraft = {
   notes: '',
 }
 
-export const onClientChange = (draft: BookingDraft, clientId: string): BookingDraft => ({
+export const onChildChange = (draft: BookingDraft, child: ChildChoice | null): BookingDraft => ({
   ...draft,
-  clientId,
-  childId: '',
+  childId: child === null ? '' : child.id,
+  childInactive: child?.inactive === true,
   homeId: '',
 })
 
-export const onChildChange = (draft: BookingDraft, childId: string): BookingDraft => ({
-  ...draft,
-  childId,
+export const onChildDetail = (draft: BookingDraft, detail: ChildDetail): BookingDraft =>
+  detail.id === draft.childId ? { ...draft, childInactive: !detail.is_active } : draft
+
+export const childPickerOption = (
+  child: Pick<ChildSummary, 'id' | 'name' | 'grade_level'>,
+  inactive: boolean,
+): ChildPickerOption => ({
+  id: child.id,
+  label: child.name,
+  description: inactive ? `Grade ${child.grade_level} · inactive` : `Grade ${child.grade_level}`,
+  inactive,
 })
+
+export const childPickerOptions = (
+  active: ChildSummary[],
+  inactive: ChildSummary[],
+): ChildPickerOption[] => [
+  ...active.map((child) => childPickerOption(child, false)),
+  ...inactive.map((child) => childPickerOption(child, true)),
+]
+
+export const homeOptionsFor = (detail: ChildDetail | undefined): ChildHome[] =>
+  detail === undefined ? [] : detail.homes.filter((home) => home.is_active)
+
+export const submitPlan = (draft: BookingDraft): SubmitPlan =>
+  draft.childInactive ? 'reactivate-then-book' : 'book'
 
 export const onTutorChange = (draft: BookingDraft, tutorId: string): BookingDraft => ({
   ...draft,
@@ -87,9 +124,6 @@ export const weekdayName = (isoDate: string): string => WEEKDAY_NAMES[dayOfWeekF
 export const draftErrors = (draft: BookingDraft): string[] => {
   const errors: string[] = []
 
-  if (draft.clientId === '') {
-    errors.push('Choose a client.')
-  }
   if (draft.childId === '') {
     errors.push('Choose a child.')
   }
@@ -141,4 +175,4 @@ export const toCreateBody = (draft: BookingDraft): BookingCreate => {
   return body
 }
 
-const inputTime = (hms: string): string => hms.slice(0, 5)
+export const inputTime = (hms: string): string => hms.slice(0, 5)

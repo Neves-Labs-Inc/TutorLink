@@ -11,6 +11,7 @@ import {
   Settings,
   UserCog,
   Users,
+  Baby,
   X,
 } from 'lucide-react'
 
@@ -25,7 +26,8 @@ type NavBodyProps = {
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/tutors', label: 'Tutors', icon: GraduationCap },
-  { to: '/clients', label: 'Clients', icon: Users },
+  { to: '/children', label: 'Children', icon: Baby },
+  { to: '/guardians', label: 'Guardians', icon: Users },
   { to: '/chats', label: 'Chats', icon: MessageSquare },
   { to: '/bookings', label: 'Bookings', icon: CalendarDays },
   { to: '/subjects', label: 'Subjects', icon: BookOpen },

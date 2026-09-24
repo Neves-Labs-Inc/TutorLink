@@ -11,10 +11,10 @@ import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
 import { formatIsoDate, formatTime } from '@/lib/dates/dates'
 import type { Booking, BookingListParams } from '@/lib/queries/bookings'
-import { clientQueries } from '@/lib/queries/clients'
+import { guardianQueries } from '@/lib/queries/guardians'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 
-type BookingHistorySectionProps = { clientId: string }
+type GuardianBookingsSectionProps = { guardianId: string }
 
 type HistoryFilters = {
   status: Booking['status'][]
@@ -43,7 +43,7 @@ const COLUMNS: Column<Booking>[] = [
   { id: 'status', header: 'Status', cell: (booking) => <StatusBadge status={booking.status} /> },
 ]
 
-export const BookingHistorySection = ({ clientId }: BookingHistorySectionProps) => {
+export const GuardianBookingsSection = ({ guardianId }: GuardianBookingsSectionProps) => {
   const [filters, setFilters] = useState<HistoryFilters>(EMPTY_FILTERS)
   const [page, setPage] = useState(1)
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null)
@@ -55,7 +55,7 @@ export const BookingHistorySection = ({ clientId }: BookingHistorySectionProps) 
     page,
   }
   const { data, isPending, isError, error, refetch } = useQuery(
-    clientQueries.bookings(clientId, params),
+    guardianQueries.bookings(guardianId, params),
   )
 
   const applyFilters = (next: HistoryFilters) => {

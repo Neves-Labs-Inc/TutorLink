@@ -3,7 +3,7 @@ import { api } from '@/lib/api'
 import { bookingSearchParams, type Booking, type BookingListParams } from '@/lib/queries/bookings'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
 
-export type Client = {
+export type Guardian = {
   id: string
   name: string
   phone_number: string
@@ -20,38 +20,40 @@ export type Home = {
   is_active: boolean
 }
 
-export type ClientChild = {
+export type GuardianChild = {
   id: string
   name: string
   date_of_birth: string | null
   grade_level: number
   school_name: string
   notes: string | null
+  is_active: boolean
 }
 
-export type ClientDetail = {
+export type GuardianDetail = {
   id: string
   name: string
   phone_number: string
   is_active: boolean
   homes: Home[]
-  children: ClientChild[]
+  children: GuardianChild[]
 }
 
-export type ClientListParams = {
+export type GuardianListParams = {
   q?: string
+  phone_number?: string
   is_active?: boolean
   page?: number
   page_size?: number
 }
 
-export type ClientUpdate = {
+export type GuardianUpdate = {
   name?: string
   phone_number?: string
   is_active?: boolean
 }
 
-export type ClientCreate = {
+export type GuardianCreate = {
   name: string
   phone_number: string
   home?: {
@@ -61,14 +63,14 @@ export type ClientCreate = {
   }
 }
 
-export const clientQueries = {
+export const guardianQueries = {
   // Whole `Page<T>` rather than `.items` (unlike `settings.ts`): every list view here needs
   // `total` for its `Pager`, and `settings.ts` has no pager.
-  list: (params: ClientListParams = {}) =>
+  list: (params: GuardianListParams = {}) =>
     queryOptions({
-      queryKey: ['clients', 'list', params],
+      queryKey: ['guardians', 'list', params],
       queryFn: async () => {
-        const response = await api.get<Page<Client>>('/api/clients', {
+        const response = await api.get<Page<Guardian>>('/api/clients', {
           params: { page_size: DEFAULT_PAGE_SIZE, ...params },
         })
 
@@ -77,22 +79,22 @@ export const clientQueries = {
       placeholderData: keepPreviousData,
     }),
 
-  detail: (clientId: string) =>
+  detail: (guardianId: string) =>
     queryOptions({
-      queryKey: ['clients', 'detail', clientId],
+      queryKey: ['guardians', 'detail', guardianId],
       queryFn: async () => {
-        const response = await api.get<ClientDetail>(`/api/clients/${clientId}`)
+        const response = await api.get<GuardianDetail>(`/api/clients/${guardianId}`)
 
         return response.data
       },
     }),
 
-  bookings: (clientId: string, params: BookingListParams = {}) =>
+  bookings: (guardianId: string, params: BookingListParams = {}) =>
     queryOptions({
-      queryKey: ['clients', 'bookings', clientId, params],
+      queryKey: ['guardians', 'bookings', guardianId, params],
       queryFn: async () => {
         const response = await api.get<Page<Booking>>(
-          `/api/clients/${clientId}/bookings?${bookingSearchParams(params)}`,
+          `/api/clients/${guardianId}/bookings?${bookingSearchParams(params)}`,
         )
 
         return response.data
@@ -101,14 +103,28 @@ export const clientQueries = {
     }),
 }
 
-export const createClient = async (data: ClientCreate): Promise<ClientDetail> => {
-  const response = await api.post<ClientDetail>('/api/clients', data)
+export const createGuardian = async (data: GuardianCreate): Promise<GuardianDetail> => {
+  const response = await api.post<GuardianDetail>('/api/clients', data)
 
   return response.data
 }
 
-export const updateClient = async (clientId: string, data: ClientUpdate): Promise<ClientDetail> => {
-  const response = await api.patch<ClientDetail>(`/api/clients/${clientId}`, data)
+export const updateGuardian = async (
+  guardianId: string,
+  data: GuardianUpdate,
+): Promise<GuardianDetail> => {
+  const response = await api.patch<GuardianDetail>(`/api/clients/${guardianId}`, data)
 
   return response.data
+}
+
+export const findGuardianByPhone = async (
+  phoneNumber: string,
+  isActive: boolean,
+): Promise<Guardian | null> => {
+  const response = await api.get<Page<Guardian>>('/api/clients', {
+    params: { phone_number: phoneNumber, is_active: isActive, page_size: 1 },
+  })
+
+  return response.data.items[0] ?? null
 }

@@ -632,7 +632,7 @@ def test_an_id_that_names_no_row_is_400(
     assert _count(db) == 0
 
 
-@pytest.mark.parametrize("reference", ["tutor", "subject", "home", "guardian"])
+@pytest.mark.parametrize("reference", ["tutor", "subject", "home", "guardian", "child"])
 def test_a_reference_an_admin_has_retired_is_400(
     api: TestClient, db: Session, family: Family, reference: str
 ) -> None:
@@ -644,8 +644,8 @@ def test_a_reference_an_admin_has_retired_is_400(
     retired row is a property of one reference — the class rule 1 already answers with a 400
     for an inactive availability range.
 
-    `children` is not a case here and its absence is deliberate rather than an oversight: the
-    table carries no `is_active` (`docs/api-design.md:71`).
+    `child` is a case from migration 0016 on (P7C-1, REQ-114): an inactive child is refused with
+    the same `detail` as a missing one.
     """
     getattr(family, reference).is_active = False
     db.flush()
@@ -657,12 +657,34 @@ def test_a_reference_an_admin_has_retired_is_400(
     assert _count(db) == 0
 
 
+def test_a_reactivated_child_can_be_booked_again(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Reactivation goes through `PATCH /api/children/{id}`, the path an admin actually takes
+    (P7C-P), rather than flipping the column behind the service's back."""
+    family.child.is_active = False
+    db.flush()
+    user = _make_user(db)
+    refused = _post(api, user, family)
+
+    reactivated = api.patch(
+        f"/api/children/{family.child.id}", json={"is_active": True}, headers=_auth(user)
+    )
+    accepted = _post(api, user, family)
+
+    _assert_detail(refused, 400, REFERENCE_NOT_FOUND_ERROR)
+    assert reactivated.status_code == 200
+    assert reactivated.json()["is_active"] is True
+    assert accepted.status_code == 201
+    assert _count(db) == 1
+
+
 def test_a_booking_naming_only_active_references_is_accepted(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """The retirement check reads the four ids the request names and no others — retiring every
-    unnamed tutor, subject, home and client in the fixture leaves this booking untouched."""
-    for name in ("other_tutor", "other_subject", "stranger_home", "stranger_guardian"):
+    """The retirement check reads the five ids the request names and no others — retiring every
+    unnamed tutor, subject, home, client and child in the fixture leaves this booking untouched."""
+    for name in ("other_tutor", "other_subject", "stranger_home", "stranger_guardian", "sibling"):
         getattr(family, name).is_active = False
     db.flush()
     user = _make_user(db)

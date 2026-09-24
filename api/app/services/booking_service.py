@@ -23,6 +23,7 @@ class BookingFilters:
     date_from: datetime.date | None = None
     date_to: datetime.date | None = None
     subject_id: uuid.UUID | None = None
+    child_id: uuid.UUID | None = None
 
 
 class BookingServiceError(Exception): ...
@@ -143,6 +144,9 @@ def apply_booking_filters(
 
     if filters.subject_id is not None:
         statement = statement.where(Booking.subject_id == filters.subject_id)
+
+    if filters.child_id is not None:
+        statement = statement.where(Booking.child_id == filters.child_id)
 
     if filters.date_from is not None:
         statement = statement.where(Booking.scheduled_date >= filters.date_from)

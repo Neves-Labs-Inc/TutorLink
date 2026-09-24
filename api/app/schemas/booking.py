@@ -11,6 +11,14 @@ class NamedRef(BaseModel):
     name: str
 
 
+class BookingChild(NamedRef):
+    """The assigned tutor sees a child's notes on the session detail (OQ-52 answered (b),
+    2026-09-23, reversing A-43). `date_of_birth` is never here and must never be added.
+    `BookingSummary.child` stays `NamedRef` (P7C-V) — the list is left out on purpose."""
+
+    notes: str | None
+
+
 class BookingSummary(BaseModel):
     id: uuid.UUID
     child: NamedRef
@@ -32,7 +40,7 @@ class HomeRef(BaseModel):
 
 class BookingDetail(BaseModel):
     id: uuid.UUID
-    child: NamedRef
+    child: BookingChild
     tutor: NamedRef
     subject: NamedRef
     scheduled_date: datetime.date

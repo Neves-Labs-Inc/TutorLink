@@ -7,8 +7,10 @@ import { Login } from '@/pages/Login'
 import { Dashboard } from '@/pages/admin/Dashboard'
 import { Tutors } from '@/pages/admin/Tutors'
 import { TutorDetail } from '@/pages/admin/TutorDetail'
-import { Clients } from '@/pages/admin/Clients'
-import { ClientDetail } from '@/pages/admin/ClientDetail'
+import { Children } from '@/pages/admin/Children'
+import { ChildDetail } from '@/pages/admin/ChildDetail'
+import { Guardians } from '@/pages/admin/Guardians'
+import { GuardianDetail } from '@/pages/admin/GuardianDetail'
 import { ChatsLayout } from '@/components/chat/ChatsLayout'
 import { ChatThread } from '@/pages/admin/ChatThread'
 import { Bookings } from '@/pages/admin/Bookings'
@@ -56,21 +58,41 @@ export const App = () => (
           }
         />
         <Route
-          path="/clients"
+          path="/children"
           element={
             <RouteGuard allow={ADMIN_ROLES}>
               <AppShell>
-                <Clients />
+                <Children />
               </AppShell>
             </RouteGuard>
           }
         />
         <Route
-          path="/clients/:id"
+          path="/children/:id"
           element={
             <RouteGuard allow={ADMIN_ROLES}>
               <AppShell>
-                <ClientDetail />
+                <ChildDetail />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/guardians"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <Guardians />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/guardians/:id"
+          element={
+            <RouteGuard allow={ADMIN_ROLES}>
+              <AppShell>
+                <GuardianDetail />
               </AppShell>
             </RouteGuard>
           }

@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { SearchPicker, type SearchPickerOption } from '@/components/pickers/SearchPicker'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,22 +10,25 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { errorDetail } from '@/lib/api'
 import {
+  childPickerOptions,
   draftErrors,
   EMPTY_DRAFT,
+  homeOptionsFor,
   onChildChange,
-  onClientChange,
+  onChildDetail,
   onDateChange,
   onSlotChange,
   onTutorChange,
   slotsForDate,
+  submitPlan,
   toCreateBody,
   weekdayName,
   type BookingDraft,
 } from '@/lib/booking-form/bookingForm'
 import { formatTime } from '@/lib/dates/dates'
 import { bookingRefQueries } from '@/lib/queries/bookingRefs'
-import { createBooking } from '@/lib/queries/bookings'
-import { clientQueries } from '@/lib/queries/clients'
+import { createBooking, type BookingCreate } from '@/lib/queries/bookings'
+import { childQueries, updateChild, type ChildDetail } from '@/lib/queries/children'
 import { subjectQueries } from '@/lib/queries/subjects'
 import { tutorQueries } from '@/lib/queries/tutors'
 import { cn } from '@/lib/utils'
@@ -33,6 +37,7 @@ type BookingFormProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: () => void
+  initialChild?: { id: string; name: string }
 }
 
 type FieldProps = {
@@ -44,35 +49,79 @@ type FieldProps = {
 
 const FORM_ID = 'create-booking-form'
 const REFERENCE_PAGE_SIZE = 100
+const CHILD_SEARCH_PAGE_SIZE = 20
+const CHILD_WRITE_KEYS = ['children', 'guardians', 'households']
 const SUBMIT_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const AVAILABILITY_FALLBACK_ERROR = 'Could not load this tutor’s availability.'
-const CLIENT_FIRST_HINT = 'Choose a client first.'
+const HOMES_FALLBACK_ERROR = 'Could not load this child’s homes.'
+const CHILD_FIRST_HINT = 'Choose a child first.'
 
 const alertClasses = 'text-sm font-medium text-destructive'
 
-export const BookingForm = ({ open, onOpenChange, onCreated }: BookingFormProps) => {
-  const [draft, setDraft] = useState<BookingDraft>(EMPTY_DRAFT)
-  const [submitted, setSubmitted] = useState(false)
+export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: BookingFormProps) => {
+  const queryClient = useQueryClient()
 
-  const clients = useQuery(clientQueries.list({ is_active: true, page_size: REFERENCE_PAGE_SIZE }))
+  const [draft, setDraft] = useState<BookingDraft>(EMPTY_DRAFT)
+  const [childOption, setChildOption] = useState<SearchPickerOption | null>(null)
+  const [submitted, setSubmitted] = useState(false)
+  const [reactivatedName, setReactivatedName] = useState<string | null>(null)
+  const [seenOpen, setSeenOpen] = useState(false)
+  const [syncedDetail, setSyncedDetail] = useState<ChildDetail | undefined>(undefined)
+
+  if (open !== seenOpen) {
+    setSeenOpen(open)
+
+    if (open && initialChild !== undefined) {
+      setChildOption({ id: initialChild.id, label: initialChild.name })
+      setDraft(onChildChange(EMPTY_DRAFT, initialChild))
+    }
+  }
+
   const tutors = useQuery(tutorQueries.list({ is_active: true, page_size: REFERENCE_PAGE_SIZE }))
   const subjects = useQuery(subjectQueries.list({ is_active: true, page_size: REFERENCE_PAGE_SIZE }))
-  const clientDetail = useQuery({
-    ...clientQueries.detail(draft.clientId),
-    enabled: draft.clientId !== '',
+  const childDetail = useQuery({
+    ...childQueries.detail(draft.childId),
+    enabled: draft.childId !== '',
   })
   const availability = useQuery(bookingRefQueries.tutorAvailability(draft.tutorId))
-  const create = useMutation({ mutationFn: createBooking })
+  const reactivate = useMutation({
+    mutationFn: (childId: string) => updateChild(childId, { is_active: true }),
+    onSuccess: () => {
+      for (const key of CHILD_WRITE_KEYS) {
+        queryClient.invalidateQueries({ queryKey: [key] })
+      }
+    },
+  })
+  const create = useMutation({
+    mutationFn: createBooking,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['children'] })
+    },
+  })
 
-  const childOptions = draft.clientId === '' ? [] : (clientDetail.data?.children ?? [])
-  const homeOptions = draft.clientId === '' ? [] : (clientDetail.data?.homes ?? [])
+  if (childDetail.data !== syncedDetail) {
+    const loaded = childDetail.data
+
+    setSyncedDetail(loaded)
+
+    if (loaded !== undefined) {
+      setDraft((current) => onChildDetail(current, loaded))
+    }
+  }
+
+  const homeOptions = homeOptionsFor(childDetail.data)
   const slotOptions = slotsForDate(availability.data?.items ?? [], draft.date)
   const errors = draftErrors(draft)
-  const busy = create.isPending
+  const plan = submitPlan(draft)
+  const noActiveHome = childDetail.data !== undefined && homeOptions.length === 0
+  const busy = create.isPending || reactivate.isPending
 
   const resetAndClose = () => {
     setDraft(EMPTY_DRAFT)
+    setChildOption(null)
     setSubmitted(false)
+    setReactivatedName(null)
+    reactivate.reset()
     create.reset()
     onOpenChange(false)
   }
@@ -85,26 +134,100 @@ export const BookingForm = ({ open, onOpenChange, onCreated }: BookingFormProps)
     }
   }
 
+  const book = (body: BookingCreate) => {
+    create.mutate(body, {
+      onSuccess: () => {
+        onCreated()
+        resetAndClose()
+      },
+    })
+  }
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSubmitted(true)
+    setReactivatedName(null)
+    reactivate.reset()
+    create.reset()
 
-    if (errors.length === 0) {
-      create.mutate(toCreateBody(draft), {
-        onSuccess: () => {
-          onCreated()
-          resetAndClose()
-        },
-      })
-    } else {
-      create.reset()
+    if (errors.length === 0 && !noActiveHome) {
+      const body = toCreateBody(draft)
+      const childName = childOption?.label ?? ''
+
+      if (plan === 'reactivate-then-book') {
+        reactivate.mutate(draft.childId, {
+          onSuccess: () => {
+            setDraft((current) => ({ ...current, childInactive: false }))
+            setReactivatedName(childName)
+            book(body)
+          },
+        })
+      } else {
+        book(body)
+      }
     }
+  }
+
+  const handleChildChange = (option: SearchPickerOption | null) => {
+    setChildOption(option)
+    setDraft((current) => onChildChange(current, option))
+  }
+
+  const searchChildren = async (term: string): Promise<SearchPickerOption[]> => {
+    const [active, inactive] = await Promise.all([
+      queryClient.fetchQuery(
+        childQueries.list({ q: term, is_active: true, page_size: CHILD_SEARCH_PAGE_SIZE }),
+      ),
+      queryClient.fetchQuery(
+        childQueries.list({ q: term, is_active: false, page_size: CHILD_SEARCH_PAGE_SIZE }),
+      ),
+    ])
+
+    return childPickerOptions(active.items, inactive.items)
   }
 
   const handleSlotSelect = (availabilityId: string) => {
     const slot = slotOptions.find((candidate) => candidate.id === availabilityId) ?? null
 
     setDraft((current) => onSlotChange(current, slot))
+  }
+
+  let submitError: string | null = null
+
+  if (reactivate.isError) {
+    submitError = errorDetail(reactivate.error) ?? SUBMIT_FALLBACK_ERROR
+  } else if (create.isError) {
+    const detail = errorDetail(create.error) ?? SUBMIT_FALLBACK_ERROR
+
+    submitError =
+      reactivatedName === null
+        ? detail
+        : `${reactivatedName} was reactivated, but the session could not be booked: ${detail}`
+  }
+
+  let submitLabel = plan === 'reactivate-then-book' ? 'Reactivate and book' : 'Create booking'
+
+  if (reactivate.isPending) {
+    submitLabel = 'Reactivating…'
+  } else if (create.isPending) {
+    submitLabel = 'Creating…'
+  }
+
+  const childHint =
+    draft.childInactive && childOption !== null
+      ? `${childOption.label} is inactive. Booking will reactivate them first.`
+      : null
+
+  let homeHint: string | null = null
+
+  if (draft.childId === '') {
+    homeHint = CHILD_FIRST_HINT
+  } else if (childDetail.isPending) {
+    homeHint = 'Loading homes…'
+  } else if (childDetail.isError) {
+    homeHint = errorDetail(childDetail.error) ?? HOMES_FALLBACK_ERROR
+  } else if (noActiveHome) {
+    homeHint = `${childDetail.data.name} has no active home. Add one on the child's page.`
   }
 
   let slotHint: string | null = null
@@ -134,14 +257,14 @@ export const BookingForm = ({ open, onOpenChange, onCreated }: BookingFormProps)
               ))}
             </ul>
           )}
-          {create.isError && (
+          {submitError !== null && (
             <p role="alert" className={alertClasses}>
-              {errorDetail(create.error) ?? SUBMIT_FALLBACK_ERROR}
+              {submitError}
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <Button type="submit" form={FORM_ID} disabled={busy}>
-              {busy ? 'Creating…' : 'Create booking'}
+            <Button type="submit" form={FORM_ID} disabled={busy || noActiveHome}>
+              {submitLabel}
             </Button>
             <Button type="button" variant="outline" disabled={busy} onClick={resetAndClose}>
               Cancel
@@ -151,51 +274,24 @@ export const BookingForm = ({ open, onOpenChange, onCreated }: BookingFormProps)
       }
     >
       <form id={FORM_ID} onSubmit={handleSubmit} className="space-y-4">
-        <Field id="booking-client" label="Client">
-          <Select
-            id="booking-client"
-            value={draft.clientId}
-            disabled={busy}
-            onChange={(event) => setDraft((current) => onClientChange(current, event.target.value))}
-          >
-            <option value="">Select a client</option>
-            {(clients.data?.items ?? []).map((client) => (
-              <option key={client.id} value={client.id}>
-                {client.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-
-        <Field
-          id="booking-child"
-          label="Child"
-          hint={draft.clientId === '' ? CLIENT_FIRST_HINT : null}
-        >
-          <Select
+        <Field id="booking-child" label="Child" hint={childHint}>
+          <SearchPicker
             id="booking-child"
-            value={draft.childId}
-            disabled={busy || draft.clientId === ''}
-            onChange={(event) => setDraft((current) => onChildChange(current, event.target.value))}
-          >
-            <option value="">Select a child</option>
-            {childOptions.map((child) => (
-              <option key={child.id} value={child.id}>
-                {child.name} — grade {child.grade_level}
-              </option>
-            ))}
-          </Select>
+            queryKeyPrefix={['children', 'picker']}
+            search={searchChildren}
+            value={childOption}
+            onChange={handleChildChange}
+            placeholder="Search by child or guardian name"
+            disabled={busy}
+            emptyMessage="No matching children."
+          />
         </Field>
 
-        <Field
-          id="booking-home"
-          label="Home"
-          hint={draft.clientId === '' ? CLIENT_FIRST_HINT : null}
-        >
+        <Field id="booking-home" label="Home" hint={homeHint}>
           <Select
             id="booking-home"
             value={draft.homeId}
-            disabled={busy || draft.clientId === ''}
+            disabled={busy || homeOptions.length === 0}
             onChange={(event) =>
               setDraft((current) => ({ ...current, homeId: event.target.value }))
             }

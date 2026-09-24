@@ -26,6 +26,7 @@ type DetailRowProps = {
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const ADMIN_CREATED_LABEL = 'Created by an admin'
 const NO_NOTES_LABEL = 'No notes.'
+const NO_CHILD_NOTES_LABEL = 'No notes for this child.'
 const HIDDEN_CODE_LABEL = 'Hidden'
 const LOADING_ROWS = [0, 1, 2, 3, 4]
 
@@ -123,7 +124,16 @@ const PanelBody = ({ bookingId }: PanelBodyProps) => {
         </div>
 
         <div className="space-y-1.5">
-          <h3 className="text-sm font-medium text-foreground">Notes</h3>
+          <h3 className="text-sm font-medium text-foreground">Child notes</h3>
+          <p className="text-sm whitespace-pre-wrap text-foreground">
+            {detail.child.notes ?? (
+              <span className="text-muted-foreground">{NO_CHILD_NOTES_LABEL}</span>
+            )}
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <h3 className="text-sm font-medium text-foreground">Session notes</h3>
           <p className="text-sm whitespace-pre-wrap text-foreground">
             {detail.notes ?? <span className="text-muted-foreground">{NO_NOTES_LABEL}</span>}
           </p>

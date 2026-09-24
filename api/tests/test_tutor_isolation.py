@@ -275,21 +275,22 @@ def test_a_tutor_reads_their_own_booking(api: TestClient, world: World) -> None:
     assert body["child"]["id"] == str(world.child_id)
 
 
-def test_a_tutor_sees_a_booked_child_as_a_name_and_nothing_more(
+def test_a_tutor_sees_a_booked_childs_notes_on_the_detail_and_never_the_date_of_birth(
     api: TestClient, world: World
 ) -> None:
-    """A-43: a child's date of birth and notes are admin-only. The fixture child carries both,
-    so their absence from the tutor's responses is a filter, not an empty column."""
+    """OQ-52 answered (b), reversing A-43 (REQ-126): the assigned tutor sees the child's notes
+    on the session detail. The date of birth stays admin-only everywhere a tutor can reach."""
     listed = api.get("/api/bookings", headers=world.tutor_headers)
     detail = api.get(f"/api/bookings/{world.booking_id}", headers=world.tutor_headers)
 
     assert listed.status_code == 200
     assert detail.status_code == 200
     assert [set(row["child"]) for row in listed.json()["items"]] == [{"id", "name"}]
-    assert set(detail.json()["child"]) == {"id", "name"}
-    for response in (listed, detail):
-        assert CHILD_NOTES not in response.text
-        assert CHILD_DATE_OF_BIRTH.isoformat() not in response.text
+    assert set(detail.json()["child"]) == {"id", "name", "notes"}
+    assert detail.json()["child"]["notes"] == CHILD_NOTES
+    assert CHILD_DATE_OF_BIRTH.isoformat() not in listed.text
+    assert CHILD_DATE_OF_BIRTH.isoformat() not in detail.text
+    assert CHILD_NOTES not in listed.text
 
 
 def test_a_tutor_creating_their_own_time_off_lands_pending(
@@ -375,10 +376,20 @@ def test_a_tutor_naming_a_tutor_id_that_is_not_theirs_is_403(
     }
 
 
-def test_a_tutor_reading_another_tutors_booking_is_403(api: TestClient, world: World) -> None:
+def test_a_tutor_reading_another_tutors_booking_is_403(
+    api: TestClient, db: Session, world: World
+) -> None:
+    """REQ-126.2: the 403 body carries nothing of the other child's, including its notes."""
+    marker = f"Other notes {uuid.uuid4().hex}"
+    other_booking = db.get_one(Booking, world.other_booking_id)
+    other_child = db.get_one(Child, other_booking.child_id)
+    other_child.notes = marker
+    db.flush()
+
     response = api.get(f"/api/bookings/{world.other_booking_id}", headers=world.tutor_headers)
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
+    assert marker not in response.text
 
 
 def test_a_tutor_deleting_another_tutors_pending_request_is_403(

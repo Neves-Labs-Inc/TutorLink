@@ -1,8 +1,8 @@
-"""`/api/children` over HTTP — REQ-034, and the replace semantics OQ-1 settles.
+"""`/api/children` writes over HTTP — REQ-034, the replace semantics OQ-1 settles, and
+deactivation (REQ-110, REQ-113).
 
-The frozen contract offers no `GET /api/children/{id}`, so most of what matters here is
-invisible over HTTP and is asserted against the junction tables directly. Three things a
-passing response body cannot show on its own:
+The reads are `test_child_read_routes.py`'s; what matters here is asserted against the tables
+directly, because three things a passing response body cannot show on its own are:
 
 - a link that falls out of a `PATCH` is **hard-deleted**, not deactivated;
 - a link that stays keeps **its own row** — the junction primary key is what separates set
@@ -15,29 +15,61 @@ phone-number normalisation never runs and these tests do not inherit REQ-037's f
 
 REQ-095's date-of-birth bound is exercised at both ends, with `child_service._today()` frozen
 for the upper one: an unfrozen "tomorrow" would pass or fail depending on when the suite runs.
+
+Deactivation cancels the child's upcoming sessions (P7C-O), so its tests freeze
+`child_service._now()` at noon and seed bookings on either side of it: "upcoming" is "starts
+after now" (P7C-T), and a session this morning that nobody has marked completed must survive.
+Every cancellation is read back from the row, never inferred from the status code. The
+two-connection race and the rollback of a half-done cancel need real commits and live in
+`test_child_deactivation_race.py`.
 """
 
 import datetime
 import uuid
+from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.availability import TutorAvailability
+from app.models.booking import Booking
 from app.models.child import NOTES_MAX_LENGTH, Child
-from app.models.enums import UserRole
+from app.models.enums import BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
+from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
+from app.routers.children import (
+    HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR,
+    UPCOMING_SESSIONS_CHANGED_ERROR,
+)
 from app.security import create_access_token, hash_password
-from app.services import child_service
+from app.services import broadcast_service, child_service, twilio_service
 
 PASSWORD = "correct horse battery staple"
 DATE_OF_BIRTH = "2014-05-02"
 FROZEN_TODAY = datetime.date(2026, 9, 23)
 INVALID_DATE_OF_BIRTH_ERROR = "date_of_birth must be a real date between 1900-01-01 and today"
+FROZEN_NOW = datetime.datetime(2026, 9, 23, 12, 0)
+TODAY = FROZEN_NOW.date()
+TOMORROW = TODAY + datetime.timedelta(days=1)
+YESTERDAY = TODAY - datetime.timedelta(days=1)
+NINE = datetime.time(9, 0)
+FIFTEEN = datetime.time(15, 0)
+
+
+@dataclass(frozen=True, slots=True)
+class Sessions:
+    child_id: uuid.UUID
+    tomorrow: uuid.UUID
+    this_afternoon: uuid.UUID
+    this_morning: uuid.UUID
+    yesterday: uuid.UUID
+    already_cancelled: uuid.UUID
+    other_childs: uuid.UUID
 
 
 def _phone() -> str:
@@ -120,6 +152,85 @@ def _home_links(db: Session, child_id: uuid.UUID) -> dict[uuid.UUID, uuid.UUID]:
         link.home_id: link.id
         for link in db.scalars(select(ChildHome).where(ChildHome.child_id == child_id))
     }
+
+
+def _book(
+    db: Session,
+    *,
+    child_id: uuid.UUID,
+    home_id: uuid.UUID,
+    on: datetime.date,
+    start: datetime.time,
+    status: BookingStatus = BookingStatus.CONFIRMED,
+) -> uuid.UUID:
+    """A booking written straight to the table, each with its own tutor, so no two collide on
+    `excl_bookings_live_overlap` and none has to pass the window gates of `POST /api/bookings`."""
+    tutor = _make_tutor(db)
+    subject = Subject(name=f"Subject {uuid.uuid4().hex[:8]}")
+    db.add(subject)
+    db.flush()
+    availability = TutorAvailability(
+        tutor_id=tutor.id,
+        day_of_week=on.weekday(),
+        start_time=datetime.time(8, 0),
+        end_time=datetime.time(20, 0),
+    )
+    db.add(availability)
+    db.flush()
+    booking = Booking(
+        child_id=child_id,
+        tutor_id=tutor.id,
+        subject_id=subject.id,
+        availability_id=availability.id,
+        home_id=home_id,
+        scheduled_date=on,
+        start_time=start,
+        end_time=(datetime.datetime.combine(on, start) + datetime.timedelta(hours=1)).time(),
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+    return booking.id
+
+
+def _seed_sessions(api: TestClient, db: Session, admin: User) -> Sessions:
+    """Two upcoming live sessions (tomorrow, and 15:00 today), and four that must survive a
+    deactivation at noon: 09:00 today, yesterday, an already-cancelled one tomorrow, and another
+    child's tomorrow."""
+    guardian, home = _make_guardian(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[guardian], homes=[home])
+    other_child_id = _create_child(api, admin, guardians=[guardian], homes=[home])
+
+    def book(
+        on: datetime.date,
+        start: datetime.time,
+        status: BookingStatus = BookingStatus.CONFIRMED,
+    ) -> uuid.UUID:
+        return _book(db, child_id=child_id, home_id=home.id, on=on, start=start, status=status)
+
+    return Sessions(
+        child_id=child_id,
+        tomorrow=book(TOMORROW, NINE),
+        this_afternoon=book(TODAY, FIFTEEN, BookingStatus.PENDING),
+        this_morning=book(TODAY, NINE),
+        yesterday=book(YESTERDAY, FIFTEEN),
+        already_cancelled=book(TOMORROW, FIFTEEN, BookingStatus.CANCELLED),
+        other_childs=_book(db, child_id=other_child_id, home_id=home.id, on=TOMORROW, start=NINE),
+    )
+
+
+def _status(db: Session, booking_id: uuid.UUID) -> BookingStatus:
+    db.expire_all()
+    return db.scalars(select(Booking.status).where(Booking.id == booking_id)).one()
+
+
+def _child(db: Session, child_id: uuid.UUID) -> Child:
+    db.expire_all()
+    return db.get_one(Child, child_id)
+
+
+def _refuse_outbound(*args: object, **kwargs: object) -> None:
+    raise AssertionError("a deactivation must not notify anyone (OQ-59)")
 
 
 # --- REQ-034.6: the RBAC gate and the error envelope ----------------------------------------
@@ -437,6 +548,7 @@ def test_the_response_carries_exactly_the_documented_keys(api: TestClient, db: S
         "grade_level",
         "school_name",
         "notes",
+        "is_active",
         "guardian_ids",
         "home_ids",
     }
@@ -652,10 +764,11 @@ def test_patch_refuses_an_implausible_date_of_birth_and_writes_nothing(
     assert stored.date_of_birth == datetime.date.fromisoformat(DATE_OF_BIRTH)
 
 
-# --- REQ-034.5: nothing here soft-deletes ---------------------------------------------------
+# --- REQ-034.5: no DELETE route --------------------------------------------------------------
 
 
-def test_a_child_carries_no_is_active_and_has_no_delete_route(api: TestClient, db: Session) -> None:
+def test_a_child_has_no_delete_route(api: TestClient, db: Session) -> None:
+    """Deactivation is `PATCH {"is_active": false}` (CW); the frozen contract lists no DELETE."""
     admin = _make_user(db)
     body = api.post(
         "/api/children",
@@ -663,5 +776,283 @@ def test_a_child_carries_no_is_active_and_has_no_delete_route(api: TestClient, d
         json=_payload(guardians=[_make_guardian(db)], homes=[_make_home(db)]),
     ).json()
 
-    assert "is_active" not in body
     assert api.delete(f"/api/children/{body['id']}", headers=_auth(admin)).status_code == 405
+
+
+# --- REQ-110 and REQ-113: deactivation, reactivation, the home-unlink guard -----------------
+
+
+@pytest.fixture
+def frozen_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(child_service, "_now", lambda: FROZEN_NOW)
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"expected_cancellations": 0}, {"expected_cancellations": 3}]
+)
+def test_deactivating_a_child_with_no_upcoming_sessions_ignores_the_count(
+    api: TestClient, db: Session, frozen_now: None, extra: dict[str, int]
+) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"is_active": False, **extra}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
+    assert _child(db, child_id).is_active is False
+
+
+def test_reactivating_a_child_touches_no_booking(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    home = _make_home(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[home])
+    upcoming = _book(db, child_id=child_id, home_id=home.id, on=TOMORROW, start=NINE)
+    _child(db, child_id).is_active = False
+    db.flush()
+
+    response = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"is_active": True}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is True
+    assert _child(db, child_id).is_active is True
+    assert _status(db, upcoming) is BookingStatus.CONFIRMED
+
+
+def test_deactivating_an_already_inactive_child_cancels_nothing(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    """Not re-processed: no count is demanded and a live booking left over stays live."""
+    admin = _make_user(db)
+    home = _make_home(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[home])
+    upcoming = _book(db, child_id=child_id, home_id=home.id, on=TOMORROW, start=NINE)
+    _child(db, child_id).is_active = False
+    db.flush()
+
+    response = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"is_active": False}
+    )
+
+    assert response.status_code == 200
+    assert _status(db, upcoming) is BookingStatus.CONFIRMED
+
+
+def test_deactivation_cancels_exactly_the_sessions_that_start_after_now(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    sessions = _seed_sessions(api, db, admin)
+
+    response = api.patch(
+        f"/api/children/{sessions.child_id}",
+        headers=_auth(admin),
+        json={"is_active": False, "expected_cancellations": 2},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
+    assert _child(db, sessions.child_id).is_active is False
+    assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
+    assert _status(db, sessions.this_afternoon) is BookingStatus.CANCELLED
+    assert _status(db, sessions.this_morning) is BookingStatus.CONFIRMED
+    assert _status(db, sessions.yesterday) is BookingStatus.CONFIRMED
+    assert _status(db, sessions.already_cancelled) is BookingStatus.CANCELLED
+    assert _status(db, sessions.other_childs) is BookingStatus.CONFIRMED
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"expected_cancellations": 1}, {"expected_cancellations": 3}],
+    ids=["absent", "fewer", "more"],
+)
+def test_a_deactivation_count_that_does_not_match_is_409_and_applies_nothing(
+    api: TestClient, db: Session, frozen_now: None, extra: dict[str, int]
+) -> None:
+    admin = _make_user(db)
+    sessions = _seed_sessions(api, db, admin)
+
+    response = api.patch(
+        f"/api/children/{sessions.child_id}",
+        headers=_auth(admin),
+        json={"is_active": False, "name": "X", **extra},
+    )
+
+    child = _child(db, sessions.child_id)
+    assert response.status_code == 409
+    assert response.json() == {"detail": UPCOMING_SESSIONS_CHANGED_ERROR}
+    assert child.is_active is True
+    assert child.name == "Tommy Doe"
+    assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED
+    assert _status(db, sessions.this_afternoon) is BookingStatus.PENDING
+
+
+def test_a_deactivation_sends_nothing_to_anyone(
+    api: TestClient, db: Session, frozen_now: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OQ-59: cancelled without notice. Both outbound seams raise, so any attempt is a 500."""
+    monkeypatch.setattr(twilio_service, "send_whatsapp_message", _refuse_outbound)
+    monkeypatch.setattr(broadcast_service, "publish", _refuse_outbound)
+    admin = _make_user(db)
+    sessions = _seed_sessions(api, db, admin)
+
+    response = api.patch(
+        f"/api/children/{sessions.child_id}",
+        headers=_auth(admin),
+        json={"is_active": False, "expected_cancellations": 2},
+    )
+
+    assert response.status_code == 200
+    assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
+
+
+def test_only_the_home_without_an_upcoming_booking_can_be_removed(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    first, second = _make_home(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[first, second])
+    _book(db, child_id=child_id, home_id=first.id, on=TOMORROW, start=NINE)
+
+    refused = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"home_ids": [str(second.id)]}
+    )
+    accepted = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"home_ids": [str(first.id)]}
+    )
+
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR}
+    assert accepted.status_code == 200
+    assert set(_home_links(db, child_id)) == {first.id}
+
+
+def test_a_refused_home_removal_keeps_both_links(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    first, second = _make_home(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[first, second])
+    _book(db, child_id=child_id, home_id=first.id, on=TOMORROW, start=NINE)
+
+    response = api.patch(
+        f"/api/children/{child_id}",
+        headers=_auth(admin),
+        json={"home_ids": [str(second.id)], "name": "X"},
+    )
+
+    assert response.status_code == 409
+    assert set(_home_links(db, child_id)) == {first.id, second.id}
+    assert _child(db, child_id).name == "Tommy Doe"
+
+
+@pytest.mark.parametrize(
+    ("on", "start", "status"),
+    [
+        (YESTERDAY, FIFTEEN, BookingStatus.CONFIRMED),
+        (TODAY, NINE, BookingStatus.CONFIRMED),
+        (TOMORROW, NINE, BookingStatus.CANCELLED),
+    ],
+    ids=["yesterday", "earlier-today", "cancelled"],
+)
+def test_a_booking_that_is_not_upcoming_does_not_block_removing_its_home(
+    api: TestClient,
+    db: Session,
+    frozen_now: None,
+    on: datetime.date,
+    start: datetime.time,
+    status: BookingStatus,
+) -> None:
+    admin = _make_user(db)
+    first, second = _make_home(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[first, second])
+    _book(db, child_id=child_id, home_id=first.id, on=on, start=start, status=status)
+
+    response = api.patch(
+        f"/api/children/{child_id}", headers=_auth(admin), json={"home_ids": [str(second.id)]}
+    )
+
+    assert response.status_code == 200
+    assert set(_home_links(db, child_id)) == {second.id}
+
+
+def test_the_home_unlink_guard_is_checked_before_the_deactivation_count(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    first, second = _make_home(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[first, second])
+    upcoming = _book(db, child_id=child_id, home_id=first.id, on=TOMORROW, start=NINE)
+
+    response = api.patch(
+        f"/api/children/{child_id}",
+        headers=_auth(admin),
+        json={"home_ids": [str(second.id)], "is_active": False},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR}
+    assert _status(db, upcoming) is BookingStatus.CONFIRMED
+
+
+def test_the_date_of_birth_is_checked_before_the_deactivation_count(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    sessions = _seed_sessions(api, db, admin)
+
+    response = api.patch(
+        f"/api/children/{sessions.child_id}",
+        headers=_auth(admin),
+        json={"is_active": False, "date_of_birth": "2100-01-01"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": INVALID_DATE_OF_BIRTH_ERROR}
+    assert _child(db, sessions.child_id).is_active is True
+    assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED
+    assert _status(db, sessions.this_afternoon) is BookingStatus.PENDING
+
+
+def test_an_inactive_child_can_still_be_edited(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    _child(db, child_id).is_active = False
+    db.flush()
+
+    response = api.patch(f"/api/children/{child_id}", headers=_auth(admin), json={"notes": "x"})
+
+    assert response.status_code == 200
+    assert response.json()["notes"] == "x"
+    assert response.json()["is_active"] is False
+
+
+def test_a_tutor_cannot_deactivate_a_child(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = api.patch(
+        f"/api/children/{child_id}", headers=_auth(tutor), json={"is_active": False}
+    )
+
+    assert response.status_code == 403
+    assert isinstance(response.json()["detail"], str)
+    assert _child(db, child_id).is_active is True
+
+
+def test_patch_with_no_token_is_401(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = api.patch(f"/api/children/{child_id}", json={"is_active": False})
+
+    assert response.status_code == 401
+    assert isinstance(response.json()["detail"], str)
+    assert _child(db, child_id).is_active is True

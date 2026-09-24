@@ -121,7 +121,7 @@ export const Dashboard = () => {
           detail="Tutors currently active"
         />
         <StatWidget
-          label="Active clients"
+          label="Active guardians"
           value={stats.data.active_client_count}
           detail="Guardians currently active"
         /> */}

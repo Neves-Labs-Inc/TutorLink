@@ -167,6 +167,93 @@ def test_an_inverted_range_selects_nothing_and_is_not_an_error(
     assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
 
 
+def test_filtering_by_child_id_returns_only_that_childs_bookings(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    other_child = _make_child(db, guardians=[family.guardian])
+    mine = _book(db, family)
+    _book(db, family, child=other_child, start=ELEVEN, end=TWELVE)
+
+    body = api.get(f"/api/bookings?child_id={family.child.id}", headers=_auth(admin)).json()
+
+    assert body["total"] == 1
+    assert [row["id"] for row in body["items"]] == [str(mine.id)]
+
+
+def test_child_id_composes_with_status_and_date_range(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    other_child = _make_child(db, guardians=[family.guardian])
+    matching = _book(db, family, on=LATER, status=BookingStatus.CONFIRMED)
+    _book(db, family, on=LATER, status=BookingStatus.PENDING, start=ELEVEN, end=TWELVE)
+    _book(
+        db,
+        family,
+        child=other_child,
+        on=LATER,
+        status=BookingStatus.CONFIRMED,
+        start=NINE,
+        end=TEN,
+    )
+
+    query = f"?child_id={family.child.id}&status=confirmed&from=2026-09-08&to=2026-09-08"
+    body = api.get(f"/api/bookings{query}", headers=_auth(admin)).json()
+
+    assert body["total"] == 1
+    assert [row["id"] for row in body["items"]] == [str(matching.id)]
+
+
+def test_an_unknown_child_id_is_an_empty_page_not_an_error(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _book(db, family)
+
+    response = api.get(f"/api/bookings?child_id={uuid.uuid4()}", headers=_auth(admin))
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+
+
+def test_a_malformed_child_id_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get("/api/bookings?child_id=not-a-uuid", headers=_auth(admin))
+
+    assert response.status_code == 400
+    body = response.json()
+    assert isinstance(body["detail"], str)
+
+
+def test_tutor_filtering_by_child_id_sees_only_their_own_bookings_of_that_child(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    mine = _book(db, family, tutor=family.tutor)
+    _book(db, family, tutor=family.other_tutor)
+
+    body = api.get(f"/api/bookings?child_id={family.child.id}", headers=_auth(user)).json()
+
+    assert body["total"] == 1
+    assert [row["id"] for row in body["items"]] == [str(mine.id)]
+
+
+def test_tutor_naming_another_tutor_id_with_child_id_is_still_403(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    _book(db, family, tutor=family.other_tutor)
+
+    response = api.get(
+        f"/api/bookings?child_id={family.child.id}&tutor_id={family.other_tutor.id}",
+        headers=_auth(user),
+    )
+
+    _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
+
+
 def test_bookings_are_ordered_by_date_then_start_time(
     api: TestClient, db: Session, family: Family
 ) -> None:
@@ -312,6 +399,7 @@ def _book(
     *,
     tutor: Tutor | None = None,
     home: Home | None = None,
+    child: Child | None = None,
     on: datetime.date = DATE,
     start: datetime.time = TEN,
     end: datetime.time = ELEVEN,
@@ -320,7 +408,7 @@ def _book(
 ) -> Booking:
     booked_tutor = tutor or family.tutor
     booking = Booking(
-        child_id=family.child.id,
+        child_id=(child or family.child).id,
         tutor_id=booked_tutor.id,
         subject_id=family.subject.id,
         availability_id=(

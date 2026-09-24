@@ -34,6 +34,11 @@ describe('bookingListParams', () => {
         expected: { tutor_id: 'tutor-1', subject_id: 'subject-1' },
       },
       {
+        name: 'a child',
+        state: { ...EMPTY_FILTERS, childId: 'child-1' },
+        expected: { child_id: 'child-1' },
+      },
+      {
         name: 'a date range',
         state: { ...EMPTY_FILTERS, from: '2026-09-01', to: '2026-09-30' },
         expected: { from: '2026-09-01', to: '2026-09-30' },
@@ -49,6 +54,7 @@ describe('bookingListParams', () => {
           statuses: ['confirmed'],
           tutorId: 'tutor-1',
           subjectId: 'subject-1',
+          childId: 'child-1',
           from: '2026-09-01',
           to: '2026-09-30',
         },
@@ -56,6 +62,7 @@ describe('bookingListParams', () => {
           status: ['confirmed'],
           tutor_id: 'tutor-1',
           subject_id: 'subject-1',
+          child_id: 'child-1',
           from: '2026-09-01',
           to: '2026-09-30',
         },
@@ -76,6 +83,10 @@ describe('bookingListParams', () => {
     expect(params).not.toHaveProperty('tutor_id')
     expect(params).not.toHaveProperty('subject_id')
   })
+
+  it('drops a child cleared back to all', () => {
+    expect(bookingListParams({ ...EMPTY_FILTERS, childId: '' })).not.toHaveProperty('child_id')
+  })
 })
 
 describe('bookingFiltersFromSearchParams', () => {
@@ -85,6 +96,11 @@ describe('bookingFiltersFromSearchParams', () => {
       name: 'a tutor deep link',
       search: 'tutor_id=tutor-1',
       expected: { ...EMPTY_FILTERS, tutorId: 'tutor-1' },
+    },
+    {
+      name: 'a child deep link',
+      search: 'child_id=child-1',
+      expected: { ...EMPTY_FILTERS, childId: 'child-1' },
     },
     {
       name: 'repeated status keys',
@@ -125,11 +141,12 @@ describe('bookingFiltersFromSearchParams', () => {
       name: 'every filter at once',
       search:
         'status=pending&status=confirmed&tutor_id=tutor-1' +
-        '&subject_id=subject-1&from=2026-09-01&to=2026-09-30',
+        '&subject_id=subject-1&child_id=child-1&from=2026-09-01&to=2026-09-30',
       expected: {
         statuses: ['pending', 'confirmed'],
         tutorId: 'tutor-1',
         subjectId: 'subject-1',
+        childId: 'child-1',
         from: '2026-09-01',
         to: '2026-09-30',
       },
@@ -165,16 +182,23 @@ describe('bookingFilterSearchParams', () => {
       expected: 'tutor_id=tutor-1',
     },
     {
+      name: 'a child alone',
+      state: { ...EMPTY_FILTERS, childId: 'child-1' },
+      expected: 'child_id=child-1',
+    },
+    {
       name: 'every filter at once',
       state: {
         statuses: ['confirmed'],
         tutorId: 'tutor-1',
         subjectId: 'subject-1',
+        childId: 'child-1',
         from: '2026-09-01',
         to: '2026-09-30',
       },
       expected:
-        'status=confirmed&tutor_id=tutor-1&subject_id=subject-1&from=2026-09-01&to=2026-09-30',
+        'status=confirmed&tutor_id=tutor-1&subject_id=subject-1&child_id=child-1' +
+        '&from=2026-09-01&to=2026-09-30',
     },
   ]
 
@@ -198,6 +222,7 @@ describe('booking filter URL round trip', () => {
   const states: { name: string; state: BookingFilterState }[] = [
     { name: 'an empty filter set', state: EMPTY_FILTERS },
     { name: 'a tutor deep link', state: { ...EMPTY_FILTERS, tutorId: 'tutor-1' } },
+    { name: 'a child deep link', state: { ...EMPTY_FILTERS, childId: 'child-1' } },
     {
       name: 'multiple statuses',
       state: { ...EMPTY_FILTERS, statuses: ['pending', 'confirmed'] },
@@ -209,6 +234,7 @@ describe('booking filter URL round trip', () => {
         statuses: ['confirmed', 'completed'],
         tutorId: 'tutor-1',
         subjectId: 'subject-1',
+        childId: 'child-1',
         from: '2026-09-01',
         to: '2026-09-30',
       },

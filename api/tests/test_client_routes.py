@@ -288,6 +288,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "grade_level": 7,
             "school_name": "Lincoln Middle School",
             "notes": "Peanut allergy",
+            "is_active": True,
         }
     ]
 

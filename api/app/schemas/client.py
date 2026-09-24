@@ -46,6 +46,7 @@ class ChildRead(BaseModel):
     grade_level: int
     school_name: str
     notes: str | None
+    is_active: bool
 
 
 class ClientSummary(BaseModel):

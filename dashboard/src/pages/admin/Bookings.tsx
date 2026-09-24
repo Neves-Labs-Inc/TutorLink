@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { BookingDetailPanel } from '@/components/bookings/BookingDetailPanel'
 import { BookingForm } from '@/components/bookings/BookingForm'
+import { SearchPicker, type SearchPickerOption } from '@/components/pickers/SearchPicker'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -13,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
+import { childPickerOption } from '@/lib/booking-form/bookingForm'
 import {
   bookingCountLabel,
   bookingFilterSearchParams,
@@ -26,6 +28,7 @@ import {
 } from '@/lib/bookings/bookings'
 import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
+import { childQueries } from '@/lib/queries/children'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import { subjectQueries } from '@/lib/queries/subjects'
 import { tutorQueries } from '@/lib/queries/tutors'
@@ -47,6 +50,7 @@ export const Bookings = () => {
   const [page, setPage] = useState(1)
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
+  const [childOption, setChildOption] = useState<SearchPickerOption | null>(null)
 
   const filters = bookingFiltersFromSearchParams(searchParams)
 
@@ -55,10 +59,31 @@ export const Bookings = () => {
   )
   const tutors = useQuery(tutorQueries.list({ page_size: REFERENCE_PAGE_SIZE }))
   const subjects = useQuery(subjectQueries.list({ page_size: REFERENCE_PAGE_SIZE }))
+  const filteredChild = useQuery({
+    ...childQueries.detail(filters.childId),
+    enabled: filters.childId !== '',
+  })
+
+  if (filters.childId === '' && childOption !== null) {
+    setChildOption(null)
+  } else if (filteredChild.data?.id === filters.childId && childOption?.id !== filters.childId) {
+    setChildOption(childPickerOption(filteredChild.data, false))
+  }
 
   const applyFilters = (next: BookingFilterState) => {
     setSearchParams(bookingFilterSearchParams(next))
     setPage(1)
+  }
+
+  const handleChildChange = (option: SearchPickerOption | null) => {
+    setChildOption(option)
+    applyFilters({ ...filters, childId: option?.id ?? '' })
+  }
+
+  const searchChildren = async (term: string): Promise<SearchPickerOption[]> => {
+    const results = await queryClient.fetchQuery(childQueries.list({ q: term, page_size: 20 }))
+
+    return results.items.map((child) => childPickerOption(child, false))
   }
 
   const columns: Column<Booking>[] = [
@@ -90,7 +115,7 @@ export const Bookings = () => {
 
       <Card>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <div className="space-y-1.5">
               <Label htmlFor="booking-from">From</Label>
               <Input
@@ -141,6 +166,19 @@ export const Bookings = () => {
                   </option>
                 ))}
               </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="booking-child-filter">Child</Label>
+              <SearchPicker
+                id="booking-child-filter"
+                queryKeyPrefix={['children', 'filter']}
+                search={searchChildren}
+                value={childOption}
+                onChange={handleChildChange}
+                placeholder="All children"
+                emptyMessage="No matching children."
+              />
             </div>
           </div>
 

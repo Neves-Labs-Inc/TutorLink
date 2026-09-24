@@ -324,17 +324,39 @@ def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Cont
     already answers with a 400 when the named availability range is inactive. Adding a third
     convention for a unary reference failure is what this avoids.
 
-    `children` is absent from `retirable` and that is not an oversight: it carries no
-    `is_active` at all (`docs/api-design.md:71`), and `CONSTITUTION.md` §12 forbids adding one.
-    `tutor_availability.is_active` is likewise absent because it is rule 1's, not a reference
-    failure — a withdrawn range names the wrong times rather than the wrong row (OQ-4).
+    `children` carries `is_active` from migration 0016 on (P7C-1) and an inactive child is
+    refused here exactly as a missing one, like every other retirable reference. (`CONSTITUTION.md`
+    §12 governs junctions only and never forbade the flag — D-7C-4.)
+
+    **The child and the home are read `FOR SHARE`** (P7C-S), because each has a deactivation
+    that decides on the bookings it can see: `child_service.update_child` locks the child
+    `FOR UPDATE` and cancels the upcoming bookings it counted, and `home_service.update_home`
+    locks the home `FOR UPDATE` and refuses while one is upcoming. An unlocked read here would
+    let a booking commit behind either decision — a live session on an inactive child that the
+    admin never confirmed, or at a home the guard just let go. With the share lock each pair
+    serialises: a deactivation already under way makes this wait and then see the row inactive;
+    a booking already past this line makes the deactivation wait and then see the booking.
+    `FOR SHARE` does not conflict with itself, so bookings of one child or at one home do not
+    queue on each other. `populate_existing` is what makes the locked read win over a row the
+    caller's session already cached: otherwise a caller that loaded it earlier in the transaction
+    would be judged on the value read *before* the lock waited (`conversation_service._locked`).
+
+    **Lock order is conversation → child → home → bookings**, and nothing in this module may
+    lock a booking before these reads. Neither deactivation can close a cycle against it:
+    `update_child` takes the child and then bookings, and reaches a home only through the key
+    share an inserted `child_homes` row takes, after the child; `update_home` takes only the home
+    and waits on nothing else. The child is kept out of `retirable` because the rules need it
+    too; the home stays in it, read locked.
+
+    `tutor_availability.is_active` is absent from `retirable` because it is rule 1's, not a
+    reference failure — a withdrawn range names the wrong times rather than the wrong row (OQ-4).
     """
-    child = db.get(Child, request.child_id)
+    child = db.get(Child, request.child_id, with_for_update={"read": True}, populate_existing=True)
     availability = db.get(TutorAvailability, request.availability_id)
     retirable = [
         db.get(Tutor, request.tutor_id),
         db.get(Subject, request.subject_id),
-        db.get(Home, request.home_id),
+        db.get(Home, request.home_id, with_for_update={"read": True}, populate_existing=True),
     ]
 
     if request.booked_by_guardian_id is not None:
@@ -342,6 +364,7 @@ def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Cont
 
     if (
         child is None
+        or not child.is_active
         or availability is None
         or any(row is None or not row.is_active for row in retirable)
     ):

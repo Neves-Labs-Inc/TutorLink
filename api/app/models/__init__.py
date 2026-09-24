@@ -1,6 +1,7 @@
 from app.db import Base
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
+from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
@@ -28,6 +29,7 @@ from app.models.enums import (
 )
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
+from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.models.refresh_token import RefreshToken
 from app.models.subject import Subject
@@ -55,6 +57,7 @@ __all__ = [
     "USER_ROLE_VALUES",
     "Booking",
     "BookingStatus",
+    "BotFlowState",
     "Child",
     "ChildGuardian",
     "ChildHome",
@@ -65,6 +68,7 @@ __all__ = [
     "Guardian",
     "GuardianHome",
     "Home",
+    "LoginAttempt",
     "Message",
     "MessageAuthor",
     "MessageStatus",

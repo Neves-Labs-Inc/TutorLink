@@ -4,44 +4,62 @@ Three call sites want one way to say "a message was recorded" or "a conversation
 webhook (on every inbound message and on the bot's reply), the takeover path, and the socket's
 own `send` handler. This module is that one way.
 
-**It is Redis pub/sub and not an in-process `set[WebSocket]`, and the difference is invisible
-until it matters (P7-K).** More than one API process exists on every topology this project
-would actually run — `uvicorn --workers N`, the seconds during which `docker compose up -d`
-runs the outgoing and incoming containers together, and any later horizontal move. Twilio's
-POST and an admin's WebSocket are two independent connections with no affinity to each other,
-so they land on different processes routinely. With an in-process registry the webhook
-broadcasts into process A's empty set while the admin sits on process B: nothing raises,
-nothing logs, the socket stays open and healthy, and the admin simply never sees the client's
-message. The contract's own safety net (`docs/api-design.md:1668-1673` — the socket is not a
-delivery guarantee, refetch on reconnect) never fires, because nothing tells the client to
-reconnect. Redis already carries four concerns here, so `PUBLISH`/`SUBSCRIBE` adds no
-infrastructure.
+**It is PostgreSQL `LISTEN`/`NOTIFY` and not an in-process `set[WebSocket]`, and the difference
+is invisible until it matters (P7-K).** More than one API process exists on every topology this
+project runs: ECS deploys are canaries, so the outgoing and incoming tasks serve side by side
+for the length of every deploy; autoscaling may add a second task; and `uvicorn --workers N`
+does the same on one host. Twilio's POST and an admin's WebSocket are two independent
+connections with no affinity to each other, so they land on different processes routinely.
+With an in-process registry the webhook broadcasts into process A's empty set while the admin
+sits on process B: nothing raises, nothing logs, the socket stays open and healthy, and the
+admin simply never sees the client's message. The contract's own safety net
+(`docs/api-design.md:1668-1673` — the socket is not a delivery guarantee, refetch on reconnect)
+never fires, because nothing tells the client to reconnect. The database is already the one
+thing every process shares, so the fan-out adds no infrastructure.
 
-**The channel is `chat:broadcast` and it is shared with nothing.** Epic #9's Traps section
-requires the Redis concerns to stay apart: `bot:flow:` (30-minute flow state), `twilio:msg:`
-(24-hour webhook dedupe), `ratelimit:login:*` (sliding windows) and Phase 2's refresh-token
-revocation. This is a pub/sub channel rather than a key, so it holds no data and has no TTL to
-share, but it is named under its own `chat:` prefix so nothing later reaches for a key under
-the same name.
+**The channel is `chat_broadcast`, and it is shared with nothing.** It is a PostgreSQL
+identifier — `LISTEN` takes an identifier, not a string — so it is written without anything
+that would need quoting. No other code in this project listens or notifies.
 
 **One channel for the whole deployment, not one per conversation.** The socket is
 conversation-wide by contract (`api-design.md:1602-1606`), so per-conversation channels would
 buy no filtering and would add a subscription lifecycle to get wrong.
 
-**Publishing is synchronous and subscribing is asynchronous, deliberately.** The three
-publishers are ordinary `def` routes holding the `Redis` from `Depends(get_redis)`; the one
-subscriber is the WebSocket route's pump, which is `async` and must not park a blocking socket
-read on a thread it has no way to cancel. `redis.asyncio` ships in the same package, so the
-second client costs a connection and no dependency.
+**A notice carries ids, never the payload.** PostgreSQL refuses a `NOTIFY` payload of 8000
+bytes or more, and a WhatsApp body alone can exceed that once it is UTF-8 encoded, so a
+`MessageCreated` that carried its message would be refused for exactly the long messages an
+admin most needs to see. `publish` sends `{type, id, client_message_id}` instead, and the one
+subscriber in each process — the socket route's pump — reads the row back and rebuilds the
+event with the same functions `GET /api/conversations/...` serialises with. That makes the
+socket frame identical to what the REST refetch returns, by construction rather than by two
+serialisers agreeing. `client_message_id` is the one field the database cannot give back, so it
+travels in the notice; it is the only unbounded one, and is dropped (with a warning) on the one
+path that could push a notice past the cap — the composer's bubble then reconciles on refetch.
 
-**`publish` fails open, and logs.** A `RedisError` here is swallowed rather than raised,
-because every publisher calls this *after* its write is committed: raising would turn a Redis
-blip into a 500 on the webhook — which Twilio then retries for hours while the parent waits on
-a reply the API is refusing to return — or a 500 on a takeover that actually succeeded. Failing
-closed does not get the event to the admin either, so it buys nothing for the reader it is
-meant to protect and costs a completed, user-visible action. Unlike `rate_limit_service`'s
-deliberately silent fail-open, this one logs: the dropped event is otherwise untraceable, and
-`GET /readyz` already reports an unreachable Redis to whoever is watching.
+**Publishing is synchronous, after the commit, on its own short connection.** The publishers
+are ordinary `def` routes, and each calls this only once the write it announces is committed:
+the pump rebuilds from the database, so a notice that raced its row would find nothing and be
+dropped. The `pg_notify` runs in its own transaction that commits at once, which also keeps two
+notices from being folded into one — PostgreSQL delivers identical payloads sent inside one
+transaction only once.
+
+**Subscribing is asynchronous, on one dedicated connection per process.** `listen` opens a
+single `psycopg.AsyncConnection` in autocommit mode — `LISTEN` takes effect only when its
+transaction commits, so a listener inside a transaction is silently subscribed to nothing — and
+never opens a transaction afterwards, because a session idling in one blocks the server from
+cleaning its notification queue. **No connection pooler may ever sit on that connection.** A
+pooled connection (RDS Proxy, PgBouncer in transaction mode) is handed to whoever asks next, so
+the `LISTEN` would stay behind on a server connection this process no longer holds — the
+in-process-registry bug one layer down, and just as silent. If a proxy is ever added for the
+publishers, this one connection bypasses it.
+
+**`publish` fails open, and logs.** A `SQLAlchemyError` here is swallowed rather than raised,
+because every publisher calls this *after* its write is committed: raising would turn a
+database error on the notify into a 500 on the webhook — which Twilio then retries for hours
+while the parent waits on a reply the API is refusing to return — or a 500 on a takeover that
+actually succeeded. Failing closed does not get the event to the admin either, so it buys
+nothing for the reader it is meant to protect and costs a completed, user-visible action. It
+logs because the dropped event is otherwise untraceable.
 
 No FastAPI import anywhere in this module (CONSTITUTION §6): a socket is registered through the
 structural `EventSink` protocol, which `starlette.websockets.WebSocket` satisfies as it stands.
@@ -50,25 +68,33 @@ structural `EventSink` protocol, which `starlette.websockets.WebSocket` satisfie
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from functools import lru_cache
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from typing import Annotated, Literal, Protocol
 
+import psycopg
+from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
-from redis import Redis
-from redis.asyncio import Redis as AsyncRedis
-from redis.asyncio.client import PubSub
-from redis.exceptions import RedisError
+from sqlalchemy import text
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
+from app.db import engine
 
-CHANNEL = "chat:broadcast"
+CHANNEL = "chat_broadcast"
 
-# A subscription that is not confirmed is not a subscription: `SUBSCRIBE` is written to the
-# socket without waiting for the server, so a caller that started iterating immediately would
-# miss anything published in the window before Redis processed it.
-SUBSCRIBE_TIMEOUT_SECONDS = 5.0
+# PostgreSQL's cap is "shorter than 8000 bytes"; the margin keeps a notice clear of it without
+# anyone having to count the JSON punctuation around the ids.
+NOTICE_LIMIT_BYTES = 7900
+
+# How long the listener waits in silence before it proves the connection is still there. A
+# connection that died without a word — a dropped route, not a terminated backend — raises
+# nothing on its own, and the pump would sit on it serving no one.
+LIVENESS_SECONDS = 30
+
+_NOTIFY = text("SELECT pg_notify(:channel, :payload)")
+_LISTEN = sql.SQL("LISTEN {}").format(sql.Identifier(CHANNEL))
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +142,30 @@ class ConversationUpdated(_Event):
 
 type BroadcastEvent = MessageCreated | ConversationUpdated
 
-_event_adapter: TypeAdapter[BroadcastEvent] = TypeAdapter(
-    Annotated[BroadcastEvent, Field(discriminator="type")]
+
+class _Notice(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+
+class MessageNotice(_Notice):
+    """What crosses the channel for a `MessageCreated`: the row to read back, and the echo."""
+
+    type: Literal["message.created"] = "message.created"
+    message_id: uuid.UUID
+    client_message_id: str | None
+
+
+class ConversationNotice(_Notice):
+    """What crosses the channel for a `ConversationUpdated`: the row to read back."""
+
+    type: Literal["conversation.updated"] = "conversation.updated"
+    conversation_id: uuid.UUID
+
+
+type Notice = MessageNotice | ConversationNotice
+
+_notice_adapter: TypeAdapter[Notice] = TypeAdapter(
+    Annotated[Notice, Field(discriminator="type")]
 )
 
 
@@ -134,41 +182,55 @@ class EventSink(Protocol):
 _sinks: set[EventSink] = set()
 
 
-def publish(redis: Redis, event: BroadcastEvent) -> None:
-    """Send one event to every API process, including this one.
+def publish(event: BroadcastEvent) -> None:
+    """Announce one event to every API process, including this one. Call after the commit.
 
-    Fails open on an unreachable Redis — see the module docstring. Only `RedisError` is
+    Fails open on a database error — see the module docstring. Only `SQLAlchemyError` is
     swallowed; a serialisation bug is a bug and travels.
     """
+    payload = _notice_for(event).model_dump_json()
+
     try:
-        redis.publish(CHANNEL, event.model_dump_json(exclude_none=True))
-    except RedisError:
-        logger.exception("dropped a %s broadcast: Redis is unreachable", event.type)
+        with _notify_engine().begin() as connection:
+            connection.execute(_NOTIFY, {"channel": CHANNEL, "payload": payload})
+    except SQLAlchemyError:
+        logger.exception("dropped a %s broadcast: the notify did not reach the database", event.type)
 
 
 @asynccontextmanager
-async def subscribe(redis: AsyncRedis) -> AsyncIterator[AsyncIterator[BroadcastEvent]]:
-    """Hold one subscription to the channel, and iterate the events published on it.
+async def listen() -> AsyncIterator[AsyncIterator[Notice]]:
+    """Hold this process's one `LISTEN`, and iterate the notices sent on the channel.
 
-    A context manager rather than a bare generator for two reasons. The subscription is
-    established and **confirmed** before the body runs, so a caller cannot miss an event
-    published between opening the iterator and Redis processing its `SUBSCRIBE`; and the pubsub
-    connection is released on the way out, including when the socket that owned it disconnects.
+    A context manager rather than a bare generator for two reasons. `LISTEN` has executed —
+    and, in autocommit, taken effect — before the body runs, so a caller cannot miss a notice
+    sent between opening the iterator and the subscription starting; and the connection is
+    closed on the way out, including when the pump that owned it is cancelled.
 
-    The iterator never ends quietly: a dropped connection raises `RedisError` into the caller's
-    `async for`, because a pump that returns instead would leave every socket in this process
-    open, registered, and silently receiving nothing.
+    The iterator never ends quietly: a dropped connection raises `psycopg.Error` into the
+    caller's `async for`, because a pump that returns instead would leave every socket in this
+    process open, registered, and silently receiving nothing.
     """
-    pubsub = redis.pubsub()
-    await pubsub.subscribe(CHANNEL)
-    try:
-        confirmation = await pubsub.get_message(timeout=SUBSCRIBE_TIMEOUT_SECONDS)
-        if confirmation is None or confirmation["type"] != "subscribe":
-            raise RedisError(f"Redis did not confirm the subscription to {CHANNEL!r}")
+    connection = await psycopg.AsyncConnection.connect(listen_dsn(), autocommit=True)
+    notices = _notices(connection)
 
-        yield _events(pubsub)
+    try:
+        await connection.execute(_LISTEN)
+        yield notices
     finally:
-        await pubsub.aclose()
+        await notices.aclose()
+        await connection.close()
+
+
+def listen_dsn() -> str:
+    """The application's database, as a libpq URL the raw listener connection can open.
+
+    `DATABASE_URL` is a SQLAlchemy URL (`postgresql+psycopg://`), which libpq refuses. Only the
+    driver name changes: the query string carries `sslmode=require` in production, and a
+    listener that dropped it would connect in the clear or not at all.
+    """
+    url = make_url(get_settings().database_url)
+
+    return url.set(drivername="postgresql").render_as_string(hide_password=False)
 
 
 def register(sink: EventSink) -> None:
@@ -189,43 +251,65 @@ def registered() -> frozenset[EventSink]:
 async def deliver(event: BroadcastEvent) -> None:
     """Write one event to every socket registered in **this** process.
 
-    The registry is per-process by design: pub/sub carries the event between processes and this
-    carries it to the sockets inside one. Sends run concurrently so that one slow client does
-    not delay the rest, and a sink that raises is dropped rather than allowed to fail the whole
-    fan-out.
+    The registry is per-process by design: the channel carries the notice between processes
+    and this carries the rebuilt event to the sockets inside one. Sends run concurrently so
+    that one slow client does not delay the rest, and a sink that raises is dropped rather than
+    allowed to fail the whole fan-out.
     """
     frame = event.frame()
     await asyncio.gather(*(_send(sink, frame) for sink in registered()))
 
 
-@lru_cache(maxsize=1)
-def get_async_redis() -> AsyncRedis:
-    """The process-wide async client the subscriber pump runs on.
+def _notice_for(event: BroadcastEvent) -> Notice:
+    if isinstance(event, ConversationUpdated):
+        notice: Notice = ConversationNotice(conversation_id=event.conversation["id"])
+    else:
+        notice = MessageNotice(
+            message_id=event.message["id"], client_message_id=event.client_message_id
+        )
 
-    Separate from `redis_client.get_redis()` because that one is synchronous and is what the
-    publishing routes hold; same URL, same server, its own connection pool. Cached rather than
-    built per call for the reason `get_redis`'s docstring gives — a client is a handle onto a
-    pool, and one per socket would open a connection per connected admin.
-    """
-    return AsyncRedis.from_url(get_settings().redis_url, decode_responses=True)
+        if len(notice.model_dump_json().encode()) >= NOTICE_LIMIT_BYTES:
+            logger.warning(
+                "dropped an oversized client_message_id from the notice for message %s",
+                notice.message_id,
+            )
+            notice = MessageNotice(message_id=notice.message_id, client_message_id=None)
+
+    return notice
 
 
-async def _events(pubsub: PubSub) -> AsyncIterator[BroadcastEvent]:
-    async for message in pubsub.listen():
-        if message["type"] != "message":
-            continue
+def _notify_engine() -> Engine:
+    return engine
 
-        try:
-            event = _event_adapter.validate_json(message["data"])
-        except ValidationError:
-            # A payload this process cannot read is the rolling-deploy case this design exists
-            # for, arriving from the other side: the two containers overlap for seconds and one
-            # of them may publish a shape the other has never seen. Skipping it costs one
-            # update; letting it raise would end the pump for every socket in this process.
-            logger.warning("skipped an unreadable broadcast payload on %s", CHANNEL)
-            continue
 
-        yield event
+async def _notices(connection: psycopg.AsyncConnection) -> AsyncGenerator[Notice, None]:
+    while True:
+        received = False
+
+        async with aclosing(connection.notifies(timeout=LIVENESS_SECONDS)) as notifies:
+            async for notify in notifies:
+                received = True
+                notice = _parse(notify.payload)
+
+                if notice is not None:
+                    yield notice
+
+        if not received:
+            await connection.execute("SELECT 1")
+
+
+def _parse(payload: str) -> Notice | None:
+    try:
+        notice: Notice | None = _notice_adapter.validate_json(payload)
+    except ValidationError:
+        # A notice this process cannot read is the canary-deploy case this design exists for,
+        # arriving from the other side: two task versions overlap for the whole deploy and one
+        # of them may send a shape the other has never seen. Skipping it costs one update;
+        # letting it raise would end the pump for every socket in this process.
+        logger.warning("skipped an unreadable broadcast notice on %s", CHANNEL)
+        notice = None
+
+    return notice
 
 
 async def _send(sink: EventSink, frame: dict[str, object]) -> None:

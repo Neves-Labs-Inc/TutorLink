@@ -177,3 +177,35 @@ def test_settings_reads_twilio_status_callback_url_when_env_var_is_present(
     settings = Settings(secret_key=VALID_SECRET_KEY)
 
     assert settings.twilio_status_callback_url == "https://example.com/webhook/whatsapp/status"
+
+
+def test_settings_defaults_dashboard_dist_dir_to_empty_when_env_var_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DASHBOARD_DIST_DIR", raising=False)
+
+    assert Settings(secret_key=VALID_SECRET_KEY).dashboard_dist_dir == ""
+
+
+def test_settings_reads_dashboard_dist_dir_when_env_var_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASHBOARD_DIST_DIR", "/opt/dashboard")
+
+    assert Settings(secret_key=VALID_SECRET_KEY).dashboard_dist_dir == "/opt/dashboard"
+
+
+def test_settings_defaults_api_docs_enabled_to_true_when_env_var_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("API_DOCS_ENABLED", raising=False)
+
+    assert Settings(secret_key=VALID_SECRET_KEY).api_docs_enabled is True
+
+
+def test_settings_honours_an_explicit_false_api_docs_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("API_DOCS_ENABLED", "false")
+
+    assert Settings(secret_key=VALID_SECRET_KEY).api_docs_enabled is False

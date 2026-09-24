@@ -1,0 +1,19 @@
+[Unit]
+Description=TutorLink chat retention purge
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# Ordering only, no dependency: it takes effect when Persistent=true catches both missed timers
+# up in one transaction at boot, where the hour between the two OnCalendar times does not apply.
+# The purge deletes rows the night's dump must already contain.
+After=tutorlink-backup.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/tutorlink
+# `exec -T` is mandatory: without it this fails with "the input device is not a TTY" under
+# systemd and the retention obligation silently stops running. The shell wrapper is deliberate —
+# a bare ExecStart= does no shell parsing.
+ExecStart=/bin/bash -lc 'docker compose -f /opt/tutorlink/docker-compose.yml -f /opt/tutorlink/docker-compose.prod.yml --env-file /opt/tutorlink/.env exec -T api python -m app.cli purge-messages'
+TimeoutStartSec=30min

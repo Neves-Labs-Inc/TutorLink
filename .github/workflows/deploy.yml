@@ -1,0 +1,247 @@
+name: Deploy
+
+# Tag push and manual dispatch only. There is deliberately no branch trigger: OQ-35 holds `main`
+# promotion until MVP scope, and a workflow that deployed on push to a branch would quietly
+# contradict a standing decision.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  # The instance is Graviton (OQ-33, t4g.small), so the images must be arm64. An amd64 image
+  # builds and pushes cleanly and then fails on the box with `exec format error`. This is the one
+  # place the platform is written down; the runner label below has to agree with it, and the
+  # smoke step asserts the built artifact's architecture rather than trusting either.
+  BUILD_PLATFORM: linux/arm64
+  IMAGE_TAG: ${{ github.sha }}
+  SSM_EXECUTION_TIMEOUT: "1800"
+  DEPLOY_POLL_TIMEOUT: "1800"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the deployment variables are configured
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in AWS_REGION AWS_DEPLOY_ROLE_ARN EC2_INSTANCE_ID BACKUP_BUCKET; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::repository variables are not set:$missing"
+            exit 1
+          fi
+
+      # Short-lived credentials from GitHub's OIDC provider. No AWS access key exists anywhere in
+      # this repository, and none may be added — that is the whole of issue #29.
+      #
+      # The role itself is created by hand per task R's runbook; this workflow only assumes it.
+      # Its trust policy must condition on BOTH claims, and the `sub` condition must name this
+      # repository and the refs this workflow can run from:
+      #
+      #   StringEquals "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+      #   StringLike   "token.actions.githubusercontent.com:sub" = "repo:Siraneves/TutorLink:ref:refs/tags/v*"
+      #
+      # and, if manual dispatch is to be allowed, a second `sub` value
+      # "repo:Siraneves/TutorLink:ref:refs/heads/*" — workflow_dispatch presents the branch it was
+      # dispatched from, not the tag. A `sub` of "repo:*", or no `sub` condition at all, lets any
+      # repository on GitHub assume this role and push to this account's ECR.
+      #
+      # VERIFY at provisioning time, both confirmed against GitHub and AWS documentation on
+      # 2026-09-22 and both cheap to re-check: repositories created after 2026-07-15 are issued an
+      # immutable subject that embeds owner and repository IDs
+      # ("repo:Siraneves@<owner-id>/TutorLink@<repo-id>:ref:refs/tags/v1") — this repository
+      # predates that date, so the plain form above applies, but read the token's own claims
+      # rather than assuming. A certificate thumbprint is no longer required on the
+      # token.actions.githubusercontent.com identity provider: AWS trusts GitHub's root CA and
+      # ignores whatever thumbprint is configured.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: tutorlink-deploy
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # No `cache-from`, no `cache-to`, no `--mount=type=cache`. A hosted runner starts with an
+      # empty build cache every run, so the images are built from the checked-out lockfiles and
+      # nothing else; adding a shared cache here is what would let a dependency layer outlive a
+      # `uv.lock` bump and ship a container whose venv predates its own dependencies.
+      - name: Build the API image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "$BUILD_PLATFORM" \
+            --file docker/api.Dockerfile \
+            --tag "$REGISTRY/tutorlink-api:$IMAGE_TAG" \
+            --load \
+            api
+
+      # Smokes the artifact, not the recipe. Phase 7 added `anthropic` and `twilio` to
+      # api/pyproject.toml and regenerated uv.lock, and two test modules then failed to collect in
+      # a running container whose venv predated the lock change. That is the shape of a green
+      # pipeline shipping a broken container: the runner's own tests pass because they installed
+      # from the current lock, and the thing that actually runs in production cannot import half
+      # its dependencies. These two commands run inside the built image and cost seconds.
+      - name: Smoke the API image before pushing it
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/tutorlink-api:$IMAGE_TAG"
+          expected="${BUILD_PLATFORM#linux/}"
+          actual="$(docker image inspect --format '{{.Architecture}}' "$image")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::API image is $actual, expected $expected"
+            exit 1
+          fi
+          docker run --rm "$image" python -c "import anthropic, twilio"
+          docker run --rm "$image" pytest --collect-only -q
+
+      - name: Push the API image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: docker push "$REGISTRY/tutorlink-api:$IMAGE_TAG"
+
+      # Repository root as the context, and deliberately no --target: docker/dashboard.Dockerfile
+      # copies docker/Caddyfile into the final stage, which a ./dashboard context cannot reach,
+      # and its untargeted final stage is the production image. `dev` is the stage that has to be
+      # asked for by name, so a job that forgets a target cannot ship the Vite dev server.
+      - name: Build the dashboard image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "$BUILD_PLATFORM" \
+            --file docker/dashboard.Dockerfile \
+            --tag "$REGISTRY/tutorlink-web:$IMAGE_TAG" \
+            --load \
+            .
+
+      - name: Smoke the dashboard image and push it
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/tutorlink-web:$IMAGE_TAG"
+          expected="${BUILD_PLATFORM#linux/}"
+          actual="$(docker image inspect --format '{{.Architecture}}' "$image")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::dashboard image is $actual, expected $expected"
+            exit 1
+          fi
+          # The compiled bundle and the Caddyfile are the whole payload of this image, and an
+          # empty /srv serves a blank page that looks like a frontend bug rather than a bad build.
+          docker run --rm --entrypoint sh "$image" -c 'test -s /srv/index.html && test -s /etc/caddy/Caddyfile'
+          docker push "$image"
+
+      # The compose files are versioned with the release and fetched by deploy.sh, because a box
+      # whose compose file predates a change to a service's `environment:` pulls the new image, runs
+      # the old compose and boots a container missing a variable the image now needs — and
+      # deploy.sh's assert_compose_variables_resolved cannot catch that, because a file that never
+      # mentions the new variable leaves nothing unresolved. Phase 7 made exactly that change when
+      # it added ANTHROPIC_API_KEY to the api service.
+      #
+      # This runs after both pushes so that a release prefix only ever exists for a tag whose images
+      # exist, and it uses the backup bucket under a separate prefix rather than a second bucket.
+      # BACKUP_BUCKET is a repository variable here and an SSM parameter on the box, as every other
+      # deployment coordinate in this workflow is; the two disagreeing is not silent, because
+      # deploy.sh then aborts naming the tag it could not find.
+      - name: Upload the compose files as release artifacts
+        env:
+          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
+        run: |
+          set -euo pipefail
+          for file in docker-compose.yml docker-compose.prod.yml; do
+            aws s3 cp "$file" "s3://$BACKUP_BUCKET/releases/$IMAGE_TAG/$file" --only-show-errors
+          done
+
+      # SSM Run Command, not SSH (OQ-34): no inbound port 22 on the box and no key material in
+      # GitHub. The invocation is polled to a terminal state and the job fails on anything but
+      # Success — a send-and-forget step turns a failed deploy into a green build, which leaves
+      # the operator believing new code is running when the old code is.
+      - name: Deploy on the box
+        id: deploy
+        env:
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          parameters="$(jq -n \
+            --arg command "/opt/tutorlink/deploy.sh $IMAGE_TAG" \
+            --arg timeout "$SSM_EXECUTION_TIMEOUT" \
+            '{commands: [$command], executionTimeout: [$timeout]}')"
+
+          command_id="$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "tutorlink deploy ${IMAGE_TAG:0:12}" \
+            --parameters "$parameters" \
+            --query Command.CommandId \
+            --output text)"
+          echo "SSM command $command_id"
+
+          deadline=$(( SECONDS + DEPLOY_POLL_TIMEOUT ))
+          status=Pending
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            status="$(aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)"
+            case "$status" in
+              Success|Failed|Cancelled|TimedOut|Undeliverable|Terminated) break ;;
+            esac
+            sleep 5
+          done
+
+          invocation="$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --output json)"
+          echo "--- deploy.sh stdout (SSM truncates at 24000 characters) ---"
+          jq -r '.StandardOutputContent' <<<"$invocation"
+          echo "--- deploy.sh stderr ---"
+          jq -r '.StandardErrorContent' <<<"$invocation"
+          status="$(jq -r '.Status' <<<"$invocation")"
+
+          if [ "$status" != Success ]; then
+            echo "::error::deploy.sh on $EC2_INSTANCE_ID ended with SSM status $status"
+            exit 1
+          fi
+
+      - name: Summarise
+        if: always()
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Deploy $IMAGE_TAG"
+            echo
+            for repository in tutorlink-api tutorlink-web; do
+              image="$REGISTRY/$repository:$IMAGE_TAG"
+              digest="$(docker image inspect --format '{{join .RepoDigests " "}}' "$image" 2>/dev/null || echo "not built")"
+              echo "- \`$repository\` — $digest"
+            done
+          } >>"$GITHUB_STEP_SUMMARY"

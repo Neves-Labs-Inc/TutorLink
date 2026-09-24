@@ -37,10 +37,6 @@ from app.routers.conversations import CONVERSATION_NOT_FOUND_ERROR, NO_REACTIVAT
 from app.security import create_access_token, hash_password
 from app.services import twilio_service
 from app.services.broadcast_service import ConversationUpdated
-from tests.conftest import FakeRedis
-
-type Broadcast = tuple[FakeRedis, ConversationUpdated]
-
 PASSWORD = "correct horse battery staple"
 
 NOON = datetime.datetime(2026, 1, 5, 12, 0, tzinfo=datetime.UTC)
@@ -113,7 +109,7 @@ def test_the_list_shape_is_unchanged_by_a_pending_request(api: TestClient, db: S
 
 
 def test_approving_reactivates_the_child_and_ends_the_request(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
     child = _make_child(db, is_active=False)
@@ -130,12 +126,12 @@ def test_approving_reactivates_the_child_and_ends_the_request(
     assert row.reactivation_child_id is None
     assert row.flagged_at is None
     assert db.get_one(Child, child.id).is_active is True
-    assert [event.conversation["id"] for _, event in broadcasts] == [str(conversation.id)]
-    assert broadcasts[0][1].frame()["type"] == "conversation.updated"
+    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
+    assert broadcasts[0].frame()["type"] == "conversation.updated"
 
 
 def test_denying_ends_the_request_and_leaves_the_child_inactive(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
     child = _make_child(db, is_active=False)
@@ -150,7 +146,7 @@ def test_denying_ends_the_request_and_leaves_the_child_inactive(
     assert body["flag_reason"] is None
     assert _row(db, conversation.id).reactivation_child_id is None
     assert db.get_one(Child, child.id).is_active is False
-    assert [event.conversation["id"] for _, event in broadcasts] == [str(conversation.id)]
+    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
 
 
 @pytest.mark.parametrize(("path", "active_after"), [(APPROVE, True), (DENY, False)])
@@ -219,7 +215,7 @@ def test_nothing_is_written_to_the_thread_or_sent_to_the_guardian(
 
 @pytest.mark.parametrize("path", REACTIVATION_ROUTES)
 def test_nothing_pending_is_409_and_changes_nothing(
-    api: TestClient, db: Session, broadcasts: list[Broadcast], path: str
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated], path: str
 ) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db, flag_reason=FlagReason.GUARDIAN_LINK_REQUEST)
@@ -295,14 +291,14 @@ def test_a_developer_may_resolve_a_request(api: TestClient, db: Session, path: s
 
 
 @pytest.fixture(autouse=True)
-def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[Broadcast]:
-    """Every `conversation.updated` the routes publish. Autouse because the conftest
-    `FakeRedis` has no `publish`, exactly as in `test_conversation_routes.py`."""
-    recorded: list[Broadcast] = []
+def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[ConversationUpdated]:
+    """Every `conversation.updated` the routes publish. Autouse, exactly as in
+    `test_conversation_routes.py`: no test here may reach the real `publish`."""
+    recorded: list[ConversationUpdated] = []
     monkeypatch.setattr(
         conversations_router,
         "publish",
-        lambda redis, event: recorded.append((redis, event)),
+        lambda event: recorded.append(event),
     )
 
     return recorded

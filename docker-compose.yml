@@ -27,8 +27,9 @@ services:
 
   api:
     build:
-      context: ./api
-      dockerfile: ../docker/api.Dockerfile
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: runtime
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -40,6 +41,21 @@ services:
       TWILIO_WHATSAPP_NUMBER: ${TWILIO_WHATSAPP_NUMBER}
       TWILIO_STATUS_CALLBACK_URL: ${TWILIO_STATUS_CALLBACK_URL}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    # `--reload` lives here, not in the image's CMD, so that the image is production-correct.
+    # `--no-proxy-headers` is repeated because this overrides the CMD wholesale: dropping it
+    # would arm uvicorn's own forwarded-header trust alongside the application's. See the
+    # comment block above the CMD in docker/api.Dockerfile.
+    command:
+      - uv
+      - run
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --no-proxy-headers
     ports:
       - "8000:8000"
     volumes:

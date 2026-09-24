@@ -1,4 +1,4 @@
-"""What the two Twilio webhooks do: check the signature, claim the delivery, run one turn.
+"""What the two Twilio webhooks do: check the signature, record the delivery, run one turn.
 
 **The signature is the whole of this surface's authentication.** `/webhook/*` carries no auth
 dependency (see `app/routers/webhook.py`), so `signature_is_valid` returning `True` is the only
@@ -7,8 +7,18 @@ thing standing between the open internet and every write below it. It returns `F
 refuse the endpoint, never accept everything posted to it.
 
 **Nothing here commits** (§4). One inbound message is one transaction and the router commits it
-whole — then, and only then, publishes the broadcast events, so a Redis blip cannot turn a
-committed write into the 500 Twilio would retry for hours.
+whole — then, and only then, publishes the broadcast events, so a database error on the notify
+cannot turn a committed write into the 500 Twilio would retry for hours.
+
+**The inbound insert is the only redelivery dedup.** Twilio retries a delivery it believes
+failed with the same `MessageSid`, and `UNIQUE (messages.twilio_sid)` is what recognises it:
+`record_inbound` returns `None` when the SID is already recorded, and `_turn` stops there with
+empty TwiML — no status branch, no row lock, no bot turn, nothing for the router to publish.
+That is sufficient on its own, concurrency included. A duplicate arriving while the first is
+still in flight blocks on the unique index until the first transaction ends: if it committed,
+the duplicate's insert conflicts and it takes the empty branch; if it rolled back, nothing was
+recorded and the duplicate is the one turn that runs. Either way exactly one bot turn commits.
+No second store is consulted first, so there is nothing to fall out of step with the row.
 
 **`From` is stored with the `whatsapp:` prefix stripped and nothing else done to it** (P7-H).
 It does not go through `phone_service`: an inbound message is proof of dialability by delivery,
@@ -26,7 +36,6 @@ an admin's reply typed on the socket.
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from redis import Redis
 from sqlalchemy.orm import Session
 from twilio.request_validator import RequestValidator
 
@@ -38,11 +47,6 @@ from app.schemas.bot import BotTurn
 from app.services import bot_service, conversation_service, message_service, twilio_service
 
 WHATSAPP_PREFIX = "whatsapp:"
-
-# Epic #9's Traps requires the Redis concerns to stay apart: `bot:flow:` holds flow state for
-# 30 minutes, `ratelimit:login:*` the sliding windows, `chat:broadcast` the socket fan-out.
-DELIVERY_KEY_PREFIX = "twilio:msg:"
-DELIVERY_KEY_TTL_SECONDS = 86_400
 
 # Twilio sends more delivery states than `messages.status` models. `undelivered` is a terminal
 # failure carrying an `ErrorCode` and is recorded as one; `sending` and `read` are the finer
@@ -90,34 +94,13 @@ def signature_is_valid(*, url: str, params: Mapping[str, str], signature: str | 
     return valid
 
 
-def claim_delivery(redis: Redis, *, twilio_sid: str) -> bool:
-    """Claim this `MessageSid` for a day. `False` means Twilio has delivered it before.
-
-    A `RedisError` is deliberately not caught here. The durable guard against a duplicate row
-    is `UNIQUE (messages.twilio_sid)` and this claim is what additionally stops a redelivery
-    *re-running the bot* on top of it. With Redis down the bot could neither load nor save its
-    flow state anyway, so a 500 that Twilio retries is a better answer than a turn that cannot
-    work and a second reply the client never asked for.
-    """
-    return bool(
-        redis.set(f"{DELIVERY_KEY_PREFIX}{twilio_sid}", "1", nx=True, ex=DELIVERY_KEY_TTL_SECONDS)
-    )
-
-
-def handle_inbound(
-    db: Session, *, redis: Redis, twilio_from: str, body: str, twilio_sid: str
-) -> InboundTurn:
+def handle_inbound(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> InboundTurn:
     """Record one inbound message and decide what to say back.
 
     The order of what follows is the specification, not an implementation choice
     (`docs/api-design.md:461-478`), and the router's signature check precedes all of it.
     """
-    if claim_delivery(redis, twilio_sid=twilio_sid):
-        turn = _turn(db, twilio_from=twilio_from, body=body, twilio_sid=twilio_sid)
-    else:
-        turn = InboundTurn(twiml=twilio_service.twiml_empty(), recorded=())
-
-    return turn
+    return _turn(db, twilio_from=twilio_from, body=body, twilio_sid=twilio_sid)
 
 
 def handle_status(
@@ -150,17 +133,22 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
         db, conversation=conversation, body=body, twilio_sid=twilio_sid
     )
 
+    if inbound is None:
+        return InboundTurn(twiml=twilio_service.twiml_empty(), recorded=())
+
     if conversation.status is ConversationStatus.HUMAN:
         reply = None
         twiml = twilio_service.twiml_empty()
     else:
         # REQ-130.4 / P7D-I. Re-read the pending request from the row, never from the identity
         # map, and under the row lock held to the commit: two overlapping turns must not both
-        # see "nothing pending" and both record one. The inbound insert above already holds
-        # the lock; `with_for_update` takes it here too, for a redelivery whose insert
-        # conflicted and so locked nothing. Conversation first, children after — the order
-        # `resolve_reactivation` takes them in (P7D-E), so an approval racing this turn waits
-        # rather than deadlocks.
+        # see "nothing pending" and both record one. The lock serialises overlapping *distinct*
+        # messages from one number; a redelivery never reaches this line, since it stopped at
+        # the conflicting insert above. The insert's `last_message_at` update happens to hold
+        # the lock already, and `with_for_update` takes it here regardless, where the read
+        # depends on it, so a change to how recording touches the conversation cannot quietly
+        # drop it. Conversation first, children after — the order `resolve_reactivation`
+        # takes them in (P7D-E), so an approval racing this turn waits rather than deadlocks.
         db.refresh(conversation, attribute_names=["reactivation_child_id"], with_for_update=True)
         decided = bot_service.reply_for(
             db,

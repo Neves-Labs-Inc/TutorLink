@@ -61,7 +61,6 @@ from app.routers.children import UPCOMING_SESSIONS_CHANGED_ERROR
 from app.routers.homes import HOME_HAS_UPCOMING_BOOKINGS_ERROR
 from app.security import create_access_token, hash_password
 from app.services import booking_status_service, booking_write_service
-from tests.conftest import FakeRedis
 
 HOLD_SECONDS = 0.5
 NINE = datetime.time(9, 0)
@@ -324,7 +323,7 @@ def committed_sessions(_test_engine: Engine) -> sessionmaker[Session]:
 
 @pytest.fixture
 def session_per_request_api(
-    committed_sessions: sessionmaker[Session], redis_double: FakeRedis
+    committed_sessions: sessionmaker[Session],
 ) -> Generator[TestClient, None, None]:
     """One session per request, closed without a commit on failure — what `get_db` does."""
     from app.db import get_db

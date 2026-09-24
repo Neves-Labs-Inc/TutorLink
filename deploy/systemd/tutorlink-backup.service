@@ -1,0 +1,14 @@
+[Unit]
+Description=TutorLink nightly PostgreSQL dump to S3
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/tutorlink
+ExecStart=/opt/tutorlink/backup.sh
+# A oneshot inherits DefaultTimeoutStartSec (90s), which a pg_dump plus an S3 upload can exceed.
+# Timing out kills the dump and reports a failure that is not one.
+TimeoutStartSec=30min

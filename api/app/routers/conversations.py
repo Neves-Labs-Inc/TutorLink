@@ -18,8 +18,8 @@ commit**, on every 200 including a no-op, so the other admins' list screens move
 reload. `POST /read` publishes nothing: the watermark is shared,
 but a read is not an event anybody else needs pushed. `broadcast_service.publish` fails open
 and logs rather than raising, deliberately — the write has already committed by the time it is
-reached, so raising would turn a Redis blip into a 500 on an action that succeeded, and it
-would not get the event to the admin either.
+reached, so raising would turn a database error on the notify into a 500 on an action that
+succeeded, and it would not get the event to the admin either.
 
 Exactly one route here takes a request body — `FlagHandled` on `POST /handled` — and it is a
 compare token rather than data: the `flagged_at` the admin saw, so that a flag the bot raised
@@ -37,7 +37,6 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from redis import Redis
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -46,7 +45,6 @@ from app.models.enums import ConversationStatus
 from app.models.child import Child
 from app.models.guardian import Guardian
 from app.models.user import User
-from app.redis_client import get_redis
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.conversation import (
     ConversationRead,
@@ -84,7 +82,6 @@ FLAG_CHANGED_ERROR = "The flag changed since you opened this conversation; revie
 REACTIVATION_FLAG_ERROR = "Approve or deny the reactivation request instead"
 
 DbSession = Annotated[Session, Depends(get_db)]
-RedisClient = Annotated[Redis, Depends(get_redis)]
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -166,7 +163,7 @@ def read_thread(
 
 @router.post("/{conversation_id}/takeover", response_model=ConversationRead)
 def take_over(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession, redis: RedisClient
+    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
 ) -> ConversationRead:
     try:
         detail = claim(db, conversation_id=conversation_id, user_id=user.id)
@@ -179,14 +176,14 @@ def take_over(
 
     db.commit()
     conversation = _read(detail)
-    _publish_update(redis, conversation)
+    _publish_update(conversation)
 
     return conversation
 
 
 @router.delete("/{conversation_id}/takeover", response_model=ConversationRead)
 def release_takeover(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession, redis: RedisClient
+    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
 ) -> ConversationRead:
     # No holder check, and that asymmetry with `take_over` is the contract rather than an
     # omission (`api-design.md:1579-1583`): a claim only its owner could undo leaves a client
@@ -199,7 +196,7 @@ def release_takeover(
 
     db.commit()
     conversation = _read(detail)
-    _publish_update(redis, conversation)
+    _publish_update(conversation)
 
     return conversation
 
@@ -220,16 +217,16 @@ def mark_thread_read(
 
 @router.post("/{conversation_id}/reactivation/approve", response_model=ConversationRead)
 def approve_reactivation(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession, redis: RedisClient
+    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
 ) -> ConversationRead:
-    return _resolve_reactivation(db, redis, conversation_id=conversation_id, approve=True)
+    return _resolve_reactivation(db, conversation_id=conversation_id, approve=True)
 
 
 @router.post("/{conversation_id}/reactivation/deny", response_model=ConversationRead)
 def deny_reactivation(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession, redis: RedisClient
+    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
 ) -> ConversationRead:
-    return _resolve_reactivation(db, redis, conversation_id=conversation_id, approve=False)
+    return _resolve_reactivation(db, conversation_id=conversation_id, approve=False)
 
 
 @router.post("/{conversation_id}/handled", response_model=ConversationRead)
@@ -238,7 +235,6 @@ def mark_flag_handled(
     payload: FlagHandled,
     user: AdminPrincipal,
     db: DbSession,
-    redis: RedisClient,
 ) -> ConversationRead:
     try:
         detail = mark_handled(db, conversation_id=conversation_id, flagged_at=payload.flagged_at)
@@ -251,13 +247,13 @@ def mark_flag_handled(
 
     db.commit()
     conversation = _read(detail)
-    _publish_update(redis, conversation)
+    _publish_update(conversation)
 
     return conversation
 
 
 def _resolve_reactivation(
-    db: Session, redis: Redis, *, conversation_id: uuid.UUID, approve: bool
+    db: Session, *, conversation_id: uuid.UUID, approve: bool
 ) -> ConversationRead:
     try:
         resolve_reactivation(db, conversation_id=conversation_id, approve=approve)
@@ -269,13 +265,13 @@ def _resolve_reactivation(
     detail = get_detail(db, conversation_id=conversation_id)
     db.commit()
     conversation = _read(detail)
-    _publish_update(redis, conversation)
+    _publish_update(conversation)
 
     return conversation
 
 
-def _publish_update(redis: Redis, conversation: ConversationRead) -> None:
-    publish(redis, ConversationUpdated(conversation=conversation.model_dump(mode="json")))
+def _publish_update(conversation: ConversationRead) -> None:
+    publish(ConversationUpdated(conversation=conversation.model_dump(mode="json")))
 
 
 def _summary(row: ConversationListItem) -> ConversationSummary:

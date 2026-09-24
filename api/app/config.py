@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     # exactly as they do today.
     trusted_proxies: str = ""
 
+    # Empty means no SPA is mounted (local dev, tests); production sets it to `/opt/dashboard`,
+    # the path `docker/api.Dockerfile` copies the compiled dashboard to.
+    dashboard_dist_dir: str = ""
+
+    # Off in production (OQ-94): a single public origin would otherwise publish the whole API
+    # schema. Caddy previously kept `/docs` off the internet; this setting is its replacement.
+    api_docs_enabled: bool = True
+
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_whatsapp_number: str | None = None

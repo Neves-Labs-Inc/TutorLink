@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -31,6 +33,7 @@ from app.routers import (
     users,
     webhook,
 )
+from app.spa import mount_dashboard
 
 
 def create_app() -> FastAPI:
@@ -62,10 +65,22 @@ def create_app() -> FastAPI:
     With `TRUSTED_PROXIES` unset nothing is mounted at all: fail-closed, and it makes the empty
     default a byte-for-byte reproduction of the behaviour before this existed rather than a
     differently-configured version of the new one.
+
+    The dashboard mount, when `DASHBOARD_DIST_DIR` is set, comes **after every `include_router`
+    call and before** the exception handler and the proxy-header middleware: its catch-all route
+    must never get a chance to answer a request one of this API's own routers would otherwise
+    have served, and the proxy middleware still has to wrap it like everything else.
     """
     # No CORS middleware by design (D-012): the browser reaches this API same-origin through the
-    # Vite dev proxy. Do not add one.
-    app = FastAPI(title="TutorLink API", docs_url="/docs")
+    # Vite dev proxy in development, and through this same process serving the dashboard in
+    # production. Do not add one.
+    app_settings = get_settings()
+    docs_url = "/docs" if app_settings.api_docs_enabled else None
+    redoc_url = "/redoc" if app_settings.api_docs_enabled else None
+    openapi_url = "/openapi.json" if app_settings.api_docs_enabled else None
+    app = FastAPI(
+        title="TutorLink API", docs_url=docs_url, redoc_url=redoc_url, openapi_url=openapi_url
+    )
 
     app.include_router(health.router)
     app.include_router(auth.router)
@@ -93,6 +108,9 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(conversation_stream.router)
 
+    if app_settings.dashboard_dist_dir:
+        mount_dashboard(app, dist_dir=Path(app_settings.dashboard_dist_dir))
+
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
         request: Request, exc: RequestValidationError
@@ -104,7 +122,7 @@ def create_app() -> FastAPI:
 
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": detail})
 
-    trusted = get_settings().trusted_proxy_hosts
+    trusted = app_settings.trusted_proxy_hosts
     if trusted:
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=trusted)
 

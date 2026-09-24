@@ -1,0 +1,17 @@
+# A timer, not a cron entry: `systemctl list-timers tutorlink-*` answers "did it run, when next",
+# `systemctl status tutorlink-backup` carries the last exit code, and `journalctl -u
+# tutorlink-backup` carries backup.sh's own output. A cron job that stops running is silent.
+[Unit]
+Description=Run the TutorLink database backup nightly
+
+[Timer]
+# 03:00 UTC. Phone numbers default to country code 1, so that is 23:00 (EDT) / 22:00 (EST) the
+# previous evening on the US east coast: after the day's bookings and before the morning's.
+OnCalendar=*-*-* 03:00:00 UTC
+RandomizedDelaySec=5min
+# Catch up a run missed while the box was off. This is the main reason this is a timer.
+Persistent=true
+Unit=tutorlink-backup.service
+
+[Install]
+WantedBy=timers.target

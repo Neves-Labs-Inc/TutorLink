@@ -15,20 +15,18 @@ validates the booking against the `tutor_availability` row named by `availabilit
 
 **The broadcast runs after the commit.** `broadcast_service.publish` fails open and logs rather
 than raising, which is only safe because the write it announces is already durable: raising
-would turn a Redis blip into a 500 that Twilio retries for hours while the parent waits on a
-reply this API is refusing to return.
+would turn a database error on the notify into a 500 that Twilio retries for hours while the
+parent waits on a reply this API is refusing to return.
 """
 
 from collections.abc import Mapping
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from redis import Redis
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.message import Message
-from app.redis_client import get_redis
 from app.schemas.message import MessageRead
 from app.services import webhook_service
 from app.services.broadcast_service import MessageCreated, publish
@@ -56,25 +54,21 @@ async def get_twilio_form(request: Request) -> dict[str, str]:
 
 
 DbSession = Annotated[Session, Depends(get_db)]
-RedisClient = Annotated[Redis, Depends(get_redis)]
 TwilioForm = Annotated[dict[str, str], Depends(get_twilio_form)]
 
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 
 @router.post("/whatsapp")
-def receive_whatsapp(
-    request: Request, form: TwilioForm, db: DbSession, redis: RedisClient
-) -> Response:
+def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Response:
     # REQ-071 is an ordering property, not a validation property: the signature check precedes
-    # **every** side effect on this path — state reads, database writes, the outbound reply,
-    # and the Redis delivery claim, which is itself a write. Nothing below may be hoisted above
-    # this line; a refactor that did would be a security regression no functional test catches.
+    # **every** side effect on this path — state reads, database writes and the outbound reply.
+    # Nothing below may be hoisted above this line; a refactor that did would be a security
+    # regression no functional test catches.
     _require_twilio_signature(request, form)
 
     turn = webhook_service.handle_inbound(
         db,
-        redis=redis,
         twilio_from=_required(form, "From"),
         body=form.get("Body", ""),
         twilio_sid=_required(form, "MessageSid"),
@@ -83,7 +77,7 @@ def receive_whatsapp(
     db.commit()
 
     for message in turn.recorded:
-        publish(redis, _message_created(message))
+        publish(_message_created(message))
 
     return Response(content=turn.twiml, media_type=TWIML_MEDIA_TYPE)
 

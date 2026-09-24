@@ -57,10 +57,6 @@ from app.routers.conversations import CONVERSATION_NOT_FOUND_ERROR, HELD_BY_ANOT
 from app.security import create_access_token, hash_password
 from app.services.broadcast_service import ConversationUpdated
 from app.services.conversation_service import claim
-from tests.conftest import FakeRedis
-
-type Broadcast = tuple[FakeRedis, ConversationUpdated]
-
 PASSWORD = "correct horse battery staple"
 
 # Well in the past, never "today": `POST /read` stamps the watermark from the real clock, and a
@@ -403,7 +399,7 @@ def test_a_malformed_before_marker_is_400_not_422(api: TestClient, db: Session) 
 
 
 def test_a_takeover_claims_the_conversation_and_broadcasts_once(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db, marker=_marker())
@@ -416,21 +412,8 @@ def test_a_takeover_claims_the_conversation_and_broadcasts_once(
     assert body["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
     assert body["taken_over_at"] is not None
     assert _row(db, conversation.id).taken_over_by_user_id == admin.id
-    assert [event.conversation["id"] for _, event in broadcasts] == [str(conversation.id)]
-    assert broadcasts[0][1].frame()["type"] == "conversation.updated"
-
-
-def test_the_broadcast_goes_out_on_the_requests_own_redis_client(
-    api: TestClient, db: Session, redis_double: FakeRedis, broadcasts: list[Broadcast]
-) -> None:
-    """`publish` is handed the client from `Depends(get_redis)`, not a module-level import —
-    which is what makes it overridable and what makes the fan-out reach the other processes."""
-    admin = _make_user(db)
-    conversation = _make_conversation(db, marker=_marker())
-
-    api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(admin))
-
-    assert broadcasts[0][0] is redis_double
+    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
+    assert broadcasts[0].frame()["type"] == "conversation.updated"
 
 
 def test_a_reclaim_by_the_holder_is_a_no_op_200(api: TestClient, db: Session) -> None:
@@ -450,7 +433,7 @@ def test_a_reclaim_by_the_holder_is_a_no_op_200(api: TestClient, db: Session) ->
 
 
 def test_a_takeover_of_a_conversation_another_admin_holds_is_409_naming_them(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     """The 409 names the holder because the only useful next step is to go and ask them
     (`api-design.md:1562-1566`)."""
@@ -467,7 +450,7 @@ def test_a_takeover_of_a_conversation_another_admin_holds_is_409_naming_them(
 
 
 def test_any_admin_may_release_not_only_the_holder(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     """Deliberately unrestricted (`api-design.md:1579-1583`), which is also what answers a
     deactivated holder (**OQ-28**) without anything automatic."""
@@ -485,7 +468,7 @@ def test_any_admin_may_release_not_only_the_holder(
     assert body["taken_over_by"] is None
     assert body["taken_over_at"] is None
     assert _row(db, conversation.id).taken_over_by_user_id is None
-    assert [event.conversation["id"] for _, event in broadcasts] == [str(conversation.id)]
+    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
 
 
 def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_200(
@@ -503,7 +486,7 @@ def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_200(
 
 
 def test_marking_read_returns_the_recomputed_unread_count_and_broadcasts_nothing(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     """The watermark is shared, but a read is not an event anybody else needs pushed. Returning
     the conversation is what saves the caller a second request."""
@@ -663,19 +646,19 @@ def test_no_route_in_the_module_takes_a_tutor_scope() -> None:
 
 
 @pytest.fixture(autouse=True)
-def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[Broadcast]:
-    """Every `conversation.updated` the routes publish, with the client they published it on.
+def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[ConversationUpdated]:
+    """Every `conversation.updated` the routes publish.
 
-    Autouse rather than opt-in: the conftest `FakeRedis` models only the two commands the login
-    limiter issues and has no `publish`, so a takeover would otherwise fail on the double
-    rather than on anything under test. Recording the calls is also what makes "exactly one
-    event" and "no event at all" assertable — "it did not raise" would not be.
+    Autouse rather than opt-in: these tests exercise the routes, not the transport, so none of
+    them may reach the real `publish` and its NOTIFY — that is `test_broadcast_service.py`'s
+    subject. Recording the calls is also what makes "exactly one event" and "no event at all"
+    assertable — "it did not raise" would not be.
     """
-    recorded: list[Broadcast] = []
+    recorded: list[ConversationUpdated] = []
     monkeypatch.setattr(
         conversations_router,
         "publish",
-        lambda redis, event: recorded.append((redis, event)),
+        lambda event: recorded.append(event),
     )
 
     return recorded
@@ -693,10 +676,8 @@ def committed_sessions(_test_engine: Engine) -> sessionmaker[Session]:
 
 @pytest.fixture
 def session_per_request_api(
-    committed_sessions: sessionmaker[Session], redis_double: FakeRedis
+    committed_sessions: sessionmaker[Session],
 ) -> Generator[TestClient, None, None]:
-    # Takes `redis_double` for its side effect, as `test_auth_routes.py` does: it is what puts
-    # the `get_redis` override on the app.
     from app.db import get_db
     from app.main import app
 

@@ -70,10 +70,6 @@ from app.services.conversation_service import (
     resolve_reactivation,
     touch_last_message,
 )
-from tests.conftest import FakeRedis
-
-type Broadcast = tuple[FakeRedis, ConversationUpdated]
-
 PASSWORD = "correct horse battery staple"
 
 NOON = datetime.datetime(2026, 1, 5, 12, 0, tzinfo=datetime.UTC)
@@ -200,7 +196,7 @@ def test_mark_handled_on_an_unknown_conversation_is_not_found(db: Session) -> No
 
 @pytest.mark.parametrize("reason", CLEARABLE_REASONS)
 def test_marking_handled_clears_the_flag_and_takes_the_thread_off_the_flagged_list(
-    api: TestClient, db: Session, broadcasts: list[Broadcast], reason: FlagReason
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated], reason: FlagReason
 ) -> None:
     admin = _make_user(db)
     marker = _marker()
@@ -228,9 +224,9 @@ def test_marking_handled_clears_the_flag_and_takes_the_thread_off_the_flagged_li
     assert _message_count(db, conversation.id) == 1
     assert listed_before == 1
     assert _flagged_total(api, admin, marker) == 0
-    assert [event.conversation["id"] for _, event in broadcasts] == [str(conversation.id)]
-    assert broadcasts[0][1].frame()["type"] == "conversation.updated"
-    assert broadcasts[0][1].conversation["flag_reason"] is None
+    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
+    assert broadcasts[0].frame()["type"] == "conversation.updated"
+    assert broadcasts[0].conversation["flag_reason"] is None
 
 
 def test_the_token_the_detail_returns_is_accepted_verbatim(api: TestClient, db: Session) -> None:
@@ -249,7 +245,7 @@ def test_the_token_the_detail_returns_is_accepted_verbatim(api: TestClient, db: 
 
 
 def test_marking_an_unflagged_conversation_handled_is_a_no_op_200(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     """A double click, a retry or a second admin: the second request asks for the state already
     there. Each 200 still publishes, as takeover and release do."""
@@ -269,7 +265,7 @@ def test_marking_an_unflagged_conversation_handled_is_a_no_op_200(
 
 
 def test_a_token_one_microsecond_off_is_409_and_changes_nothing(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db, reason=FlagReason.STUCK)
@@ -284,7 +280,7 @@ def test_a_token_one_microsecond_off_is_409_and_changes_nothing(
 
 
 def test_a_reactivation_request_is_409_and_changes_nothing(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
     child = _make_child(db)
@@ -301,7 +297,7 @@ def test_a_reactivation_request_is_409_and_changes_nothing(
 
 
 def test_a_pending_request_resurfaces_and_only_approve_then_ends_it(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
     child = _make_child(db)
@@ -356,7 +352,7 @@ def test_the_resurfaced_request_is_back_on_the_flagged_list(api: TestClient, db:
     ids=["no body", "no flagged_at", "null", "malformed", "naive", "not json"],
 )
 def test_an_invalid_body_is_400_never_422_or_500(
-    api: TestClient, db: Session, broadcasts: list[Broadcast], request_body: dict[str, Any]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated], request_body: dict[str, Any]
 ) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db, reason=FlagReason.STUCK)
@@ -373,7 +369,7 @@ def test_an_invalid_body_is_400_never_422_or_500(
 
 
 def test_an_unknown_conversation_is_404(
-    api: TestClient, db: Session, broadcasts: list[Broadcast]
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
 
@@ -680,14 +676,14 @@ def test_the_clear_waits_behind_an_approval_and_both_complete(
 
 
 @pytest.fixture(autouse=True)
-def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[Broadcast]:
-    """Every `conversation.updated` the route publishes. Autouse because the conftest
-    `FakeRedis` has no `publish`, exactly as in `test_conversation_routes.py`."""
-    recorded: list[Broadcast] = []
+def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[ConversationUpdated]:
+    """Every `conversation.updated` the route publishes. Autouse, exactly as in
+    `test_conversation_routes.py`: no test here may reach the real `publish`."""
+    recorded: list[ConversationUpdated] = []
     monkeypatch.setattr(
         conversations_router,
         "publish",
-        lambda redis, event: recorded.append((redis, event)),
+        lambda event: recorded.append(event),
     )
 
     return recorded

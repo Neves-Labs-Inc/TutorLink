@@ -1,0 +1,18 @@
+# A timer, not a cron entry: `systemctl list-timers tutorlink-*` answers "did it run, when next",
+# `systemctl status tutorlink-purge` carries the last exit code, and `journalctl -u tutorlink-purge`
+# carries the purge's own counts. A cron job that stops running is silent.
+[Unit]
+Description=Run the TutorLink chat retention purge nightly
+
+[Timer]
+# 04:00 UTC — an hour after the backup, and 00:00 (EDT) / 23:00 (EST) on the US east coast.
+# The gap is not cosmetic: the purge deletes messages permanently, and running it after the dump
+# is what makes a purge reversible from last night's backup rather than final.
+OnCalendar=*-*-* 04:00:00 UTC
+RandomizedDelaySec=5min
+# Catch up a run missed while the box was off. This is the main reason this is a timer.
+Persistent=true
+Unit=tutorlink-purge.service
+
+[Install]
+WantedBy=timers.target

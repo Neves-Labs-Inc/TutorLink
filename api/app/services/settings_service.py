@@ -132,6 +132,9 @@ _VALUE_BOUNDS = {
     # age-based DELETE matches every message ever recorded. A century is far past any retention
     # obligation and far short of the `timedelta(days=...)` overflow the CLI would hit.
     "chat_retention_days": _Bounds(minimum=0, maximum=365 * 100),
+    # An hour of the UTC day. Anything outside 0-23 never equals the tick's `now.hour`, so the
+    # scheduler would log nothing and silently never purge again.
+    "retention_purge_hour_utc": _Bounds(minimum=0, maximum=23),
 }
 
 

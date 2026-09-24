@@ -25,7 +25,7 @@ from app.db import SessionLocal
 from app.models.enums import UserRole
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
-from app.services.retention_service import purge_expired_messages
+from app.services.retention_scheduler import run_guarded_purge
 
 MIN_PASSWORD_LENGTH = 8
 
@@ -139,22 +139,27 @@ def _run_seed_admin() -> int:
 
 
 def _run_purge_messages() -> int:
-    db = SessionLocal()
-    try:
-        result = purge_expired_messages(db)
-        db.commit()
-    finally:
-        db.close()
+    run = run_guarded_purge(SessionLocal)
 
-    if not result.ran:
-        print("chat_retention_days is 0; purge disabled, nothing deleted")
+    if run.purge is None:
+        # Non-zero: the operator asked for a purge and this invocation did not perform one.
+        print("skipped: another instance holds the lock", file=sys.stderr)
+        status = 1
     else:
+        if not run.purge.ran:
+            print("chat_retention_days is 0; purge disabled, nothing deleted")
+        else:
+            print(
+                f"purged {run.purge.messages_deleted} message(s) and "
+                f"{run.purge.conversations_deleted} conversation(s)"
+            )
         print(
-            f"purged {result.messages_deleted} message(s) and "
-            f"{result.conversations_deleted} conversation(s)"
+            f"reaped {run.flow_states_deleted} expired flow state(s) and "
+            f"{run.login_attempts_deleted} expired login attempt(s)"
         )
+        status = 0
 
-    return 0
+    return status
 
 
 def _run_create_developer() -> int:

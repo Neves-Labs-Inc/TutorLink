@@ -1,3 +1,7 @@
+import asyncio
+import contextlib
+import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import FastAPI, Request, status
@@ -6,6 +10,7 @@ from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import get_settings
+from app.db import SessionLocal
 from app.routers import (
     auth,
     availability,
@@ -33,7 +38,34 @@ from app.routers import (
     users,
     webhook,
 )
+from app.services.retention_scheduler import run_forever
 from app.spa import mount_dashboard
+
+app_logger = logging.getLogger("app")
+app_logger.setLevel(logging.INFO)
+if not app_logger.handlers:
+    app_handler = logging.StreamHandler()
+    app_handler.setFormatter(logging.Formatter("%(levelname)s: %(name)s: %(message)s"))
+    app_logger.addHandler(app_handler)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Run the retention scheduler for exactly as long as the application is being served.
+
+    Here rather than in `retention_scheduler`, which is service code and knows nothing about
+    FastAPI. The task touches no database until its first top-of-hour tick, so entering this is
+    free. On shutdown it is cancelled and awaited, so it never outlives the process's event
+    loop; a purge already running on its worker thread finishes or fails on its own, inside its
+    one transaction.
+    """
+    scheduler = asyncio.create_task(run_forever(SessionLocal))
+    try:
+        yield
+    finally:
+        scheduler.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler
 
 
 def create_app() -> FastAPI:
@@ -79,7 +111,11 @@ def create_app() -> FastAPI:
     redoc_url = "/redoc" if app_settings.api_docs_enabled else None
     openapi_url = "/openapi.json" if app_settings.api_docs_enabled else None
     app = FastAPI(
-        title="TutorLink API", docs_url=docs_url, redoc_url=redoc_url, openapi_url=openapi_url
+        title="TutorLink API",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
+        lifespan=lifespan,
     )
 
     app.include_router(health.router)

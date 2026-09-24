@@ -19,9 +19,9 @@ Admins manage everything through a web dashboard: adding tutors, setting weekly 
 | WhatsApp | Twilio | Sandbox for dev, production when ready |
 | Bot backend | FastAPI (Python) | Handles Twilio webhooks and business logic |
 | Database | PostgreSQL | Hosted on AWS RDS in production, Docker in dev |
-| Conversation state | Redis | Temporary TTL-based state, Docker in dev |
+| Conversation state | PostgreSQL | Bot flow state, alongside conversation history |
 | Admin dashboard | Vite + React | Reads/writes directly to Postgres via API |
-| Hosting | AWS EC2 | Docker Compose in early stage, ECS when scaling |
+| Hosting | AWS ECS (Express Mode) | Managed RDS PostgreSQL, dashboard served from the same container |
 
 ---
 
@@ -33,23 +33,22 @@ WhatsApp
    ▼
 Twilio ──────────► FastAPI (Bot Backend) ───────┐
                         │                       │
-              ┌─────────┴──────────┐            │
-              ▼                    ▼            │ WebSocket
-           Redis              PostgreSQL        │ (live chat)
-      (bot flow                (clients,        │
-          state)              tutors, bookings, │
-                              chat history)     │
-                                   ▲            │
-                                   │            │
-                          Vite + React◄─────────┘
-                         (Admin Dashboard)
+                        ▼                       │ WebSocket
+                   PostgreSQL                    │ (live chat)
+              (clients, tutors,                  │
+               bookings, chat                    │
+               history, bot                      │
+               flow state)                       │
+                        ▲                        │
+                        │                        │
+               Vite + React◄─────────────────────┘
+              (Admin Dashboard)
 ```
 
 - **Twilio** receives WhatsApp messages and forwards them to the FastAPI webhook
-- **FastAPI** processes each message, manages conversation state in Redis, reads/writes booking data to Postgres
+- **FastAPI** processes each message, manages conversation state and reads/writes booking data, both in Postgres
 - **Vite + React** admin dashboard talks directly to FastAPI REST endpoints
-- **Redis** stores per-user bot flow state with a 30-minute TTL — no long-term persistence needed; the conversation history that state drives is persisted in Postgres, not Redis
-- **PostgreSQL** is the single source of truth for all business data, including full conversation and message history
+- **PostgreSQL** is the single source of truth for all business data, including bot flow state and full conversation and message history
 - **WebSocket** carries live chat between the dashboard and FastAPI — new messages and takeover changes push to connected admins instead of being polled for
 
 ---
@@ -63,7 +62,6 @@ tutorlink/
 │   │   ├── main.py
 │   │   ├── config.py
 │   │   ├── db.py
-│   │   ├── redis_client.py
 │   │   ├── models/
 │   │   ├── schemas/
 │   │   ├── services/
@@ -121,7 +119,6 @@ This starts:
 - FastAPI on `http://localhost:8000`
 - Vite + React dashboard on `http://localhost:5173`
 - PostgreSQL on port `5432`
-- Redis on port `6379`
 
 4. Apply database migrations
 
@@ -159,7 +156,6 @@ Set the resulting URL as your Twilio WhatsApp webhook: `https://<your-ngrok-url>
 ```env
 # App
 DATABASE_URL=postgresql+psycopg://tutorlink:tutorlink@postgres:5432/tutorlink
-REDIS_URL=redis://redis:6379/0
 SECRET_KEY=change-me-generate-with-openssl-rand-hex-32
 COOKIE_SECURE=true
 
@@ -187,23 +183,9 @@ VITE_API_PROXY_TARGET=http://api:8000
 
 ## Deployment (AWS)
 
-### Early Stage — Single EC2 Instance
-
-1. Launch an EC2 instance (t3.small recommended)
-2. Install Docker + Docker Compose
-3. Clone the repo and set environment variables
-4. Run `docker compose up -d`
-5. Point your domain to the EC2 public IP
-6. Update Twilio webhook URL to your production domain
-
-### Production — EC2 + RDS + ElastiCache
-
-When reliability becomes a priority:
-
-- Migrate Postgres from Docker container to **AWS RDS**
-- Migrate Redis from Docker container to **AWS ElastiCache**
-- Update `DATABASE_URL` and `REDIS_URL` in your environment to point to the managed services
-- EC2 continues running the FastAPI bot and React dashboard
+The target is **AWS ECS Express Mode**, with the database on a managed **RDS PostgreSQL**
+instance and the dashboard served from the same container as the API (single origin). See
+`deploy/RUNBOOK.md` for the full procedure.
 
 ---
 

@@ -24,10 +24,12 @@ they assert on, under a `uuid4`-suffixed key, and compare key *sets* rather than
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models.enums import UserRole
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
+from app.services.retention_scheduler import RETENTION_PURGE_HOUR_SETTING
 from app.services.settings_service import (
     SettingKeyDuplicated,
     SettingNotAnInteger,
@@ -337,6 +339,40 @@ def test_apply_setting_updates_writes_nothing_when_a_later_update_is_out_of_rang
     assert get_int_setting(db, key="session_gap_minutes") == seeded_gap
 
 
+@pytest.mark.parametrize("value", ["24", "-1"])
+def test_apply_setting_updates_refuses_a_purge_hour_outside_the_day(
+    db: Session, value: str
+) -> None:
+    # The scheduler compares this with the tick's `now.hour`, which is 0-23: anything else is
+    # accepted silently and then never matches, so the purge just stops happening.
+    _ensure_purge_hour_row(db)
+    seeded = get_int_setting(db, key=RETENTION_PURGE_HOUR_SETTING)
+
+    with pytest.raises(SettingValueInvalid):
+        apply_setting_updates(
+            db,
+            actor_role=UserRole.ADMIN,
+            updates=[SettingUpdate(key=RETENTION_PURGE_HOUR_SETTING, value=value)],
+        )
+
+    assert get_int_setting(db, key=RETENTION_PURGE_HOUR_SETTING) == seeded
+
+
+@pytest.mark.parametrize("value", ["0", "23"])
+def test_apply_setting_updates_accepts_a_purge_hour_at_either_end_of_the_day(
+    db: Session, value: str
+) -> None:
+    _ensure_purge_hour_row(db)
+
+    apply_setting_updates(
+        db,
+        actor_role=UserRole.ADMIN,
+        updates=[SettingUpdate(key=RETENTION_PURGE_HOUR_SETTING, value=value)],
+    )
+
+    assert get_int_setting(db, key=RETENTION_PURGE_HOUR_SETTING) == int(value)
+
+
 def test_apply_setting_updates_raises_on_a_value_type_it_cannot_validate(db: Session) -> None:
     # A migration that adds a `value_type` without teaching this module to check it is a deploy
     # error. Waving the write through unvalidated is the one outcome that must not happen.
@@ -382,6 +418,22 @@ def _make_setting(
     db.flush()
 
     return row
+
+
+def _ensure_purge_hour_row(db: Session) -> None:
+    """Migration 0018 seeds this row and the harness does not yet; `DO NOTHING` keeps this
+    correct on either side of the harness learning to."""
+    db.execute(
+        insert(SystemSetting)
+        .values(
+            key=RETENTION_PURGE_HOUR_SETTING,
+            value="3",
+            value_type=SETTING_VALUE_TYPE_INTEGER,
+            is_developer_only=False,
+        )
+        .on_conflict_do_nothing(index_elements=[SystemSetting.key])
+    )
+    db.flush()
 
 
 def _unique_key(label: str) -> str:

@@ -17,8 +17,6 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_db
 from app.main import create_app
-from app.redis_client import get_redis
-from tests.conftest import FakeRedis
 
 DASHBOARD_DIST_DIR_ENV = "DASHBOARD_DIST_DIR"
 API_DOCS_ENABLED_ENV = "API_DOCS_ENABLED"
@@ -206,7 +204,6 @@ def build_dashboard_app(
         get_settings.cache_clear()
         built = create_app()
         built.dependency_overrides[get_db] = lambda: db
-        built.dependency_overrides[get_redis] = lambda: FakeRedis()
 
         return built
 

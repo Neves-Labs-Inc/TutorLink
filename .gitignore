@@ -22,3 +22,13 @@ dist/
 
 # Planning scratch files
 .scratch/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!*.tfvars.example
+crash.log
+*.tfplan
+tfplan

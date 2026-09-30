@@ -18,9 +18,9 @@ Admins manage everything through a web dashboard: adding tutors, setting weekly 
 |---|---|---|
 | WhatsApp | Twilio | Sandbox for dev, production when ready |
 | Bot backend | FastAPI (Python) | Handles Twilio webhooks and business logic |
-| Database | PostgreSQL | Hosted on AWS RDS in production, Docker in dev |
+| Database | PostgreSQL | Docker container in dev and production (data on an EBS volume) |
 | Admin dashboard | Vite + React | Reads/writes directly to Postgres via API |
-| Hosting | AWS EC2 | Docker Compose in early stage, ECS when scaling |
+| Hosting | AWS EC2 | Single instance running Docker Compose, provisioned with Terraform |
 
 ---
 
@@ -71,10 +71,23 @@ tutorlink/
 │       ├── components/
 │       ├── stores/
 │       └── lib/
-├── docker/                     # Dockerfiles
-│   ├── api.Dockerfile
-│   └── dashboard.Dockerfile
-├── docker-compose.yml
+├── docker/                     # Dockerfiles and Caddy config
+│   ├── api.Dockerfile          # dev API image
+│   ├── api.prod.Dockerfile     # production API image
+│   ├── dashboard.Dockerfile    # dev dashboard image
+│   ├── web.Dockerfile          # production web image (dashboard build + Caddy)
+│   └── Caddyfile
+├── deploy/
+│   └── remote-deploy.sh        # runs on the instance: pull, migrate, restart
+├── infra/                      # Terraform for the production EC2 environment
+│   ├── bootstrap/              # one-time S3 bucket for Terraform state
+│   └── *.tf
+├── scripts/
+│   └── smoke-prod.sh           # local check of the production stack
+├── .github/workflows/
+│   └── deploy.yml              # manual deploy: ECR + SSM
+├── docker-compose.yml          # local development
+├── docker-compose.prod.yml     # production stack (postgres, api, web)
 ├── .env.example
 └── Readme.md
 ```
@@ -174,22 +187,108 @@ VITE_API_PROXY_TARGET=http://api:8000
 
 ## Deployment (AWS)
 
-### Early Stage — Single EC2 Instance
+### Architecture
 
-1. Launch an EC2 instance (t3.small recommended)
-2. Install Docker + Docker Compose
-3. Clone the repo and set environment variables
-4. Run `docker compose up -d`
-5. Point your domain to the EC2 public IP
-6. Update Twilio webhook URL to your production domain
+Production is one EC2 `t3.micro` in `us-east-1` running Docker Compose (Postgres, the API and a Caddy `web` container that serves the dashboard and proxies the API). Postgres data, Caddy certificates and the deploy files live on a separate 5 GB encrypted EBS volume mounted at `/srv/tutorlink`, so they survive instance replacement. Caddy serves HTTPS on `<elastic-ip-with-dashes>.sslip.io` until there is a domain. There is no SSH: shells go through SSM Session Manager. App secrets live in SSM Parameter Store under `/tutorlink/prod/`, and deploys are a manual GitHub Actions workflow that pushes images to ECR and runs them on the instance through SSM. Every AWS resource is tagged `Project=tutorlink`, `Environment=prod`, `ManagedBy=terraform`. The Terraform details (resources, variables, outputs) are in [`infra/README.md`](infra/README.md).
 
-### Production — EC2 + RDS
+### Prerequisites
 
-When reliability becomes a priority:
+- Terraform >= 1.10
+- AWS CLI v2 with working credentials for account `211125623243` (`aws login` for the default profile; check with `aws sts get-caller-identity`). No profile name is required: Terraform uses the default credential chain, and `AWS_PROFILE` works.
+- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (`brew install --cask session-manager-plugin`)
+- The `gh` CLI, logged in with `gh auth login` and with admin access to the repository
 
-- Migrate Postgres from Docker container to **AWS RDS**
-- Update `DATABASE_URL` in your environment to point to the managed service
-- EC2 continues running the FastAPI bot and React dashboard
+### One-time setup
+
+Run these in order, from an empty AWS account.
+
+1. Create the Terraform state bucket (keeps its own local state, run once):
+
+   ```bash
+   cd infra/bootstrap
+   terraform init && terraform apply
+   ```
+
+   The main root's backend in `infra/versions.tf` names the bucket (`tutorlink-tfstate-<account-id>`); see [`infra/bootstrap/README.md`](infra/bootstrap/README.md).
+
+2. Create the infrastructure:
+
+   ```bash
+   cd ../
+   terraform init
+   terraform apply
+   ```
+
+   The instance installs Docker and mounts the data volume on first boot, then waits for its first deploy.
+
+3. Set the five repository variables from the Terraform outputs (from `infra/`):
+
+   ```bash
+   gh variable set AWS_REGION          --body "$(terraform output -raw region)"
+   gh variable set AWS_DEPLOY_ROLE_ARN --body "$(terraform output -raw deploy_role_arn)"
+   gh variable set ECR_API_REPO        --body "$(terraform output -raw ecr_api_repo_url)"
+   gh variable set ECR_WEB_REPO        --body "$(terraform output -raw ecr_web_repo_url)"
+   gh variable set SITE_URL            --body "$(terraform output -raw site_url)"
+   ```
+
+   There is no instance ID variable: the workflow finds the one running instance tagged `Project=tutorlink`, `Environment=prod`.
+
+4. Wait a few minutes after `apply` for first-boot setup (Docker, data volume) to finish; the instance should show as Online under Systems Manager > Fleet Manager. If the first deploy fails on a missing instance or a missing `/srv/tutorlink/app`, wait and run it again.
+
+5. Run the Deploy workflow. It only works on `main`: choose `main` in the Run workflow branch picker, because the deploy role trusts only runs on `main` and AWS rejects any other branch. Or:
+
+   ```bash
+   gh workflow run deploy.yml --ref main
+   ```
+
+   It finishes when `<SITE_URL>/health/ready` returns 200 over valid HTTPS. The first run also waits for Caddy to obtain its certificate.
+
+6. Seed the first accounts. Open a session on the instance (from `infra/`):
+
+   ```bash
+   aws ssm start-session --region "$(terraform output -raw region)" --target "$(terraform output -raw instance_id)"
+   ```
+
+   then, inside the session, each command prompts for an email and password:
+
+   ```bash
+   sudo docker compose -f /srv/tutorlink/app/docker-compose.prod.yml --env-file /srv/tutorlink/app/.env run --rm api python -m app.cli seed-admin
+   sudo docker compose -f /srv/tutorlink/app/docker-compose.prod.yml --env-file /srv/tutorlink/app/.env run --rm api python -m app.cli create-developer
+   ```
+
+   See [Local Development](#local-development) for what these commands do and refuse to do.
+
+### Routine deploy
+
+Run the Deploy workflow on `main` (the only branch AWS accepts; Actions > Deploy > Run workflow). It builds both images tagged with the commit SHA, pushes them to ECR, and has the instance pull them, run `alembic upgrade head` and restart the containers. A failed migration stops the deploy before the API and web containers are replaced, so the previous version keeps running. Only one deploy runs at a time.
+
+After an instance replacement (a change to the `user_data` script makes Terraform replace the instance), just run Deploy again: it finds the new instance by its tags. The data volume and the Elastic IP carry over.
+
+To check the production stack locally before deploying, run `scripts/smoke-prod.sh`. It builds both production images, starts the stack on `https://localhost` (needs Docker, curl, openssl and ports 80 and 443 free) and checks the routing and security headers.
+
+### Day-to-day operations
+
+- **Shell on the instance:** `aws ssm start-session --region "$(terraform output -raw region)" --target "$(terraform output -raw instance_id)"` from `infra/`. The app lives in `/srv/tutorlink/app/`.
+- **Growing the data volume:** raise `data_volume_size_gb` (default 5), run `terraform apply`, then in an SSM session run `sudo xfs_growfs /srv/tutorlink`. A volume can never be shrunk.
+- **Listing everything this project created:**
+
+  ```bash
+  aws resourcegroupstaggingapi get-resources --region us-east-1 --tag-filters Key=Project,Values=tutorlink
+  ```
+
+### Adding a domain
+
+1. Set `domain` in `infra/terraform.tfvars` (gitignored), e.g. `domain = "app.example.com"`.
+2. Add a DNS A record for that hostname pointing at `terraform output -raw public_ip`.
+3. Run `terraform apply` in `infra/`.
+4. Update the `SITE_URL` variable (`gh variable set SITE_URL --body "$(terraform output -raw site_url)"`) and run the Deploy workflow again so Caddy requests the new certificate.
+5. Update the Twilio webhook URL once it exists.
+
+### Known risks
+
+- **There are no database backups yet.** The data volume holds the only copy of the database. Losing it loses the data.
+- The data volume has `prevent_destroy`, so `terraform destroy` fails on it by design. Do not remove that guard without a backup.
+- The `t3.micro` has no swap; watch for out-of-memory kills if the load grows.
 
 ---
 

@@ -46,11 +46,12 @@ SDK_DEFAULT_MAX_RETRIES = 2
 TWILIO_WEBHOOK_BUDGET_SECONDS = 15.0
 
 STEP = "which_day"
+QUESTION = "Which day works best for the session?"
 BODY = "tuesday after school for Amelia"
 CONTEXT = {"child_name": "Amelia", "subject": "Maths"}
 
 WELL_FORMED = (
-    '{"intent": "book",'
+    '{"intent": "book", "answer": "tuesday",'
     ' "fields": [{"name": "which_day", "value": "tuesday"},'
     ' {"name": "preferred_time", "value": "after school"}],'
     ' "confidence_is_low": false}'
@@ -100,11 +101,25 @@ def test_a_well_formed_answer_becomes_a_validated_parsed_intent(
 ) -> None:
     _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parsed = parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert parsed.intent is BotIntent.BOOK
+    assert parsed.answer == "tuesday"
     assert parsed.fields == {"which_day": "tuesday", "preferred_time": "after school"}
     assert parsed.confidence_is_low is False
+
+
+def test_a_null_answer_means_the_message_did_not_answer_the_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(
+        monkeypatch,
+        _StubClient(
+            text='{"intent": "unknown", "answer": null, "fields": [], "confidence_is_low": false}'
+        ),
+    )
+
+    assert parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT).answer is None
 
 
 def test_a_repeated_field_name_folds_to_the_value_the_model_settled_on(
@@ -117,7 +132,7 @@ def test_a_repeated_field_name_folds_to_the_value_the_model_settled_on(
         monkeypatch,
         _StubClient(
             text=(
-                '{"intent": "book",'
+                '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": "which_day", "value": "tuesday"},'
                 ' {"name": "which_day", "value": "wednesday"}],'
                 ' "confidence_is_low": false}'
@@ -125,7 +140,7 @@ def test_a_repeated_field_name_folds_to_the_value_the_model_settled_on(
         ),
     )
 
-    parsed = parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert parsed.fields == {"which_day": "wednesday"}
 
@@ -142,7 +157,7 @@ def test_an_unnamed_field_is_dropped_loudly_and_its_siblings_survive(
         monkeypatch,
         _StubClient(
             text=(
-                '{"intent": "book",'
+                '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": "  ", "value": "tuesday"},'
                 ' {"name": "child_name", "value": "Amelia"}],'
                 ' "confidence_is_low": false}'
@@ -151,7 +166,7 @@ def test_an_unnamed_field_is_dropped_loudly_and_its_siblings_survive(
     )
 
     with caplog.at_level(logging.WARNING, logger=parser_service.__name__):
-        parsed = parse_intent(step=STEP, body=BODY, context=CONTEXT)
+        parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert parsed.fields == {"child_name": "Amelia"}
     assert "dropped an unnamed field" in caplog.text
@@ -167,14 +182,16 @@ def test_a_padded_field_name_is_stripped_rather_than_left_as_a_near_miss(
         monkeypatch,
         _StubClient(
             text=(
-                '{"intent": "book",'
+                '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": " which_day ", "value": "tuesday"}],'
                 ' "confidence_is_low": false}'
             )
         ),
     )
 
-    assert parse_intent(step=STEP, body=BODY, context=CONTEXT).fields == {"which_day": "tuesday"}
+    assert parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT).fields == {
+        "which_day": "tuesday"
+    }
 
 
 def test_the_prompt_pins_child_name_as_the_key_for_a_named_child() -> None:
@@ -183,12 +200,19 @@ def test_the_prompt_pins_child_name_as_the_key_for_a_named_child() -> None:
     assert bot_service.STEP_CHILD_NAME == "child_name"
 
 
+def test_the_prompt_no_longer_keys_the_answer_by_the_step_name() -> None:
+    """The model named that key whatever it liked (`parent_name` 3 times in 9), so the answer
+    now has a fixed `answer` slot and the step-name rule must not come back."""
+    assert "under that step's own name" not in SYSTEM_PROMPT
+    assert "`answer`" in SYSTEM_PROMPT
+
+
 def test_a_named_child_folds_under_child_name(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(
         monkeypatch,
         _StubClient(
             text=(
-                '{"intent": "book",'
+                '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": "child_name", "value": "Sam"},'
                 ' {"name": "menu", "value": "book"}],'
                 ' "confidence_is_low": false}'
@@ -196,7 +220,7 @@ def test_a_named_child_folds_under_child_name(monkeypatch: pytest.MonkeyPatch) -
         ),
     )
 
-    parsed = parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert parsed.fields == {"child_name": "Sam", "menu": "book"}
 
@@ -208,10 +232,15 @@ def test_the_models_own_low_confidence_signal_is_passed_through_untouched(
     slot (#27). It is the model's signal, not a threshold this module re-derives."""
     _install(
         monkeypatch,
-        _StubClient(text='{"intent": "book", "fields": [], "confidence_is_low": true}'),
+        _StubClient(
+            text='{"intent": "book", "answer": null, "fields": [], "confidence_is_low": true}'
+        ),
     )
 
-    assert parse_intent(step=STEP, body=BODY, context=CONTEXT).confidence_is_low is True
+    assert (
+        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT).confidence_is_low
+        is True
+    )
 
 
 def test_the_request_names_the_model_as_a_literal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,7 +248,7 @@ def test_the_request_names_the_model_as_a_literal(monkeypatch: pytest.MonkeyPatc
     that was never chosen fails here instead of shipping."""
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert MODEL == "claude-haiku-4-5"
     assert messages.calls[0]["model"] == "claude-haiku-4-5"
@@ -236,7 +265,7 @@ def test_the_request_carries_no_reasoning_or_caching_parameters(
     """
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     call = messages.calls[0]
     assert "thinking" not in call
@@ -250,7 +279,7 @@ def test_the_request_is_one_call_with_a_small_extraction_budget(
 ) -> None:
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert len(messages.calls) == 1
     assert messages.calls[0]["max_tokens"] == MAX_TOKENS
@@ -262,7 +291,7 @@ def test_the_prompt_carries_the_step_the_message_and_the_collected_context(
 ) -> None:
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, body=BODY, context=CONTEXT)
+    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     prompt = messages.calls[0]["messages"][0]["content"]
     assert STEP in prompt
@@ -270,6 +299,19 @@ def test_the_prompt_carries_the_step_the_message_and_the_collected_context(
     for name, value in CONTEXT.items():
         assert name in prompt
         assert value in prompt
+
+
+def test_the_prompt_shows_the_question_being_answered_once_outside_the_collected_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
+
+    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+
+    prompt = messages.calls[0]["messages"][0]["content"]
+    collected = prompt.split("Collected so far:", 1)[1]
+    assert prompt.count(QUESTION) == 1
+    assert QUESTION not in collected
 
 
 def test_the_client_overrides_both_sdk_defaults_and_fits_the_twilio_budget() -> None:
@@ -301,7 +343,7 @@ def test_every_sdk_failure_becomes_parse_failed_with_the_original_chained(
     _install(monkeypatch, _StubClient(error=error))
 
     with pytest.raises(ParseFailed) as raised:
-        parse_intent(step=STEP, body=BODY, context=CONTEXT)
+        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert raised.value.__cause__ is error
 
@@ -315,7 +357,7 @@ def test_a_timeout_is_caught_before_its_connection_error_base(
     _install(monkeypatch, _StubClient(error=APITimeoutError(request=_REQUEST)))
 
     with pytest.raises(ParseFailed, match="did not answer within"):
-        parse_intent(step=STEP, body=BODY, context=CONTEXT)
+        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
 
 def test_an_answer_truncated_at_max_tokens_becomes_parse_failed(
@@ -326,7 +368,7 @@ def test_an_answer_truncated_at_max_tokens_becomes_parse_failed(
     _install(monkeypatch, _StubClient(text='{"intent": "book", "fields": [{"name": "whi'))
 
     with pytest.raises(ParseFailed) as raised:
-        parse_intent(step=STEP, body=BODY, context=CONTEXT)
+        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
     assert isinstance(raised.value.__cause__, ValidationError)
 
@@ -340,7 +382,7 @@ def test_a_response_with_no_parsable_content_becomes_parse_failed(
     _install(monkeypatch, _StubClient(text=None))
 
     with pytest.raises(ParseFailed):
-        parse_intent(step=STEP, body=BODY, context=CONTEXT)
+        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
 
 
 def test_the_schema_sent_to_the_api_can_still_carry_extracted_fields() -> None:
@@ -364,6 +406,16 @@ def test_the_schema_sent_to_the_api_can_still_carry_extracted_fields() -> None:
 
     assert collapsed["properties"] == {}
     assert collapsed["additionalProperties"] is False
+
+
+def test_the_schema_sent_to_the_api_requires_a_nullable_answer() -> None:
+    """Required so the model always states it; nullable so "this message does not answer the
+    question" has a way to be said other than an invented value."""
+    schema = transform_schema(_ModelOutput.model_json_schema())
+    answer_types = {option.get("type") for option in schema["properties"]["answer"]["anyOf"]}
+
+    assert "answer" in schema["required"]
+    assert answer_types == {"string", "null"}
 
 
 def test_nothing_in_this_module_reaches_the_http_layer() -> None:

@@ -27,12 +27,15 @@ class BotIntent(str, enum.Enum):
 class ParsedIntent(BaseModel):
     """What the parser extracted from one inbound message.
 
-    `fields` carries whatever slots the intent needs (e.g. a date, a child's name) as raw
-    strings; `bot_service` is responsible for resolving them against the database.
+    `answer` is the parent's answer to the question the bot last asked, or `None` when the
+    message does not answer it. `fields` carries any other slots the message supplies (e.g. a
+    child's name) as raw strings; `bot_service` is responsible for resolving them against the
+    database.
     `confidence_is_low` signals a re-prompt rather than acting on a guess.
     """
 
     intent: BotIntent
+    answer: str | None = None
     fields: dict[str, str]
     confidence_is_low: bool
 

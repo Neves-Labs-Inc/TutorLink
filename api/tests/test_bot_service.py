@@ -128,8 +128,10 @@ class ScriptedParser:
     def script(self, answer: ParsedIntent | Exception) -> None:
         self._answer = answer
 
-    def __call__(self, *, step: str, body: str, context: dict[str, str]) -> ParsedIntent:
-        self.calls.append({"step": step, "body": body, "context": context})
+    def __call__(
+        self, *, step: str, question: str, body: str, context: dict[str, str]
+    ) -> ParsedIntent:
+        self.calls.append({"step": step, "question": question, "body": body, "context": context})
         answer, self._answer = self._answer, None
 
         if answer is None:
@@ -145,9 +147,9 @@ class ScriptedParser:
 class Chat:
     """One WhatsApp thread, driven message by message.
 
-    `say` answers whatever question the flow is currently on, because the answer to a step's
-    question is keyed by that step's own name — so the driver reads the pending step out of
-    the table instead of every test spelling it out.
+    `say(value=...)` answers whatever question the flow is currently on: the parser returns
+    the answer to the pending question in its fixed `answer` slot, whatever the step, so no
+    test has to spell the step out. `fields=` supplies any extras, such as `child_name`.
     """
 
     db: Session
@@ -167,17 +169,16 @@ class Chat:
         confidence_is_low: bool = False,
         fails: bool = False,
     ) -> BotTurn:
-        """`fields` replaces the step-keyed answer outright — for a field the parser gives
-        under another name than the current step's, such as `child_name` at the menu."""
-        step = self.step
-
-        if fields is None:
-            fields = {} if value is None or step is None else {step: str(value)}
-
+        """`value` is scripted as the parser's `answer`; `fields` as its named extras."""
         self.parser.script(
             parser_service.ParseFailed("scripted outage")
             if fails
-            else ParsedIntent(intent=intent, fields=fields, confidence_is_low=confidence_is_low)
+            else ParsedIntent(
+                intent=intent,
+                answer=None if value is None else str(value),
+                fields=fields or {},
+                confidence_is_low=confidence_is_low,
+            )
         )
         turn = bot_service.reply_for(
             self.db,
@@ -557,10 +558,10 @@ def test_the_date_of_birth_question_shows_the_iso_format(chat: Chat) -> None:
     _answer_up_to_the_child_name(chat)
     chat.say(value=DATE_OF_BIRTH.isoformat())
 
-    dob_context = chat.parser.calls[-1]["context"]
+    dob_question = chat.parser.calls[-1]["question"]
 
     assert chat.parser.calls[-1]["step"] == bot_service.STEP_CHILD_DOB
-    assert re.search(r"\b\d{4}-\d{2}-\d{2}\b", dob_context["prompt"])
+    assert re.search(r"\b\d{4}-\d{2}-\d{2}\b", dob_question)
 
 
 def test_the_date_of_birth_and_notes_are_never_sent_to_the_parser_again(chat: Chat) -> None:

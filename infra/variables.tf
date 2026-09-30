@@ -13,7 +13,7 @@ variable "instance_type" {
 variable "data_volume_size_gb" {
   description = "Size of the persistent data volume mounted at /srv/tutorlink (Postgres data, Caddy certificates, deploy files)."
   type        = number
-  default     = 20
+  default     = 5
 }
 
 variable "domain" {

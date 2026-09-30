@@ -7,7 +7,7 @@ locals {
   compose_sha256  = "db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576"
 
   # Room for a few generations of the api and web images before `docker image prune` runs.
-  root_volume_size_gb = 20
+  root_volume_size_gb = 10
 }
 
 data "aws_ssm_parameter" "al2023_ami" {

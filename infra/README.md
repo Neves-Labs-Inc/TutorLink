@@ -37,7 +37,7 @@ backups yet), so Terraform refuses any plan that would delete it.
 | --- | --- | --- |
 | `region` | `us-east-1` | Region for everything. |
 | `instance_type` | `t3.micro` | EC2 instance type. |
-| `data_volume_size_gb` | `20` | Size of the data volume. |
+| `data_volume_size_gb` | `5` | Size of the data volume. Can be grown later (apply, then `sudo xfs_growfs /srv/tutorlink`), never shrunk. |
 | `domain` | `null` | Real hostname; when null the site uses `<ip-with-dashes>.sslip.io`. |
 | `github_repo` | `Siraneves/TutorLink` | Repository allowed to assume the deploy role. |
 | `github_deploy_environment` | `production` | GitHub environment allowed to deploy. |

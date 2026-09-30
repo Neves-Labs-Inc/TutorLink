@@ -1,0 +1,74 @@
+#!/bin/bash
+# First-boot setup for the TutorLink host. Safe to re-run: every step checks before it acts,
+# and the data volume is formatted only when it has no filesystem at all.
+set -euo pipefail
+
+readonly DATA_DIR="${data_dir}"
+readonly VOLUME_ID="${volume_id}"
+readonly COMPOSE_VERSION="${compose_version}"
+readonly COMPOSE_SHA256="${compose_sha256}"
+readonly COMPOSE_PLUGIN="/usr/local/lib/docker/cli-plugins/docker-compose"
+readonly DEVICE_WAIT_SECONDS=600
+
+dnf install -y docker git
+
+# AL2023 doesn't package the Compose plugin; install a pinned, checksummed release.
+# Captured first: piping into `grep -q` can SIGPIPE the writer and fail under pipefail.
+installed_compose=""
+if [[ -x "$COMPOSE_PLUGIN" ]]; then
+  installed_compose="$("$COMPOSE_PLUGIN" version)"
+fi
+if [[ "$installed_compose" != *"$COMPOSE_VERSION"* ]]; then
+  mkdir -p "$(dirname "$COMPOSE_PLUGIN")"
+  curl -fsSL -o /tmp/docker-compose \
+    "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-x86_64"
+  echo "$COMPOSE_SHA256  /tmp/docker-compose" | sha256sum -c -
+  install -m 0755 /tmp/docker-compose "$COMPOSE_PLUGIN"
+  rm -f /tmp/docker-compose
+fi
+
+systemctl enable --now amazon-ssm-agent
+
+# The volume is attached after boot, and on Nitro it shows up as an NVMe device named by volume
+# ID (without the dash), not as the /dev/sdf it was attached as. /dev/xvdf covers Xen types.
+nvme_link="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${VOLUME_ID//-/}"
+device=""
+for _ in $(seq "$DEVICE_WAIT_SECONDS"); do
+  if [[ -e "$nvme_link" ]]; then
+    device="$(readlink -f "$nvme_link")"
+    break
+  fi
+  if [[ -b /dev/xvdf ]]; then
+    device=/dev/xvdf
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$device" ]]; then
+  echo "data volume $VOLUME_ID did not appear within $DEVICE_WAIT_SECONDS seconds" >&2
+  exit 1
+fi
+
+# Never reformat: mkfs runs only when blkid finds no filesystem signature.
+if ! blkid "$device" >/dev/null 2>&1; then
+  mkfs.xfs "$device"
+fi
+
+uuid="$(blkid -s UUID -o value "$device")"
+fs_type="$(blkid -s TYPE -o value "$device")"
+mkdir -p "$DATA_DIR"
+if ! grep -q "UUID=$uuid" /etc/fstab; then
+  echo "UUID=$uuid $DATA_DIR $fs_type defaults,nofail 0 2" >> /etc/fstab
+fi
+if ! mountpoint -q "$DATA_DIR"; then
+  mount "$DATA_DIR"
+fi
+
+mkdir -p "$DATA_DIR/pgdata" "$DATA_DIR/caddy/data" "$DATA_DIR/caddy/config" "$DATA_DIR/app"
+
+# Containers bind-mount DATA_DIR. If dockerd ran without it (nofail doesn't order the mount before
+# boot targets), restart policies would start Postgres on an empty directory on the root volume.
+mkdir -p /etc/systemd/system/docker.service.d
+printf '[Unit]\nRequiresMountsFor=%s\n' "$DATA_DIR" > /etc/systemd/system/docker.service.d/10-data-volume.conf
+systemctl daemon-reload
+systemctl enable --now docker

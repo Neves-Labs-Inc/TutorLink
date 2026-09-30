@@ -16,6 +16,10 @@ from sqlalchemy.dialects import postgresql
 USER_ROLE_ENUM_NAME = "user_role"
 BOOKING_STATUS_ENUM_NAME = "booking_status"
 EXCEPTION_STATUS_ENUM_NAME = "exception_status"
+CONVERSATION_STATUS_ENUM_NAME = "conversation_status"
+MESSAGE_AUTHOR_ENUM_NAME = "message_author"
+MESSAGE_STATUS_ENUM_NAME = "message_status"
+FLAG_REASON_ENUM_NAME = "flag_reason"
 
 
 class UserRole(str, enum.Enum):
@@ -45,6 +49,75 @@ class ExceptionStatus(str, enum.Enum):
     REJECTED = "rejected"
 
 
+class ConversationStatus(str, enum.Enum):
+    """Who is answering the client on this thread right now.
+
+    Deliberately not merged with `FlagReason`. `status` answers "who is replying" and
+    `flag_reason` answers "why does an admin need to look" — a `BOT` conversation can be
+    flagged and unattended, and a `HUMAN` one can carry a flag raised before the takeover.
+    One column would lose whichever half is not currently true.
+    """
+
+    BOT = "bot"
+    HUMAN = "human"
+
+
+class MessageAuthor(str, enum.Enum):
+    """Who wrote a message. Inbound and outbound are derived from this rather than stored:
+    `CLIENT` is inbound, `BOT` and `ADMIN` are outbound, and a second column recording the
+    same fact could disagree with this one."""
+
+    CLIENT = "client"
+    BOT = "bot"
+    ADMIN = "admin"
+
+
+class MessageStatus(str, enum.Enum):
+    """Delivery state.
+
+    An inbound message is written `RECEIVED` and never moves again. An outbound message sent
+    through Twilio's REST API — an admin's reply — starts `QUEUED` and is advanced by the
+    delivery status callback. A bot reply returned as TwiML is written `SENT` directly: Twilio
+    does not mint a `MessageSid` until after it reads the webhook's response, so the row has no
+    SID for a later callback to match and would otherwise sit at `QUEUED` forever.
+    """
+
+    RECEIVED = "received"
+    QUEUED = "queued"
+    SENT = "sent"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+
+
+class FlagReason(str, enum.Enum):
+    """Why an admin needs to look at a conversation.
+
+    `STUCK` is two failed re-prompts in a row with no usable reply. `PARSE_ERROR` is the parser
+    itself failing rather than the client being unclear, raised immediately rather than burning
+    a re-prompt on an outage that is not the client's fault.
+
+    `GUARDIAN_LINK_REQUEST` is **not** a failure: the bot worked, understood a second guardian
+    asking to be linked to an existing child, and stopped because phone-alone identity cannot
+    tell a real second guardian from anyone who knows a child's name. It is listed beside the
+    two failures but must be surfaced apart from them.
+
+    `REACTIVATION_REQUEST` is not a failure either: a guardian asked for one of their inactive
+    children to be reactivated, and only an admin can decide that. Like `GUARDIAN_LINK_REQUEST`
+    it is an admin action rather than a bot failure. It was added by the user's OQ-71 answer
+    (Phase 7D), which reversed the earlier three-values-only rule; the child it names is on
+    `conversations.reactivation_child_id`, which a later flag does not overwrite.
+
+    No value exists for a policy refusal. A reschedule or cancellation refused inside
+    `cancellation_cutoff_hours` is the bot working as intended rather than failing, and flagging
+    it would bury the flags that mean the bot needs help.
+    """
+
+    STUCK = "stuck"
+    PARSE_ERROR = "parse_error"
+    GUARDIAN_LINK_REQUEST = "guardian_link_request"
+    REACTIVATION_REQUEST = "reactivation_request"
+
+
 def _values(enum_class: type[enum.Enum]) -> list[str]:
     return [member.value for member in enum_class]
 
@@ -70,6 +143,38 @@ exception_status_enum = postgresql.ENUM(
     values_callable=_values,
 )
 
+conversation_status_enum = postgresql.ENUM(
+    ConversationStatus,
+    name=CONVERSATION_STATUS_ENUM_NAME,
+    create_type=False,
+    values_callable=_values,
+)
+
+message_author_enum = postgresql.ENUM(
+    MessageAuthor,
+    name=MESSAGE_AUTHOR_ENUM_NAME,
+    create_type=False,
+    values_callable=_values,
+)
+
+message_status_enum = postgresql.ENUM(
+    MessageStatus,
+    name=MESSAGE_STATUS_ENUM_NAME,
+    create_type=False,
+    values_callable=_values,
+)
+
+flag_reason_enum = postgresql.ENUM(
+    FlagReason,
+    name=FLAG_REASON_ENUM_NAME,
+    create_type=False,
+    values_callable=_values,
+)
+
 USER_ROLE_VALUES = _values(UserRole)
 BOOKING_STATUS_VALUES = _values(BookingStatus)
 EXCEPTION_STATUS_VALUES = _values(ExceptionStatus)
+CONVERSATION_STATUS_VALUES = _values(ConversationStatus)
+MESSAGE_AUTHOR_VALUES = _values(MessageAuthor)
+MESSAGE_STATUS_VALUES = _values(MessageStatus)
+FLAG_REASON_VALUES = _values(FlagReason)

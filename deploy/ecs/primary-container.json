@@ -1,0 +1,18 @@
+{
+  "image": "${IMAGE}",
+  "containerPort": 8000,
+  "environment": [
+    { "name": "COOKIE_SECURE", "value": "true" },
+    { "name": "API_DOCS_ENABLED", "value": "false" },
+    { "name": "TRUSTED_PROXIES", "value": "${TRUSTED_PROXIES}" },
+    { "name": "TWILIO_WHATSAPP_NUMBER", "value": "${TWILIO_WHATSAPP_NUMBER}" },
+    { "name": "TWILIO_STATUS_CALLBACK_URL", "value": "${TWILIO_STATUS_CALLBACK_URL}" }
+  ],
+  "secrets": [
+    { "name": "DATABASE_URL", "valueFrom": "${APP_SECRET_ARN}:DATABASE_URL::" },
+    { "name": "SECRET_KEY", "valueFrom": "${APP_SECRET_ARN}:SECRET_KEY::" },
+    { "name": "TWILIO_ACCOUNT_SID", "valueFrom": "${APP_SECRET_ARN}:TWILIO_ACCOUNT_SID::" },
+    { "name": "TWILIO_AUTH_TOKEN", "valueFrom": "${APP_SECRET_ARN}:TWILIO_AUTH_TOKEN::" },
+    { "name": "ANTHROPIC_API_KEY", "valueFrom": "${APP_SECRET_ARN}:ANTHROPIC_API_KEY::" }
+  ]
+}

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
-import { landingPath, type Role } from '@/lib/auth'
+import { landingPath, type Role } from '@/lib/auth/auth'
 import { useAuthStore } from '@/stores/authStore'
 
 type RouteGuardProps = {

@@ -18,7 +18,7 @@ further work holds the lock with it.
 import datetime
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.dependencies import ADMIN_ROLES
@@ -46,6 +46,10 @@ class ExceptionNotFound(ExceptionRequestError):
 
 class ExceptionAlreadyDecided(ExceptionRequestError):
     """The row has already been approved or rejected, so there is nothing left to decide."""
+
+
+class ExceptionNotDeletable(ExceptionRequestError):
+    """A tutor tried to withdraw a request an admin has already decided."""
 
 
 def create_exception(
@@ -107,6 +111,105 @@ def decide_exception(
     db.flush()
 
     return row
+
+
+def list_exceptions(
+    db: Session,
+    *,
+    tutor_id: uuid.UUID,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    limit: int,
+    offset: int,
+) -> tuple[list[TutorAvailabilityException], int]:
+    """One tutor's exceptions at every status, and the count before paging.
+
+    `pending` and `rejected` rows come back beside the `approved` ones even though neither
+    blocks a booking. The list is how a tutor sees that a request is still waiting and how an
+    admin finds the ones left to decide, so narrowing it to the rows that block availability
+    would hide exactly the rows the page exists to show.
+
+    `tutor_id` is never `None`. The only caller binds it from a `{tutor_id}` path segment
+    through `TutorScope`, which has already refused a cross-tutor reach with a 403, and there
+    is no route that wants every tutor's exceptions at once.
+
+    `date_from`/`date_to`, when given, narrow the result to rows that **overlap** the window
+    rather than rows contained by it: `end_date >= date_from` and `start_date <= date_to`. A
+    containment test (`start_date >= date_from`) would drop an exception that began before the
+    window and runs through it — exactly the row a weekly grid exists to show, since the tutor
+    is unavailable for every day the row and the window share, not only the days the row starts
+    on.
+    """
+    matching = select(TutorAvailabilityException).where(
+        TutorAvailabilityException.tutor_id == tutor_id
+    )
+    if date_from is not None:
+        matching = matching.where(TutorAvailabilityException.end_date >= date_from)
+    if date_to is not None:
+        matching = matching.where(TutorAvailabilityException.start_date <= date_to)
+
+    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
+
+    # `id` is the tiebreaker, not decoration: a tutor booking a week off in pieces has several
+    # rows on one `start_date`, and LIMIT/OFFSET over a sort key that does not distinguish them
+    # may order two executions differently — so page two can repeat or skip a row page one
+    # already showed.
+    rows = list(
+        db.scalars(
+            matching.order_by(TutorAvailabilityException.start_date, TutorAvailabilityException.id)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+
+    return rows, total
+
+
+def load_exception_for_delete(
+    db: Session, *, exception_id: uuid.UUID
+) -> TutorAvailabilityException:
+    """Load and lock the row a caller is about to delete. Raises unless it exists.
+
+    Split from `delete_exception` because the ownership check belongs to the router, which
+    needs `row.tutor_id` to run it — and it has to run *before* the status gate, so a tutor
+    holding another tutor's id cannot tell "not yours" from "already decided".
+
+    Locked for the same reason `decide_exception` locks, in the other direction: without it a
+    tutor could read their own request as `pending`, an admin could approve and commit, and the
+    delete would still go through — erasing the decision the status gate exists to protect. The
+    waiter re-reads the decided row and is refused.
+    """
+    row = db.execute(
+        select(TutorAvailabilityException)
+        .where(TutorAvailabilityException.id == exception_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+
+    if row is None:
+        raise ExceptionNotFound(f"no exception {exception_id}")
+
+    return row
+
+
+def delete_exception(
+    db: Session, *, exception: TutorAvailabilityException, actor_role: UserRole
+) -> None:
+    """Delete a loaded exception, if the actor's role permits it at that row's status.
+
+    An admin or developer deletes any row whatever its status. That is deliberate and it is the
+    only way back from a mistaken approval: `decide_exception` refuses to re-decide, so nothing
+    else reverses one. A tutor deletes only a still-`pending` row — withdrawing a request nobody
+    has acted on — because undoing a decision unilaterally, in either direction, is precisely
+    what the admin gate exists to prevent.
+
+    The row is really gone afterwards. `tutor_availability_exceptions` carries no `is_active`
+    and nothing references it by foreign key, so there is no orphan and nothing to soft-delete.
+    """
+    if actor_role not in ADMIN_ROLES and exception.status is not ExceptionStatus.PENDING:
+        raise ExceptionNotDeletable(f"exception {exception.id} is already {exception.status.value}")
+
+    db.delete(exception)
+    db.flush()
 
 
 def _initial_status(creator_role: UserRole) -> ExceptionStatus:

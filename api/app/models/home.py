@@ -8,25 +8,15 @@ share the same pair — none of which a single fused row can express.
 Both junctions here are hard-delete, matching `tutor_subjects`: a link is not an entity.
 """
 
-import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Index,
-    String,
-    Text,
-    UniqueConstraint,
-    func,
-    text,
-)
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
@@ -34,31 +24,21 @@ if TYPE_CHECKING:
     from app.models.guardian import Guardian
 
 
-class Home(Base):
+class Home(HasID, HasTimestamps, HasActiveFlag, Base):
     __tablename__ = "homes"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     # The bot has to ask "which home?" when a child has two, and reading two full street
     # addresses back over WhatsApp is a poor prompt. Nullable, so it costs nothing unused.
     label: Mapped[str | None] = mapped_column(String(64), nullable=True)
     address: Mapped[str] = mapped_column(Text, nullable=False)
     access_code: Mapped[str] = mapped_column(String(64), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
 
     child_links: Mapped[list["ChildHome"]] = relationship(back_populates="home")
     guardian_links: Mapped[list["GuardianHome"]] = relationship(back_populates="home")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="home")
 
 
-class ChildHome(Base):
+class ChildHome(HasID, Base):
     """Which homes a child is tutored at. Many-to-many, which is what accommodates siblings
     sharing a home and one child having two."""
 
@@ -68,9 +48,6 @@ class ChildHome(Base):
         Index("ix_child_homes_home_id", "home_id"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     child_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("children.id"), nullable=False
     )
@@ -82,7 +59,7 @@ class ChildHome(Base):
     home: Mapped["Home"] = relationship(back_populates="child_links")
 
 
-class GuardianHome(Base):
+class GuardianHome(HasID, Base):
     """Which homes belong to a guardian.
 
     Explicit rather than derived through children, for three reasons: a couple sharing one
@@ -98,9 +75,6 @@ class GuardianHome(Base):
         Index("ix_guardian_homes_home_id", "home_id"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     guardian_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("guardians.id"), nullable=False
     )

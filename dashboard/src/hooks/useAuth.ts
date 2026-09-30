@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { errorDetail, requestLogin, requestLogout } from '@/lib/api'
-import { decodeAccessToken, landingPath } from '@/lib/auth'
+import { decodeAccessToken, landingPath } from '@/lib/auth/auth'
 import { useAuthStore } from '@/stores/authStore'
 
 const LOGIN_FALLBACK_ERROR = 'Something went wrong. Please try again.'

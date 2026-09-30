@@ -2,6 +2,11 @@
 
 A thin HTTP shell over `user_service`, matching `auth.py`: the service raises domain
 exceptions, this maps them to status codes and owns the commit.
+
+`POST` can write two rows — an account, and the tutor profile it links to when the payload
+carries `tutor` instead of `tutor_id`. The single `db.commit()` below is what makes that one
+event: every failure path leaves this function by `raise`, so neither row is ever committed
+without the other.
 """
 
 import uuid
@@ -13,11 +18,18 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
-from app.schemas.user import UserCreate, UserRead, UserUpdate
+from app.schemas.user import TutorProfileCreate, UserCreate, UserRead, UserUpdate
+from app.services.phone_service import InvalidPhoneNumber
+from app.services.tutor_service import (
+    TutorEmailTaken,
+    TutorPhoneNumberTaken,
+    TutorUniqueViolation,
+)
 from app.services.user_service import (
     EmailTaken,
     InvalidUserShape,
     RoleNotPermitted,
+    TutorProfileInput,
     UserNotFound,
     create_user,
     deactivate_user,
@@ -30,9 +42,15 @@ EMAIL_TAKEN_ERROR = "A user with that email already exists"
 USER_NOT_FOUND_ERROR = "User not found"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
 INVALID_SHAPE_ERROR = (
-    "A tutor account requires an existing tutor_id, an admin or developer must not have one, "
-    "and a password must be at least 8 characters"
+    "A tutor account requires exactly one of tutor_id and tutor, an admin or developer must "
+    "have neither, and a password must be at least 8 characters"
 )
+TUTOR_EMAIL_TAKEN_ERROR = (
+    "A tutor profile already holds that email — link it with tutor_id instead of sending tutor"
+)
+TUTOR_PHONE_NUMBER_TAKEN_ERROR = "A tutor with that phone number already exists"
+TUTOR_UNIQUE_VIOLATION_ERROR = "A tutor with that email or phone number already exists"
+INVALID_PHONE_NUMBER_ERROR = "tutor.phone_number is not a phone number that can be dialled"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -79,6 +97,7 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
             password=payload.password,
             role=payload.role,
             tutor_id=payload.tutor_id,
+            tutor=_tutor_profile_input(payload.tutor),
         )
     except RoleNotPermitted as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
@@ -86,6 +105,14 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN_ERROR) from exc
     except InvalidUserShape as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_SHAPE_ERROR) from exc
+    except InvalidPhoneNumber as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
+    except TutorEmailTaken as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, TUTOR_EMAIL_TAKEN_ERROR) from exc
+    except TutorPhoneNumberTaken as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, TUTOR_PHONE_NUMBER_TAKEN_ERROR) from exc
+    except TutorUniqueViolation as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, TUTOR_UNIQUE_VIOLATION_ERROR) from exc
 
     db.commit()
 
@@ -132,3 +159,11 @@ def soft_delete(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> User
     db.commit()
 
     return UserRead.model_validate(deactivated)
+
+
+def _tutor_profile_input(tutor: TutorProfileCreate | None) -> TutorProfileInput | None:
+    return (
+        None
+        if tutor is None
+        else TutorProfileInput(name=tutor.name, phone_number=tutor.phone_number, bio=tutor.bio)
+    )

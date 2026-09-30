@@ -59,6 +59,20 @@ class IssuedTokens:
     refresh_expires_at: datetime
 
 
+def normalise_email(email: str) -> str:
+    """The one spelling of an address that identifies an account.
+
+    D-028: the users.email unique constraint is case-sensitive, so normalising here is what
+    makes "Admin@X" and "admin@x" the same account. The seed command normalises identically.
+
+    A function rather than an expression inlined below because `rate_limit_service` has to
+    bucket failed attempts under exactly this spelling. A second copy of `.strip().lower()`
+    there would be free to drift, and the day it did, varying the casing would give an attacker
+    a fresh per-account budget for every spelling they cared to type.
+    """
+    return email.strip().lower()
+
+
 def authenticate_user(db: Session, *, email: str, password: str) -> User:
     if not password_is_encodable(password):
         # bcrypt consumes only the first 72 bytes of a password. Without this guard a longer
@@ -66,9 +80,7 @@ def authenticate_user(db: Session, *, email: str, password: str) -> User:
         # bytes would be in. Rejected before any hash is computed.
         raise InvalidCredentials("password exceeds the maximum encodable length")
 
-    # D-028: the users.email unique constraint is case-sensitive, so normalising here is what
-    # makes "Admin@X" and "admin@x" the same account. The seed command normalises identically.
-    normalised = email.strip().lower()
+    normalised = normalise_email(email)
     user = db.execute(select(User).where(User.email == normalised)).scalar_one_or_none()
 
     if user is None:

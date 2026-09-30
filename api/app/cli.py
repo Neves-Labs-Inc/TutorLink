@@ -25,6 +25,7 @@ from app.db import SessionLocal
 from app.models.enums import UserRole
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
+from app.services.retention_scheduler import run_guarded_purge
 
 MIN_PASSWORD_LENGTH = 8
 
@@ -89,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser(
         "create-developer", help="Create a developer account. Never promotes an existing user."
     )
+    subparsers.add_parser(
+        "purge-messages", help="Delete messages past chat_retention_days, and empty threads."
+    )
 
     args = parser.parse_args(argv)
 
@@ -96,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         status = _run_seed_admin()
     elif args.command == "create-developer":
         status = _run_create_developer()
+    elif args.command == "purge-messages":
+        status = _run_purge_messages()
     else:
         parser.error(f"unknown command: {args.command}")
         status = 2
@@ -128,6 +134,30 @@ def _run_seed_admin() -> int:
                 else:
                     print(f"created admin: {normalized_email}")
                 status = 0
+
+    return status
+
+
+def _run_purge_messages() -> int:
+    run = run_guarded_purge(SessionLocal)
+
+    if run.purge is None:
+        # Non-zero: the operator asked for a purge and this invocation did not perform one.
+        print("skipped: another instance holds the lock", file=sys.stderr)
+        status = 1
+    else:
+        if not run.purge.ran:
+            print("chat_retention_days is 0; purge disabled, nothing deleted")
+        else:
+            print(
+                f"purged {run.purge.messages_deleted} message(s) and "
+                f"{run.purge.conversations_deleted} conversation(s)"
+            )
+        print(
+            f"reaped {run.flow_states_deleted} expired flow state(s) and "
+            f"{run.login_attempts_deleted} expired login attempt(s)"
+        )
+        status = 0
 
     return status
 

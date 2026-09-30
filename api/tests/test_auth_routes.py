@@ -10,15 +10,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 from app.models.enums import UserRole
+from app.models.login_attempt import LoginAttempt
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.routers import auth
 from app.security import REFRESH_TOKEN_TYPE, decode_token, hash_password
+from app.services.rate_limit_service import EMAIL_BUCKET_PREFIX, IP_BUCKET_PREFIX
 
 EMAIL = "admin@example.com"
 DORMANT_EMAIL = "dormant@example.com"
 PASSWORD = "correct horse battery staple"
 COMMITTED_EMAIL_SUFFIX = "@committed.test"
+TEST_CLIENT_PEER = "testclient"
 
 
 def test_login_returns_a_token_pair_and_sets_the_refresh_cookie(
@@ -41,10 +44,10 @@ def test_login_returns_a_token_pair_and_sets_the_refresh_cookie(
     assert "Secure" not in set_cookie
 
 
-def test_login_marks_the_refresh_cookie_secure_when_debug_is_off(
+def test_login_marks_the_refresh_cookie_secure_when_cookie_secure_is_on(
     api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    production = get_settings().model_copy(update={"debug": False})
+    production = get_settings().model_copy(update={"cookie_secure": True})
     monkeypatch.setattr(auth, "get_settings", lambda: production)
     _make_user(db)
 
@@ -221,6 +224,37 @@ def test_logout_revocation_is_committed_before_the_204_is_returned(
     assert reuse.status_code == 401
 
 
+def test_a_wrong_password_commits_one_reservation_row_per_armed_bucket(
+    session_per_request_api: TestClient, committed_sessions: sessionmaker[Session]
+) -> None:
+    """The reservation is the recorded failure, so it has to survive the 401.
+
+    The 401 is raised without a commit. Only the commit `login` makes straight after reserving
+    keeps the row; drop it and this failure is rolled back with the request and never counted.
+    """
+    email = f"wrong{COMMITTED_EMAIL_SUFFIX}"
+    _make_committed_user(committed_sessions, email)
+
+    response = _login(session_per_request_api, email=email, password="not the password")
+    reserved = _committed_rows_reserved_alongside(committed_sessions, EMAIL_BUCKET_PREFIX + email)
+
+    assert response.status_code == 401
+    assert reserved == [EMAIL_BUCKET_PREFIX + email, IP_BUCKET_PREFIX + TEST_CLIENT_PEER]
+
+
+def test_a_correct_password_leaves_none_of_its_own_reservation_rows(
+    session_per_request_api: TestClient, committed_sessions: sessionmaker[Session]
+) -> None:
+    email = f"right{COMMITTED_EMAIL_SUFFIX}"
+    _make_committed_user(committed_sessions, email)
+
+    response = _login(session_per_request_api, email=email)
+    reserved = _committed_rows_reserved_alongside(committed_sessions, EMAIL_BUCKET_PREFIX + email)
+
+    assert response.status_code == 200
+    assert reserved == []
+
+
 @pytest.fixture
 def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session], None, None]:
     factory = sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)
@@ -253,6 +287,7 @@ def session_per_request_api(
         yield TestClient(app)
     finally:
         del app.dependency_overrides[get_db]
+        _delete_committed_reservations(committed_sessions)
 
 
 def _make_user(
@@ -299,3 +334,28 @@ def _live_row_count(sessions: sessionmaker[Session], family_id: uuid.UUID) -> in
             .select_from(RefreshToken)
             .where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))
         ).scalar_one()
+
+
+def _committed_rows_reserved_alongside(sessions: sessionmaker[Session], key: str) -> list[str]:
+    attempt_ids = select(LoginAttempt.attempt_id).where(LoginAttempt.bucket_key == key)
+
+    with sessions() as observer:
+        return list(
+            observer.execute(
+                select(LoginAttempt.bucket_key)
+                .where(LoginAttempt.attempt_id.in_(attempt_ids))
+                .order_by(LoginAttempt.bucket_key)
+            ).scalars()
+        )
+
+
+def _delete_committed_reservations(sessions: sessionmaker[Session]) -> None:
+    # Logging in through committed sessions commits real reservations. Removed by the attempt
+    # ids of this module's own email buckets, so the IP rows those attempts wrote under the
+    # shared "testclient" peer go with them and nobody else's rows in that bucket do.
+    own_buckets = LoginAttempt.bucket_key.like(f"{EMAIL_BUCKET_PREFIX}%{COMMITTED_EMAIL_SUFFIX}")
+    attempt_ids = select(LoginAttempt.attempt_id).where(own_buckets)
+
+    with sessions() as cleanup:
+        cleanup.execute(delete(LoginAttempt).where(LoginAttempt.attempt_id.in_(attempt_ids)))
+        cleanup.commit()

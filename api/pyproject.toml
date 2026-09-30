@@ -10,17 +10,19 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
     "pydantic-settings>=2.4",
-    "redis>=5.0",
     "pyjwt>=2.9",
     "bcrypt>=4.2",
     "python-multipart>=0.0.9",
+    "phonenumbers>=8.13",
+    "anthropic>=0.40",
+    "twilio>=9.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
-    "ruff>=0.6",
+    "ruff>=0.16,<0.17",
 ]
 
 [tool.uv]
@@ -29,3 +31,12 @@ package = false
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+# Pinned explicitly rather than left to ruff's own default (P7-P): the venv's 0.16.2 and a
+# developer's PATH 0.15.12 previously disagreed because neither `pyproject.toml` nor the ruff
+# range said which rules run. This `select` is ruff's own default rule set (E4, E7, E9, F)
+# written out — chosen because it is the only set that leaves `ruff check .`'s finding set on
+# `develop` unchanged; every wider candidate (adding W, I, UP, B, C4, or SIM) surfaced pre-existing
+# findings elsewhere in the repo that are out of scope for this change.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

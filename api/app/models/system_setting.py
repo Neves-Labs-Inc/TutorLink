@@ -9,25 +9,19 @@ lets the settings page render and validate a field it has no compile-time knowle
 Validators stay in code; `value_type` is a rendering hint, not a constraint.
 """
 
-import datetime
-import uuid
-
-from sqlalchemy import Boolean, DateTime, String, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+from app.models.mixins import HasID, HasTimestamps
 
 SETTING_VALUE_TYPE_INTEGER = "integer"
 
 
-class SystemSetting(Base):
+class SystemSetting(HasID, HasTimestamps, Base):
     __tablename__ = "system_settings"
     __table_args__ = (UniqueConstraint("key", name="uq_system_settings_key"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     key: Mapped[str] = mapped_column(String(64), nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     value_type: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -36,10 +30,4 @@ class SystemSetting(Base):
     # first occupant, and the default is what makes that safe.
     is_developer_only: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
-    )
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

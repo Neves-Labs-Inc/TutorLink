@@ -19,3 +19,16 @@ dist/
 
 # Planning documents — local only, tracked as GitHub issues instead
 .planning/
+
+# Planning scratch files
+.scratch/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!*.tfvars.example
+crash.log
+*.tfplan
+tfplan

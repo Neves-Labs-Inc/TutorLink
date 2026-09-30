@@ -9,50 +9,31 @@ step-parent, or a legal guardian. The API keeps calling them a *client*, which i
 relationship rather than the relationship to the child; both are accurate on their own axis.
 """
 
-import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Index,
-    String,
-    UniqueConstraint,
-    func,
-    text,
-)
+from sqlalchemy import ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.child import Child
 
 
-class Guardian(Base):
+class Guardian(HasID, HasTimestamps, HasActiveFlag, Base):
     __tablename__ = "guardians"
     __table_args__ = (Index("ix_guardians_phone_number", "phone_number"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     phone_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
 
     child_links: Mapped[list["ChildGuardian"]] = relationship(back_populates="guardian")
 
 
-class ChildGuardian(Base):
+class ChildGuardian(HasID, Base):
     """Which guardians a child has. Many-to-many: siblings share guardians, and a child with
     separated guardians has two.
 
@@ -67,9 +48,6 @@ class ChildGuardian(Base):
         Index("ix_child_guardians_guardian_id", "guardian_id"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     child_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("children.id"), nullable=False
     )

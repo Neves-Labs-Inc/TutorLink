@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { isAdminRole } from '@/lib/auth'
+import { isAdminRole } from '@/lib/auth/auth'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { AdminSidebar } from './AdminSidebar'

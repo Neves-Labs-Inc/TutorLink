@@ -1,35 +1,28 @@
 import datetime
-import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Date, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.guardian import ChildGuardian
     from app.models.home import ChildHome
 
+NOTES_MAX_LENGTH = 2000
 
-class Child(Base):
+
+class Child(HasID, HasTimestamps, HasActiveFlag, Base):
     __tablename__ = "children"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    age: Mapped[int] = mapped_column(Integer, nullable=False)
+    date_of_birth: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     grade_level: Mapped[int] = mapped_column(Integer, nullable=False)
     school_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # No `parent_id`: a child has many guardians and many homes, and neither is derivable from
     # the other. A guardian's homes are their own; the homes a child is tutored at are theirs.

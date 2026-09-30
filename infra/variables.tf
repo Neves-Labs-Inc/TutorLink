@@ -7,7 +7,7 @@ variable "region" {
 variable "instance_type" {
   description = "EC2 instance type for the single application host."
   type        = string
-  default     = "t3.small"
+  default     = "t3.micro"
 }
 
 variable "data_volume_size_gb" {

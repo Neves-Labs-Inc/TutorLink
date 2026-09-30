@@ -36,7 +36,7 @@ backups yet), so Terraform refuses any plan that would delete it.
 | Name | Default | Purpose |
 | --- | --- | --- |
 | `region` | `us-east-1` | Region for everything. |
-| `instance_type` | `t3.small` | EC2 instance type. |
+| `instance_type` | `t3.micro` | EC2 instance type. |
 | `data_volume_size_gb` | `20` | Size of the data volume. |
 | `domain` | `null` | Real hostname; when null the site uses `<ip-with-dashes>.sslip.io`. |
 | `github_repo` | `Siraneves/TutorLink` | Repository allowed to assume the deploy role. |

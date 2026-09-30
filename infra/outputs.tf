@@ -14,7 +14,7 @@ output "site_url" {
 }
 
 output "instance_id" {
-  description = "EC2 instance ID, for SSM sessions and deploy commands (GitHub variable EC2_INSTANCE_ID)."
+  description = "EC2 instance ID, for SSM shell sessions (the deploy workflow finds the instance by its tags)."
   value       = aws_instance.app.id
 }
 

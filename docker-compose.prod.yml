@@ -13,7 +13,9 @@ services:
     volumes:
       - ${DATA_DIR:?DATA_DIR is required}/pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      # Over TCP: during initdb Postgres listens only on the Unix socket, so a first boot isn't
+      # reported healthy (and migrations don't start) until initialization has finished.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10

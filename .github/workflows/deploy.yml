@@ -1,0 +1,168 @@
+# Manual production deploy: builds both images, pushes them to ECR, has the EC2 host pull,
+# migrate and restart through SSM Run Command, then checks the public site is ready.
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# One deploy at a time; a second run waits instead of cancelling one mid-migration.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The deploy role's OIDC trust accepts only jobs in this environment.
+    environment: production
+    timeout-minutes: 45
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      ECR_API_REPO: ${{ vars.ECR_API_REPO }}
+      ECR_WEB_REPO: ${{ vars.ECR_WEB_REPO }}
+      SITE_URL: ${{ vars.SITE_URL }}
+      API_IMAGE: ${{ vars.ECR_API_REPO }}:${{ github.sha }}
+      WEB_IMAGE: ${{ vars.ECR_WEB_REPO }}:${{ github.sha }}
+      APP_DIR: /srv/tutorlink/app
+    steps:
+      - name: Check repository variables
+        run: |
+          missing=()
+          for name in AWS_REGION AWS_DEPLOY_ROLE_ARN ECR_API_REPO ECR_WEB_REPO SITE_URL; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing repository variables: ${missing[*]}. Set them from the Terraform outputs (see infra/README.md)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          # Nothing later pushes to git; don't leave the token in .git/config.
+          persist-credentials: false
+
+      - name: Assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push images
+        run: |
+          docker build --platform linux/amd64 -f docker/api.prod.Dockerfile -t "$API_IMAGE" api
+          docker build --platform linux/amd64 -f docker/web.Dockerfile -t "$WEB_IMAGE" .
+          docker push "$API_IMAGE"
+          docker push "$WEB_IMAGE"
+
+      - name: Find the instance
+        id: instance
+        run: |
+          instance_ids="$(aws ec2 describe-instances \
+            --filters Name=tag:Project,Values=tutorlink Name=tag:Environment,Values=prod \
+              Name=instance-state-name,Values=running \
+            --query 'Reservations[].Instances[].InstanceId' --output text)"
+          read -r -a matches <<<"$instance_ids"
+          if [[ ${#matches[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one running instance tagged Project=tutorlink, Environment=prod; found ${#matches[@]}: ${matches[*]:-none}."
+            exit 1
+          fi
+          echo "Deploying to ${matches[0]}"
+          echo "id=${matches[0]}" >>"$GITHUB_OUTPUT"
+
+      - name: Deploy on the instance
+        env:
+          INSTANCE_ID: ${{ steps.instance.outputs.id }}
+          # Image pulls and migrations on a small instance; generous, but bounded.
+          COMMAND_TIMEOUT_SECONDS: 1200
+          POLL_INTERVAL_SECONDS: 10
+        run: |
+          # The compose file and deploy script travel inside the command, so the host never needs
+          # a checkout of the repo.
+          jq -n \
+            --arg app_dir "$APP_DIR" \
+            --arg compose "$(base64 -w0 docker-compose.prod.yml)" \
+            --arg script "$(base64 -w0 deploy/remote-deploy.sh)" \
+            --arg api_image "$API_IMAGE" \
+            --arg web_image "$WEB_IMAGE" \
+            --arg timeout "$COMMAND_TIMEOUT_SECONDS" \
+            '{
+              commands: [
+                "set -eu",
+                "test -d \($app_dir) || { echo \"\($app_dir) is missing; has the instance finished its first boot?\" >&2; exit 1; }",
+                "echo \($compose) | base64 -d > \($app_dir)/docker-compose.prod.yml",
+                "echo \($script) | base64 -d > \($app_dir)/remote-deploy.sh",
+                "chmod 0755 \($app_dir)/remote-deploy.sh",
+                "\($app_dir)/remote-deploy.sh \($api_image | @sh) \($web_image | @sh)"
+              ],
+              executionTimeout: [$timeout]
+            }' >"$RUNNER_TEMP/ssm-parameters.json"
+
+          command_id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy ${GITHUB_SHA::7}" \
+            --parameters "file://$RUNNER_TEMP/ssm-parameters.json" \
+            --query Command.CommandId --output text)"
+          echo "SSM command $command_id"
+
+          deadline=$((SECONDS + COMMAND_TIMEOUT_SECONDS + 120))
+          status=Pending
+          while [[ "$status" =~ ^(Pending|InProgress|Delayed)$ ]]; do
+            if ((SECONDS > deadline)); then
+              echo "::error::Timed out waiting for SSM command $command_id."
+              exit 1
+            fi
+            sleep "$POLL_INTERVAL_SECONDS"
+            # Right after send-command the invocation may not exist yet; that means "still pending".
+            if ! status="$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2>"$RUNNER_TEMP/ssm-error")"; then
+              grep -q InvocationDoesNotExist "$RUNNER_TEMP/ssm-error" || { cat "$RUNNER_TEMP/ssm-error" >&2; exit 1; }
+              status=Pending
+            fi
+          done
+
+          echo "::group::Remote stdout"
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          echo "::endgroup::"
+          echo "::group::Remote stderr"
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text
+          echo "::endgroup::"
+
+          if [[ "$status" != Success ]]; then
+            echo "::error::Remote deploy finished with status $status."
+            exit 1
+          fi
+
+      - name: Wait for the site to be ready
+        env:
+          # Covers Caddy obtaining its first certificate.
+          READY_TIMEOUT_SECONDS: 180
+          POLL_INTERVAL_SECONDS: 5
+        run: |
+          url="$SITE_URL/health/ready"
+          deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+          status=""
+          while ((SECONDS < deadline)); do
+            # No -k: the certificate has to be valid for the check to pass.
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url" || true)"
+            if [[ "$status" == 200 ]]; then
+              echo "$url returned 200"
+              exit 0
+            fi
+            echo "$url returned ${status:-no response}; retrying"
+            sleep "$POLL_INTERVAL_SECONDS"
+          done
+          echo "::error::$url did not return 200 within $READY_TIMEOUT_SECONDS seconds (last: ${status:-no response})."
+          exit 1

@@ -60,6 +60,14 @@ data "aws_iam_policy_document" "deploy" {
     ]
   }
 
+  # The workflow finds the instance by its Project/Environment tags. DescribeInstances has no
+  # resource-level permissions, so it can't be scoped further.
+  statement {
+    sid       = "FindInstance"
+    actions   = ["ec2:DescribeInstances"]
+    resources = ["*"]
+  }
+
   # These actions don't support resource-level permissions.
   statement {
     sid       = "ReadCommandResults"

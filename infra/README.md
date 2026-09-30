@@ -49,7 +49,7 @@ backups yet), so Terraform refuses any plan that would delete it.
 | `public_ip` | The Elastic IP; the DNS A record target when you use a real domain. |
 | `site_address` | Hostname Caddy serves and requests a certificate for. |
 | `site_url` | GitHub variable `SITE_URL`; the deploy polls `<site_url>/health/ready`. |
-| `instance_id` | GitHub variable `EC2_INSTANCE_ID`; also the target for SSM shell sessions. |
+| `instance_id` | Target for SSM shell sessions. Not a GitHub variable: the deploy workflow finds the running instance tagged `Project=tutorlink`, `Environment=prod`. |
 | `ecr_api_repo_url` | GitHub variable `ECR_API_REPO`. |
 | `ecr_web_repo_url` | GitHub variable `ECR_WEB_REPO`. |
 | `deploy_role_arn` | GitHub variable `AWS_DEPLOY_ROLE_ARN`. |

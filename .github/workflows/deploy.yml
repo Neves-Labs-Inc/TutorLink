@@ -17,8 +17,6 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # The deploy role's OIDC trust accepts only jobs in this environment.
-    environment: production
     timeout-minutes: 45
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
@@ -30,6 +28,18 @@ jobs:
       WEB_IMAGE: ${{ vars.ECR_WEB_REPO }}:${{ github.sha }}
       APP_DIR: /srv/tutorlink/app
     steps:
+      # The deploy role's OIDC trust accepts only runs on main; failing here gives a clearer
+      # message than the AssumeRoleWithWebIdentity denial.
+      - name: Check the branch
+        env:
+          # Keep in sync with github_deploy_ref in infra/variables.tf.
+          DEPLOY_REF: refs/heads/main
+        run: |
+          if [[ "$GITHUB_REF" != "$DEPLOY_REF" ]]; then
+            echo "::error::Deploys run only from main (this run is on $GITHUB_REF). Pick main in the 'Use workflow from' menu."
+            exit 1
+          fi
+
       - name: Check repository variables
         run: |
           missing=()

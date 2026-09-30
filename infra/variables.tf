@@ -23,13 +23,18 @@ variable "domain" {
 }
 
 variable "github_repo" {
-  description = "GitHub repository (owner/name) allowed to assume the deploy role."
+  description = <<-EOT
+    Repository part of the OIDC subject the deploy role trusts. The repo uses GitHub's immutable
+    subject format, <owner>@<owner-id>/<repo>@<repo-id>, which also survives a rename or a
+    recreated repo of the same name. Read it with
+    `gh api repos/Siraneves/TutorLink/actions/oidc/customization/sub` (sub_claim_prefix, minus "repo:").
+  EOT
   type        = string
-  default     = "Siraneves/TutorLink"
+  default     = "Siraneves@313945357/TutorLink@1325618027"
 }
 
-variable "github_deploy_environment" {
-  description = "GitHub environment the deploy role trusts; only jobs running in this environment can deploy."
+variable "github_deploy_ref" {
+  description = "Git ref the deploy role trusts; only workflow runs on this ref can deploy."
   type        = string
-  default     = "production"
+  default     = "refs/heads/main"
 }

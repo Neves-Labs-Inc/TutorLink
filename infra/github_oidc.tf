@@ -23,12 +23,12 @@ data "aws_iam_policy_document" "deploy_assume" {
       values   = [local.github_oidc_audience]
     }
 
-    # Only jobs in the repo's deploy environment can deploy; the environment's own protection
-    # rules (allowed branches, reviewers) decide who gets there.
+    # Only runs on the deploy branch can deploy. GitHub environments would allow reviewers, but
+    # they aren't available for private repos on the org's Free plan.
     condition {
       test     = "StringEquals"
       variable = "${local.github_oidc_host}:sub"
-      values   = ["repo:${var.github_repo}:environment:${var.github_deploy_environment}"]
+      values   = ["repo:${var.github_repo}:ref:${var.github_deploy_ref}"]
     }
   }
 }

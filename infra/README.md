@@ -39,8 +39,8 @@ backups yet), so Terraform refuses any plan that would delete it.
 | `instance_type` | `t3.micro` | EC2 instance type. |
 | `data_volume_size_gb` | `5` | Size of the data volume. Can be grown later (apply, then `sudo xfs_growfs /srv/tutorlink`), never shrunk. |
 | `domain` | `null` | Real hostname; when null the site uses `<ip-with-dashes>.sslip.io`. |
-| `github_repo` | `Siraneves/TutorLink` | Repository allowed to assume the deploy role. |
-| `github_deploy_environment` | `production` | GitHub environment allowed to deploy. |
+| `github_repo` | `Siraneves@313945357/TutorLink@1325618027` | Repository allowed to assume the deploy role, in GitHub's immutable `owner@id/repo@id` subject format. |
+| `github_deploy_ref` | `refs/heads/main` | Git ref whose workflow runs may deploy. |
 
 ## Outputs
 
@@ -55,13 +55,21 @@ backups yet), so Terraform refuses any plan that would delete it.
 | `deploy_role_arn` | GitHub variable `AWS_DEPLOY_ROLE_ARN`. |
 | `region` | GitHub variable `AWS_REGION`. |
 
-## GitHub environment
+## Who can deploy
 
-The deploy role trusts only jobs running in the repository's `production` GitHub environment
-(OIDC subject `repo:Siraneves/TutorLink:environment:production`). Create that environment under
-the repository's Settings > Environments before the first deploy, and restrict it to the `main`
-branch (and add required reviewers if you want a manual gate). A job without
-`environment: production` can't assume the role.
+The deploy role trusts only workflow runs on `main` of `Siraneves/TutorLink`, with the OIDC
+subject `repo:Siraneves@313945357/TutorLink@1325618027:ref:refs/heads/main`; a run from any other
+branch can't assume it. The repository uses GitHub's immutable subject format (owner and repo
+names with their numeric IDs), so a renamed or recreated repo doesn't inherit the trust. Check
+the prefix with:
+
+```sh
+gh api repos/Siraneves/TutorLink/actions/oidc/customization/sub
+```
+
+If `sub_claim_prefix` ever changes, set `github_repo` to it without the leading `repo:`.
+It trusts a branch rather than a GitHub environment because environments aren't available for
+private repositories on the org's GitHub Free plan.
 
 ## Opening a shell
 

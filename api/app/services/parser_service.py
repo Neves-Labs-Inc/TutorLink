@@ -41,13 +41,17 @@ model would be grammar-constrained to return `{}` — every extracted slot dropp
 anywhere. `_ModelOutput` carries the same information as a list of name/value pairs, which is a
 closed schema, and `parse_intent` folds it back into the `ParsedIntent` its caller expects.
 
-**Field names (P7-V).** `ParsedIntent.fields` is keyed in `lower_snake_case`, and the answer to
-the question the current step asked is returned under the step's own name. `bot_service`
-resolves every value against the database; nothing here validates one. The list-to-dict fold is
-total — `_fold_fields` decides, and states, what a repeated name and a nameless pair do. A child
-the parent names is also returned under `child_name` (SA-28, Phase 7D), which is the same string
-as `bot_service.STEP_CHILD_NAME`, so at the intake name question the two rules agree; the bot
-resolves the name against the guardian's own children — this module still decides nothing.
+**The answer slot and field names (P7-V).** The parent's answer to the question in the bot's
+last message comes back in `ParsedIntent.answer`, a slot whose name never changes, and is `None`
+when the message does not answer it. It used to be returned under the step's own name in
+`fields`, and the model did not reliably use that name (`parent_name` for `intake_name` 3 times
+in 9, with high confidence), so every such answer read as a miss. The question itself reaches
+the model as its own labelled section of the prompt. `fields` carries any other values the
+message supplies, keyed in `lower_snake_case`; the list-to-dict fold is total — `_fold_fields`
+decides, and states, what a repeated name and a nameless pair do. A child the parent names is
+also returned under `child_name` (SA-28, Phase 7D), whatever the step; the bot resolves the name
+against the guardian's own children. `bot_service` resolves every value against the database;
+nothing here validates one.
 
 **Every vendor failure becomes `ParseFailed`.** CONSTITUTION §6 keeps HTTP out of anything below
 `app/routers/`, and #27 assigns all of them one behaviour anyway: flag `parse_error` at once and
@@ -84,11 +88,13 @@ Return:
 off, `reschedule` to move one, `link_guardian` to be added to a child who is already \
 registered with someone else, `unknown` when the message is chit-chat, unreadable, or does not \
 fit any of the others.
-- `fields`: the values the message supplies, as `name`/`value` pairs. Names are \
-lower_snake_case. The answer to the question the current step asked goes under that step's own \
-name. When the parent names one of their children, also give that name under `child_name`, \
-whatever the current step. Add a pair only for a value the parent actually gave; never invent \
-one and never repeat a value already listed in the collected context.
+- `answer`: the parent's answer to the question in the bot's last message, as the value alone \
+(for example `Franklin Neves`, not `My name is Franklin Neves`), in the form the question asks \
+for. Null when the message does not answer that question.
+- `fields`: any other values the message supplies, as `name`/`value` pairs. Names are \
+lower_snake_case. When the parent names one of their children, also give that name under \
+`child_name`, whatever the current step. Add a pair only for a value the parent actually gave; \
+never invent one and never repeat a value already listed in the collected context.
 - `confidence_is_low`: true when the message is ambiguous, contradicts the context, or could \
 reasonably mean more than one thing. Set it rather than guessing — a wrong guess books the \
 wrong child into the wrong slot, and a true here only costs the parent one clarifying \
@@ -116,6 +122,9 @@ class _ModelOutput(BaseModel):
     """The wire shape of one parse. Folded into `ParsedIntent` before it leaves this module."""
 
     intent: BotIntent
+    # Required but nullable: the model always states it, and null is how it says the message
+    # does not answer the question.
+    answer: str | None
     fields: list[_ExtractedField]
     confidence_is_low: bool
 
@@ -131,10 +140,15 @@ _client = anthropic.Anthropic(
 )
 
 
-def _build_prompt(*, step: str, body: str, context: dict[str, str]) -> str:
+def _build_prompt(*, step: str, question: str, body: str, context: dict[str, str]) -> str:
     collected = "\n".join(f"- {name}: {value}" for name, value in context.items()) or "- nothing"
 
-    return f"Current step: {step}\nCollected so far:\n{collected}\nThe parent just sent:\n{body}"
+    return (
+        f"Current step: {step}\n"
+        f"The bot's last message, which the parent is replying to:\n{question}\n"
+        f"Collected so far:\n{collected}\n"
+        f"The parent just sent:\n{body}"
+    )
 
 
 def _call_model(prompt: str) -> _ModelOutput | None:
@@ -185,8 +199,8 @@ def _fold_fields(fields: list[_ExtractedField]) -> dict[str, str]:
     return folded
 
 
-def parse_intent(*, step: str, body: str, context: dict[str, str]) -> ParsedIntent:
-    prompt = _build_prompt(step=step, body=body, context=context)
+def parse_intent(*, step: str, question: str, body: str, context: dict[str, str]) -> ParsedIntent:
+    prompt = _build_prompt(step=step, question=question, body=body, context=context)
 
     # Most specific first, and the order is load-bearing: `APITimeoutError` is a subclass of
     # `APIConnectionError` and `RateLimitError` is a subclass of `APIStatusError`, so either
@@ -214,6 +228,7 @@ def parse_intent(*, step: str, body: str, context: dict[str, str]) -> ParsedInte
 
     return ParsedIntent(
         intent=output.intent,
+        answer=output.answer,
         fields=_fold_fields(output.fields),
         confidence_is_low=output.confidence_is_low,
     )

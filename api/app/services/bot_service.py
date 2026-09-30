@@ -47,11 +47,13 @@ project's runtime-settings convention governs numbers that re-cut behaviour; thi
 copy, reviewed against a live thread at `qa-visual` time. The genuine tuning number this module
 reads — `cancellation_cutoff_hours` — is a settings row, read at turn time like every other.
 
-**The answer to the question a step asked arrives under that step's own name.**
-`ParsedIntent.fields` is keyed in `lower_snake_case` and `parser_service`'s system prompt says
-so in those words (`parser_service.py:44-46`), so the `STEP_*` constants below are the field
-names as well as the state values. That is the entire contract between the two modules and
-nothing else pins them together; a step renamed here is a step the parser stops answering.
+**The answer to the question a step asked arrives in `ParsedIntent.answer`.** The parser is
+shown the pending question (`state.prompt`) as its own section of the prompt and returns the
+parent's answer to it in that fixed slot, whatever the step; `_answer` reads nothing else. The
+`STEP_*` constants below are state values only, not field names — the model used to be asked to
+key the answer by them and did not reliably do so. `fields` carries the extras, of which this
+module reads one by name: `child_name` (`STEP_CHILD_NAME`), pinned in the parser's system prompt
+for reactivation detection at the menu.
 """
 
 import datetime
@@ -301,7 +303,7 @@ _BOOKING_KEYS = (
 # What each step's handler reads out of `collected_data` before it writes anything of its own —
 # the exact shape a stale payload (a build whose handler now reads a key an older build never
 # wrote) fails on with a `KeyError`. A step absent here needs nothing beyond the step's own
-# answer, which arrives through `parsed.fields` rather than `collected_data`.
+# answer, which arrives through `parsed.answer` rather than `collected_data`.
 _INTAKE_KEYS = frozenset({"guardian_name", "address", "access_code"})
 
 _REQUIRED_KEYS: dict[str, frozenset[str]] = {
@@ -453,17 +455,21 @@ def _take_turn(
     )
 
     try:
-        parsed = parser_service.parse_intent(step=state.step, body=body, context=_context(state))
-    except parser_service.ParseFailed:
+        parsed = parser_service.parse_intent(
+            step=state.step, question=state.prompt, body=body, context=_context(state)
+        )
+    except parser_service.ParseFailed as error:
         # REQ-078.3: flag on the first occurrence and leave the state exactly as it is — the
         # re-prompt counter is not burned on an outage the parent did not cause.
+        # ParseFailed messages are fixed strings, so logging one cannot leak the body.
+        logger.warning("bot parser failed at step %s: %s", state.step, error)
         parsed = None
 
     if parsed is None:
         decided = BotTurn(reply=PARSER_UNAVAILABLE, flag_reason=FlagReason.PARSE_ERROR)
     else:
         result = None if parsed.confidence_is_low else _HANDLERS[state.step](turn, parsed)
-        decided = _miss(turn) if result is None else _apply(turn, result)
+        decided = _miss(turn, parsed) if result is None else _apply(turn, result)
 
     return decided
 
@@ -543,7 +549,7 @@ def _apply(turn: _Turn, result: _Next) -> BotTurn:
     )
 
 
-def _miss(turn: _Turn) -> BotTurn:
+def _miss(turn: _Turn, parsed: ParsedIntent) -> BotTurn:
     """A reply this step could not use: re-prompt, or bail out on the third one (REQ-078.2).
 
     `step` and `collected_data` are untouched either way, so the bail-out hands the thread to
@@ -551,9 +557,24 @@ def _miss(turn: _Turn) -> BotTurn:
     the bot *can* use carries on from the same question.
     """
     turn.state.misses += 1
+    # Names and presence only, never values: fields and answers hold the parent's PII.
+    logger.warning(
+        "bot miss at step %s: intent=%s confidence_is_low=%s fields=%s answer=%s misses=%d",
+        turn.state.step,
+        parsed.intent.value,
+        parsed.confidence_is_low,
+        sorted(parsed.fields),
+        "present" if parsed.answer and parsed.answer.strip() else "empty",
+        turn.state.misses,
+    )
+    has_bailed_out = turn.state.misses > MAX_REPROMPTS
+    if has_bailed_out:
+        # `stuck` is "two failed re-prompts in a row" (docs/erd.md): the next stretch of
+        # unusable replies starts counting from zero instead of re-flagging at once.
+        turn.state.misses = 0
     save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
 
-    if turn.state.misses > MAX_REPROMPTS:
+    if has_bailed_out:
         result = BotTurn(reply=BAILED_OUT, flag_reason=FlagReason.STUCK)
     else:
         result = BotTurn(reply=f"{NOT_UNDERSTOOD}\n\n{turn.state.prompt}")
@@ -1540,13 +1561,13 @@ def _booking_label(booking: Booking) -> str:
 
 
 def _answer(turn: _Turn, parsed: ParsedIntent) -> str | None:
-    """What the parent said in reply to the question this step asked.
+    """What the parent said in reply to the question this step asked, or `None` when nothing.
 
-    Keyed by the step's own name: that is the convention `parser_service`'s system prompt
-    instructs the model with (`parser_service.py:44-46`), and reading any other key here would
-    make every extraction silently empty.
+    Read only from the parser's fixed `answer` slot. There is deliberately no fallback to
+    `fields[<step>]`: that key was the model's to name, and it named it wrongly often enough
+    to strand parents at the first question.
     """
-    value = parsed.fields.get(turn.state.step, "").strip()
+    value = (parsed.answer or "").strip()
 
     return value or None
 
@@ -1613,10 +1634,11 @@ def _chosen(turn: _Turn, parsed: ParsedIntent) -> dict[str, Any] | None:
 
 
 def _context(state: FlowState) -> dict[str, str]:
-    """What the parser is told about where the conversation is.
+    """What the parser is told about what has been collected so far.
 
-    The pending question and the numbered choices go in verbatim, because "the second one" and
-    "the 10:30 one" are only resolvable against them.
+    The pending question is not here: it travels as `parse_intent`'s own `question` argument.
+    The numbered choices go in verbatim, because "the second one" and "the 10:30 one" are only
+    resolvable against them.
 
     **The home address and its access code are withheld** (`_WITHHELD_FROM_CONTEXT`). They are
     the pair #39 built P7-F to protect — a street address and the code that opens its door —
@@ -1630,7 +1652,6 @@ def _context(state: FlowState) -> dict[str, str]:
         for key, value in state.collected_data.items()
         if isinstance(value, str) and key not in _WITHHELD_FROM_CONTEXT
     }
-    context["prompt"] = state.prompt
     options: list[dict[str, Any]] = state.collected_data.get("options", [])
 
     if options:

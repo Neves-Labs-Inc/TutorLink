@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the production compose stack on https://localhost and checks the routing contract:
 # Caddy serves the dashboard (with SPA fallback), 404s stale hashed assets, sends the security
-# headers, and proxies /api/*, /auth/* and /health* to FastAPI on the same origin. Needs Docker, curl, openssl, and host ports 80 and 443 free.
+# headers, and proxies /api/*, /auth/*, /health* and /webhook/* to FastAPI on the same origin.
+# Needs Docker, curl, openssl, and host ports 80 and 443 free.
 #
 #   scripts/smoke-prod.sh
 set -euo pipefail
@@ -29,6 +30,8 @@ DATA_DIR="$WORK_DIR/data"
 RESPONSE_BODY="$WORK_DIR/response-body"
 RESPONSE_HEADERS="$WORK_DIR/response-headers"
 INDEX_BODY="$WORK_DIR/index-body"
+TWILIO_TEST_AUTH_TOKEN="$(openssl rand -hex 16)"
+STATUS_WEBHOOK_SID="SM00000000000000000000000000000000"
 
 compose() {
   docker compose -p "$PROJECT_NAME" -f "$WORK_DIR/docker-compose.prod.yml" "$@"
@@ -79,6 +82,7 @@ assert_json() {
   [[ "$STATUS" == "$expected_status" ]] || fail "$label: expected $expected_status, got $STATUS"
   [[ "$CONTENT_TYPE" == application/json* ]] || fail "$label: expected JSON, got '$CONTENT_TYPE'"
   # Unquoted on purpose: the expected body is a glob pattern.
+  # shellcheck disable=SC2053
   [[ "$(cat "$RESPONSE_BODY")" == $expected_pattern ]] ||
     fail "$label: expected body matching $expected_pattern, got $(cat "$RESPONSE_BODY")"
   pass "$label → $STATUS $(cat "$RESPONSE_BODY")"
@@ -118,7 +122,7 @@ DATABASE_URL=postgresql+psycopg://tutorlink:$POSTGRES_PASSWORD@postgres:5432/tut
 SECRET_KEY=$(openssl rand -hex 32)
 DEBUG=false
 TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
+TWILIO_AUTH_TOKEN=$TWILIO_TEST_AUTH_TOKEN
 TWILIO_WHATSAPP_NUMBER=
 SITE_ADDRESS=localhost
 API_IMAGE=$API_IMAGE
@@ -170,6 +174,19 @@ request GET /api/users/
 grep -qi "^location: $BASE_URL/api/users" "$RESPONSE_HEADERS" ||
   fail "GET /api/users/: redirect is not https ($(grep -i '^location:' "$RESPONSE_HEADERS" | tr -d '\r'))"
 pass "GET /api/users/ redirects over https (API trusts the proxy)"
+
+request POST /webhook/whatsapp --data-urlencode "Body=hello"
+# Only FastAPI's signature check proves the request reached the API rather than the SPA.
+assert_json "POST /webhook/whatsapp unsigned" 403 '{"detail":"Invalid Twilio signature"}'
+
+# Twilio signs the full URL plus each form key and value, sorted by key.
+STATUS_WEBHOOK_URL="$BASE_URL/webhook/whatsapp/status"
+STATUS_SIGNATURE="$(printf '%s' "${STATUS_WEBHOOK_URL}MessageSid${STATUS_WEBHOOK_SID}MessageStatusdelivered" |
+  openssl dgst -sha1 -hmac "$TWILIO_TEST_AUTH_TOKEN" -binary | base64)"
+request POST /webhook/whatsapp/status -H "X-Twilio-Signature: $STATUS_SIGNATURE" \
+  --data-urlencode "MessageSid=$STATUS_WEBHOOK_SID" --data-urlencode "MessageStatus=delivered"
+[[ "$STATUS" == 204 ]] || fail "POST /webhook/whatsapp/status signed: expected 204, got $STATUS"
+pass "POST /webhook/whatsapp/status signed → 204 (proves Caddy routing and the https URL reconstruction)"
 
 ASSET_PATH="$(grep -oE '/assets/[^"]+\.js' "$INDEX_BODY" | head -n 1)"
 [[ -n "$ASSET_PATH" ]] || fail "GET /: index.html references no /assets/*.js"

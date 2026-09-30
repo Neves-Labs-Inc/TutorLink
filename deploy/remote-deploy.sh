@@ -7,12 +7,19 @@
 #   remote-deploy.sh <api-image-uri> <web-image-uri>
 set -euo pipefail
 
-readonly DATA_DIR="/srv/tutorlink"
+# Production never sets TUTORLINK_DATA_DIR; the override exists so deploy/test-remote-deploy.sh can
+# run this script against a temp dir.
+readonly DATA_DIR="${TUTORLINK_DATA_DIR:-/srv/tutorlink}"
 readonly APP_DIR="$DATA_DIR/app"
 readonly COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
 readonly ENV_FILE="$APP_DIR/.env"
 readonly PARAMETER_PATH="/tutorlink/prod/"
 readonly REQUIRED_PARAMETERS=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB SECRET_KEY SITE_ADDRESS)
+# The WhatsApp bot's configuration: all four set turns the bot on, none set leaves it off, and a
+# mix fails the deploy so a half-configured bot never goes live.
+readonly BOT_PARAMETERS=(TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_WHATSAPP_NUMBER ANTHROPIC_API_KEY)
+# Terraform creates the bot parameters holding this value (infra/ssm.tf); keep the two in sync.
+readonly BOT_PARAMETER_PLACEHOLDER="unset"
 # <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>; the region is read from the host part.
 readonly ECR_IMAGE_PATTERN='^[0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com/[a-z0-9._/-]+:[A-Za-z0-9._-]+$'
 
@@ -57,6 +64,31 @@ for key in "${REQUIRED_PARAMETERS[@]}"; do
   [[ -n "${parameters[$key]:-}" ]] || fail "parameter $PARAMETER_PATH$key is missing or empty"
 done
 
+unset_bot_parameters=()
+for key in "${BOT_PARAMETERS[@]}"; do
+  value="${parameters[$key]:-}"
+  if [[ -z "$value" || "$value" == "$BOT_PARAMETER_PLACEHOLDER" ]]; then
+    unset_bot_parameters+=("$PARAMETER_PATH$key")
+  fi
+done
+is_bot_configured=false
+if ((${#unset_bot_parameters[@]} == 0)); then
+  is_bot_configured=true
+elif ((${#unset_bot_parameters[@]} < ${#BOT_PARAMETERS[@]})); then
+  fail "the WhatsApp bot parameters must be set together; still unset: ${unset_bot_parameters[*]}"
+else
+  log "WhatsApp bot not configured (all bot parameters unset); deploying without it"
+fi
+# Blank values tell the app the bot is unconfigured.
+bot_env_lines=()
+for key in "${BOT_PARAMETERS[@]}"; do
+  if [[ "$is_bot_configured" == true ]]; then
+    bot_env_lines+=("$key=${parameters[$key]}")
+  else
+    bot_env_lines+=("$key=")
+  fi
+done
+
 postgres_user="${parameters[POSTGRES_USER]}"
 postgres_password="${parameters[POSTGRES_PASSWORD]}"
 postgres_db="${parameters[POSTGRES_DB]}"
@@ -68,10 +100,13 @@ env_lines=(
   "SECRET_KEY=${parameters[SECRET_KEY]}"
   "DEBUG=false"
   "SITE_ADDRESS=${parameters[SITE_ADDRESS]}"
-  # Twilio isn't configured in production yet.
-  "TWILIO_ACCOUNT_SID="
-  "TWILIO_AUTH_TOKEN="
-  "TWILIO_WHATSAPP_NUMBER="
+  "${bot_env_lines[@]}"
+  "TWILIO_STATUS_CALLBACK_URL=https://${parameters[SITE_ADDRESS]}/webhook/whatsapp/status"
+  "API_DOCS_ENABLED=false"
+  "COOKIE_SECURE=true"
+  # Empty on purpose: the prod image's uvicorn (--proxy-headers) already trusts Caddy, its only
+  # peer, so the app's own proxy-headers middleware stays off.
+  "TRUSTED_PROXIES="
   "API_IMAGE=$API_IMAGE"
   "WEB_IMAGE=$WEB_IMAGE"
   "DATA_DIR=$DATA_DIR"

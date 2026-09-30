@@ -15,9 +15,9 @@
 
 	root * /srv
 
-	# The same paths the Vite dev proxy forwards, plus health. /docs and /openapi.json stay
-	# private: they fall through to the SPA below.
-	@api path /api/* /auth/* /health /health/*
+	# The same paths the Vite dev proxy forwards, plus health and the Twilio webhooks. /docs and
+	# /openapi.json stay private: they fall through to the SPA below.
+	@api path /api/* /auth/* /health /health/* /webhook/*
 	handle @api {
 		reverse_proxy api:8000
 	}

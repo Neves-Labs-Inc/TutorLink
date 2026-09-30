@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     database_url: str
-    redis_url: str
     secret_key: str
     debug: bool = False
 

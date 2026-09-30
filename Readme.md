@@ -19,7 +19,6 @@ Admins manage everything through a web dashboard: adding tutors, setting weekly 
 | WhatsApp | Twilio | Sandbox for dev, production when ready |
 | Bot backend | FastAPI (Python) | Handles Twilio webhooks and business logic |
 | Database | PostgreSQL | Hosted on AWS RDS in production, Docker in dev |
-| Conversation state | Redis | Temporary TTL-based state, Docker in dev |
 | Admin dashboard | Vite + React | Reads/writes directly to Postgres via API |
 | Hosting | AWS EC2 | Docker Compose in early stage, ECS when scaling |
 
@@ -33,21 +32,19 @@ WhatsApp
    ▼
 Twilio ──────────► FastAPI (Bot Backend)
                         │
-              ┌─────────┴──────────┐
-              ▼                    ▼
-           Redis              PostgreSQL
-      (conversation           (clients,
-          state)            tutors, bookings)
-                                   ▲
-                                   │
-                          Vite + React
-                         (Admin Dashboard)
+                        ▼
+                   PostgreSQL
+                   (clients,
+               tutors, bookings)
+                        ▲
+                        │
+                  Vite + React
+                (Admin Dashboard)
 ```
 
 - **Twilio** receives WhatsApp messages and forwards them to the FastAPI webhook
-- **FastAPI** processes each message, manages conversation state in Redis, reads/writes booking data to Postgres
+- **FastAPI** processes each message, reads/writes booking data to Postgres
 - **Vite + React** admin dashboard talks directly to FastAPI REST endpoints
-- **Redis** stores per-user conversation state with a 30-minute TTL — no long-term persistence needed
 - **PostgreSQL** is the single source of truth for all business data
 
 ---
@@ -61,7 +58,6 @@ tutorlink/
 │   │   ├── main.py
 │   │   ├── config.py
 │   │   ├── db.py
-│   │   ├── redis_client.py
 │   │   ├── models/
 │   │   ├── schemas/
 │   │   ├── services/
@@ -119,7 +115,6 @@ This starts:
 - FastAPI on `http://localhost:8000`
 - Vite + React dashboard on `http://localhost:5173`
 - PostgreSQL on port `5432`
-- Redis on port `6379`
 
 4. Apply database migrations
 
@@ -157,7 +152,6 @@ Set the resulting URL as your Twilio WhatsApp webhook: `https://<your-ngrok-url>
 ```env
 # App
 DATABASE_URL=postgresql+psycopg://tutorlink:tutorlink@postgres:5432/tutorlink
-REDIS_URL=redis://redis:6379/0
 SECRET_KEY=change-me-generate-with-openssl-rand-hex-32
 DEBUG=true
 
@@ -189,13 +183,12 @@ VITE_API_PROXY_TARGET=http://api:8000
 5. Point your domain to the EC2 public IP
 6. Update Twilio webhook URL to your production domain
 
-### Production — EC2 + RDS + ElastiCache
+### Production — EC2 + RDS
 
 When reliability becomes a priority:
 
 - Migrate Postgres from Docker container to **AWS RDS**
-- Migrate Redis from Docker container to **AWS ElastiCache**
-- Update `DATABASE_URL` and `REDIS_URL` in your environment to point to the managed services
+- Update `DATABASE_URL` in your environment to point to the managed service
 - EC2 continues running the FastAPI bot and React dashboard
 
 ---

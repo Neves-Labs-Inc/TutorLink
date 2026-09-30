@@ -2,7 +2,7 @@
 
 ## Overview
 
-TutorLink uses a PostgreSQL relational database as the single source of truth for all business data. Conversation state is handled separately in Redis and is not persisted long-term.
+TutorLink uses a PostgreSQL relational database as the single source of truth for all business data.
 
 ---
 
@@ -341,15 +341,3 @@ time — changing it from 60 to 45 re-cuts every future availability range. Stor
 `start_time`/`end_time` and are unaffected, but they end up misaligned with the new grid: a 60-minute
 booking at 10:00 straddles both the 09:45–10:30 and the 10:30–11:15 slots. Matching on equality would
 find neither and offer both, double-booking the tutor.
-
----
-
-## Redis — Conversation State
-
-Not part of the relational schema. Redis stores temporary per-user conversation state during an active bot session.
-
-| Key | Value | TTL |
-|---|---|---|
-| `phone_number` | `{ step, collected_data }` | 30 minutes |
-
-The state is discarded automatically when the TTL expires. If a client goes idle mid-conversation, they start fresh next time they message.

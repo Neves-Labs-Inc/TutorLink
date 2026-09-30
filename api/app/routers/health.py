@@ -2,7 +2,6 @@ from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 
 from app.db import check_database
-from app.redis_client import check_redis
 
 router = APIRouter(tags=["health"])
 
@@ -16,7 +15,6 @@ def liveness() -> dict[str, str]:
 def readiness() -> JSONResponse:
     dependencies = {
         "database": "ok" if check_database() else "error",
-        "redis": "ok" if check_redis() else "error",
     }
     healthy = all(state == "ok" for state in dependencies.values())
     return JSONResponse(

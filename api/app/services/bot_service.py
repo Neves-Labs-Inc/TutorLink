@@ -555,9 +555,14 @@ def _miss(turn: _Turn) -> BotTurn:
     the bot *can* use carries on from the same question.
     """
     turn.state.misses += 1
+    has_bailed_out = turn.state.misses > MAX_REPROMPTS
+    if has_bailed_out:
+        # `stuck` is "two failed re-prompts in a row" (docs/erd.md): the next stretch of
+        # unusable replies starts counting from zero instead of re-flagging at once.
+        turn.state.misses = 0
     save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
 
-    if turn.state.misses > MAX_REPROMPTS:
+    if has_bailed_out:
         result = BotTurn(reply=BAILED_OUT, flag_reason=FlagReason.STUCK)
     else:
         result = BotTurn(reply=f"{NOT_UNDERSTOOD}\n\n{turn.state.prompt}")

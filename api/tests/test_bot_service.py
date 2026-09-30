@@ -1110,6 +1110,34 @@ def test_a_usable_message_after_the_bail_out_resumes_mid_flow(
     assert chat.state.misses == 0
 
 
+def test_the_bail_out_resets_the_miss_counter_so_the_next_stretch_re_prompts_again(
+    chat: Chat, world: BotWorld, client: ClientWorld
+) -> None:
+    """`stuck` means two failed re-prompts in a row (docs/erd.md), so after the bail-out the
+    parent gets a fresh two re-prompts before the next flag, not an instant one."""
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    collected_before = dict(chat.state.collected_data)
+    chat.say("???")
+    chat.say("????")
+    bailed = chat.say("still no")
+
+    assert bailed.flag_reason is FlagReason.STUCK
+    assert chat.state.misses == 0
+    assert chat.step == bot_service.STEP_BOOK_SUBJECT
+    assert chat.state.collected_data == collected_before
+
+    first = chat.say("hmm")
+    second = chat.say("hmmm")
+    third = chat.say("hmmmm")
+
+    assert [first.flag_reason, second.flag_reason] == [None, None]
+    assert bot_service.NOT_UNDERSTOOD in first.reply
+    assert bot_service.NOT_UNDERSTOOD in second.reply
+    assert third.reply == bot_service.BAILED_OUT
+    assert third.flag_reason is FlagReason.STUCK
+
+
 def test_a_low_confidence_parse_re_prompts_rather_than_acting_on_a_guess(
     chat: Chat, world: BotWorld, client: ClientWorld
 ) -> None:

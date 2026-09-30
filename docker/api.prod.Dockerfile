@@ -37,5 +37,9 @@ USER app
 EXPOSE 8000
 
 # Trust X-Forwarded-* from any peer so the API sees the client's scheme and IP behind Caddy.
-# Safe only because the api publishes no ports: its sole peer is the compose network.
+# Safe only because the api publishes no ports: its sole peer is Caddy on the compose network.
+# This deliberately differs from docker/api.Dockerfile's --no-proxy-headers + TRUSTED_PROXIES
+# design: uvicorn is the single trust boundary here, and TRUSTED_PROXIES is left empty so the
+# app's middleware isn't mounted. The Twilio webhook signature check depends on this, because
+# it rebuilds the signed https URL from the forwarded scheme and host.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

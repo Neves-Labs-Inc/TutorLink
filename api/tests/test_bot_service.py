@@ -1183,6 +1183,88 @@ def test_three_parse_failures_still_never_reach_the_stuck_bail_out(
     assert chat.state.misses == 0
 
 
+# --- diagnostic logging: metadata only ----------------------------------------------------------
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == bot_service.__name__ and record.levelno == logging.WARNING
+    ]
+
+
+def test_a_parse_failure_logs_the_step_and_the_reason_but_not_the_body(
+    chat: Chat, client: ClientWorld, caplog: pytest.LogCaptureFixture
+) -> None:
+    chat.say("hi")
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    turn = chat.say("SECRET-BODY", fails=True)
+
+    [message] = _warnings(caplog)
+    assert chat.state is not None
+    assert chat.state.step in message
+    assert "scripted outage" in message
+    assert "SECRET-BODY" not in message
+    assert turn.flag_reason is FlagReason.PARSE_ERROR
+
+
+def test_a_low_confidence_miss_logs_its_metadata_and_no_values(
+    chat: Chat, world: BotWorld, client: ClientWorld, caplog: pytest.LogCaptureFixture
+) -> None:
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    chat.say(
+        "SECRET-BODY",
+        value="SECRET-VALUE",
+        fields={"zeta_field": "SECRET-VALUE", "alpha_field": "SECRET-VALUE"},
+        intent=BotIntent.BOOK,
+        confidence_is_low=True,
+    )
+
+    [message] = _warnings(caplog)
+    assert bot_service.STEP_BOOK_SUBJECT in message
+    assert "intent=book" in message
+    assert "confidence_is_low=True" in message
+    assert "['alpha_field', 'zeta_field']" in message
+    assert "answer=present" in message
+    assert "misses=1" in message
+    assert "SECRET" not in message
+
+
+def test_a_handler_rejected_miss_logs_an_empty_answer_and_the_bail_out_count(
+    chat: Chat, caplog: pytest.LogCaptureFixture
+) -> None:
+    _answer_up_to_the_child_name(chat)
+    chat.say(value=DATE_OF_BIRTH.isoformat())
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    chat.say("SECRET-BODY", value="99999999999")
+    chat.say("SECRET-BODY", value="99999999999")
+    chat.say("SECRET-BODY", value=None)
+
+    messages = _warnings(caplog)
+    assert len(messages) == 3
+    assert [f"misses={count}" in message for count, message in enumerate(messages, 1)] == [True] * 3
+    assert "answer=present" in messages[0]
+    assert "answer=empty" in messages[2]
+    assert "confidence_is_low=False" in messages[2]
+    assert not any("SECRET" in message or "99999999999" in message for message in messages)
+
+
+def test_a_successful_turn_logs_no_warning(
+    chat: Chat, client: ClientWorld, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    chat.say("hi")
+
+    assert _warnings(caplog) == []
+
+
 # --- TTL expiry (REQ-076) -----------------------------------------------------------------------
 
 

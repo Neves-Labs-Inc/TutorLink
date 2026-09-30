@@ -458,16 +458,18 @@ def _take_turn(
         parsed = parser_service.parse_intent(
             step=state.step, question=state.prompt, body=body, context=_context(state)
         )
-    except parser_service.ParseFailed:
+    except parser_service.ParseFailed as error:
         # REQ-078.3: flag on the first occurrence and leave the state exactly as it is — the
         # re-prompt counter is not burned on an outage the parent did not cause.
+        # ParseFailed messages are fixed strings, so logging one cannot leak the body.
+        logger.warning("bot parser failed at step %s: %s", state.step, error)
         parsed = None
 
     if parsed is None:
         decided = BotTurn(reply=PARSER_UNAVAILABLE, flag_reason=FlagReason.PARSE_ERROR)
     else:
         result = None if parsed.confidence_is_low else _HANDLERS[state.step](turn, parsed)
-        decided = _miss(turn) if result is None else _apply(turn, result)
+        decided = _miss(turn, parsed) if result is None else _apply(turn, result)
 
     return decided
 
@@ -547,7 +549,7 @@ def _apply(turn: _Turn, result: _Next) -> BotTurn:
     )
 
 
-def _miss(turn: _Turn) -> BotTurn:
+def _miss(turn: _Turn, parsed: ParsedIntent) -> BotTurn:
     """A reply this step could not use: re-prompt, or bail out on the third one (REQ-078.2).
 
     `step` and `collected_data` are untouched either way, so the bail-out hands the thread to
@@ -555,6 +557,16 @@ def _miss(turn: _Turn) -> BotTurn:
     the bot *can* use carries on from the same question.
     """
     turn.state.misses += 1
+    # Names and presence only, never values: fields and answers hold the parent's PII.
+    logger.warning(
+        "bot miss at step %s: intent=%s confidence_is_low=%s fields=%s answer=%s misses=%d",
+        turn.state.step,
+        parsed.intent.value,
+        parsed.confidence_is_low,
+        sorted(parsed.fields),
+        "present" if parsed.answer and parsed.answer.strip() else "empty",
+        turn.state.misses,
+    )
     has_bailed_out = turn.state.misses > MAX_REPROMPTS
     if has_bailed_out:
         # `stuck` is "two failed re-prompts in a row" (docs/erd.md): the next stretch of

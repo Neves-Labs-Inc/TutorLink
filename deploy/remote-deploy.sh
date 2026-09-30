@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Deploys two prebuilt images on the production host: writes .env from SSM Parameter Store,
+# pulls, migrates, then swaps the containers. A failed migration exits before api and web are
+# recreated, so the previous containers keep serving. Runs as root; the deploy workflow ships
+# this script and the prod compose file into APP_DIR through SSM Run Command.
+#
+#   remote-deploy.sh <api-image-uri> <web-image-uri>
+set -euo pipefail
+
+readonly DATA_DIR="/srv/tutorlink"
+readonly APP_DIR="$DATA_DIR/app"
+readonly COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
+readonly ENV_FILE="$APP_DIR/.env"
+readonly PARAMETER_PATH="/tutorlink/prod/"
+readonly REQUIRED_PARAMETERS=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB SECRET_KEY SITE_ADDRESS)
+# <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>; the region is read from the host part.
+readonly ECR_IMAGE_PATTERN='^[0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com/[a-z0-9._/-]+:[A-Za-z0-9._-]+$'
+
+fail() {
+  echo "deploy failed: $1" >&2
+  exit 1
+}
+
+log() {
+  echo "==> $1"
+}
+
+compose() {
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: $0 <api-image-uri> <web-image-uri>" >&2
+  exit 2
+fi
+readonly API_IMAGE="$1"
+readonly WEB_IMAGE="$2"
+
+[[ "$API_IMAGE" =~ $ECR_IMAGE_PATTERN ]] || fail "api image '$API_IMAGE' is not an ECR image URI"
+readonly REGION="${BASH_REMATCH[1]}"
+[[ "$WEB_IMAGE" =~ $ECR_IMAGE_PATTERN ]] || fail "web image '$WEB_IMAGE' is not an ECR image URI"
+[[ -f "$COMPOSE_FILE" ]] || fail "$COMPOSE_FILE is missing"
+
+cd "$APP_DIR"
+
+log "Reading parameters under $PARAMETER_PATH"
+# Held in a variable, not read through a pipe, so a failed AWS call stops the script.
+parameters_tsv="$(aws ssm get-parameters-by-path --region "$REGION" --path "$PARAMETER_PATH" \
+  --with-decryption --query 'Parameters[].[Name,Value]' --output text)"
+declare -A parameters=()
+while IFS=$'\t' read -r name value; do
+  if [[ -n "$name" ]]; then
+    parameters["${name#"$PARAMETER_PATH"}"]="$value"
+  fi
+done <<<"$parameters_tsv"
+for key in "${REQUIRED_PARAMETERS[@]}"; do
+  [[ -n "${parameters[$key]:-}" ]] || fail "parameter $PARAMETER_PATH$key is missing or empty"
+done
+
+postgres_user="${parameters[POSTGRES_USER]}"
+postgres_password="${parameters[POSTGRES_PASSWORD]}"
+postgres_db="${parameters[POSTGRES_DB]}"
+env_lines=(
+  "POSTGRES_USER=$postgres_user"
+  "POSTGRES_PASSWORD=$postgres_password"
+  "POSTGRES_DB=$postgres_db"
+  "DATABASE_URL=postgresql+psycopg://$postgres_user:$postgres_password@postgres:5432/$postgres_db"
+  "SECRET_KEY=${parameters[SECRET_KEY]}"
+  "DEBUG=false"
+  "SITE_ADDRESS=${parameters[SITE_ADDRESS]}"
+  # Twilio isn't configured in production yet.
+  "TWILIO_ACCOUNT_SID="
+  "TWILIO_AUTH_TOKEN="
+  "TWILIO_WHATSAPP_NUMBER="
+  "API_IMAGE=$API_IMAGE"
+  "WEB_IMAGE=$WEB_IMAGE"
+  "DATA_DIR=$DATA_DIR"
+)
+
+log "Writing $ENV_FILE"
+# Created 600 from the start and renamed into place, so the secrets are never world-readable
+# and a half-written file never replaces the old one.
+env_tmp="$(umask 077 && mktemp "$APP_DIR/.env.XXXXXX")"
+printf '%s\n' "${env_lines[@]}" >"$env_tmp"
+chmod 600 "$env_tmp"
+mv -f "$env_tmp" "$ENV_FILE"
+
+log "Pulling images"
+aws ecr get-login-password --region "$REGION" |
+  docker login --username AWS --password-stdin "${API_IMAGE%%/*}"
+if [[ "${WEB_IMAGE%%/*}" != "${API_IMAGE%%/*}" ]]; then
+  aws ecr get-login-password --region "$REGION" |
+    docker login --username AWS --password-stdin "${WEB_IMAGE%%/*}"
+fi
+docker pull "$API_IMAGE"
+docker pull "$WEB_IMAGE"
+
+log "Starting postgres"
+compose up -d --wait postgres
+
+log "Running migrations"
+if ! compose run --rm api alembic upgrade head; then
+  fail "migration failed; api and web are still running the previous images"
+fi
+
+log "Starting the new containers"
+compose up -d --remove-orphans
+# -a also drops earlier sha-tagged images; images the running containers use are kept.
+docker image prune -af
+
+log "Deployed $API_IMAGE and $WEB_IMAGE"

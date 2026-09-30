@@ -1,0 +1,9 @@
+# Allowlist: the web build reads the dashboard sources and the Caddyfile, nothing else.
+*
+!dashboard
+!docker/Caddyfile
+dashboard/node_modules
+dashboard/dist
+dashboard/.env
+dashboard/.env.*
+dashboard/*.local

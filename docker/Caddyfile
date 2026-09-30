@@ -1,0 +1,35 @@
+# SITE_ADDRESS is a public hostname in production (Caddy gets a Let's Encrypt certificate for
+# it) and `localhost` in the smoke test (Caddy's internal CA).
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# No includeSubDomains on HSTS: the host may be a shared sslip.io name.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "frame-ancestors 'none'"
+		-Server
+	}
+
+	root * /srv
+
+	# The same paths the Vite dev proxy forwards, plus health. /docs and /openapi.json stay
+	# private: they fall through to the SPA below.
+	@api path /api/* /auth/* /health /health/*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	# Hashed build output. A stale hash must 404, not come back as index.html with a 200.
+	handle /assets/* {
+		file_server
+	}
+
+	handle {
+		# Client-side routes (/login, /dashboard, ...) have no file; the SPA resolves them.
+		try_files {path} /index.html
+		file_server
+	}
+}

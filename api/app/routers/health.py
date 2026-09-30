@@ -13,7 +13,9 @@ def liveness() -> dict[str, str]:
 
 @router.get("/health/ready")
 def readiness() -> JSONResponse:
-    dependencies = {"database": "ok" if check_database() else "error"}
+    dependencies = {
+        "database": "ok" if check_database() else "error",
+    }
     healthy = all(state == "ok" for state in dependencies.values())
     return JSONResponse(
         content=dependencies,

@@ -4,11 +4,11 @@ from fastapi.testclient import TestClient
 from app.routers import health
 
 
-def test_liveness_is_ok_without_touching_dependencies(
+def test_liveness_is_ok_without_touching_the_database(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fail() -> bool:
-        raise AssertionError("liveness must not touch dependencies")
+        raise AssertionError("liveness must not touch the database")
 
     monkeypatch.setattr(health, "check_database", fail)
 

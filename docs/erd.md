@@ -2,7 +2,7 @@
 
 ## Overview
 
-TutorLink uses a PostgreSQL relational database as the single source of truth for all business data, including the full history of every WhatsApp conversation the bot has had. The [`bot_flow_state`](#bot_flow_state) table holds only the live flow state of a conversation currently in progress — which step the bot is on and what it has collected so far — and a row expires 30 minutes after its last write. What was said, by whom, and when is relational and retained; see [`conversations`](#conversations) and [`messages`](#messages).
+TutorLink uses a PostgreSQL relational database as the single source of truth for all business data.
 
 ---
 
@@ -559,23 +559,8 @@ Step 3 subtracts by **time overlap**, widened by `session_gap_minutes` on both s
 equality. A candidate slot is dropped when `slot.start_time < booking.end_time + gap AND
 slot.end_time + gap > booking.start_time`.
 
-The widening is what keeps this step and the write path agreeing. The gap is where the tutor travels, so a
-slot that merely abuts a booking, or sits inside the travel gap beside one, is not bookable — and rule 3 of
-`POST /api/bookings` refuses it in as many words: "at least `session_gap_minutes` clear of the nearest
-booking on either side". Bare overlap here would offer a slot the confirm then rejects with a 409, which is
-the offer surface and the write path reading the same rows by different rules. Both inequalities stay
-strict, so clearance of exactly one gap passes, which is what "at least" means: on the 60+30 grid above, a
-booking filling 09:00–10:00 leaves 10:30–11:30 offered, since `10:30 < 10:00 + 30` is false. That holds in
-general and not by luck — the stride is `length + gap`, so consecutive grid slots are always exactly a gap
-apart and can never erase each other. What the widening does drop is the off-grid neighbour: a booking of
-10:00–11:00 clears 09:00–10:00, which bare overlap would have kept.
-
-Equality matching fails for a separate reason. Both settings are runtime-editable and `POST /api/bookings`
-does not require a booking to land on the grid, so a stored booking's `start_time` need not be any slot's:
-an admin may book outside the grid, and a booking made before the settings were re-cut keeps the times it
-was given. At length 45 and gap 30 the stride is 75 minutes, so the 09:00–12:00 range above cuts into
-09:00–09:45 and 10:15–11:00 — 11:30–12:15 would overrun the range, leaving 11:00–12:00 over. An admin
-booking the tutor 09:30–10:30 starts at neither 09:00 nor 10:15, yet takes the last 15 minutes of the first
-slot and the first 15 of the second. Matching on equality would find no slot to remove and offer both,
-double-booking the tutor. Overlap alone is enough to drop both here; the widening extends the same
-subtraction to the slots such a booking only abuts.
+This matters because `session_length_minutes` is runtime-editable, so the slot grid is not stable over
+time — changing it from 60 to 45 re-cuts every future availability range. Stored bookings keep their own
+`start_time`/`end_time` and are unaffected, but they end up misaligned with the new grid: a 60-minute
+booking at 10:00 straddles both the 09:45–10:30 and the 10:30–11:15 slots. Matching on equality would
+find neither and offer both, double-booking the tutor.

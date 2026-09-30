@@ -128,8 +128,10 @@ class ScriptedParser:
     def script(self, answer: ParsedIntent | Exception) -> None:
         self._answer = answer
 
-    def __call__(self, *, step: str, body: str, context: dict[str, str]) -> ParsedIntent:
-        self.calls.append({"step": step, "body": body, "context": context})
+    def __call__(
+        self, *, step: str, question: str, body: str, context: dict[str, str]
+    ) -> ParsedIntent:
+        self.calls.append({"step": step, "question": question, "body": body, "context": context})
         answer, self._answer = self._answer, None
 
         if answer is None:
@@ -145,9 +147,9 @@ class ScriptedParser:
 class Chat:
     """One WhatsApp thread, driven message by message.
 
-    `say` answers whatever question the flow is currently on, because the answer to a step's
-    question is keyed by that step's own name — so the driver reads the pending step out of
-    the table instead of every test spelling it out.
+    `say(value=...)` answers whatever question the flow is currently on: the parser returns
+    the answer to the pending question in its fixed `answer` slot, whatever the step, so no
+    test has to spell the step out. `fields=` supplies any extras, such as `child_name`.
     """
 
     db: Session
@@ -167,17 +169,16 @@ class Chat:
         confidence_is_low: bool = False,
         fails: bool = False,
     ) -> BotTurn:
-        """`fields` replaces the step-keyed answer outright — for a field the parser gives
-        under another name than the current step's, such as `child_name` at the menu."""
-        step = self.step
-
-        if fields is None:
-            fields = {} if value is None or step is None else {step: str(value)}
-
+        """`value` is scripted as the parser's `answer`; `fields` as its named extras."""
         self.parser.script(
             parser_service.ParseFailed("scripted outage")
             if fails
-            else ParsedIntent(intent=intent, fields=fields, confidence_is_low=confidence_is_low)
+            else ParsedIntent(
+                intent=intent,
+                answer=None if value is None else str(value),
+                fields=fields or {},
+                confidence_is_low=confidence_is_low,
+            )
         )
         turn = bot_service.reply_for(
             self.db,
@@ -557,10 +558,10 @@ def test_the_date_of_birth_question_shows_the_iso_format(chat: Chat) -> None:
     _answer_up_to_the_child_name(chat)
     chat.say(value=DATE_OF_BIRTH.isoformat())
 
-    dob_context = chat.parser.calls[-1]["context"]
+    dob_question = chat.parser.calls[-1]["question"]
 
     assert chat.parser.calls[-1]["step"] == bot_service.STEP_CHILD_DOB
-    assert re.search(r"\b\d{4}-\d{2}-\d{2}\b", dob_context["prompt"])
+    assert re.search(r"\b\d{4}-\d{2}-\d{2}\b", dob_question)
 
 
 def test_the_date_of_birth_and_notes_are_never_sent_to_the_parser_again(chat: Chat) -> None:
@@ -1109,6 +1110,34 @@ def test_a_usable_message_after_the_bail_out_resumes_mid_flow(
     assert chat.state.misses == 0
 
 
+def test_the_bail_out_resets_the_miss_counter_so_the_next_stretch_re_prompts_again(
+    chat: Chat, world: BotWorld, client: ClientWorld
+) -> None:
+    """`stuck` means two failed re-prompts in a row (docs/erd.md), so after the bail-out the
+    parent gets a fresh two re-prompts before the next flag, not an instant one."""
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    collected_before = dict(chat.state.collected_data)
+    chat.say("???")
+    chat.say("????")
+    bailed = chat.say("still no")
+
+    assert bailed.flag_reason is FlagReason.STUCK
+    assert chat.state.misses == 0
+    assert chat.step == bot_service.STEP_BOOK_SUBJECT
+    assert chat.state.collected_data == collected_before
+
+    first = chat.say("hmm")
+    second = chat.say("hmmm")
+    third = chat.say("hmmmm")
+
+    assert [first.flag_reason, second.flag_reason] == [None, None]
+    assert bot_service.NOT_UNDERSTOOD in first.reply
+    assert bot_service.NOT_UNDERSTOOD in second.reply
+    assert third.reply == bot_service.BAILED_OUT
+    assert third.flag_reason is FlagReason.STUCK
+
+
 def test_a_low_confidence_parse_re_prompts_rather_than_acting_on_a_guess(
     chat: Chat, world: BotWorld, client: ClientWorld
 ) -> None:
@@ -1152,6 +1181,88 @@ def test_three_parse_failures_still_never_reach_the_stuck_bail_out(
 
     assert reasons == [FlagReason.PARSE_ERROR] * 3
     assert chat.state.misses == 0
+
+
+# --- diagnostic logging: metadata only ----------------------------------------------------------
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == bot_service.__name__ and record.levelno == logging.WARNING
+    ]
+
+
+def test_a_parse_failure_logs_the_step_and_the_reason_but_not_the_body(
+    chat: Chat, client: ClientWorld, caplog: pytest.LogCaptureFixture
+) -> None:
+    chat.say("hi")
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    turn = chat.say("SECRET-BODY", fails=True)
+
+    [message] = _warnings(caplog)
+    assert chat.state is not None
+    assert chat.state.step in message
+    assert "scripted outage" in message
+    assert "SECRET-BODY" not in message
+    assert turn.flag_reason is FlagReason.PARSE_ERROR
+
+
+def test_a_low_confidence_miss_logs_its_metadata_and_no_values(
+    chat: Chat, world: BotWorld, client: ClientWorld, caplog: pytest.LogCaptureFixture
+) -> None:
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    chat.say(
+        "SECRET-BODY",
+        value="SECRET-VALUE",
+        fields={"zeta_field": "SECRET-VALUE", "alpha_field": "SECRET-VALUE"},
+        intent=BotIntent.BOOK,
+        confidence_is_low=True,
+    )
+
+    [message] = _warnings(caplog)
+    assert bot_service.STEP_BOOK_SUBJECT in message
+    assert "intent=book" in message
+    assert "confidence_is_low=True" in message
+    assert "['alpha_field', 'zeta_field']" in message
+    assert "answer=present" in message
+    assert "misses=1" in message
+    assert "SECRET" not in message
+
+
+def test_a_handler_rejected_miss_logs_an_empty_answer_and_the_bail_out_count(
+    chat: Chat, caplog: pytest.LogCaptureFixture
+) -> None:
+    _answer_up_to_the_child_name(chat)
+    chat.say(value=DATE_OF_BIRTH.isoformat())
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    chat.say("SECRET-BODY", value="99999999999")
+    chat.say("SECRET-BODY", value="99999999999")
+    chat.say("SECRET-BODY", value=None)
+
+    messages = _warnings(caplog)
+    assert len(messages) == 3
+    assert [f"misses={count}" in message for count, message in enumerate(messages, 1)] == [True] * 3
+    assert "answer=present" in messages[0]
+    assert "answer=empty" in messages[2]
+    assert "confidence_is_low=False" in messages[2]
+    assert not any("SECRET" in message or "99999999999" in message for message in messages)
+
+
+def test_a_successful_turn_logs_no_warning(
+    chat: Chat, client: ClientWorld, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=bot_service.__name__)
+
+    chat.say("hi")
+
+    assert _warnings(caplog) == []
 
 
 # --- TTL expiry (REQ-076) -----------------------------------------------------------------------

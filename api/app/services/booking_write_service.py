@@ -245,8 +245,12 @@ def _rule_5_grade_ceiling_respected(db: Session, context: _Context) -> None:
     to refuse" — turning the strongest possible violation, a tutor who does not teach the
     subject at all, into a success. Fetch, check for `None`, then compare; the ceiling is per
     subject and the boundary is inclusive.
+
+    A child with no grade yet skips the comparison but never the `None` check: the tutor must
+    still teach the subject.
     """
     request = context.request
+    grade_level = context.child.grade_level
     assignment = db.scalars(
         select(TutorSubject).where(
             TutorSubject.tutor_id == request.tutor_id,
@@ -254,7 +258,9 @@ def _rule_5_grade_ceiling_respected(db: Session, context: _Context) -> None:
         )
     ).first()
 
-    if assignment is None or assignment.max_grade_level < context.child.grade_level:
+    if assignment is None:
+        raise TutorGradeCeilingExceeded
+    if grade_level is not None and assignment.max_grade_level < grade_level:
         raise TutorGradeCeilingExceeded
 
 

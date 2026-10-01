@@ -80,7 +80,13 @@ TOKEN = NOON.replace(microsecond=418367)
 ONE_MICROSECOND = datetime.timedelta(microseconds=1)
 
 HANDLED = "/api/conversations/{conversation_id}/handled"
-CLEARABLE_REASONS = [FlagReason.STUCK, FlagReason.PARSE_ERROR, FlagReason.GUARDIAN_LINK_REQUEST]
+CLEARABLE_REASONS = [
+    FlagReason.STUCK,
+    FlagReason.PARSE_ERROR,
+    FlagReason.GUARDIAN_LINK_REQUEST,
+    FlagReason.BOOKING_REQUEST,
+    FlagReason.QUESTION,
+]
 
 HOLD_SECONDS = 0.4
 

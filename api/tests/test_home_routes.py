@@ -1,9 +1,9 @@
 """`POST /api/clients/{id}/homes` and `PATCH /api/homes/{id}` over HTTP — REQ-102.
 
-The deactivation guard carries the weight here. Its clock is frozen at 12:00 through
-`home_service._now`, so "later today" and "earlier today" are real cases rather than whatever
-the wall clock happens to make them: a live booking at 14:00 today blocks, one at 09:00 today
-does not. Every refusal also re-reads the row, because a 409 whose body is right but whose
+The deactivation guard carries the weight here. The business clock (`clock.business_now`) is
+frozen at 12:00, so "later today" and "earlier today" are real cases rather than whatever the
+wall clock happens to make them: a live booking at 14:00 today blocks, one at 09:00 today does
+not. Every refusal also re-reads the row, because a 409 whose body is right but whose
 other fields were applied anyway is the failure A-49 exists to prevent.
 
 Every negative case asserts the exact `{"detail": "..."}` body, not merely the status.
@@ -11,6 +11,7 @@ Every negative case asserts the exact `{"detail": "..."}` body, not merely the s
 
 import datetime
 import uuid
+from collections.abc import Callable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,7 +32,6 @@ from app.models.user import User
 from app.routers import client_homes, clients, homes
 from app.routers.booking_writes import REFERENCE_NOT_FOUND_ERROR
 from app.security import create_access_token, hash_password
-from app.services import home_service
 
 PASSWORD = "correct horse battery staple"
 
@@ -308,13 +308,13 @@ def test_patch_access_code_over_64_characters_is_400(api: TestClient, db: Sessio
 def test_deactivating_a_home_with_an_upcoming_live_booking_is_409_and_applies_nothing(
     api: TestClient,
     db: Session,
-    monkeypatch: pytest.MonkeyPatch,
+    freeze_business_clock: Callable[[datetime.datetime], None],
     on: datetime.date,
     start: datetime.time,
     end: datetime.time,
     status: BookingStatus,
 ) -> None:
-    monkeypatch.setattr(home_service, "_now", lambda: NOW)
+    freeze_business_clock(NOW)
     admin = _make_user(db)
     home = _make_home(db, client=_make_client(db))
     _book(db, home=home, on=on, start=start, end=end, status=status)
@@ -345,13 +345,13 @@ def test_deactivating_a_home_with_an_upcoming_live_booking_is_409_and_applies_no
 def test_deactivating_a_home_with_no_upcoming_live_booking_succeeds(
     api: TestClient,
     db: Session,
-    monkeypatch: pytest.MonkeyPatch,
+    freeze_business_clock: Callable[[datetime.datetime], None],
     on: datetime.date,
     start: datetime.time,
     end: datetime.time,
     status: BookingStatus,
 ) -> None:
-    monkeypatch.setattr(home_service, "_now", lambda: NOW)
+    freeze_business_clock(NOW)
     admin = _make_user(db)
     home = _make_home(db, client=_make_client(db))
     _book(db, home=home, on=on, start=start, end=end, status=status)
@@ -364,9 +364,9 @@ def test_deactivating_a_home_with_no_upcoming_live_booking_succeeds(
 
 
 def test_a_booking_at_another_home_does_not_block_deactivation(
-    api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
 ) -> None:
-    monkeypatch.setattr(home_service, "_now", lambda: NOW)
+    freeze_business_clock(NOW)
     admin = _make_user(db)
     client = _make_client(db)
     home = _make_home(db, client=client)

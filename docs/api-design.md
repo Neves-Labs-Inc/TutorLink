@@ -839,7 +839,7 @@ at it.
 
 An absent field is left alone. `label: ""` clears the label; a blank `address` or
 `access_code` is **400**. Deactivating a home that still has a `pending` or `confirmed`
-booking that starts after now (UTC) is refused with **409**
+booking that starts after now (business time) is refused with **409**
 `Home has upcoming bookings; cancel or move them first`, and nothing in the request is
 applied — a deactivated home cannot be booked, and a live session would otherwise send a tutor
 to an address the family has left. Links to children and guardians are never changed here. An
@@ -870,7 +870,7 @@ Ordered by `Child.name`, then `Child.id`.
 
 `guardians` lists every linked guardian, active or not, ordered by name then id. `homes` lists
 only the child's **active** homes, ordered by creation. `next_session` is the child's earliest
-booking that is live and starts after now (UTC) — `null` when there is none.
+booking that is live and starts after now (business time) — `null` when there is none.
 
 **Response**
 ```json
@@ -896,7 +896,7 @@ booking that is live and starts after now (UTC) — `null` when there is none.
 An unknown id is **404** `Child not found`. The flag is ignored, as with every by-id fetch.
 
 `upcoming_session_count` is the number of the child's bookings that are live and start after now
-(UTC) — exactly the set a deactivation would cancel.
+(business time) — exactly the set a deactivation would cancel.
 
 `guardians` is ordered by name then id. `homes` lists **every** linked home, deactivated ones
 included, each carrying `is_active` and `access_code`, ordered by creation.
@@ -958,7 +958,7 @@ when present, replace the link set.
 `is_active: false` deactivates the child; `true` reactivates it.
 
 **Deactivation cancels the child's upcoming sessions.** With `is_active: false`, the child's
-bookings that are live and start after now (UTC) are found. If there are any and
+bookings that are live and start after now (business time) are found. If there are any and
 `expected_cancellations` is absent or does not match their number, the request is refused with
 **409** `Upcoming sessions changed; review them and confirm again` and nothing is applied.
 Otherwise each of those bookings is cancelled in the same transaction as the deactivation. **No
@@ -967,7 +967,7 @@ no upcoming sessions, `expected_cancellations` is ignored. Deactivating a child 
 inactive cancels nothing.
 
 **Removing a home a child has an upcoming session at is refused.** A `home_ids` set that drops a
-home at which the child has a booking that is live and starts after now (UTC) is **409**
+home at which the child has a booking that is live and starts after now (business time) is **409**
 `Child has upcoming bookings at a home being removed; cancel or move them first`, and nothing is
 applied. Removing a guardian is not guarded beyond the existing "at least one guardian, at least
 one home" rule.
@@ -1626,7 +1626,7 @@ The admin dashboard's overview page in one request: five widgets — today's ses
 
 **This endpoint needs no clock because it has no rule that requires one.** The endpoints that do hold one hold it because their rules are about the present instant — a slot is offered only if it starts after `now + min_booking_lead_hours`, and a session cannot be booked into the past. Neither rule can be written without knowing what time it is. This endpoint states no such rule: it reads, and the window it reads is named by its caller.
 
-That distinction matters because TutorLink configures no business timezone anywhere — not in code, not in config, not in `system_settings` — so those `now` comparisons resolve against whatever zone the API container happens to run in. **That gap is real and this section does not close it.** This endpoint sidesteps the question rather than answering it; the endpoints that must answer it still have to.
+That distinction matters because the endpoints that hold a clock read the business wall-clock defined by the `BUSINESS_TIMEZONE` setting (an IANA name, default `UTC`; an invalid name refuses boot). Scheduling columns are naive business-local wall-clock, and audit timestamps are timezone-aware UTC. This endpoint still takes its date from the caller.
 
 A missing or malformed `date` is **400**, per [Error Responses](#error-responses).
 

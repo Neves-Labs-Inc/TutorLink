@@ -10,13 +10,14 @@ is 400 and not 404. The addressed resource is the child. Precedent:
 `user_service._assert_profile_matches_role` for a `tutor_id` that does not resolve.
 
 `date_of_birth_is_plausible` is the one date-of-birth rule (A-46): the router turns a refusal
-into a 400, the bot into a re-prompt. "Today" is the UTC date, read through `_today()` so a test
-can freeze it. `notes` is normalised here rather than in a validator (CONSTITUTION §7): stripped,
+into a 400, the bot into a re-prompt. "Today" is the business date (`clock.business_today`,
+per `BUSINESS_TIMEZONE`), which a test freezes through `clock.business_now`. `notes` is normalised here rather than in a validator (CONSTITUTION §7): stripped,
 and blank is stored as NULL. On update, an absent `notes` or `date_of_birth` is left alone, a
 blank `notes` clears it, and `date_of_birth` cannot be cleared (A-47).
 
 **Deactivation cancels the child's upcoming sessions, after a count check (P7C-O, OQ-59).**
-"Upcoming" is `upcoming_live_bookings(now)` (P7C-T), `now` read through `_now()` in naive UTC.
+"Upcoming" is `upcoming_live_bookings(now)` (P7C-T), `now` the business wall-clock from
+`clock.business_now` (`BUSINESS_TIMEZONE`).
 `is_active: false` on an active child selects those bookings `FOR UPDATE`; if there are any and
 `expected_cancellations` — the number the admin was shown and confirmed — differs from how many
 there are now, `UpcomingSessionsChanged` refuses the whole update. Otherwise each one goes to
@@ -57,7 +58,7 @@ from app.models.child import Child
 from app.models.enums import BookingStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
-from app.services import booking_status_service
+from app.services import booking_status_service, clock
 
 DATE_OF_BIRTH_EARLIEST = datetime.date(1900, 1, 1)
 
@@ -98,7 +99,7 @@ def create_child(
     home_ids: Sequence[uuid.UUID],
     name: str,
     date_of_birth: datetime.date,
-    grade_level: int,
+    grade_level: int | None,
     school_name: str,
     notes: str | None = None,
 ) -> Child:
@@ -151,7 +152,7 @@ def update_child(
 
     guardians = None if guardian_ids is None else _validated_link_ids(db, Guardian, guardian_ids)
     homes = None if home_ids is None else _validated_link_ids(db, Home, home_ids)
-    now = _now()
+    now = clock.business_now()
 
     if homes is not None:
         _assert_no_upcoming_booking_at_removed_home(db, child_id=child.id, wanted=homes, now=now)
@@ -212,17 +213,8 @@ def update_child(
 
 
 def _assert_plausible(date_of_birth: datetime.date) -> None:
-    if not date_of_birth_is_plausible(date_of_birth, today=_today()):
+    if not date_of_birth_is_plausible(date_of_birth, today=clock.business_today()):
         raise InvalidDateOfBirth
-
-
-def _today() -> datetime.date:
-    return datetime.datetime.now(tz=datetime.UTC).date()
-
-
-def _now() -> datetime.datetime:
-    """Naive UTC, the form every scheduling column stores (`bot_service.server_now`)."""
-    return datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)
 
 
 def _assert_no_upcoming_booking_at_removed_home(

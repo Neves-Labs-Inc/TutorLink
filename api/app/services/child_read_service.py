@@ -11,11 +11,10 @@ read through an ORM relationship for that reason.
 
 "Upcoming" — both `next_session` and `upcoming_session_count` — is `upcoming_live_bookings(now)`,
 the predicate a deactivation cancels by (P7C-O, P7C-T), so the number an admin confirms and the
-rows `PATCH` cancels cannot be defined differently. `now` is naive UTC, read through `_now()` so a
-test can freeze it.
+rows `PATCH` cancels cannot be defined differently. `now` is the naive business wall-clock
+(`clock.business_now`, per `BUSINESS_TIMEZONE`), which is also where a test freezes it.
 """
 
-import datetime
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -27,6 +26,7 @@ from app.models.booking import Booking, upcoming_live_bookings
 from app.models.child import Child
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
+from app.services import clock
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -98,7 +98,7 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         db.scalar(
             select(func.count())
             .select_from(Booking)
-            .where(Booking.child_id == child.id, upcoming_live_bookings(_now()))
+            .where(Booking.child_id == child.id, upcoming_live_bookings(clock.business_now()))
         )
         or 0
     )
@@ -109,10 +109,6 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         homes=_homes_by_child(db, child_ids=[child.id], only_active=False)[child.id],
         upcoming_session_count=upcoming_session_count,
     )
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)
 
 
 def _matching(*, is_active: bool, q: str | None) -> Select[tuple[Child]]:
@@ -193,7 +189,7 @@ def _next_sessions_by_child(db: Session, *, child_ids: list[uuid.UUID]) -> dict[
     child under the `ORDER BY`, which is why `child_id` has to lead it."""
     bookings = db.scalars(
         select(Booking)
-        .where(Booking.child_id.in_(child_ids), upcoming_live_bookings(_now()))
+        .where(Booking.child_id.in_(child_ids), upcoming_live_bookings(clock.business_now()))
         .distinct(Booking.child_id)
         .order_by(Booking.child_id, Booking.scheduled_date, Booking.start_time, Booking.id)
         .options(joinedload(Booking.tutor), joinedload(Booking.subject))

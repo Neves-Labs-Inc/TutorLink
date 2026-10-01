@@ -12,7 +12,7 @@ export type HouseholdGuardian = {
 export type HouseholdChild = {
   id: string
   name: string
-  grade_level: number
+  grade_level: number | null
   is_active: boolean
 }
 

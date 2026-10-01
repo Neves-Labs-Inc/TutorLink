@@ -8,16 +8,21 @@ that key whatever it liked. Here `reply_for` runs through the real `parse_intent
 reaches the client with nothing queued fails loudly.
 """
 
+import datetime
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pytest
 from sqlalchemy.orm import Session
 
 from app.models.guardian import Guardian
+from app.models.enums import FlagReason
+from app.schemas.bot import AnswerKind, BotIntent
 from app.services import bot_service, parser_service
 from app.services.bot_state import FlowState, load_state
 from tests.test_bot_service import (
+    DATE,
     INBOUND_NUMBER,
     NOW,
     _make_client,
@@ -100,8 +105,8 @@ class WireChat:
 
 
 @pytest.fixture(autouse=True)
-def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bot_service, "server_now", lambda: NOW)
+def frozen_clock(freeze_business_clock: Callable[[datetime.datetime], None]) -> None:
+    freeze_business_clock(NOW)
 
 
 @pytest.fixture
@@ -163,23 +168,11 @@ def test_a_no_at_the_already_registered_question_moves_on_to_the_childs_name(
     assert chat.step == bot_service.STEP_CHILD_NAME
 
 
-def test_a_grade_answered_as_a_number_moves_on_to_the_school(chat: WireChat) -> None:
-    _through_the_child_name(chat)
-    chat.say("23 April 2016", _wire("2016-04-23"))
-
-    reply = chat.say("she's in year 3", _wire("3"))
-
-    assert bot_service.ASK_CHILD_SCHOOL in reply
-    assert chat.step == bot_service.STEP_CHILD_SCHOOL
-    assert chat.state.collected_data["child_grade"] == "3"
-
-
 def test_a_no_to_another_child_finishes_intake_and_writes_the_guardian(
     chat: WireChat, db: Session
 ) -> None:
     _through_the_child_name(chat)
     chat.say("23 April 2016", _wire("2016-04-23"))
-    chat.say("3", _wire("3"))
     chat.say("Test School", _wire("Test School"))
     chat.say("none", _wire("none"))
 
@@ -211,7 +204,110 @@ def test_an_answer_only_under_the_step_name_is_a_re_prompt(chat: WireChat) -> No
 
     reply = chat.say("My name is Franklin Neves", wire)
 
-    assert bot_service.NOT_UNDERSTOOD in reply
-    assert bot_service.ASK_GUARDIAN_NAME in reply
+    assert reply == bot_service.NUDGES[bot_service.STEP_INTAKE_NAME]
     assert chat.step == bot_service.STEP_INTAKE_NAME
     assert chat.state.misses == 1
+
+
+def test_the_prompt_names_the_expected_answer_kind_and_todays_date(chat: WireChat) -> None:
+    """The parser can only resolve "next Tuesday" or "the second one" into the form the bot
+    reads if it is told that form and the day it is counting from."""
+    _through_the_child_name(chat)
+    chat.say("23rd April 2016", _wire("2016-04-23"))
+
+    registered_prompt = chat.wire.prompts[4]
+    birth_date_prompt = chat.wire.prompts[-1]
+
+    assert "Expected answer: yes_no" in registered_prompt
+    assert "exactly `yes` or `no`" in registered_prompt
+    assert "Expected answer: date" in birth_date_prompt
+    assert "YYYY-MM-DD" in birth_date_prompt
+    assert f"Today is {NOW.date().isoformat()}" in birth_date_prompt
+
+
+def test_the_prompt_dates_today_by_the_business_clock_not_utc(
+    chat: WireChat, business_evening: datetime.datetime
+) -> None:
+    _through_the_child_name(chat)
+    chat.say("23rd April 2016", _wire("2016-04-23"))
+
+    assert "Today is 2026-09-28 (Monday)" in chat.wire.prompts[-1]
+
+
+def test_small_talk_from_the_wire_gets_the_menu_back_without_a_re_prompt(
+    chat: WireChat, db: Session
+) -> None:
+    _make_client(db)
+    chat.say("hi")
+
+    reply = chat.say("thanks!", _wire(None, intent="chit_chat"))
+
+    assert reply.endswith(bot_service.ASK_MENU)
+    assert chat.step == bot_service.STEP_MENU
+    assert chat.state.misses == 0
+
+
+def test_a_question_from_the_wire_is_flagged_for_the_office(chat: WireChat, db: Session) -> None:
+    _make_client(db)
+    chat.say("hi")
+    chat.wire.queued.append(_wire(None, intent="question"))
+
+    turn = bot_service.reply_for(
+        db, phone_number=INBOUND_NUMBER, body="how much is a session?", guardian_id=None
+    )
+
+    assert turn.reply == f"{bot_service.QUESTION_PASSED_ON} {bot_service.ASK_MENU}"
+    assert turn.flag_reason is FlagReason.QUESTION
+    assert chat.step == bot_service.STEP_MENU
+    assert chat.state.misses == 0
+
+
+def test_the_system_prompt_defines_every_intent() -> None:
+    for intent in BotIntent:
+        assert f"`{intent.value}`" in parser_service.SYSTEM_PROMPT
+
+
+def test_the_system_prompt_explains_every_answer_kind() -> None:
+    for kind in AnswerKind:
+        assert f"`{kind.value}`" in parser_service.SYSTEM_PROMPT
+
+
+def test_the_prompt_tells_the_parser_a_hedge_is_no_yes_or_no(chat: WireChat) -> None:
+    """At the already-registered question a hedge coerced to `no` registers a duplicate."""
+    _through_the_child_name(chat)
+
+    registered_prompt = chat.wire.prompts[4]
+
+    assert "not sure" in registered_prompt
+
+
+def test_a_yes_to_another_child_starts_the_next_child(chat: WireChat) -> None:
+    _through_the_child_name(chat)
+    chat.say("23 April 2016", _wire("2016-04-23"))
+    chat.say("Test School", _wire("Test School"))
+    chat.say("none", _wire("none"))
+
+    reply = chat.say("yes please", _wire("yes"))
+
+    assert reply == bot_service.ASK_CHILD_REGISTERED
+    assert chat.step == bot_service.STEP_CHILD_REGISTERED
+
+
+def test_a_booking_day_and_a_slot_number_lead_to_the_confirmation(
+    chat: WireChat, db: Session
+) -> None:
+    _make_client(db)
+    world = _make_world(db)
+    chat.say("hi")
+    chat.say("I'd like to book", _wire(None, intent="book"))
+    chat.say("maths", _wire("1"))
+    tutor_prompt_index = len(chat.wire.prompts)
+    chat.say("anyone", _wire("3"))
+
+    offer = chat.say("next week's one", _wire(DATE.isoformat()))
+    confirm = chat.say("the first one", _wire("1"))
+
+    assert "Expected answer: choice" in chat.wire.prompts[tutor_prompt_index]
+    assert bot_service.format_date(DATE) in offer
+    assert chat.step == bot_service.STEP_BOOK_CONFIRM
+    assert world.first_tutor_name in confirm or world.second_tutor_name in confirm

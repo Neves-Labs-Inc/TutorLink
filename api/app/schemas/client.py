@@ -43,7 +43,7 @@ class ChildRead(BaseModel):
     id: uuid.UUID
     name: str
     date_of_birth: datetime.date | None
-    grade_level: int
+    grade_level: int | None
     school_name: str
     notes: str | None
     is_active: bool

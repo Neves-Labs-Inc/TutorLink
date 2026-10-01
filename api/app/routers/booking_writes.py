@@ -9,13 +9,12 @@ another.
 validation touches five tutor-owned mappers with no tutor filter to apply, and an unread scope
 would arm `_guard_unapplied_scope` and turn every one of those queries into a 500.
 
-The clock is read here rather than in the service, and `_now` hands the service a **naive**
-datetime: `scheduled_date`, `start_time` and `end_time` are naive columns, no timezone handling
-exists anywhere in scheduling code, and comparing an aware `now` with a naive `combine(date,
-start_time)` raises `TypeError` — a 500 on an ordinary request. It is UTC with the offset
-stripped rather than `datetime.now()`, which is the same instant under the container's UTC
-clock and does not silently change meaning with a stray `TZ`. Passing it in is what lets the
-window gates be tested without freezing time.
+The clock is read here rather than in the service, through `clock.business_now`, which hands
+the service a **naive** datetime in the business wall-clock (`BUSINESS_TIMEZONE`):
+`scheduled_date`, `start_time` and `end_time` are naive columns holding the times staff typed
+in that zone, and comparing an aware `now` with a naive `combine(date, start_time)` raises
+`TypeError` — a 500 on an ordinary request. Passing it in is what lets the window gates be
+tested without freezing time.
 
 The three status classes are the service's, not this module's invention: rule 1 and the window
 gates are 400, rules 2, 3 and 4 are 409, and rules 5, 6 and 7 are **422** — a deliberate
@@ -23,7 +22,6 @@ semantic refusal of a well-formed request, which is `CONSTITUTION.md` §10's own
 and what `docs/api-design.md:1141-1144` assigns them. Do not fold them into 400.
 """
 
-import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,6 +31,7 @@ from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.booking import Booking
 from app.schemas.booking_write import BookingCreate, BookingCreated
+from app.services import clock
 from app.services.booking_write_service import (
     BlockedByException,
     BookingOverlaps,
@@ -67,7 +66,7 @@ router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 @router.post("", response_model=BookingCreated, status_code=status.HTTP_201_CREATED)
 def create(payload: BookingCreate, user: AdminPrincipal, db: DbSession) -> BookingCreated:
     try:
-        booking = create_booking(db, request=_request(payload), now=_now())
+        booking = create_booking(db, request=_request(payload), now=clock.business_now())
     except BookingReferenceNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=REFERENCE_NOT_FOUND_ERROR
@@ -112,10 +111,6 @@ def create(payload: BookingCreate, user: AdminPrincipal, db: DbSession) -> Booki
     db.commit()
 
     return _created(booking)
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)
 
 
 def _request(payload: BookingCreate) -> BookingRequest:

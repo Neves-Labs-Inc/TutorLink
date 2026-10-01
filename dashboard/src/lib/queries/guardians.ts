@@ -24,7 +24,7 @@ export type GuardianChild = {
   id: string
   name: string
   date_of_birth: string | null
-  grade_level: number
+  grade_level: number | null
   school_name: string
   notes: string | null
   is_active: boolean

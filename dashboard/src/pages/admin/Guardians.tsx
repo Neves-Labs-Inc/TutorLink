@@ -10,6 +10,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
+import { gradeLabel } from '@/lib/children/children'
 import { formatPhoneForDisplay } from '@/lib/guardians/guardians'
 import { householdCountLabel, householdListParams } from '@/lib/households/households'
 import { householdQueries, type Household } from '@/lib/queries/households'
@@ -177,7 +178,7 @@ const HouseholdCard = ({ household }: HouseholdCardProps) => (
                 >
                   {child.name}
                 </Link>
-                <span className="text-sm text-muted-foreground">Grade {child.grade_level}</span>
+                <span className="text-sm text-muted-foreground">{gradeLabel(child.grade_level)}</span>
                 {!child.is_active && <StatusBadge status="inactive" />}
               </li>
             ))}

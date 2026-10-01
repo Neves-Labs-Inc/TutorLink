@@ -24,6 +24,8 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       SECRET_KEY: ${SECRET_KEY}
       COOKIE_SECURE: ${COOKIE_SECURE}
+      # Defaulted because an unset var would pass an empty string, which the validator refuses.
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-UTC}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}

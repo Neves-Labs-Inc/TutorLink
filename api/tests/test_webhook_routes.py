@@ -86,6 +86,7 @@ PHONE_NUMBER = "+15555550100"
 TWILIO_FROM = f"whatsapp:{PHONE_NUMBER}"
 INBOUND_SID = "SM00000000000000000000000000000001"
 OUTBOUND_SID = "SM00000000000000000000000000000002"
+SECOND_INBOUND_SID = "SM00000000000000000000000000000003"
 INBOUND_BODY = "I'd like to book a session"
 BOT_REPLY = "Which subject?"
 EMPTY_TWIML = "<Response></Response>"
@@ -371,6 +372,92 @@ def test_a_flagged_turn_writes_the_flag_and_still_returns_the_reply(
     assert conversation.flagged_at is not None
     assert conversation.status is ConversationStatus.BOT
     assert [row.body for row in _messages(db, author_kind=MessageAuthor.BOT)] == [BOT_REPLY]
+
+
+@pytest.mark.parametrize("reason", [FlagReason.BOOKING_REQUEST, FlagReason.QUESTION])
+def test_a_routine_handoff_turn_flags_the_conversation_and_returns_the_reply(
+    webhook_client: TestClient, db: Session, bot: "BotDouble", reason: FlagReason
+) -> None:
+    """A booking request or a question is a handoff, not a failure: it flags like any reason."""
+    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=reason)
+
+    response = _post_inbound(webhook_client)
+    conversation = _conversation(db, phone_number=PHONE_NUMBER)
+
+    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
+    assert conversation is not None
+    assert conversation.flag_reason is reason
+    assert conversation.flagged_at is not None
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        FlagReason.BOOKING_REQUEST,
+        FlagReason.GUARDIAN_LINK_REQUEST,
+        FlagReason.STUCK,
+        FlagReason.PARSE_ERROR,
+    ],
+)
+def test_a_question_does_not_replace_an_existing_flag_but_is_still_answered(
+    webhook_client: TestClient, db: Session, bot: "BotDouble", pending: FlagReason
+) -> None:
+    """Marking the question handled would otherwise drop the request or the failed handoff
+    from every queue."""
+    conversation = _bot_conversation(db)
+    conversation_service.flag(db, conversation=conversation, reason=pending)
+    flagged_at = conversation.flagged_at
+    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.QUESTION)
+
+    response = _post_inbound(webhook_client)
+    db.refresh(conversation)
+
+    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
+    assert conversation.flag_reason is pending
+    assert conversation.flagged_at == flagged_at
+
+
+def test_a_question_does_not_replace_a_pending_reactivation_request(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation_service.request_reactivation(
+        db, conversation=conversation, child_id=_inactive_child_id(db)
+    )
+    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.QUESTION)
+
+    _post_inbound(webhook_client)
+    db.refresh(conversation)
+
+    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
+
+
+def test_a_second_question_leaves_the_conversation_flagged_question(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.QUESTION)
+
+    _post_inbound(webhook_client)
+    _post_inbound(webhook_client, form=_form(MessageSid=SECOND_INBOUND_SID))
+    conversation = _conversation(db, phone_number=PHONE_NUMBER)
+
+    assert len(bot.calls) == 2
+    assert conversation is not None
+    assert conversation.flag_reason is FlagReason.QUESTION
+
+
+def test_a_stuck_turn_still_replaces_a_pending_office_request(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    """Only a question defers to a request; a failure flag keeps last-write-wins."""
+    conversation = _bot_conversation(db)
+    conversation_service.flag(db, conversation=conversation, reason=FlagReason.BOOKING_REQUEST)
+    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.STUCK)
+
+    _post_inbound(webhook_client)
+    db.refresh(conversation)
+
+    assert conversation.flag_reason is FlagReason.STUCK
 
 
 def test_a_turn_carrying_a_guardian_backfills_the_conversation(

@@ -20,7 +20,7 @@ class Child(HasID, HasTimestamps, HasActiveFlag, Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     date_of_birth: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
-    grade_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    grade_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     school_name: Mapped[str] = mapped_column(String(255), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 

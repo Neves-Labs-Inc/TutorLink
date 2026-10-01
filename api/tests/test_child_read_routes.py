@@ -3,7 +3,7 @@
 Three things here are worth more than the rest: `total` is asserted to count children, not
 `child_guardians` rows, on a search where one child matches through two guardians; the list is
 asserted to run the same number of SQL statements for a page of one child and a page of five;
-and `next_session` / `upcoming_session_count` are asserted against a frozen `_now()` with a
+and `next_session` / `upcoming_session_count` are asserted against a frozen business clock with a
 session earlier the same day, which a date-granular "upcoming" would wrongly count.
 
 Search terms carry a per-test token so that rows committed by a concurrent two-connection test
@@ -12,7 +12,7 @@ elsewhere in the suite can never land in a page asserted on here.
 
 import datetime
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,7 +30,6 @@ from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers import children, children_read
 from app.security import create_access_token, hash_password
-from app.services import child_read_service
 
 PASSWORD = "correct horse battery staple"
 CHILD_NOT_FOUND_ERROR = "Child not found"
@@ -46,8 +45,8 @@ FOURTEEN = datetime.time(14, 0)
 
 
 @pytest.fixture
-def frozen_now(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(child_read_service, "_now", lambda: NOW)
+def frozen_now(freeze_business_clock: Callable[[datetime.datetime], None]) -> None:
+    freeze_business_clock(NOW)
 
 
 @pytest.fixture

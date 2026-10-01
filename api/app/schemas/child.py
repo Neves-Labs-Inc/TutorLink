@@ -5,7 +5,9 @@ observable without a second request — the frozen contract offers no `GET /api/
 check the result against. The shape itself is `docs/api-design.md`'s (amendment P7-10).
 
 `grade_level` is an integer everywhere. The label ("Grade 7") is derived for display and is
-never stored, so a string is refused rather than coerced.
+never stored, so a string is refused rather than coerced. It is optional on create and nullable
+on read from migration 0019 on: the admin sets it by hand after the child's first session.
+`ChildUpdate` cannot clear it, because there None already means "leave alone".
 
 `date_of_birth` is required on create and nullable on read: a child registered before migration
 0015 has none, and nothing stored then could be turned into one (A-44). The plausibility bound
@@ -34,7 +36,7 @@ class ChildRead(BaseModel):
     id: uuid.UUID
     name: str
     date_of_birth: datetime.date | None
-    grade_level: int
+    grade_level: int | None
     school_name: str
     notes: str | None
     is_active: bool
@@ -47,7 +49,7 @@ class ChildCreate(BaseModel):
     home_ids: list[uuid.UUID]
     name: str
     date_of_birth: datetime.date
-    grade_level: int = Field(ge=1)
+    grade_level: int | None = Field(default=None, ge=1)
     school_name: str
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
 
@@ -90,7 +92,7 @@ class NextSession(BaseModel):
 class ChildSummary(BaseModel):
     id: uuid.UUID
     name: str
-    grade_level: int
+    grade_level: int | None
     school_name: str
     is_active: bool
     guardians: list[NamedRef]
@@ -109,7 +111,7 @@ class ChildDetail(BaseModel):
     id: uuid.UUID
     name: str
     date_of_birth: datetime.date | None
-    grade_level: int
+    grade_level: int | None
     school_name: str
     notes: str | None
     is_active: bool

@@ -1,4 +1,5 @@
 import { dayOfWeekFromIso } from '@/lib/availability/availability'
+import { gradeLabel } from '@/lib/children/children'
 import type { AvailabilitySlot } from '@/lib/queries/availability'
 import type { BookingCreate } from '@/lib/queries/bookings'
 import type { ChildDetail, ChildHome, ChildSummary } from '@/lib/queries/children'
@@ -69,7 +70,7 @@ export const childPickerOption = (
 ): ChildPickerOption => ({
   id: child.id,
   label: child.name,
-  description: inactive ? `Grade ${child.grade_level} · inactive` : `Grade ${child.grade_level}`,
+  description: inactive ? `${gradeLabel(child.grade_level)} · inactive` : gradeLabel(child.grade_level),
   inactive,
 })
 

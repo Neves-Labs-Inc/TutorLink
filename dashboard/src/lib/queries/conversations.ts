@@ -3,7 +3,13 @@ import { api } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
 
 export type ConversationStatus = 'bot' | 'human'
-export type FlagReason = 'stuck' | 'parse_error' | 'guardian_link_request' | 'reactivation_request'
+export type FlagReason =
+  | 'stuck'
+  | 'parse_error'
+  | 'guardian_link_request'
+  | 'reactivation_request'
+  | 'booking_request'
+  | 'question'
 export type MessageAuthorKind = 'client' | 'bot' | 'admin'
 export type MessageStatus = 'received' | 'queued' | 'sent' | 'delivered' | 'failed'
 

@@ -107,6 +107,10 @@ class FlagReason(str, enum.Enum):
     (Phase 7D), which reversed the earlier three-values-only rule; the child it names is on
     `conversations.reactivation_child_id`, which a later flag does not overwrite.
 
+    `BOOKING_REQUEST` and `QUESTION` are not failures either: the bot worked and handed the chat
+    to the office. A booking request is a first-session request for a child with no grade, which
+    only an admin can place; a question is one the bot cannot answer.
+
     No value exists for a policy refusal. A reschedule or cancellation refused inside
     `cancellation_cutoff_hours` is the bot working as intended rather than failing, and flagging
     it would bury the flags that mean the bot needs help.
@@ -116,6 +120,8 @@ class FlagReason(str, enum.Enum):
     PARSE_ERROR = "parse_error"
     GUARDIAN_LINK_REQUEST = "guardian_link_request"
     REACTIVATION_REQUEST = "reactivation_request"
+    BOOKING_REQUEST = "booking_request"
+    QUESTION = "question"
 
 
 def _values(enum_class: type[enum.Enum]) -> list[str]:

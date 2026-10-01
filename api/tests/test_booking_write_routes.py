@@ -54,7 +54,7 @@ from app.routers.booking_writes import (
     REFERENCE_NOT_FOUND_ERROR,
 )
 from app.security import create_access_token, hash_password
-from app.services import booking_write_service
+from app.services import booking_write_service, clock
 from app.services.scheduling_service import MIN_BOOKING_LEAD_SETTING
 
 ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
@@ -64,9 +64,9 @@ TUTOR_CEILING = 8
 
 
 def _today() -> datetime.date:
-    """The same clock the route reads: UTC with the offset stripped, since every scheduling
-    column is naive and the window gates compare against exactly this."""
-    return datetime.datetime.now(tz=datetime.UTC).date()
+    """The business clock the route reads, unfrozen; under the default `UTC` zone this is the
+    UTC date, since every scheduling column is naive business wall-clock."""
+    return clock.business_today()
 
 
 def _upcoming(weekday: int) -> datetime.date:
@@ -82,6 +82,8 @@ def _upcoming(weekday: int) -> datetime.date:
 MONDAY = _upcoming(0)
 TUESDAY = MONDAY + datetime.timedelta(days=1)
 SUNDAY = _upcoming(6)
+# The date `business_evening` freezes, a Monday like `MONDAY`; UTC is already on the 29th.
+BUSINESS_TODAY = datetime.date(2026, 9, 28)
 
 NINE = "09:00:00"
 TEN = "10:00:00"
@@ -451,6 +453,35 @@ def test_a_tutor_qualified_in_a_different_subject_is_refused_for_this_one(
     assert _count(db) == 0
 
 
+def test_a_child_with_no_grade_is_accepted_by_any_tutor_who_teaches_the_subject(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """With no grade there is no ceiling comparison, so even the lowest ceiling passes."""
+    family.child.grade_level = None
+    family.assignment.max_grade_level = 1
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    assert response.status_code == 201
+
+
+def test_a_child_with_no_grade_is_still_refused_a_tutor_who_does_not_teach_the_subject(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A missing grade skips the comparison, never the assignment check (#36)."""
+    family.child.grade_level = None
+    db.delete(family.assignment)
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    _assert_detail(response, 422, GRADE_CEILING_ERROR)
+    assert _count(db) == 0
+
+
 # --- rules 6 and 7: the home and the booking guardian, 422 ----------------------------------
 
 
@@ -586,6 +617,28 @@ def test_a_date_outside_the_booking_window_is_400(
 
     _assert_detail(response, 400, DATE_OUT_OF_WINDOW_ERROR)
     assert _count(db) == 0
+
+
+def test_the_business_date_is_inside_the_window_even_once_utc_is_on_the_next_day(
+    api: TestClient, db: Session, family: Family, business_evening: datetime.datetime
+) -> None:
+    """Past the window gate, so the refusal is the lead time: 09:00 has already gone by 22:00."""
+    user = _make_user(db)
+
+    response = _post(api, user, family, scheduled_date=BUSINESS_TODAY.isoformat())
+
+    _assert_detail(response, 400, LEAD_TIME_NOT_MET_ERROR)
+
+
+def test_the_day_before_the_business_date_is_out_of_the_window(
+    api: TestClient, db: Session, family: Family, business_evening: datetime.datetime
+) -> None:
+    user = _make_user(db)
+    yesterday = BUSINESS_TODAY - datetime.timedelta(days=1)
+
+    response = _post(api, user, family, scheduled_date=yesterday.isoformat())
+
+    _assert_detail(response, 400, DATE_OUT_OF_WINDOW_ERROR)
 
 
 def test_a_start_inside_the_minimum_lead_time_is_400(

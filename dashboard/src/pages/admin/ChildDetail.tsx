@@ -23,7 +23,7 @@ import {
   isNotFoundError,
   type ChildSessionState,
 } from '@/lib/child-detail/childDetail'
-import { formatDateOfBirth } from '@/lib/children/children'
+import { formatDateOfBirth, gradeLabel } from '@/lib/children/children'
 import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates/dates'
 import type { Booking } from '@/lib/queries/bookings'
 import { bookingQueries } from '@/lib/queries/bookings'
@@ -144,7 +144,7 @@ export const ChildDetail = () => {
               <DetailField label="Date of birth">
                 {formatDateOfBirth(child.date_of_birth, new Date())}
               </DetailField>
-              <DetailField label="Grade">Grade {child.grade_level}</DetailField>
+              <DetailField label="Grade">{gradeLabel(child.grade_level)}</DetailField>
               <DetailField label="School">{child.school_name}</DetailField>
               <DetailField label="Notes">{child.notes ?? '—'}</DetailField>
             </dl>

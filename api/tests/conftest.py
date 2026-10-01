@@ -1,3 +1,4 @@
+import datetime
 import os
 from collections.abc import Callable, Generator
 
@@ -201,3 +202,34 @@ def set_int_setting(db: Session) -> Callable[[str, int], None]:
         db.flush()
 
     return rewrite
+
+
+@pytest.fixture
+def freeze_business_clock(monkeypatch: pytest.MonkeyPatch) -> Callable[[datetime.datetime], None]:
+    """Freeze `clock.business_now`, the one scheduling clock read; `business_today` follows it."""
+    from app.services import clock
+
+    def freeze(now: datetime.datetime) -> None:
+        monkeypatch.setattr(clock, "business_now", lambda: now)
+
+    return freeze
+
+
+@pytest.fixture
+def business_evening(
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> datetime.datetime:
+    """Freeze the business clock at 22:00 on Monday 2026-09-28 in New York.
+
+    UTC has already reached Tuesday the 29th by then, so a consumer still reading a UTC "today"
+    disagrees with the business date by a whole day.
+    """
+    from zoneinfo import ZoneInfo
+
+    from app.services.clock import to_business_wall_clock
+
+    utc_instant = datetime.datetime(2026, 9, 29, 2, 0, tzinfo=datetime.UTC)
+    now = to_business_wall_clock(utc_instant, ZoneInfo("America/New_York"))
+    freeze_business_clock(now)
+
+    return now

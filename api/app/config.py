@@ -1,5 +1,6 @@
 import ipaddress
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,6 +11,8 @@ SECRET_KEY_REMEDY = "generate one with `openssl rand -hex 32`"
 
 TRUSTED_PROXIES_WILDCARD = "*"
 TRUSTED_PROXIES_REMEDY = "give the proxy's own IP address or a CIDR block, e.g. 172.20.0.0/16"
+
+BUSINESS_TIMEZONE_REMEDY = "give an IANA zone name, e.g. America/New_York"
 
 
 class Settings(BaseSettings):
@@ -24,13 +27,14 @@ class Settings(BaseSettings):
     # exactly as they do today.
     trusted_proxies: str = ""
 
-    # Empty means no SPA is mounted (local dev, tests); production sets it to `/opt/dashboard`,
-    # the path `docker/api.Dockerfile` copies the compiled dashboard to.
-    dashboard_dist_dir: str = ""
-
-    # Off in production (OQ-94): a single public origin would otherwise publish the whole API
-    # schema. Caddy previously kept `/docs` off the internet; this setting is its replacement.
+    # Off in production (OQ-94): Caddy proxies the API on the public origin, so the schema
+    # would otherwise be published with it. The API itself is what turns the docs routes off.
     api_docs_enabled: bool = True
+
+    # The zone staff type scheduling times in. Every scheduling column (booking date and times,
+    # availability, time off) is naive wall-clock in this zone, and `services/clock.py` reads
+    # "now" in it. UTC keeps dev, tests and CI unconfigured.
+    business_timezone: str = "UTC"
 
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
@@ -113,6 +117,29 @@ class Settings(BaseSettings):
                 )
 
         return value
+
+    @field_validator("business_timezone")
+    @classmethod
+    def _reject_unknown_business_timezone(cls, value: str) -> str:
+        """Refuse to boot on a zone name `zoneinfo` cannot resolve, rather than falling back to UTC.
+
+        A typo would otherwise shift every "today" and lead-time check by the zone's offset with
+        no error anywhere. The message names the value: like `TRUSTED_PROXIES`, it is operator
+        configuration rather than a credential.
+        """
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(
+                f"BUSINESS_TIMEZONE {value!r} is not a known time zone; {BUSINESS_TIMEZONE_REMEDY}"
+            ) from error
+
+        return value
+
+    @property
+    def business_zone(self) -> ZoneInfo:
+        """The validated `business_timezone`, resolved."""
+        return ZoneInfo(self.business_timezone)
 
 
 @lru_cache

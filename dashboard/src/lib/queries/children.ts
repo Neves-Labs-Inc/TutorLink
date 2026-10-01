@@ -26,7 +26,7 @@ export type NextSession = {
 export type ChildSummary = {
   id: string
   name: string
-  grade_level: number
+  grade_level: number | null
   school_name: string
   is_active: boolean
   guardians: NamedRef[]
@@ -45,7 +45,7 @@ export type ChildDetail = {
   id: string
   name: string
   date_of_birth: string | null
-  grade_level: number
+  grade_level: number | null
   school_name: string
   notes: string | null
   is_active: boolean
@@ -58,7 +58,7 @@ export type ChildRecord = {
   id: string
   name: string
   date_of_birth: string | null
-  grade_level: number
+  grade_level: number | null
   school_name: string
   notes: string | null
   is_active: boolean
@@ -76,7 +76,7 @@ export type ChildListParams = {
 export type ChildInput = {
   name: string
   date_of_birth: string
-  grade_level: number
+  grade_level?: number
   school_name: string
   notes?: string | null
 }

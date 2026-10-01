@@ -14,7 +14,7 @@ readonly APP_DIR="$DATA_DIR/app"
 readonly COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
 readonly ENV_FILE="$APP_DIR/.env"
 readonly PARAMETER_PATH="/tutorlink/prod/"
-readonly REQUIRED_PARAMETERS=(POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB SECRET_KEY SITE_ADDRESS)
+readonly REQUIRED_PARAMETERS=(DATABASE_URL SECRET_KEY SITE_ADDRESS)
 # The WhatsApp bot's configuration: all four set turns the bot on, none set leaves it off, and a
 # mix fails the deploy so a half-configured bot never goes live.
 readonly BOT_PARAMETERS=(TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_WHATSAPP_NUMBER ANTHROPIC_API_KEY)
@@ -89,14 +89,8 @@ for key in "${BOT_PARAMETERS[@]}"; do
   fi
 done
 
-postgres_user="${parameters[POSTGRES_USER]}"
-postgres_password="${parameters[POSTGRES_PASSWORD]}"
-postgres_db="${parameters[POSTGRES_DB]}"
 env_lines=(
-  "POSTGRES_USER=$postgres_user"
-  "POSTGRES_PASSWORD=$postgres_password"
-  "POSTGRES_DB=$postgres_db"
-  "DATABASE_URL=postgresql+psycopg://$postgres_user:$postgres_password@postgres:5432/$postgres_db"
+  "DATABASE_URL=${parameters[DATABASE_URL]}"
   "SECRET_KEY=${parameters[SECRET_KEY]}"
   "DEBUG=false"
   "SITE_ADDRESS=${parameters[SITE_ADDRESS]}"
@@ -104,6 +98,8 @@ env_lines=(
   "TWILIO_STATUS_CALLBACK_URL=https://${parameters[SITE_ADDRESS]}/webhook/whatsapp/status"
   "API_DOCS_ENABLED=false"
   "COOKIE_SECURE=true"
+  # The business is in Miami; a hardcoded non-secret, so not an SSM parameter.
+  "BUSINESS_TIMEZONE=America/New_York"
   # Empty on purpose: the prod image's uvicorn (--proxy-headers) already trusts Caddy, its only
   # peer, so the app's own proxy-headers middleware stays off.
   "TRUSTED_PROXIES="
@@ -129,9 +125,6 @@ if [[ "${WEB_IMAGE%%/*}" != "${API_IMAGE%%/*}" ]]; then
 fi
 docker pull "$API_IMAGE"
 docker pull "$WEB_IMAGE"
-
-log "Starting postgres"
-compose up -d --wait postgres
 
 log "Running migrations"
 if ! compose run --rm api alembic upgrade head; then

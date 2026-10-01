@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -39,7 +38,6 @@ from app.routers import (
     webhook,
 )
 from app.services.retention_scheduler import run_forever
-from app.spa import mount_dashboard
 
 app_logger = logging.getLogger("app")
 app_logger.setLevel(logging.INFO)
@@ -97,15 +95,10 @@ def create_app() -> FastAPI:
     With `TRUSTED_PROXIES` unset nothing is mounted at all: fail-closed, and it makes the empty
     default a byte-for-byte reproduction of the behaviour before this existed rather than a
     differently-configured version of the new one.
-
-    The dashboard mount, when `DASHBOARD_DIST_DIR` is set, comes **after every `include_router`
-    call and before** the exception handler and the proxy-header middleware: its catch-all route
-    must never get a chance to answer a request one of this API's own routers would otherwise
-    have served, and the proxy middleware still has to wrap it like everything else.
     """
     # No CORS middleware by design (D-012): the browser reaches this API same-origin through the
-    # Vite dev proxy in development, and through this same process serving the dashboard in
-    # production. Do not add one.
+    # Vite dev proxy in development, and through Caddy in production, which serves the dashboard
+    # and proxies the API on one origin. Do not add one.
     app_settings = get_settings()
     docs_url = "/docs" if app_settings.api_docs_enabled else None
     redoc_url = "/redoc" if app_settings.api_docs_enabled else None
@@ -143,9 +136,6 @@ def create_app() -> FastAPI:
     app.include_router(webhook.router)
     app.include_router(conversations.router)
     app.include_router(conversation_stream.router)
-
-    if app_settings.dashboard_dist_dir:
-        mount_dashboard(app, dist_dir=Path(app_settings.dashboard_dist_dir))
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

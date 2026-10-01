@@ -7,7 +7,7 @@ import { DataTable, type Column } from '@/components/shared/DataTable'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { errorDetail } from '@/lib/api'
-import { formatDateOfBirth } from '@/lib/children/children'
+import { formatDateOfBirth, gradeLabel } from '@/lib/children/children'
 import { guardianQueries, type GuardianChild } from '@/lib/queries/guardians'
 
 type GuardianChildrenSectionProps = { guardianId: string }
@@ -19,7 +19,7 @@ const columns = (today: Date): Column<GuardianChild>[] => [
     header: 'Date of birth',
     cell: (child) => formatDateOfBirth(child.date_of_birth, today),
   },
-  { id: 'grade', header: 'Grade', cell: (child) => `Grade ${child.grade_level}` },
+  { id: 'grade', header: 'Grade', cell: (child) => gradeLabel(child.grade_level) },
   { id: 'school', header: 'School', cell: (child) => child.school_name },
   {
     id: 'notes',

@@ -16,7 +16,8 @@ and the row counts involved are one day of one small tutor roster.
 
 `now` is a parameter of `find_available_slots`, not a `datetime.now()` read inside it. That is
 what makes the lead-time and lookahead behaviour testable without freezing the clock; the
-router passes the server clock, which is the one business timezone this system has (OB-12).
+router passes the business wall-clock (`clock.business_now`, per `BUSINESS_TIMEZONE`), the zone
+every scheduling column is stored in.
 
 `DateOutOfWindow` is `scheduling_service`'s and is deliberately re-exported by propagation
 rather than wrapped in a local class: the router maps the same exception from this endpoint and
@@ -78,7 +79,7 @@ def find_available_slots(
     db: Session,
     *,
     subject_id: uuid.UUID,
-    grade_level: int,
+    grade_level: int | None,
     date: datetime.date,
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
@@ -142,9 +143,13 @@ def find_available_slots(
 
 
 def _qualified_tutor_names(
-    db: Session, *, subject_id: uuid.UUID, grade_level: int, tutor_id: uuid.UUID | None
+    db: Session, *, subject_id: uuid.UUID, grade_level: int | None, tutor_id: uuid.UUID | None
 ) -> dict[uuid.UUID, str]:
     """Active tutors whose ceiling for `subject_id` is at or above `grade_level`.
+
+    A `None` grade is a child nobody has graded yet: every active tutor who teaches the subject
+    qualifies, whatever their ceiling. The inner join still drops a tutor with no
+    `tutor_subjects` row, so "no grade" never widens the set past the subject's own tutors.
 
     `max_grade_level` is a ceiling, so the comparison is `>=` and never a membership test
     (#36). The join to `TutorSubject` is inner on purpose: a tutor with no `tutor_subjects`
@@ -167,9 +172,10 @@ def _qualified_tutor_names(
             Tutor.is_active.is_(True),
             Subject.id == subject_id,
             Subject.is_active.is_(True),
-            TutorSubject.max_grade_level >= grade_level,
         )
     )
+    if grade_level is not None:
+        statement = statement.where(TutorSubject.max_grade_level >= grade_level)
     if tutor_id is not None:
         statement = statement.where(Tutor.id == tutor_id)
 

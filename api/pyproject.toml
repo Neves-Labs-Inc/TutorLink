@@ -16,6 +16,7 @@ dependencies = [
     "phonenumbers>=8.13",
     "anthropic>=0.40",
     "twilio>=9.0",
+    "tzdata>=2024.1",
 ]
 
 [dependency-groups]

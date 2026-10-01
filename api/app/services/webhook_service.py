@@ -149,7 +149,12 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
         # depends on it, so a change to how recording touches the conversation cannot quietly
         # drop it. Conversation first, children after — the order `resolve_reactivation`
         # takes them in (P7D-E), so an approval racing this turn waits rather than deadlocks.
-        db.refresh(conversation, attribute_names=["reactivation_child_id"], with_for_update=True)
+        # `flag_reason` is re-read under the same lock: `flag()` decides precedence from it.
+        db.refresh(
+            conversation,
+            attribute_names=["reactivation_child_id", "flag_reason"],
+            with_for_update=True,
+        )
         decided = bot_service.reply_for(
             db,
             phone_number=phone_number,

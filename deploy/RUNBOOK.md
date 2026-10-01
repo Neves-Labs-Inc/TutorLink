@@ -227,7 +227,7 @@ No secret value is ever set as a GitHub variable or secret — every credential 
 container needs comes from `tutorlink/prod` via `secrets[].valueFrom`.
 
 **Plain container environment** (`deploy/ecs/primary-container.json`'s `environment`, rendered by
-the workflow with `jq`): `COOKIE_SECURE=true`, `API_DOCS_ENABLED=false`, `TRUSTED_PROXIES`,
+the workflow with `jq`): `COOKIE_SECURE=true`, `BUSINESS_TIMEZONE=America/New_York` (IANA name; the API defaults to `UTC` and refuses to boot on an invalid one), `API_DOCS_ENABLED=false`, `TRUSTED_PROXIES`,
 `TWILIO_WHATSAPP_NUMBER`, `TWILIO_STATUS_CALLBACK_URL` (the workflow derives this one from
 `PUBLIC_BASE_URL` — never set it separately). `DASHBOARD_DIST_DIR` is **not** set here: it is baked
 into the image (`docker/api.Dockerfile`'s production stage sets `ENV DASHBOARD_DIST_DIR=/opt/dashboard`).

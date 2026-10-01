@@ -59,13 +59,14 @@ do **not** burn one of the parent's two re-prompts, because a parser outage is n
 failing to be understood.
 """
 
+import datetime
 import logging
 
 import anthropic
 from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
-from app.schemas.bot import BotIntent, ParsedIntent
+from app.schemas.bot import AnswerKind, BotIntent, ParsedIntent
 
 MODEL = "claude-haiku-4-5"
 
@@ -86,11 +87,26 @@ report what it means. You never reply to the parent and you never take an action
 Return:
 - `intent`: what the parent is asking for. `book` to arrange a session, `cancel` to call one \
 off, `reschedule` to move one, `link_guardian` to be added to a child who is already \
-registered with someone else, `unknown` when the message is chit-chat, unreadable, or does not \
+registered with someone else, `chit_chat` for a greeting, thanks or pleasantry that asks for \
+nothing (for example "thanks!", "hi again", "ok great"), `question` for a question about the \
+service that none of the others covers, such as prices, policies or a tutor's details (for \
+example "how much is a session?"), and `unknown` when the message is unreadable or does not \
 fit any of the others.
-- `answer`: the parent's answer to the question in the bot's last message, as the value alone \
-(for example `Franklin Neves`, not `My name is Franklin Neves`), in the form the question asks \
-for. Null when the message does not answer that question.
+- `answer`: the parent's answer to the question in the bot's last message, in the form the \
+prompt's expected answer kind requires. Null when the message does not answer that question. \
+The kinds:
+  - `text`: the value alone (for example `Franklin Neves`, not `My name is Franklin Neves`).
+  - `yes_no`: exactly `yes` or `no`. Agreement such as "yes please", "go ahead" or "sounds \
+good" is `yes`; a refusal such as "no thanks" or "not now" is `no`. A hedge such as "not \
+sure", "maybe" or "I'll check" is neither: give null.
+  - `number`: digits only, for example `3`.
+  - `date`: ISO `YYYY-MM-DD`, resolving words such as "tomorrow", "next Tuesday" or "14th Oct" \
+against today's date, which the prompt gives. A day and month with no year is the next such \
+date from today, except a date of birth, which is in the past.
+  - `choice`: the number of the chosen option in the numbered options listed in the collected \
+context, as digits. "The second one" is `2`; "the 4pm one" is the number of the option at 4pm. \
+When the parent names something that is not among the options, give what they named as written. \
+When their description fits more than one option, give null and set `confidence_is_low`.
 - `fields`: any other values the message supplies, as `name`/`value` pairs. Names are \
 lower_snake_case. When the parent names one of their children, also give that name under \
 `child_name`, whatever the current step. Add a pair only for a value the parent actually gave; \
@@ -140,12 +156,33 @@ _client = anthropic.Anthropic(
 )
 
 
-def _build_prompt(*, step: str, question: str, body: str, context: dict[str, str]) -> str:
+# What `answer` must look like for each kind, stated in the prompt beside the question. The
+# bot accepts exactly these forms, so a reply in any other shape costs the parent a re-prompt.
+_ANSWER_FORMS: dict[AnswerKind, str] = {
+    AnswerKind.TEXT: "the value alone",
+    AnswerKind.YES_NO: "exactly `yes` or `no`; null for a hedge such as not sure or maybe",
+    AnswerKind.NUMBER: "digits only",
+    AnswerKind.DATE: "an ISO date, YYYY-MM-DD, resolved relative to today",
+    AnswerKind.CHOICE: "the chosen option's number, as digits",
+}
+
+
+def _build_prompt(
+    *,
+    step: str,
+    question: str,
+    body: str,
+    context: dict[str, str],
+    answer_kind: AnswerKind,
+    today: datetime.date,
+) -> str:
     collected = "\n".join(f"- {name}: {value}" for name, value in context.items()) or "- nothing"
 
     return (
         f"Current step: {step}\n"
+        f"Today is {today.isoformat()} ({today:%A}).\n"
         f"The bot's last message, which the parent is replying to:\n{question}\n"
+        f"Expected answer: {answer_kind.value} — {_ANSWER_FORMS[answer_kind]}\n"
         f"Collected so far:\n{collected}\n"
         f"The parent just sent:\n{body}"
     )
@@ -199,8 +236,25 @@ def _fold_fields(fields: list[_ExtractedField]) -> dict[str, str]:
     return folded
 
 
-def parse_intent(*, step: str, question: str, body: str, context: dict[str, str]) -> ParsedIntent:
-    prompt = _build_prompt(step=step, question=question, body=body, context=context)
+def parse_intent(
+    *,
+    step: str,
+    question: str,
+    body: str,
+    context: dict[str, str],
+    answer_kind: AnswerKind,
+    today: datetime.date,
+) -> ParsedIntent:
+    """`today` is the caller's clock, so a turn reads the time once and the parser resolves
+    "next Tuesday" against the same day the bot's window checks use."""
+    prompt = _build_prompt(
+        step=step,
+        question=question,
+        body=body,
+        context=context,
+        answer_kind=answer_kind,
+        today=today,
+    )
 
     # Most specific first, and the order is load-bearing: `APITimeoutError` is a subclass of
     # `APIConnectionError` and `RateLimitError` is a subclass of `APIStatusError`, so either

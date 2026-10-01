@@ -39,7 +39,7 @@ BOOKING_TIME_ORDER_PREDICATE = "end_time > start_time"
 
 
 def upcoming_live_bookings(now: datetime.datetime) -> ColumnElement[bool]:
-    """Live, and starting after `now` (naive UTC). The one definition of "upcoming" (P7C-T)."""
+    """Live, and starting after `now` (naive business wall-clock). The one definition of "upcoming" (P7C-T)."""
     return and_(
         Booking.status.in_(LIVE_BOOKING_STATUSES),
         or_(

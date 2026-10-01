@@ -10,8 +10,9 @@ child qualifies, because a home can be prepared before a child returns (07C A2 d
 Repeats collapse rather than tripping the `child_homes` UNIQUE constraint.
 
 "Upcoming" is `upcoming_live_bookings(now)` — the phase's one definition (P7C-T) — with `now`
-read through `_now()` in naive UTC so a test can freeze it. A booking earlier today that has
-not been marked completed does not block deactivation; one later today does.
+the naive business wall-clock from `clock.business_now` (`BUSINESS_TIMEZONE`), which is also
+where a test freezes it. A booking earlier today that has not been marked completed does not
+block deactivation; one later today does.
 
 **The deactivation check locks the home row first.** `update_home` loads it `FOR UPDATE`, which
 conflicts with the `FOR SHARE` read `booking_write_service._resolve` takes on the home before
@@ -20,7 +21,6 @@ booking read first keeps this refusing until it commits and this then sees the b
 deactivation locked first keeps the booking write waiting and it then sees the home inactive.
 """
 
-import datetime
 import uuid
 from collections.abc import Sequence
 
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.models.booking import Booking, upcoming_live_bookings
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
+from app.services import clock
 
 
 class HomeServiceError(Exception):
@@ -160,10 +161,8 @@ def _linked_child_ids(
 
 
 def _has_upcoming_bookings(db: Session, *, home_id: uuid.UUID) -> bool:
-    statement = select(Booking.id).where(Booking.home_id == home_id, upcoming_live_bookings(_now()))
+    statement = select(Booking.id).where(
+        Booking.home_id == home_id, upcoming_live_bookings(clock.business_now())
+    )
 
     return db.scalars(statement.limit(1)).first() is not None
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)

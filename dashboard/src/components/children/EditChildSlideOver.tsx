@@ -5,7 +5,7 @@ import { ChildFields } from '@/components/children/ChildFields'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { Button } from '@/components/ui/button'
 import { errorDetail } from '@/lib/api'
-import { childDraftErrors, childDraftFrom, childUpdate, type ChildDraft } from '@/lib/children/children'
+import { GRADE_LEVEL_ERROR, childDraftErrors, childDraftFrom, childUpdate, type ChildDraft } from '@/lib/children/children'
 import { updateChild, type ChildDetail, type ChildRecord, type ChildUpdate } from '@/lib/queries/children'
 import { cn } from '@/lib/utils'
 
@@ -39,7 +39,7 @@ export const EditChildSlideOver = ({ open, onOpenChange, child, onSaved }: EditC
     mutationFn: (update: ChildUpdate) => updateChild(child.id, update),
   })
   const busy = save.isPending
-  const errors = childDraftErrors(draft, new Date())
+  const errors = childDraftErrors(draft, new Date(), child)
 
   const close = () => {
     setSubmitted(false)
@@ -111,6 +111,7 @@ export const EditChildSlideOver = ({ open, onOpenChange, child, onSaved }: EditC
     >
       <form
         id={FORM_ID}
+        noValidate
         onSubmit={(event) => {
           event.preventDefault()
           handleSubmit()
@@ -121,6 +122,8 @@ export const EditChildSlideOver = ({ open, onOpenChange, child, onSaved }: EditC
           value={draft}
           onChange={setDraft}
           disabled={busy}
+          isGradeRequired={child.grade_level !== null}
+          isGradeInvalid={submitted && errors.includes(GRADE_LEVEL_ERROR)}
           today={new Date()}
         />
       </form>

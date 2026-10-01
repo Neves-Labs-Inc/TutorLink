@@ -16,11 +16,12 @@ webhook's record-then-branch contract fixes.
 which flush and leave the boundary to the caller. One turn is therefore one transaction: the
 webhook commits it whole or not at all.
 
-**`now` is read exactly once per turn, through `server_now`.** `slot_service` and
+**`now` is read exactly once per turn, through `clock.business_now`.** `slot_service` and
 `booking_write_service` both take `now` as a parameter rather than reading the clock inside,
 which is what makes their window gates testable — that obligation lands on this module, and
-`reply_for`'s signature is fixed by P7-A and cannot take one. `server_now` is the named seam a
-test freezes, in the same spirit as `_overlapping_booking` in `booking_write_service`.
+`reply_for`'s signature is fixed by P7-A and cannot take one. `now` is the naive business
+wall-clock (`BUSINESS_TIMEZONE`), the form every scheduling column stores, and
+`clock.business_now` is the one seam a test freezes.
 
 **The `do_orm_execute` guard is not armed on this path, and no assertion replaces it
 (decision P7-T).** A webhook carries no `Principal` and no `TutorScope`, so the listener that
@@ -73,12 +74,13 @@ from app.models.enums import BookingStatus, FlagReason
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
-from app.schemas.bot import BotIntent, BotTurn, ParsedIntent
+from app.schemas.bot import AnswerKind, BotIntent, BotTurn, ParsedIntent
 from app.services import (
     booking_status_service,
     booking_write_service,
     child_service,
     client_service,
+    clock,
     parser_service,
     scheduling_service,
     slot_service,
@@ -108,7 +110,6 @@ STEP_INTAKE_LABEL = "intake_label"
 STEP_CHILD_REGISTERED = "child_registered"
 STEP_CHILD_NAME = "child_name"
 STEP_CHILD_DOB = "child_date_of_birth"
-STEP_CHILD_GRADE = "child_grade"
 STEP_CHILD_SCHOOL = "child_school"
 STEP_CHILD_NOTES = "child_notes"
 STEP_CHILD_MORE = "child_more"
@@ -120,57 +121,148 @@ STEP_BOOK_DATE = "book_date"
 STEP_BOOK_HOME = "book_home"
 STEP_BOOK_SLOT = "book_slot"
 STEP_BOOK_CONFIRM = "book_confirm"
+# A child with no grade on file is not booked by the bot: the office arranges the first session.
+# Separate step names keep this path from ever resuming into the slot offer or the write.
+STEP_FIRST_SESSION_SUBJECT = "first_session_subject"
+STEP_FIRST_SESSION_DATE = "first_session_date"
 STEP_CANCEL_PICK = "cancel_pick"
+STEP_CANCEL_CONFIRM = "cancel_confirm"
 STEP_RESCHEDULE_PICK = "reschedule_pick"
 STEP_REACTIVATION_CONFIRM = "reactivation_confirm"
 
-GREETING_NEW = "Hi! I'm the Ms Helping Hands booking assistant. I don't have you on file yet."
-GREETING_RETURNING = "Hi {name}! Good to hear from you."
-ASK_GUARDIAN_NAME = "What's your full name?"
-ASK_ADDRESS = "Thanks! What's the address where the tutoring will take place?"
-ASK_ACCESS_CODE = "Got it. What's the access code or entry instruction for getting in?"
+GREETING_NEW = (
+    "Hello, this is the Ms Helping Hands booking assistant. "
+    "I don't have your details yet, so I'll take a few now."
+)
+GREETING_RETURNING = "Hello {name}, welcome back."
+ASK_GUARDIAN_NAME = "What is your full name?"
+ASK_ADDRESS = "Thank you. What is the address where the tutoring will take place?"
+ASK_ACCESS_CODE = "Is there an access code or entry instruction the tutor will need?"
 ASK_HOME_LABEL = (
-    'Would you like to give that address a short name, like "Mum\'s" or "Dad\'s"? '
-    'It makes later bookings quicker. Reply "skip" if you\'d rather not.'
+    'Would you like to give this address a short name, such as "Mum\'s" or "Dad\'s"? '
+    'It makes future bookings quicker. You can reply "skip".'
 )
 ASK_CHILD_REGISTERED = "Is this child already registered with us under another guardian?"
-ASK_CHILD_NAME = "What's your child's name?"
-ASK_CHILD_DOB = "What's their date of birth? A date like 2016-04-23 works."
-ASK_CHILD_GRADE = "What grade are they in?"
+ASK_CHILD_NAME = "What is your child's name?"
+ASK_CHILD_DOB = "What is their date of birth? For example, 23 April 2016."
 ASK_CHILD_SCHOOL = "Which school do they go to?"
 ASK_CHILD_NOTES = (
-    "Is there anything we should know about them — learning needs, allergies, anything else? "
-    'Reply "none" if not.'
+    "Is there anything we should know about them, such as learning needs or allergies? "
+    'You can reply "none".'
 )
 ASK_MORE_CHILDREN = "Would you like to add another child?"
-ASK_MENU = "I can book a session, cancel one, or move one to a different time. What would you like?"
+ASK_MENU = (
+    "I can book a session, cancel one, or move one to another time. What would you like to do?"
+)
+# Small talk and questions at the menu (REQ-075). Neither reply states a fact about the
+# service: the bot knows no prices or policies, and the office answers the question instead.
+SMALL_TALK_REPLY = "Thanks for your message."
+QUESTION_PASSED_ON = (
+    "I'm not able to answer that here, so I've passed your question to our office and "
+    "someone will be in touch shortly."
+)
 ASK_WHICH_CHILD = "Which child is this for?"
 ASK_SUBJECT = "Which subject?"
 ASK_TUTOR = "Would you like a particular tutor?"
-ASK_DATE = "Which day would you like? A date like 2026-10-14 works, or just tell me the day."
+ASK_DATE = 'Which day would you like? For example, "Tuesday" or "14 October".'
 ASK_WHICH_HOME = "Which address should the tutor come to?"
-ASK_SLOT = "Here's what's free on {date}:"
+ASK_SLOT = "These times are available on {date}:"
 ASK_WHICH_TO_CANCEL = "Which session would you like to cancel?"
 ASK_WHICH_TO_MOVE = "Which session would you like to move?"
 ASK_NEW_DATE = "Which day would you like to move it to?"
 
-ANY_TUTOR_LABEL = "Anyone who's available"
+ANY_TUTOR_LABEL = "Any available tutor"
 CHILD_ADDED = "{name} is all set."
-CLIENT_READY = "You're all set up, thank you!"
-SHOWING_SOME = "Showing the first {shown} of {total} — tell me if none of these work."
-CONFIRM_SLOT = "Just to confirm: {label} on {date}. Shall I book it?"
-BOOKING_CONFIRMED = "Booked! {label} on {date}. See you then."
-BOOKING_MOVED = "All moved. Your new session is {label} on {date}."
-CANCELLED = "That session is cancelled. Let me know if you'd like to book another."
+CLIENT_READY = "Your details are saved. Thank you."
+SHOWING_SOME = (
+    "These are the first {shown} of {total} available times. Let me know if none of them suit."
+)
+CONFIRM_SLOT = "To confirm: {label} on {date}. Shall I book it?"
+# A reschedule's "yes" also cancels the old session, which the parser picked from a description,
+# so the confirmation names it.
+CONFIRM_RESCHEDULE = (
+    "To confirm: {label} on {date}, replacing {child}'s session on {old_date}, {old_time}. "
+    "Shall I book it?"
+)
+BOOKING_CONFIRMED = "Your session is booked: {label} on {date}."
+BOOKING_MOVED = "Your session has been moved to {label} on {date}."
+FIRST_SESSION_HANDOFF = (
+    "Thank you. Our office will arrange the first session for {name} and be in touch shortly."
+)
+# The pick is a model-resolved option number ("the Tuesday one"), so it never cancels on its
+# own: the parent sees the session and says yes first, as a booking is confirmed.
+CONFIRM_CANCEL = "Cancel {child}'s session on {date}, {time}? Please reply yes or no."
+CANCEL_KEPT = "No problem, I haven't cancelled it."
+CANCELLED = "Your session has been cancelled. Let me know if you would like to book another."
 NO_UPCOMING = "You don't have any upcoming sessions with us right now."
 NO_CHILDREN_YET = "I don't have any children on file for you yet, so let's add one."
 NO_ACTIVE_CHILDREN = (
     "I don't have any children active with us for you at the moment, so let's add one."
 )
-NO_SLOTS = "I'm afraid there's nothing free on {date}."
+NO_SLOTS = "There are no available times on {date}."
 DATE_NOT_BOOKABLE = "I can't book that far ahead, or that date has already passed."
-SLOT_JUST_TAKEN = "Sorry — that slot was taken while we were talking. Here's what's still free:"
-NOT_UNDERSTOOD = "Sorry, I didn't quite catch that."
+SLOT_JUST_TAKEN = (
+    "I'm sorry, that time was taken while we were talking. These times are still available:"
+)
+# Re-prompts (REQ-078.2). Each rephrases its step's question as what the bot needs, rather than
+# repeating it: a parent who misread the question once will misread the same words again. A
+# step with numbered options has them listed again under its nudge, so these end with a colon.
+NUDGES: dict[str, str] = {
+    STEP_INTAKE_NAME: "Please send your first name and surname, for example Jane Smith.",
+    STEP_INTAKE_ADDRESS: (
+        "Please send the street address the tutor should come to, including the suburb or town."
+    ),
+    STEP_INTAKE_ACCESS_CODE: (
+        'Please send the access code or entry instructions for the tutor, or reply "none".'
+    ),
+    STEP_INTAKE_LABEL: 'Please send a short name for this address, such as "Home", or reply "skip".',
+    STEP_CHILD_REGISTERED: (
+        "Please reply yes if another guardian has already registered this child with us, "
+        "or no if not."
+    ),
+    STEP_CHILD_NAME: "Please send your child's first name and surname.",
+    STEP_CHILD_DOB: (
+        "Please send your child's date of birth with the day, month and year, "
+        "for example 23 April 2016."
+    ),
+    STEP_CHILD_SCHOOL: "Please send the name of your child's school.",
+    STEP_CHILD_NOTES: (
+        'Please send anything we should know about your child, or reply "none" if there is nothing.'
+    ),
+    STEP_CHILD_MORE: "Please reply yes to add another child, or no if that's everyone.",
+    STEP_MENU: "Please let me know whether you'd like to book, cancel or move a session.",
+    STEP_BOOK_CHILD: "Please reply with the number or name of the child the session is for:",
+    STEP_BOOK_SUBJECT: "Please reply with the number or name of the subject:",
+    STEP_BOOK_TUTOR: "Please reply with the number or name of the tutor you'd like:",
+    STEP_BOOK_DATE: (
+        'Please send the day you\'d like the session, such as "next Tuesday" or "14 October".'
+    ),
+    STEP_BOOK_HOME: "Please reply with the number or name of the address for the session:",
+    STEP_BOOK_SLOT: "Please reply with the number of the time you'd like:",
+    STEP_BOOK_CONFIRM: "Please reply yes to book this session, or no to choose another time.",
+    STEP_FIRST_SESSION_SUBJECT: "Please reply with the number or name of the subject:",
+    STEP_FIRST_SESSION_DATE: (
+        'Please send the day you\'d like the first session, such as "next Tuesday" or "14 October".'
+    ),
+    STEP_CANCEL_PICK: "Please reply with the number of the session you'd like to cancel:",
+    STEP_CANCEL_CONFIRM: "Please reply yes to cancel this session, or no to keep it.",
+    STEP_RESCHEDULE_PICK: "Please reply with the number of the session you'd like to move:",
+    STEP_REACTIVATION_CONFIRM: (
+        "Please reply yes if you'd like me to ask the office to reactivate them, or no if not."
+    ),
+}
+
+# What a nudge says first when the handler knows why it refused the reply.
+IMPLAUSIBLE_BIRTH_DATE = "That date of birth doesn't look right."
+UNREADABLE_DATE = "I couldn't read that as a date."
+OPTION_OUT_OF_RANGE = "Please reply with a number from 1 to {count}:"
+AMBIGUOUS_NAME = "That matches more than one option. Please reply with the number you mean:"
+# The name also matches a child who is not active, and so is not in the list (REQ-132.5). The
+# full name is what lets the parent reach that child's reactivation offer; no child is named.
+AMBIGUOUS_CHILD = (
+    "More than one of your children has that name, and not all of them are listed here. "
+    "Please reply with the number of the child this session is for, or their full name:"
+)
 
 # REQ-075.6 / OQ-24. A refusal inside `cancellation_cutoff_hours` is a **policy** outcome, not
 # a bot failure, so it carries no `flag_reason`: no flag reason exists for a policy refusal, and
@@ -195,14 +287,14 @@ GUARDIAN_LINK_REPLY = (
 # REQ-078.2's bail-out. The flow state is deliberately left where it is, so the parent resumes
 # mid-flow on their next usable message rather than starting intake over.
 BAILED_OUT = (
-    "I'm sorry — I'm not following. I've asked one of our team to pick this up and "
+    "I'm sorry, I'm not following. I've asked one of our team to pick this up and "
     "they'll be in touch shortly."
 )
 
 # REQ-078.3. A parser outage is not the parent failing to be understood, so it flags
 # immediately with `parse_error` and does not spend a re-prompt.
 PARSER_UNAVAILABLE = (
-    "Sorry, I'm having trouble right now. I've asked one of our team to pick this up and "
+    "I'm sorry, I'm having trouble right now. I've asked one of our team to pick this up and "
     "they'll be in touch shortly."
 )
 
@@ -232,17 +324,13 @@ REACTIVATION_PENDING = (
 
 BOOKING_NOTE = "Booked by the WhatsApp assistant."
 
-# The widths of the columns the intake answers land in, plus the grade's range. `homes.address`
-# is TEXT and takes a loose bound of its own; `children.notes` is TEXT bounded by the same
-# `NOTES_MAX_LENGTH` the API schema enforces; the rest are the declared `String(...)` lengths in
-# `models/`. Grade 0 is refused because the API refuses it (`ChildCreate.grade_level >= 1`,
-# OQ-42): the bot is the second writer and must not store what the first would reject.
+# The widths of the columns the intake answers land in. `homes.address` is TEXT and takes a
+# loose bound of its own; `children.notes` is TEXT bounded by the same `NOTES_MAX_LENGTH` the
+# API schema enforces; the rest are the declared `String(...)` lengths in `models/`.
 NAME_LIMIT = 255
 ADDRESS_LIMIT = 1000
 ACCESS_CODE_LIMIT = 64
 LABEL_LIMIT = 64
-GRADE_MINIMUM = 1
-GRADE_MAXIMUM = 30
 
 # See `_context`. A street address and its door code are what P7-F exists to protect; a child's
 # date of birth and the notes answer — which can be health information — are withheld on the
@@ -250,9 +338,78 @@ GRADE_MAXIMUM = 30
 # be understood.
 _WITHHELD_FROM_CONTEXT = frozenset({"address", "access_code", "child_date_of_birth", "child_notes"})
 
-_AFFIRMATIVE = frozenset({"yes", "y", "yeah", "yep", "sure", "ok", "okay", "please", "true"})
-_NEGATIVE = frozenset({"no", "n", "nope", "nah", "skip", "false"})
+# Compared after `_normalized`, so "Yes, please!" is "yes please". The parser is told to answer
+# `yes` or `no`; these are the phrasings it may still pass through verbatim.
+_AFFIRMATIVE = frozenset(
+    {
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "yup",
+        "sure",
+        "ok",
+        "okay",
+        "please",
+        "true",
+        "yes please",
+        "yes thanks",
+        "yes thank you",
+        "ok thanks",
+        "okay thanks",
+        "please do",
+        "go ahead",
+        "go for it",
+        "sounds good",
+        "that's fine",
+        "that works",
+        "correct",
+        "of course",
+        "definitely",
+        "absolutely",
+    }
+)
+_NEGATIVE = frozenset(
+    {
+        "no",
+        "n",
+        "nope",
+        "nah",
+        "skip",
+        "false",
+        "no thanks",
+        "no thank you",
+        "nope thanks",
+        "not now",
+        "not right now",
+        "not at the moment",
+        "not really",
+        "no need",
+        "no that's all",
+        "no that's everyone",
+    }
+)
 _NO_NOTES = _NEGATIVE | {"none", "nothing", "n/a", "na"}
+
+# The form each step needs its answer in, told to the parser. A step absent here takes `TEXT`.
+_ANSWER_KINDS: dict[str, AnswerKind] = {
+    STEP_CHILD_REGISTERED: AnswerKind.YES_NO,
+    STEP_CHILD_MORE: AnswerKind.YES_NO,
+    STEP_BOOK_CONFIRM: AnswerKind.YES_NO,
+    STEP_CANCEL_CONFIRM: AnswerKind.YES_NO,
+    STEP_REACTIVATION_CONFIRM: AnswerKind.YES_NO,
+    STEP_CHILD_DOB: AnswerKind.DATE,
+    STEP_BOOK_DATE: AnswerKind.DATE,
+    STEP_FIRST_SESSION_DATE: AnswerKind.DATE,
+    STEP_BOOK_CHILD: AnswerKind.CHOICE,
+    STEP_BOOK_SUBJECT: AnswerKind.CHOICE,
+    STEP_BOOK_TUTOR: AnswerKind.CHOICE,
+    STEP_BOOK_HOME: AnswerKind.CHOICE,
+    STEP_BOOK_SLOT: AnswerKind.CHOICE,
+    STEP_FIRST_SESSION_SUBJECT: AnswerKind.CHOICE,
+    STEP_CANCEL_PICK: AnswerKind.CHOICE,
+    STEP_RESCHEDULE_PICK: AnswerKind.CHOICE,
+}
 
 # The steps that cannot run without a `guardians` row. A stored state pointing at one of these
 # with no guardian behind it — a turn whose commit failed, a client an admin removed — restarts
@@ -269,7 +426,10 @@ _GUARDIAN_STEPS = frozenset(
         STEP_BOOK_HOME,
         STEP_BOOK_SLOT,
         STEP_BOOK_CONFIRM,
+        STEP_FIRST_SESSION_SUBJECT,
+        STEP_FIRST_SESSION_DATE,
         STEP_CANCEL_PICK,
+        STEP_CANCEL_CONFIRM,
         STEP_RESCHEDULE_PICK,
         STEP_REACTIVATION_CONFIRM,
     }
@@ -298,6 +458,7 @@ _BOOKING_KEYS = (
     "book_home_id",
     "chosen",
     "reschedule_booking_id",
+    "cancel_booking_id",
 )
 
 # What each step's handler reads out of `collected_data` before it writes anything of its own —
@@ -307,16 +468,17 @@ _BOOKING_KEYS = (
 _INTAKE_KEYS = frozenset({"guardian_name", "address", "access_code"})
 
 _REQUIRED_KEYS: dict[str, frozenset[str]] = {
-    STEP_CHILD_NOTES: frozenset(
-        {"child_name", "child_date_of_birth", "child_grade", "child_school"}
-    ),
+    STEP_CHILD_NOTES: frozenset({"child_name", "child_date_of_birth", "child_school"}),
     STEP_BOOK_SUBJECT: frozenset({"book_child_id", "book_grade_level"}),
     STEP_BOOK_DATE: frozenset({"book_child_id"}),
+    STEP_FIRST_SESSION_SUBJECT: frozenset({"book_child_id"}),
+    STEP_FIRST_SESSION_DATE: frozenset({"book_child_id"}),
     STEP_BOOK_HOME: frozenset(
         {"book_date", "book_tutor_id", "book_subject_id", "book_grade_level"}
     ),
     STEP_BOOK_SLOT: frozenset({"book_date"}),
     STEP_REACTIVATION_CONFIRM: frozenset({"reactivation_child_id", "reactivation_child_name"}),
+    STEP_CANCEL_CONFIRM: frozenset({"cancel_booking_id"}),
     STEP_BOOK_CONFIRM: frozenset(
         {
             "chosen",
@@ -364,6 +526,18 @@ class _Next:
     reactivation_child_id: uuid.UUID | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _Aside:
+    """A reply that answers the parent without moving the flow.
+
+    The step and the miss count stay exactly as they were, so small talk can never bail a
+    parent out and never wipes a miss they have already used.
+    """
+
+    reply: str
+    flag_reason: FlagReason | None = None
+
+
 class _Ambiguity(enum.Enum):
     """More than one child matched a name, and at least one of them is inactive (REQ-132.5)."""
 
@@ -372,18 +546,24 @@ class _Ambiguity(enum.Enum):
 
 _AMBIGUOUS = _Ambiguity.INACTIVE_AMONG_SEVERAL
 
-type _Handler = Callable[[_Turn, ParsedIntent], _Next | None]
-type _NameHit = Child | _Ambiguity | None
 
+class _Refusal(enum.Enum):
+    """Why a handler could not use a reply it did read, so the re-prompt can say so.
 
-def server_now() -> datetime.datetime:
-    """The one clock read per turn, in the naive UTC every scheduling column stores.
-
-    Named rather than inlined so a test can freeze it: `reply_for`'s signature is settled by
-    P7-A and cannot take `now`, but `slot_service` and `booking_write_service` both require one
-    from their caller. Same form as `routers/slots.py:_now`.
+    A handler returns `None` when the reply gave it nothing to work with, and one of these
+    when it did and the value was wrong; `_miss` turns either into the parent's nudge.
     """
-    return datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)
+
+    IMPLAUSIBLE_BIRTH_DATE = "implausible_birth_date"
+    UNREADABLE_DATE = "unreadable_date"
+    OPTION_OUT_OF_RANGE = "option_out_of_range"
+    AMBIGUOUS_NAME = "ambiguous_name"
+    AMBIGUOUS_CHILD = "ambiguous_child"
+
+
+type _Outcome = _Next | _Aside | _Refusal | None
+type _Handler = Callable[[_Turn, ParsedIntent], _Outcome]
+type _NameHit = Child | _Ambiguity | None
 
 
 def reply_for(
@@ -449,14 +629,20 @@ def _take_turn(
         phone_number=phone_number,
         body=body,
         guardian=guardian,
-        now=server_now(),
+        # The turn's one clock read; every handler uses `turn.now`.
+        now=clock.business_now(),
         state=state,
         reactivation_pending=reactivation_pending,
     )
 
     try:
         parsed = parser_service.parse_intent(
-            step=state.step, question=state.prompt, body=body, context=_context(state)
+            step=state.step,
+            question=state.prompt,
+            body=body,
+            context=_context(state),
+            answer_kind=_ANSWER_KINDS.get(state.step, AnswerKind.TEXT),
+            today=turn.now.date(),
         )
     except parser_service.ParseFailed as error:
         # REQ-078.3: flag on the first occurrence and leave the state exactly as it is — the
@@ -469,7 +655,12 @@ def _take_turn(
         decided = BotTurn(reply=PARSER_UNAVAILABLE, flag_reason=FlagReason.PARSE_ERROR)
     else:
         result = None if parsed.confidence_is_low else _HANDLERS[state.step](turn, parsed)
-        decided = _miss(turn, parsed) if result is None else _apply(turn, result)
+        if isinstance(result, _Next):
+            decided = _apply(turn, result)
+        elif isinstance(result, _Aside):
+            decided = _set_aside(turn, result)
+        else:
+            decided = _miss(turn, parsed, result)
 
     return decided
 
@@ -549,7 +740,15 @@ def _apply(turn: _Turn, result: _Next) -> BotTurn:
     )
 
 
-def _miss(turn: _Turn, parsed: ParsedIntent) -> BotTurn:
+def _set_aside(turn: _Turn, result: _Aside) -> BotTurn:
+    """Answer without advancing: only the prompt moves on, so the parser sees what was said."""
+    turn.state.prompt = result.reply
+    save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
+
+    return BotTurn(reply=result.reply, flag_reason=result.flag_reason)
+
+
+def _miss(turn: _Turn, parsed: ParsedIntent, refusal: _Refusal | None) -> BotTurn:
     """A reply this step could not use: re-prompt, or bail out on the third one (REQ-078.2).
 
     `step` and `collected_data` are untouched either way, so the bail-out hands the thread to
@@ -559,12 +758,14 @@ def _miss(turn: _Turn, parsed: ParsedIntent) -> BotTurn:
     turn.state.misses += 1
     # Names and presence only, never values: fields and answers hold the parent's PII.
     logger.warning(
-        "bot miss at step %s: intent=%s confidence_is_low=%s fields=%s answer=%s misses=%d",
+        "bot miss at step %s: intent=%s confidence_is_low=%s fields=%s answer=%s "
+        "refusal=%s misses=%d",
         turn.state.step,
         parsed.intent.value,
         parsed.confidence_is_low,
         sorted(parsed.fields),
         "present" if parsed.answer and parsed.answer.strip() else "empty",
+        None if refusal is None else refusal.value,
         turn.state.misses,
     )
     has_bailed_out = turn.state.misses > MAX_REPROMPTS
@@ -577,9 +778,34 @@ def _miss(turn: _Turn, parsed: ParsedIntent) -> BotTurn:
     if has_bailed_out:
         result = BotTurn(reply=BAILED_OUT, flag_reason=FlagReason.STUCK)
     else:
-        result = BotTurn(reply=f"{NOT_UNDERSTOOD}\n\n{turn.state.prompt}")
+        result = BotTurn(reply=_nudge(turn, refusal))
 
     return result
+
+
+def _nudge(turn: _Turn, refusal: _Refusal | None) -> str:
+    """The re-prompt: what the step needs, led by why the reply was refused when that is known,
+    and followed by the step's numbered options when it has them."""
+    step = turn.state.step
+    options: list[dict[str, Any]] = turn.data.get("options", [])
+
+    if refusal is _Refusal.OPTION_OUT_OF_RANGE:
+        text = OPTION_OUT_OF_RANGE.format(count=len(options))
+    elif refusal is _Refusal.AMBIGUOUS_NAME:
+        text = AMBIGUOUS_NAME
+    elif refusal is _Refusal.AMBIGUOUS_CHILD:
+        text = AMBIGUOUS_CHILD
+    elif refusal is _Refusal.IMPLAUSIBLE_BIRTH_DATE:
+        text = f"{IMPLAUSIBLE_BIRTH_DATE} {NUDGES[step]}"
+    elif refusal is _Refusal.UNREADABLE_DATE:
+        text = f"{UNREADABLE_DATE} {NUDGES[step]}"
+    else:
+        text = NUDGES[step]
+
+    if _ANSWER_KINDS.get(step) is AnswerKind.CHOICE and options:
+        text = f"{text}\n{_numbered(options)}"
+
+    return text
 
 
 def _stuck(turn: _Turn) -> _Next:
@@ -613,28 +839,6 @@ def _collect_text(key: str, reply: str, step: str, *, limit: int) -> _Handler:
     return handler
 
 
-def _collect_number(key: str, reply: str, step: str, *, minimum: int, maximum: int) -> _Handler:
-    """As `_collect_text`, for an answer that has to be a whole number.
-
-    Out of range is treated as not understood rather than stored: `grade_level` is an `integer`
-    column, and a number past PostgreSQL's four-byte range is the same 500-then-retry-for-ever
-    failure truncation exists to prevent above.
-    """
-
-    def handler(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
-        value = _number(turn, parsed)
-
-        if value is None or not minimum <= value <= maximum:
-            result = None
-        else:
-            turn.data[key] = str(value)
-            result = _Next(reply=reply, step=step)
-
-        return result
-
-    return handler
-
-
 def _intake_label(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     """The optional home label, and therefore the one intake step that never re-prompts.
 
@@ -644,7 +848,7 @@ def _intake_label(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     """
     label = _answer(turn, parsed)
 
-    if label is not None and label.casefold() not in _NEGATIVE:
+    if label is not None and _normalized(label) not in _NEGATIVE:
         turn.data["home_label"] = label[:LABEL_LIMIT]
 
     return _Next(reply=ASK_CHILD_REGISTERED, step=STEP_CHILD_REGISTERED)
@@ -703,21 +907,26 @@ def _child_name(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     return result
 
 
-def _child_date_of_birth(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _child_date_of_birth(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     """The ISO form only, and only a date `child_service` would accept (REQ-096.3).
 
-    Resolving "April 23rd 2016" is the parser's job, taught by the example in `ASK_CHILD_DOB`
-    the way `ASK_DATE` teaches it for bookings. Anything else is a re-prompt rather than a
-    guess, and so is an implausible date: `create_child` refuses one on the notes turn, and a
-    refusal there is a 500 the webhook cannot answer.
+    Resolving "April 23rd 2016" is the parser's job, told the `DATE` answer kind and today's
+    date. Anything else is a re-prompt rather than a guess, and so is an implausible date:
+    `create_child` refuses one on the notes turn, and a refusal there is a 500 the webhook
+    cannot answer. The two refusals say which went wrong.
     """
-    value = _iso_date(_answer(turn, parsed))
+    raw = _answer(turn, parsed)
+    value = _iso_date(raw)
 
-    if value is None or not child_service.date_of_birth_is_plausible(value, today=turn.now.date()):
-        result = None
+    if raw is None:
+        result: _Outcome = None
+    elif value is None:
+        result = _Refusal.UNREADABLE_DATE
+    elif not child_service.date_of_birth_is_plausible(value, today=turn.now.date()):
+        result = _Refusal.IMPLAUSIBLE_BIRTH_DATE
     else:
         turn.data["child_date_of_birth"] = value.isoformat()
-        result = _Next(reply=ASK_CHILD_GRADE, step=STEP_CHILD_GRADE)
+        result = _Next(reply=ASK_CHILD_SCHOOL, step=STEP_CHILD_SCHOOL)
 
     return result
 
@@ -745,7 +954,7 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
     """
     answer = _answer(turn, parsed)
 
-    if answer is None or answer.casefold() in _NO_NOTES:
+    if answer is None or _normalized(answer) in _NO_NOTES:
         notes = None
     else:
         notes = answer[:NOTES_MAX_LENGTH]
@@ -767,7 +976,8 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
             home_ids=home_ids,
             name=turn.data["child_name"],
             date_of_birth=datetime.date.fromisoformat(turn.data["child_date_of_birth"]),
-            grade_level=int(turn.data["child_grade"]),
+            # Unknown at intake: an admin sets the grade after the first session.
+            grade_level=None,
             school_name=turn.data["child_school"],
             notes=notes,
         )
@@ -823,12 +1033,13 @@ def _child_more(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
 # --- the menu, and the three things a returning guardian can ask for (REQ-075) -----------------
 
 
-def _menu(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _menu(turn: _Turn, parsed: ParsedIntent) -> _Next | _Aside | None:
     """Dispatch on the intent — after detection point (a) has looked for an inactive child.
 
     Only `book` and `unknown` are read for a name (§4a). A unique inactive hit is offered; an
     ambiguous one picks nothing by that name, so a booking asks which child even when only one
     is active and an `unknown` re-prompts (REQ-132.5). Anything else is today's dispatch.
+    Small talk and a question the bot cannot answer are asides: neither is a miss.
     """
     named = _named_at_menu(turn, parsed)
 
@@ -848,6 +1059,10 @@ def _menu(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
             step=None,
             flag_reason=FlagReason.GUARDIAN_LINK_REQUEST,
         )
+    elif parsed.intent is BotIntent.CHIT_CHAT:
+        result = _Aside(reply=f"{SMALL_TALK_REPLY} {ASK_MENU}")
+    elif parsed.intent is BotIntent.QUESTION:
+        result = _Aside(reply=f"{QUESTION_PASSED_ON} {ASK_MENU}", flag_reason=FlagReason.QUESTION)
     else:
         result = None
 
@@ -907,16 +1122,54 @@ def _begin_change(turn: _Turn, *, moving: bool) -> _Next:
     return result
 
 
-def _cancel_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
-    """REQ-075.3, and `cancellation_cutoff_hours`'s first consumer.
+def _cancel_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
+    """REQ-075.3, and `cancellation_cutoff_hours`'s first consumer: the pick, then a confirm.
 
     Inside the window the bot declines and does **not** flag: a policy refusal is not a bot
-    failure, and no flag reason exists for one.
+    failure, and no flag reason exists for one. The cutoff is checked here so the refusal comes
+    before the confirm question, and again on the "yes", which can arrive much later.
     """
     booking = _picked_booking(turn, parsed)
 
-    if booking is None:
+    if not isinstance(booking, Booking):
+        return booking
+
+    if _inside_cutoff(turn.db, booking=booking, now=turn.now):
+        return _Next(reply=CUTOFF_DECLINED, step=None)
+
+    turn.data["cancel_booking_id"] = str(booking.id)
+
+    return _Next(
+        reply=CONFIRM_CANCEL.format(
+            child=booking.child.name,
+            date=format_date(booking.scheduled_date),
+            time=format_time_range(booking.start_time, booking.end_time),
+        ),
+        step=STEP_CANCEL_CONFIRM,
+    )
+
+
+def _cancel_confirm(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
+    """The answer to `CONFIRM_CANCEL`. "No" keeps the session and goes back to the menu."""
+    answer = _yes_no(turn, parsed)
+
+    if answer is None:
         return None
+
+    booking_id = uuid.UUID(turn.data.pop("cancel_booking_id"))
+
+    if not answer:
+        return _Next(reply=f"{CANCEL_KEPT} {ASK_MENU}", step=STEP_MENU)
+
+    # Re-read through the guardian's own upcoming list: an admin may have unlinked them from
+    # the child, or the session may have changed, since the pick.
+    upcoming = _upcoming_bookings(
+        turn.db, guardian_id=turn.guardian.id, on_or_after=turn.now.date()
+    )
+    booking = next((booking for booking in upcoming if booking.id == booking_id), None)
+
+    if booking is None:
+        return _stuck(turn)
 
     if _inside_cutoff(turn.db, booking=booking, now=turn.now):
         return _Next(reply=CUTOFF_DECLINED, step=None)
@@ -931,7 +1184,7 @@ def _cancel_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     return _Next(reply=CANCELLED, step=None)
 
 
-def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     """P7-O: reschedule is cancel-then-rebook through the two paths that already exist.
 
     Nothing is cancelled here. The old booking's id is carried in the flow state and the old
@@ -943,8 +1196,8 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     """
     booking = _picked_booking(turn, parsed)
 
-    if booking is None:
-        return None
+    if not isinstance(booking, Booking):
+        return booking
 
     if _inside_cutoff(turn.db, booking=booking, now=turn.now):
         return _Next(reply=CUTOFF_DECLINED, step=None)
@@ -952,7 +1205,7 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     _reset_booking(turn.data)
     turn.data["reschedule_booking_id"] = str(booking.id)
     turn.data["book_child_id"] = str(booking.child_id)
-    turn.data["book_grade_level"] = str(booking.child.grade_level)
+    turn.data["book_grade_level"] = _stored_grade(booking.child.grade_level)
     turn.data["book_subject_id"] = str(booking.subject_id)
     turn.data["book_tutor_id"] = str(booking.tutor_id)
     turn.data["book_home_id"] = str(booking.home_id)
@@ -963,7 +1216,7 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
 # --- the booking flow (REQ-074) ----------------------------------------------------------------
 
 
-def _book_child(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _book_child(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     """The child pick — and detection point (b) when the answer is a name rather than a list
     position (§4a).
 
@@ -972,40 +1225,52 @@ def _book_child(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     before; and a typo only when `_chosen` found nothing, so a typo never overrides a pick among
     the offered children. A typo serves only the reactivation offer and never selects an active
     child.
-    """
-    raw = _answer(turn, parsed)
 
-    if raw is None or raw.isdigit():
+    The name is read from `child_name` before `answer`: the `CHOICE` kind asks the parser for
+    the option's number, so "Sam" usually arrives as a digit with the name only under that field
+    (SA-28). Checking the digit alone would book the active lookalike.
+    """
+    named = parsed.fields.get(STEP_CHILD_NAME, "").strip() or _answer(turn, parsed)
+
+    if named is None or named.isdecimal():
         return _pick_child(turn, parsed)
 
     linked = _linked_children(turn.db, guardian_id=turn.guardian.id)
-    exact = exact_matches(linked, raw)
+    exact = exact_matches(linked, named)
     hit = _inactive_hit(exact)
 
     if isinstance(hit, Child):
         result = _offer_reactivation(turn, child=hit)
     elif hit is _AMBIGUOUS:
-        result = None
+        result = _Refusal.AMBIGUOUS_CHILD
     else:
         result = _pick_child(turn, parsed)
 
-    if result is None and not exact:
-        typo_hit = _inactive_hit(typo_matches(linked, raw))
-        result = _offer_reactivation(turn, child=typo_hit) if isinstance(typo_hit, Child) else None
+    if not isinstance(result, _Next) and not exact:
+        typo_hit = _inactive_hit(typo_matches(linked, named))
+        if isinstance(typo_hit, Child):
+            result = _offer_reactivation(turn, child=typo_hit)
 
     return result
 
 
-def _pick_child(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _pick_child(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     option = _chosen(turn, parsed)
-    child = None if option is None else turn.db.get(Child, uuid.UUID(option["id"]))
+
+    if not isinstance(option, dict):
+        return option
+
+    child = turn.db.get(Child, uuid.UUID(option["id"]))
 
     return None if child is None else _ask_subject(turn, child=child)
 
 
 def _ask_subject(turn: _Turn, *, child: Child) -> _Next:
+    """The subject question, on the handoff path when the child has no grade on file: without
+    a grade there is no ceiling to match tutors against, so the office arranges that session."""
     turn.data["book_child_id"] = str(child.id)
-    turn.data["book_grade_level"] = str(child.grade_level)
+    turn.data["book_grade_level"] = _stored_grade(child.grade_level)
+    step = STEP_BOOK_SUBJECT if child.grade_level is not None else STEP_FIRST_SESSION_SUBJECT
     subjects = turn.db.scalars(
         select(Subject)
         .where(Subject.is_active.is_(True))
@@ -1017,24 +1282,22 @@ def _ask_subject(turn: _Turn, *, child: Child) -> _Next:
         result = _stuck(turn)
     else:
         options = [{"id": str(subject.id), "label": subject.name} for subject in subjects]
-        result = _Next(
-            reply=f"{ASK_SUBJECT}\n{_offer(turn.state, options)}", step=STEP_BOOK_SUBJECT
-        )
+        result = _Next(reply=f"{ASK_SUBJECT}\n{_offer(turn.state, options)}", step=step)
 
     return result
 
 
-def _book_subject(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _book_subject(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     option = _chosen(turn, parsed)
 
-    if option is None:
-        return None
+    if not isinstance(option, dict):
+        return option
 
     turn.data["book_subject_id"] = option["id"]
     tutors = _qualified_tutors(
         turn.db,
         subject_id=uuid.UUID(option["id"]),
-        grade_level=int(turn.data["book_grade_level"]),
+        grade_level=_read_grade(turn.data["book_grade_level"]),
     )
 
     if not tutors:
@@ -1048,11 +1311,11 @@ def _book_subject(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     return _Next(reply=f"{ASK_TUTOR}\n{_offer(turn.state, options)}", step=STEP_BOOK_TUTOR)
 
 
-def _book_tutor(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _book_tutor(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     option = _chosen(turn, parsed)
 
-    if option is None:
-        result = None
+    if not isinstance(option, dict):
+        result: _Outcome = option
     else:
         turn.data["book_tutor_id"] = option["id"]
         result = _Next(reply=ASK_DATE, step=STEP_BOOK_DATE)
@@ -1060,21 +1323,83 @@ def _book_tutor(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     return result
 
 
-def _book_date(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _book_date(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     """Resolving "next tuesday" is the parser's job; this step only accepts the ISO form.
 
-    `ASK_DATE` shows the format and the prompt travels into the parser's context verbatim,
-    which is what makes the convention visible to the model rather than assumed of it. Anything
-    else is a re-prompt: guessing a date books a session on a day nobody named.
+    The parser is told the `DATE` answer kind and today's date, which is what makes the
+    convention visible to the model rather than assumed of it. Anything else is a re-prompt:
+    guessing a date books a session on a day nobody named.
     """
-    date = _iso_date(_answer(turn, parsed))
+    date = _read_date(turn, parsed)
 
-    if date is None:
-        return None
+    if not isinstance(date, datetime.date):
+        return date
 
     turn.data["book_date"] = date.isoformat()
 
     return _ask_home(turn)
+
+
+def _first_session_subject(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
+    option = _chosen(turn, parsed)
+
+    if not isinstance(option, dict):
+        result: _Outcome = option
+    else:
+        turn.data["book_subject_id"] = option["id"]
+        result = _Next(reply=ASK_DATE, step=STEP_FIRST_SESSION_DATE)
+
+    return result
+
+
+def _first_session_date(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
+    """Read like `_book_date`, then hand the chat to the office: no tutor, no home, no slots and
+    no write. The window is still checked, so the office is never asked for a day the bot would
+    have refused."""
+    date = _read_date(turn, parsed)
+
+    if not isinstance(date, datetime.date):
+        return date
+
+    settings = scheduling_service.load_scheduling_settings(turn.db)
+
+    try:
+        scheduling_service.assert_date_in_window(
+            date, today=turn.now.date(), lookahead_days=settings.booking_lookahead_days
+        )
+    except scheduling_service.DateOutOfWindow:
+        return _Next(reply=f"{DATE_NOT_BOOKABLE} {ASK_DATE}", step=STEP_FIRST_SESSION_DATE)
+
+    child = turn.db.get(Child, uuid.UUID(turn.data["book_child_id"]))
+
+    if child is None:
+        return _stuck(turn)
+
+    return _Next(
+        reply=FIRST_SESSION_HANDOFF.format(name=child.name),
+        step=None,
+        flag_reason=FlagReason.BOOKING_REQUEST,
+    )
+
+
+def _stored_grade(grade_level: int | None) -> str | None:
+    return None if grade_level is None else str(grade_level)
+
+
+def _read_grade(stored: str | None) -> int | None:
+    # "None" is what builds before the first-session handoff stored for a child with no grade.
+    return None if stored in (None, "None") else int(stored)
+
+
+def _read_date(turn: _Turn, parsed: ParsedIntent) -> datetime.date | _Refusal | None:
+    """The answer as a date; `None` when there was no answer, a refusal when it is not ISO."""
+    raw = _answer(turn, parsed)
+    date = _iso_date(raw)
+
+    if raw is not None and date is None:
+        return _Refusal.UNREADABLE_DATE
+
+    return date
 
 
 def _iso_date(raw: str | None) -> datetime.date | None:
@@ -1119,11 +1444,11 @@ def _ask_home(turn: _Turn) -> _Next:
     return result
 
 
-def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     option = _chosen(turn, parsed)
 
-    if option is None:
-        result = None
+    if not isinstance(option, dict):
+        result: _Outcome = option
     else:
         turn.data["book_home_id"] = option["id"]
         result = _offer_slots(turn)
@@ -1146,7 +1471,7 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
         found = slot_service.find_available_slots(
             turn.db,
             subject_id=uuid.UUID(turn.data["book_subject_id"]),
-            grade_level=int(turn.data["book_grade_level"]),
+            grade_level=_read_grade(turn.data["book_grade_level"]),
             date=date,
             tutor_id=uuid.UUID(requested) if requested else None,
             now=turn.now,
@@ -1156,13 +1481,13 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
 
     if not found.items:
         return _Next(
-            reply=f"{NO_SLOTS.format(date=date.isoformat())} {ASK_DATE}", step=STEP_BOOK_DATE
+            reply=f"{NO_SLOTS.format(date=format_date(date))} {ASK_DATE}", step=STEP_BOOK_DATE
         )
 
     options = [
         {
             "id": str(slot.availability_id),
-            "label": f"{slot.start_time:%H:%M}-{slot.end_time:%H:%M} with {slot.tutor_name}",
+            "label": f"{format_time_range(slot.start_time, slot.end_time)} with {slot.tutor_name}",
             "tutor_id": str(slot.tutor_id),
             "availability_id": str(slot.availability_id),
             "start_time": slot.start_time.isoformat(),
@@ -1170,7 +1495,7 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
         }
         for slot in found.items
     ]
-    lines = [preamble or ASK_SLOT.format(date=date.isoformat()), _offer(turn.state, options)]
+    lines = [preamble or ASK_SLOT.format(date=format_date(date)), _offer(turn.state, options)]
 
     if found.total > len(found.items):
         lines.append(SHOWING_SOME.format(shown=len(found.items), total=found.total))
@@ -1178,19 +1503,39 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
     return _Next(reply="\n".join(lines), step=STEP_BOOK_SLOT)
 
 
-def _book_slot(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+def _book_slot(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     option = _chosen(turn, parsed)
 
-    if option is None:
-        result = None
+    if not isinstance(option, dict):
+        result: _Outcome = option
     else:
         turn.data["chosen"] = option
-        result = _Next(
-            reply=CONFIRM_SLOT.format(label=option["label"], date=turn.data["book_date"]),
-            step=STEP_BOOK_CONFIRM,
-        )
+        result = _Next(reply=_slot_confirmation(turn, option), step=STEP_BOOK_CONFIRM)
 
     return result
+
+
+def _slot_confirmation(turn: _Turn, option: dict[str, Any]) -> str:
+    """`CONFIRM_RESCHEDULE` when this booking replaces one, else `CONFIRM_SLOT`.
+
+    A replaced booking that cannot be loaded (a row removed since the pick) gets the plain
+    confirmation rather than a crash; the write then treats it as already moved.
+    """
+    date = _human_date(turn.data["book_date"])
+    replaced_id = turn.data.get("reschedule_booking_id")
+    replaced = None if replaced_id is None else turn.db.get(Booking, uuid.UUID(replaced_id))
+
+    if replaced is None:
+        text = CONFIRM_SLOT.format(label=option["label"], date=date)
+    else:
+        text = CONFIRM_RESCHEDULE.format(
+            label=option["label"],
+            date=date,
+            child=replaced.child.name,
+            old_date=format_date(replaced.scheduled_date),
+            old_time=format_time_range(replaced.start_time, replaced.end_time),
+        )
+    return text
 
 
 def _book_confirm(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
@@ -1215,8 +1560,19 @@ def _write_booking(turn: _Turn) -> _Next:
 
     On a reschedule the new booking is written **first** and the old one cancelled after it. The
     other order would leave a parent with nothing whenever the replacement is refused, since the
-    cancellation would already be in the transaction the webhook is about to commit.
+    cancellation would already be in the transaction the webhook is about to commit. Both run
+    in one savepoint, so a cancel that fails unexpectedly undoes the new booking too: `stuck`
+    then means nothing changed, never two live sessions. An old session that is already
+    cancelled or gone counts as moved.
+
+    The replaced booking is checked against the guardian's links first: the id was picked from
+    their own list, but they may have been unlinked from the child since.
     """
+    replaced = turn.data.get("reschedule_booking_id")
+
+    if replaced is not None and not _may_replace(turn, booking_id=uuid.UUID(replaced)):
+        return _stuck(turn)
+
     chosen = turn.data["chosen"]
     request = booking_write_service.BookingRequest(
         child_id=uuid.UUID(turn.data["book_child_id"]),
@@ -1232,7 +1588,10 @@ def _write_booking(turn: _Turn) -> _Next:
     )
 
     try:
-        booking_write_service.create_booking(turn.db, request=request, now=turn.now)
+        with turn.db.begin_nested():
+            booking_write_service.create_booking(turn.db, request=request, now=turn.now)
+            if replaced is not None:
+                _cancel_replaced(turn, booking_id=uuid.UUID(replaced))
     except (
         booking_write_service.BookingOverlaps,
         booking_write_service.GapNotRespected,
@@ -1241,23 +1600,44 @@ def _write_booking(turn: _Turn) -> _Next:
         return _offer_slots(turn, preamble=SLOT_JUST_TAKEN)
     except (booking_write_service.DateOutOfWindow, booking_write_service.LeadTimeNotMet):
         return _Next(reply=f"{DATE_NOT_BOOKABLE} {ASK_DATE}", step=STEP_BOOK_DATE)
-    except booking_write_service.BookingWriteError:
+    except (booking_write_service.BookingWriteError, _ReplaceFailed):
         return _stuck(turn)
 
-    replaced = turn.data.get("reschedule_booking_id")
-    summary = {"label": chosen["label"], "date": turn.data["book_date"]}
+    summary = {"label": chosen["label"], "date": _human_date(turn.data["book_date"])}
+    reply = BOOKING_CONFIRMED if replaced is None else BOOKING_MOVED
 
-    if replaced is None:
-        return _Next(reply=BOOKING_CONFIRMED.format(**summary), step=None)
+    return _Next(reply=reply.format(**summary), step=None)
 
+
+class _ReplaceFailed(Exception):
+    """The old session of a reschedule is still live and could not be cancelled."""
+
+
+def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
+    """Whether this guardian is still linked to the child being rebooked, and to the old
+    session's child when that session still exists."""
+    linked_ids = {child.id for child in _linked_children(turn.db, guardian_id=turn.guardian.id)}
+    old = turn.db.get(Booking, booking_id)
+    child_ids = {uuid.UUID(turn.data["book_child_id"])}
+
+    if old is not None:
+        child_ids.add(old.child_id)
+
+    return child_ids <= linked_ids
+
+
+def _cancel_replaced(turn: _Turn, *, booking_id: uuid.UUID) -> None:
     try:
         booking_status_service.change_status(
-            turn.db, booking_id=uuid.UUID(replaced), target=BookingStatus.CANCELLED
+            turn.db, booking_id=booking_id, target=BookingStatus.CANCELLED
         )
-    except booking_status_service.BookingStatusError:
-        return _stuck(turn)
-
-    return _Next(reply=BOOKING_MOVED.format(**summary), step=None)
+    except booking_status_service.BookingNotFound:
+        # Removed since the pick: the parent already holds only the new session.
+        logger.info("reschedule: replaced booking %s no longer exists", booking_id)
+    except booking_status_service.IllegalTransition as error:
+        if error.current.value in LIVE_BOOKING_STATUSES:
+            raise _ReplaceFailed(str(error)) from error
+        logger.info("reschedule: replaced booking %s was already %s", booking_id, error.current)
 
 
 # --- reactivation requests (REQ-132) -----------------------------------------------------------
@@ -1511,7 +1891,7 @@ def _upcoming_bookings(
 
 
 def _qualified_tutors(
-    db: Session, *, subject_id: uuid.UUID, grade_level: int
+    db: Session, *, subject_id: uuid.UUID, grade_level: int | None
 ) -> dict[uuid.UUID, str]:
     """Active tutors who teach this subject at or above this grade.
 
@@ -1544,15 +1924,43 @@ def _inside_cutoff(db: Session, *, booking: Booking, now: datetime.datetime) -> 
     return starts_at - now < datetime.timedelta(hours=hours)
 
 
-def _picked_booking(turn: _Turn, parsed: ParsedIntent) -> Booking | None:
+def _picked_booking(turn: _Turn, parsed: ParsedIntent) -> Booking | _Refusal | None:
     option = _chosen(turn, parsed)
 
-    return None if option is None else turn.db.get(Booking, uuid.UUID(option["id"]))
+    if not isinstance(option, dict):
+        return option
+
+    return turn.db.get(Booking, uuid.UUID(option["id"]))
+
+
+NOON_HOUR = 12
+
+
+def format_date(day: datetime.date) -> str:
+    """ "Tuesday 14 October". Built from `%A`/`%B` and `day.day` rather than `%-d`, which is a
+    platform-specific strftime flag."""
+    return f"{day:%A} {day.day} {day:%B}"
+
+
+def format_time_range(start: datetime.time, end: datetime.time) -> str:
+    """ "4:00pm-5:00pm". Spelled out by hand because `%-I` and `%p` casing vary by platform."""
+    return f"{_format_time(start)}-{_format_time(end)}"
+
+
+def _format_time(moment: datetime.time) -> str:
+    suffix = "am" if moment.hour < NOON_HOUR else "pm"
+    return f"{moment.hour % NOON_HOUR or NOON_HOUR}:{moment.minute:02d}{suffix}"
+
+
+def _human_date(iso: str) -> str:
+    """The flow state keeps ISO; only the reply text is human."""
+    return format_date(datetime.date.fromisoformat(iso))
 
 
 def _booking_label(booking: Booking) -> str:
     return (
-        f"{booking.scheduled_date.isoformat()} {booking.start_time:%H:%M} — "
+        f"{format_date(booking.scheduled_date)}, "
+        f"{format_time_range(booking.start_time, booking.end_time)}: "
         f"{booking.subject.name} for {booking.child.name} with {booking.tutor.name}"
     )
 
@@ -1572,19 +1980,16 @@ def _answer(turn: _Turn, parsed: ParsedIntent) -> str | None:
     return value or None
 
 
-def _number(turn: _Turn, parsed: ParsedIntent) -> int | None:
-    raw = _answer(turn, parsed)
+def _normalized(raw: str) -> str:
+    """Lower case, curly apostrophes straightened, commas and closing punctuation dropped and
+    spaces collapsed — so "No, thanks!" compares equal to "no thanks"."""
+    straightened = raw.casefold().replace("\u2019", "'").replace(",", " ")
 
-    try:
-        value = None if raw is None else int(raw)
-    except ValueError:
-        value = None
-
-    return value
+    return " ".join(straightened.split()).rstrip(".!")
 
 
 def _yes_no(turn: _Turn, parsed: ParsedIntent) -> bool | None:
-    raw = (_answer(turn, parsed) or "").casefold()
+    raw = _normalized(_answer(turn, parsed) or "")
 
     if raw in _AFFIRMATIVE:
         answer = True
@@ -1605,15 +2010,21 @@ def _offer(state: FlowState, options: list[dict[str, Any]]) -> str:
     """
     state.collected_data["options"] = options
 
+    return _numbered(options)
+
+
+def _numbered(options: list[dict[str, Any]]) -> str:
     return "\n".join(
         f"{number}. {option['label']}" for number, option in enumerate(options, start=1)
     )
 
 
-def _chosen(turn: _Turn, parsed: ParsedIntent) -> dict[str, Any] | None:
+def _chosen(turn: _Turn, parsed: ParsedIntent) -> dict[str, Any] | _Refusal | None:
     """The option the parent picked, by position or by an unambiguous name.
 
-    An ambiguous name match is a re-prompt rather than the first hit. On the tutor step that is
+    A number outside the list is refused as such rather than read as part of a name: the parser
+    is told to answer a choice with its number, and "5" is not a name. An ambiguous name match
+    is a re-prompt rather than the first hit. On the tutor step that is
     the difference between booking the tutor the guardian asked for and booking a different one
     whose name happens to contain the same letters — the REQ-074 correctness bug decision P7-T
     leaves to this module rather than to an ORM-layer assertion.
@@ -1624,13 +2035,18 @@ def _chosen(turn: _Turn, parsed: ParsedIntent) -> dict[str, Any] | None:
     if raw is None or not options:
         return None
 
-    if raw.isdigit() and 1 <= int(raw) <= len(options):
-        return options[int(raw) - 1]
+    # `isdecimal`, not `isdigit`: "²" is a digit that `int` refuses.
+    if raw.isdecimal():
+        is_in_range = 1 <= int(raw) <= len(options)
+        return options[int(raw) - 1] if is_in_range else _Refusal.OPTION_OUT_OF_RANGE
 
     needle = raw.casefold()
     hits = [option for option in options if needle in option["label"].casefold()]
 
-    return hits[0] if len(hits) == 1 else None
+    if len(hits) > 1:
+        return _Refusal.AMBIGUOUS_NAME
+
+    return hits[0] if hits else None
 
 
 def _context(state: FlowState) -> dict[str, str]:
@@ -1655,9 +2071,7 @@ def _context(state: FlowState) -> dict[str, str]:
     options: list[dict[str, Any]] = state.collected_data.get("options", [])
 
     if options:
-        context["options"] = "\n".join(
-            f"{number}. {option['label']}" for number, option in enumerate(options, start=1)
-        )
+        context["options"] = _numbered(options)
 
     return context
 
@@ -1687,13 +2101,6 @@ _HANDLERS: dict[str, _Handler] = {
     STEP_CHILD_REGISTERED: _child_registered,
     STEP_CHILD_NAME: _child_name,
     STEP_CHILD_DOB: _child_date_of_birth,
-    STEP_CHILD_GRADE: _collect_number(
-        "child_grade",
-        ASK_CHILD_SCHOOL,
-        STEP_CHILD_SCHOOL,
-        minimum=GRADE_MINIMUM,
-        maximum=GRADE_MAXIMUM,
-    ),
     STEP_CHILD_SCHOOL: _collect_text(
         "child_school", ASK_CHILD_NOTES, STEP_CHILD_NOTES, limit=NAME_LIMIT
     ),
@@ -1707,7 +2114,10 @@ _HANDLERS: dict[str, _Handler] = {
     STEP_BOOK_HOME: _book_home,
     STEP_BOOK_SLOT: _book_slot,
     STEP_BOOK_CONFIRM: _book_confirm,
+    STEP_FIRST_SESSION_SUBJECT: _first_session_subject,
+    STEP_FIRST_SESSION_DATE: _first_session_date,
     STEP_CANCEL_PICK: _cancel_pick,
+    STEP_CANCEL_CONFIRM: _cancel_confirm,
     STEP_RESCHEDULE_PICK: _reschedule_pick,
     STEP_REACTIVATION_CONFIRM: _reactivation_confirm,
 }

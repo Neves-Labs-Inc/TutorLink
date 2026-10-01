@@ -44,6 +44,13 @@ resource "aws_ssm_parameter" "postgres_db" {
   value = local.postgres_name
 }
 
+# sslmode=require reaches psycopg through the URL, and RDS refuses non-TLS connections anyway.
+resource "aws_ssm_parameter" "database_url" {
+  name  = "${local.parameter_prefix}/DATABASE_URL"
+  type  = "SecureString"
+  value = "postgresql+psycopg://${local.db_username}:${random_password.db.result}@${aws_db_instance.app.address}:${local.db_port}/${local.db_name}?sslmode=require"
+}
+
 resource "aws_ssm_parameter" "site_address" {
   name  = "${local.parameter_prefix}/SITE_ADDRESS"
   type  = "String"

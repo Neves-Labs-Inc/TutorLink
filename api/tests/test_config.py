@@ -179,22 +179,6 @@ def test_settings_reads_twilio_status_callback_url_when_env_var_is_present(
     assert settings.twilio_status_callback_url == "https://example.com/webhook/whatsapp/status"
 
 
-def test_settings_defaults_dashboard_dist_dir_to_empty_when_env_var_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("DASHBOARD_DIST_DIR", raising=False)
-
-    assert Settings(secret_key=VALID_SECRET_KEY).dashboard_dist_dir == ""
-
-
-def test_settings_reads_dashboard_dist_dir_when_env_var_is_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DASHBOARD_DIST_DIR", "/opt/dashboard")
-
-    assert Settings(secret_key=VALID_SECRET_KEY).dashboard_dist_dir == "/opt/dashboard"
-
-
 def test_settings_defaults_api_docs_enabled_to_true_when_env_var_is_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,3 +193,34 @@ def test_settings_honours_an_explicit_false_api_docs_enabled(
     monkeypatch.setenv("API_DOCS_ENABLED", "false")
 
     assert Settings(secret_key=VALID_SECRET_KEY).api_docs_enabled is False
+
+
+def test_settings_defaults_business_timezone_to_utc_when_env_var_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BUSINESS_TIMEZONE", raising=False)
+
+    assert Settings(secret_key=VALID_SECRET_KEY).business_timezone == "UTC"
+
+
+def test_settings_accepts_an_iana_business_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BUSINESS_TIMEZONE", "America/New_York")
+
+    assert Settings(secret_key=VALID_SECRET_KEY).business_timezone == "America/New_York"
+
+
+@pytest.mark.parametrize(
+    "business_timezone",
+    [
+        pytest.param("Not/AZone", id="unknown-zone"),
+        pytest.param("", id="empty"),
+    ],
+)
+def test_settings_rejects_an_unknown_business_timezone(business_timezone: str) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(secret_key=VALID_SECRET_KEY, business_timezone=business_timezone)
+
+    errors = excinfo.value.errors(include_input=False)
+    assert len(errors) == 1
+    assert errors[0]["loc"] == ("business_timezone",)
+    assert repr(business_timezone) in str(excinfo.value)

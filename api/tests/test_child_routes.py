@@ -13,11 +13,12 @@ directly, because three things a passing response body cannot show on its own ar
 Guardians and homes are made through the ORM rather than through `POST /api/clients`, so
 phone-number normalisation never runs and these tests do not inherit REQ-037's fixtures.
 
-REQ-095's date-of-birth bound is exercised at both ends, with `child_service._today()` frozen
-for the upper one: an unfrozen "tomorrow" would pass or fail depending on when the suite runs.
+REQ-095's date-of-birth bound is exercised at both ends, with the business clock
+(`clock.business_now`) frozen for the upper one: an unfrozen "tomorrow" would pass or fail
+depending on when the suite runs.
 
 Deactivation cancels the child's upcoming sessions (P7C-O), so its tests freeze
-`child_service._now()` at noon and seed bookings on either side of it: "upcoming" is "starts
+the business clock at noon and seed bookings on either side of it: "upcoming" is "starts
 after now" (P7C-T), and a session this morning that nobody has marked completed must survive.
 Every cancellation is read back from the row, never inferred from the status code. The
 two-connection race and the rollback of a half-done cancel need real commits and live in
@@ -26,6 +27,7 @@ two-connection race and the rollback of a half-done cancel need real commits and
 
 import datetime
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -52,6 +54,8 @@ from app.services import broadcast_service, child_service, twilio_service
 PASSWORD = "correct horse battery staple"
 DATE_OF_BIRTH = "2014-05-02"
 FROZEN_TODAY = datetime.date(2026, 9, 23)
+# The date `business_evening` freezes; UTC is already on the 29th.
+BUSINESS_TODAY = datetime.date(2026, 9, 28)
 INVALID_DATE_OF_BIRTH_ERROR = "date_of_birth must be a real date between 1900-01-01 and today"
 FROZEN_NOW = datetime.datetime(2026, 9, 23, 12, 0)
 TODAY = FROZEN_NOW.date()
@@ -497,6 +501,29 @@ def test_post_accepts_a_grade_level_of_one(api: TestClient, db: Session) -> None
     assert response.json()["grade_level"] == 1
 
 
+def test_post_without_a_grade_level_creates_a_child_whose_grade_reads_as_null(
+    api: TestClient, db: Session
+) -> None:
+    """The admin sets the grade by hand after the first session, so a child may exist without
+    one, and every read says so with `null` rather than a guessed grade."""
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    del payload["grade_level"]
+
+    created = api.post("/api/children", headers=_auth(admin), json=payload)
+    child_id = created.json()["id"]
+    detail = api.get(f"/api/children/{child_id}", headers=_auth(admin))
+    listed = api.get(
+        "/api/children", headers=_auth(admin), params={"q": payload["name"], "page_size": 100}
+    )
+
+    assert created.status_code == 201
+    assert created.json()["grade_level"] is None
+    assert detail.json()["grade_level"] is None
+    rows = [row for row in listed.json()["items"] if row["id"] == child_id]
+    assert [row["grade_level"] for row in rows] == [None]
+
+
 @pytest.mark.parametrize("grade_level", [0, -1])
 def test_patch_refuses_a_grade_level_below_one_and_writes_nothing(
     api: TestClient, db: Session, grade_level: int
@@ -625,16 +652,55 @@ def test_post_accepts_a_plausible_date_of_birth_and_echoes_it(
 def test_the_upper_bound_is_today_inclusive(
     api: TestClient,
     db: Session,
-    monkeypatch: pytest.MonkeyPatch,
+    freeze_business_clock: Callable[[datetime.datetime], None],
     date_of_birth: datetime.date,
     expected_status: int,
 ) -> None:
-    monkeypatch.setattr(child_service, "_today", lambda: FROZEN_TODAY)
+    freeze_business_clock(datetime.datetime.combine(FROZEN_TODAY, datetime.time(12, 0)))
     admin = _make_user(db)
     payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
     payload["date_of_birth"] = date_of_birth.isoformat()
 
     response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.parametrize(("days_after_business_today", "expected_status"), [(0, 201), (1, 400)])
+def test_post_bounds_date_of_birth_by_the_business_date_not_the_utc_date(
+    api: TestClient,
+    db: Session,
+    business_evening: datetime.datetime,
+    days_after_business_today: int,
+    expected_status: int,
+) -> None:
+    admin = _make_user(db)
+    payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    date_of_birth = BUSINESS_TODAY + datetime.timedelta(days=days_after_business_today)
+    payload["date_of_birth"] = date_of_birth.isoformat()
+
+    response = api.post("/api/children", headers=_auth(admin), json=payload)
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.parametrize(("days_after_business_today", "expected_status"), [(0, 200), (1, 400)])
+def test_patch_bounds_date_of_birth_by_the_business_date_not_the_utc_date(
+    api: TestClient,
+    db: Session,
+    business_evening: datetime.datetime,
+    days_after_business_today: int,
+    expected_status: int,
+) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+    date_of_birth = BUSINESS_TODAY + datetime.timedelta(days=days_after_business_today)
+
+    response = api.patch(
+        f"/api/children/{child_id}",
+        headers=_auth(admin),
+        json={"date_of_birth": date_of_birth.isoformat()},
+    )
 
     assert response.status_code == expected_status
 
@@ -783,8 +849,8 @@ def test_a_child_has_no_delete_route(api: TestClient, db: Session) -> None:
 
 
 @pytest.fixture
-def frozen_now(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(child_service, "_now", lambda: FROZEN_NOW)
+def frozen_now(freeze_business_clock: Callable[[datetime.datetime], None]) -> None:
+    freeze_business_clock(FROZEN_NOW)
 
 
 @pytest.mark.parametrize(

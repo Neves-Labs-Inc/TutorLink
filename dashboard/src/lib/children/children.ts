@@ -18,8 +18,12 @@ export const EMPTY_CHILD_DRAFT: ChildDraft = {
   notes: '',
 }
 
+export const GRADE_LEVEL_ERROR = 'Grade level must be a whole number of at least 1.'
+
 const MIN_DATE_OF_BIRTH = '1900-01-01'
 const MAX_NOTES_LENGTH = 2000
+// Text input, so unparseable text such as "e" reaches validation instead of reading as empty.
+const WHOLE_NUMBER_PATTERN = /^\d+$/
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 const isRealIsoDate = (value: string): boolean => {
@@ -38,7 +42,12 @@ const isRealIsoDate = (value: string): boolean => {
   return result
 }
 
-export const childDraftErrors = (draft: ChildDraft, today: Date): string[] => {
+// `original` is passed when editing: a grade that is already set cannot be cleared.
+export const childDraftErrors = (
+  draft: ChildDraft,
+  today: Date,
+  original?: ChildDetail,
+): string[] => {
   const errors: string[] = []
   const dateOfBirth = draft.dateOfBirth.trim()
 
@@ -56,10 +65,13 @@ export const childDraftErrors = (draft: ChildDraft, today: Date): string[] => {
     errors.push('Date of birth must be on or after 1900-01-01.')
   }
 
-  const gradeLevel = Number(draft.gradeLevel)
+  const gradeText = draft.gradeLevel.trim()
+  const gradeLevel = Number(gradeText)
+  const isGradeCleared = gradeText === '' && original?.grade_level != null
+  const isGradeInvalid = gradeText !== '' && (!WHOLE_NUMBER_PATTERN.test(gradeText) || gradeLevel < 1)
 
-  if (draft.gradeLevel.trim() === '' || !Number.isInteger(gradeLevel) || gradeLevel < 1) {
-    errors.push('Grade level must be a whole number of at least 1.')
+  if (isGradeCleared || isGradeInvalid) {
+    errors.push(GRADE_LEVEL_ERROR)
   }
 
   if (draft.schoolName.trim() === '') {
@@ -75,11 +87,12 @@ export const childDraftErrors = (draft: ChildDraft, today: Date): string[] => {
 
 export const childInput = (draft: ChildDraft): ChildInput => {
   const notes = draft.notes.trim()
+  const gradeText = draft.gradeLevel.trim()
 
   return {
     name: draft.name.trim(),
     date_of_birth: draft.dateOfBirth.trim(),
-    grade_level: Number(draft.gradeLevel),
+    ...(gradeText === '' ? {} : { grade_level: Number(gradeText) }),
     school_name: draft.schoolName.trim(),
     notes: notes === '' ? null : notes,
   }
@@ -88,7 +101,7 @@ export const childInput = (draft: ChildDraft): ChildInput => {
 export const childDraftFrom = (child: ChildDetail): ChildDraft => ({
   name: child.name,
   dateOfBirth: child.date_of_birth ?? '',
-  gradeLevel: String(child.grade_level),
+  gradeLevel: child.grade_level === null ? '' : String(child.grade_level),
   schoolName: child.school_name,
   notes: child.notes ?? '',
 })
@@ -97,7 +110,7 @@ export const childUpdate = (draft: ChildDraft, original: ChildDetail): ChildUpda
   const update: ChildUpdate = {}
   const name = draft.name.trim()
   const dateOfBirth = draft.dateOfBirth.trim()
-  const gradeLevel = Number(draft.gradeLevel)
+  const gradeText = draft.gradeLevel.trim()
   const schoolName = draft.schoolName.trim()
   const notes = draft.notes.trim()
 
@@ -109,8 +122,9 @@ export const childUpdate = (draft: ChildDraft, original: ChildDetail): ChildUpda
     update.date_of_birth = dateOfBirth
   }
 
-  if (gradeLevel !== original.grade_level) {
-    update.grade_level = gradeLevel
+  // An empty field means no grade change; clearing a set grade is rejected by validation.
+  if (gradeText !== '' && Number(gradeText) !== original.grade_level) {
+    update.grade_level = Number(gradeText)
   }
 
   if (schoolName !== original.school_name) {
@@ -123,6 +137,9 @@ export const childUpdate = (draft: ChildDraft, original: ChildDetail): ChildUpda
 
   return update
 }
+
+export const gradeLabel = (gradeLevel: number | null): string =>
+  gradeLevel === null ? 'Grade not set' : `Grade ${gradeLevel}`
 
 export const homesToOffer = (guardians: GuardianDetail[]): Home[] => {
   const seen = new Set<string>()

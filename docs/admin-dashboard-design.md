@@ -55,7 +55,6 @@ Children
 Guardians
 Chats
 Bookings
-Subjects
 Users
 Settings
 ─────────────
@@ -103,6 +102,19 @@ Manage the tutor roster.
 - Search by name
 - Filter by subject, active status
 - "Add Tutor" button → opens a slide-over form
+- "Manage subjects" button in the page header → opens a slide-over (see below)
+
+**Manage subjects slide-over:**
+
+Manage the canonical subject list without leaving the Tutors page. It has a list view and a form
+view that swap inside the one panel; saving or deactivating returns to the list view and the
+slide-over stays open.
+- List view: table of subject name, description, number of tutors teaching it, and active status,
+  paged. A "Show inactive subjects" toggle. "Add subject" button; selecting a row opens its edit form
+- Form view (Add/Edit Subject): name, description, active toggle (edit only); Deactivate (active
+  subjects only, behind a confirm dialog; a soft deactivate, never a hard delete)
+- "number of tutors teaching it" is the `tutor_count` field on each `GET /api/subjects` item — active tutors only, one request, no second call per row.
+- After a change, the tutor list and the Subject filter refresh. Deactivating the subject selected in the Subject filter resets the filter to "All subjects"
 
 **Tutor detail (`/tutors/{id}`):**
 - Profile section: name, email, phone, bio, active toggle
@@ -256,22 +268,6 @@ View and manage all sessions.
 
 ---
 
-### Subjects (`/subjects`)
-
-Manage the canonical subject list.
-
-**List view:**
-- Table: subject name, description, number of tutors teaching it, active status
-- "Add Subject" button
-
-**Data:**
-- "number of tutors teaching it" is the `tutor_count` field on each `GET /api/subjects` item — active tutors only, one request, no second call per row.
-
-**Forms:**
-- Add/Edit Subject: name, description, active toggle
-
----
-
 ### Users (`/users`)
 
 Manage login accounts for admin and tutor users.
@@ -391,7 +387,6 @@ dashboard/src/
 │   │   ├── Chats.jsx
 │   │   ├── ChatThread.jsx
 │   │   ├── Bookings.jsx
-│   │   ├── Subjects.jsx
 │   │   ├── Users.jsx
 │   │   └── Settings.jsx
 │   └── tutor/

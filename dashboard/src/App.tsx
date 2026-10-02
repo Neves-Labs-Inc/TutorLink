@@ -14,7 +14,6 @@ import { GuardianDetail } from '@/pages/admin/GuardianDetail'
 import { ChatsLayout } from '@/components/chat/ChatsLayout'
 import { ChatThread } from '@/pages/admin/ChatThread'
 import { Bookings } from '@/pages/admin/Bookings'
-import { Subjects } from '@/pages/admin/Subjects'
 import { Users } from '@/pages/admin/Users'
 import { Settings } from '@/pages/admin/Settings'
 import { Schedule } from '@/pages/tutor/Schedule'
@@ -115,16 +114,6 @@ export const App = () => (
             <RouteGuard allow={ADMIN_ROLES}>
               <AppShell>
                 <Bookings />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/subjects"
-          element={
-            <RouteGuard allow={ADMIN_ROLES}>
-              <AppShell>
-                <Subjects />
               </AppShell>
             </RouteGuard>
           }

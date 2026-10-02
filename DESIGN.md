@@ -182,7 +182,8 @@ Inline empty lists inside a card use the bare phrase "No children" (no full stop
 
 ### Success
 The UI updates in place (query invalidation). Slide-overs close on success, and there is no
-toast.
+toast. A multi-view slide-over (Manage subjects) returns to its list view on success instead of
+closing.
 
 ## 7. Interaction and motion
 

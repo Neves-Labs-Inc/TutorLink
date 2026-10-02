@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  BookOpen,
   CalendarDays,
   GraduationCap,
   LayoutDashboard,
@@ -30,7 +29,6 @@ const NAV_ITEMS = [
   { to: '/guardians', label: 'Guardians', icon: Users },
   { to: '/chats', label: 'Chats', icon: MessageSquare },
   { to: '/bookings', label: 'Bookings', icon: CalendarDays },
-  { to: '/subjects', label: 'Subjects', icon: BookOpen },
   { to: '/users', label: 'Users', icon: UserCog },
   { to: '/settings', label: 'Settings', icon: Settings },
 ] as const

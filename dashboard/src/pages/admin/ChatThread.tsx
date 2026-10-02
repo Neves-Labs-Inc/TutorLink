@@ -56,6 +56,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
   const [cursors, setCursors] = useState<(string | undefined)[]>([undefined])
   const [pendingMessages, setPendingMessages] = useState<Message[]>([])
+  const [lastSentId, setLastSentId] = useState<string | null>(null)
   const [releaseDialogOpen, setReleaseDialogOpen] = useState(false)
 
   useEffect(() => {
@@ -155,6 +156,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
         ...current,
         optimisticMessage(clientMessageId, body, holder.id, holder.email),
       ])
+      setLastSentId(clientMessageId)
       stream.send(id, body, clientMessageId)
     }
   }
@@ -214,6 +216,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
             hasMore={hasMore}
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
+            lastSentId={lastSentId}
           />
 
           {heldByMe && (

@@ -1,16 +1,19 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Check, CheckCheck, CircleAlert, Clock, type LucideIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { formatMessageTimestamp, messageAlignment, messageStatusLabel } from '@/lib/chatThread'
 import type { Message } from '@/lib/queries/conversations'
+import { isFollowingAfter } from '@/lib/thread-scroll/followTracking'
+import { threadScrollDecision, type ThreadSnapshot } from '@/lib/thread-scroll/threadScrollDecision'
 
 export type MessageThreadProps = {
   messages: Message[]
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
+  lastSentId: string | null
 }
 
 const bubbleBase = 'max-w-[85%] rounded-lg px-3 py-2 text-sm sm:max-w-[70%]'
@@ -41,9 +44,82 @@ const hasNewlyFailed = (previous: Message[], next: Message[]): boolean => {
   })
 }
 
-export const MessageThread = ({ messages, hasMore, loadingMore, onLoadMore }: MessageThreadProps) => {
+const NEAR_BOTTOM_PX = 100
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+
+const snapshotOf = (messages: Message[]): ThreadSnapshot => ({
+  firstId: messages[0]?.id ?? null,
+  lastId: messages[messages.length - 1]?.id ?? null,
+  length: messages.length,
+})
+
+const distanceFromBottomOf = (scroller: HTMLElement): number =>
+  scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+
+export const MessageThread = ({
+  messages,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+  lastSentId,
+}: MessageThreadProps) => {
   const [previousMessages, setPreviousMessages] = useState(messages)
   const [announcement, setAnnouncement] = useState('')
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  // Last layout measured before the next render; starts "at the bottom".
+  const distanceFromBottomRef = useRef(0)
+  // True while a smooth follow is in flight, so a message landing mid-scroll still counts as at the
+  // bottom (the measured distance is mid-animation) and re-targets the new bottom. See followTracking.
+  const isFollowingRef = useRef(false)
+  const previousSnapshotRef = useRef<ThreadSnapshot>(snapshotOf([]))
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+
+    const previous = previousSnapshotRef.current
+    const next = snapshotOf(messages)
+    const savedDistance = distanceFromBottomRef.current
+    const decision = threadScrollDecision({
+      previous,
+      next,
+      wasNearBottom: isFollowingRef.current || savedDistance <= NEAR_BOTTOM_PX,
+      lastIsOwnSend: lastSentId !== null && next.lastId === lastSentId && previous.lastId !== lastSentId,
+    })
+
+    const isSmooth = decision === 'follow' && !window.matchMedia(REDUCED_MOTION_QUERY).matches
+    isFollowingRef.current = isFollowingAfter(isFollowingRef.current, {
+      kind: 'decision',
+      decision,
+      isSmooth,
+      distance: distanceFromBottomOf(scroller),
+    })
+
+    if (decision === 'jump' || decision === 'follow') {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: isSmooth ? 'smooth' : 'instant' })
+    } else if (decision === 'preserve') {
+      // Explicitly instant so a CSS scroll-behavior can never animate the restore.
+      scroller.scrollTo({ top: scroller.scrollHeight - scroller.clientHeight - savedDistance, behavior: 'instant' })
+    }
+
+    previousSnapshotRef.current = next
+    distanceFromBottomRef.current = distanceFromBottomOf(scroller)
+    // lastSentId is read only to classify this message change, never a trigger of its own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages])
+
+  const handleScroll = () => {
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+
+    const distance = distanceFromBottomOf(scroller)
+    isFollowingRef.current = isFollowingAfter(isFollowingRef.current, {
+      kind: 'scroll',
+      previousDistance: distanceFromBottomRef.current,
+      distance,
+    })
+    distanceFromBottomRef.current = distance
+  }
 
   // Adjusted during render rather than in an effect, so the announcement lands with the update.
   if (messages !== previousMessages) {
@@ -52,7 +128,11 @@ export const MessageThread = ({ messages, hasMore, loadingMore, onLoadMore }: Me
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
+    <div
+      ref={scrollerRef}
+      onScroll={handleScroll}
+      className="flex flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-4 py-4"
+    >
       <p className="sr-only" aria-live="polite">
         {announcement}
       </p>

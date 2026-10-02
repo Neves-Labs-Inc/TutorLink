@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { startTransition, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 
@@ -94,9 +94,14 @@ export const SearchPicker = ({
       return
     }
 
-    setOpen(false)
-    setHighlighted(-1)
-    revertToValue()
+    // A transition commits after the browser has moved focus to the next element.
+    // Removing the listbox synchronously, while focus is on <body>, makes Radix
+    // FocusScope (dialogs, sheets) pull focus back to its container and break Tab order.
+    startTransition(() => {
+      setOpen(false)
+      setHighlighted(-1)
+      revertToValue()
+    })
   }
 
   const handleInputChange = (next: string) => {

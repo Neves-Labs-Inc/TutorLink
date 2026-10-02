@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  activeFilterCount,
   bookingCountLabel,
   bookingFilterSearchParams,
   bookingFiltersFromSearchParams,
@@ -342,6 +343,48 @@ describe('statusLabel', () => {
       'Cancelled',
       'Completed',
     ])
+  })
+})
+
+describe('activeFilterCount', () => {
+  const cases: { name: string; state: BookingFilterState; expected: number }[] = [
+    { name: 'the empty state', state: EMPTY_FILTERS, expected: 0 },
+    {
+      name: 'one status',
+      state: { ...EMPTY_FILTERS, statuses: ['pending'] },
+      expected: 1,
+    },
+    {
+      name: 'each selected status separately',
+      state: { ...EMPTY_FILTERS, statuses: ['pending', 'completed', 'cancelled'] },
+      expected: 3,
+    },
+    { name: 'a tutor', state: { ...EMPTY_FILTERS, tutorId: 'tutor-1' }, expected: 1 },
+    { name: 'a subject', state: { ...EMPTY_FILTERS, subjectId: 'subject-1' }, expected: 1 },
+    { name: 'a child', state: { ...EMPTY_FILTERS, childId: 'child-1' }, expected: 1 },
+    { name: 'only a from date', state: { ...EMPTY_FILTERS, from: '2026-09-01' }, expected: 1 },
+    { name: 'only a to date', state: { ...EMPTY_FILTERS, to: '2026-09-30' }, expected: 1 },
+    {
+      name: 'a date range, counted as two',
+      state: { ...EMPTY_FILTERS, from: '2026-09-01', to: '2026-09-30' },
+      expected: 2,
+    },
+    {
+      name: 'every filter together',
+      state: {
+        statuses: ['pending', 'confirmed'],
+        tutorId: 'tutor-1',
+        subjectId: 'subject-1',
+        childId: 'child-1',
+        from: '2026-09-01',
+        to: '2026-09-30',
+      },
+      expected: 7,
+    },
+  ]
+
+  it.each(cases)('counts $name', ({ state, expected }) => {
+    expect(activeFilterCount(state)).toBe(expected)
   })
 })
 

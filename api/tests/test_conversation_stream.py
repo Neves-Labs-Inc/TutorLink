@@ -83,6 +83,7 @@ from app.services.broadcast_service import (
     LIVENESS_SECONDS,
     ConversationUpdated,
     MessageCreated,
+    MessageUpdated,
     registered,
     unregister,
 )
@@ -496,6 +497,49 @@ def test_a_notice_for_a_message_that_is_gone_is_skipped_and_the_socket_stays_ope
     assert len(still_registered) == 1
 
 
+def test_a_message_updated_notice_is_rebuilt_into_the_status_frame(
+    sockets: TestClient, db: Session
+) -> None:
+    """#72: the frame carries the row as the thread's refetch returns it, status included, so
+    the dashboard swaps the bubble in place rather than waiting for a reload."""
+    user = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    message = _make_admin_message(db, conversation, author=user, status=MessageStatus.DELIVERED)
+
+    with _authenticated(sockets, user) as socket:
+        broadcast_service.publish(
+            MessageUpdated(conversation_id=conversation.id, message={"id": str(message.id)})
+        )
+
+        frame = _receive(socket)
+
+    assert frame == {
+        "type": "message.updated",
+        "conversation_id": str(conversation.id),
+        "message": _thread_item(sockets, user, conversation.id),
+    }
+    assert frame["message"]["status"] == "delivered"
+
+
+def test_a_message_updated_notice_for_a_message_that_is_gone_is_skipped(
+    sockets: TestClient, db: Session
+) -> None:
+    """Retention can delete the row between the callback's commit and the pump's read; that
+    costs one frame and never the pump."""
+    user = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+
+    with _authenticated(sockets, user) as socket:
+        broadcast_service.publish(
+            MessageUpdated(conversation_id=conversation.id, message={"id": str(uuid.uuid4())})
+        )
+        broadcast_service.publish(ConversationUpdated(conversation={"id": str(conversation.id)}))
+
+        frame = _receive(socket)
+
+    assert frame["type"] == "conversation.updated"
+
+
 def test_one_socket_disconnecting_leaves_the_other_serving(
     sockets: TestClient, db: Session
 ) -> None:
@@ -836,6 +880,24 @@ def _make_inbound(db: Session, conversation: Conversation, *, body: str) -> Mess
         author_kind=MessageAuthor.CLIENT,
         body=body,
         status=MessageStatus.RECEIVED,
+        twilio_sid=f"SM{uuid.uuid4().hex}",
+        created_at=datetime.datetime.now(tz=datetime.UTC),
+    )
+    db.add(message)
+    db.flush()
+
+    return message
+
+
+def _make_admin_message(
+    db: Session, conversation: Conversation, *, author: User, status: MessageStatus
+) -> Message:
+    message = Message(
+        conversation_id=conversation.id,
+        author_kind=MessageAuthor.ADMIN,
+        author_user_id=author.id,
+        body="I'll take it from here.",
+        status=status,
         twilio_sid=f"SM{uuid.uuid4().hex}",
         created_at=datetime.datetime.now(tz=datetime.UTC),
     )

@@ -47,6 +47,8 @@ from app.services.broadcast_service import (
     ConversationUpdated,
     MessageCreated,
     MessageNotice,
+    MessageUpdated,
+    MessageUpdatedNotice,
     Notice,
     deliver,
     listen,
@@ -99,6 +101,13 @@ def _message_created(
         conversation_id=CONVERSATION_ID,
         message={"id": str(MESSAGE_ID), "body": body, "twilio_sid": None},
         client_message_id=client_message_id,
+    )
+
+
+def _message_updated() -> MessageUpdated:
+    return MessageUpdated(
+        conversation_id=CONVERSATION_ID,
+        message={"id": str(MESSAGE_ID), "status": "delivered"},
     )
 
 
@@ -172,8 +181,17 @@ def test_an_event_published_by_another_process_is_received_here(test_database: E
             ConversationUpdated(conversation={"id": str(CONVERSATION_ID), "status": "human"}),
             {"type": "conversation.updated", "conversation_id": str(CONVERSATION_ID)},
         ),
+        (
+            _message_updated(),
+            {"type": "message.updated", "message_id": str(MESSAGE_ID)},
+        ),
     ],
-    ids=["message.created", "message.created echoing a send", "conversation.updated"],
+    ids=[
+        "message.created",
+        "message.created echoing a send",
+        "conversation.updated",
+        "message.updated",
+    ],
 )
 def test_publish_sends_exactly_the_pinned_notice(
     raw_listener: psycopg.Connection, event: BroadcastEvent, expected: dict[str, object]
@@ -271,6 +289,14 @@ def test_an_unreadable_notice_is_skipped_and_the_listener_keeps_serving(
     received = asyncio.run(_receive(1, while_publishing=publish_all))
 
     assert received == [ConversationNotice(conversation_id=CONVERSATION_ID)]
+
+
+def test_a_message_updated_crosses_the_channel_as_its_own_notice(test_database: Engine) -> None:
+    """The round trip: a status change is read back as a `message.updated` notice, never as a
+    `message.created` one, or the thread would append the message a second time."""
+    received = asyncio.run(_receive(1, while_publishing=lambda: publish(_message_updated())))
+
+    assert received == [MessageUpdatedNotice(message_id=MESSAGE_ID)]
 
 
 def test_a_quiet_listener_probes_its_connection_and_keeps_serving(
@@ -398,8 +424,21 @@ def test_unregistering_a_sink_that_is_already_gone_is_a_no_op() -> None:
             ConversationUpdated(conversation={"id": "c1", "taken_over_by": None}),
             {"type": "conversation.updated", "conversation": {"id": "c1", "taken_over_by": None}},
         ),
+        (
+            _message_updated(),
+            {
+                "type": "message.updated",
+                "conversation_id": str(CONVERSATION_ID),
+                "message": {"id": str(MESSAGE_ID), "status": "delivered"},
+            },
+        ),
     ],
-    ids=["message.created", "message.created echoing a send", "conversation.updated"],
+    ids=[
+        "message.created",
+        "message.created echoing a send",
+        "conversation.updated",
+        "message.updated",
+    ],
 )
 def test_the_frame_is_the_one_the_contract_specifies(
     event: BroadcastEvent, expected: dict[str, object]

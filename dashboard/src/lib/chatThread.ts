@@ -69,6 +69,13 @@ export const isFlagChangedError = (error: unknown): boolean =>
 export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment =>
   authorKind === 'client' ? 'start' : 'end'
 
+const ADMIN_STATUS_LABELS: Partial<Record<Message['status'], string>> = {
+  queued: 'Sending…',
+  sent: 'Sent',
+  delivered: 'Delivered',
+  failed: 'Failed to send',
+}
+
 // Delivery progress only means something on an admin's own outbound message. A bot reply is
 // recorded `sent` forever by design (amendment P7-3, `api-design.md:527-534`) and must never
 // read as pending or failed, and a client message carries no admin-side delivery state at all —
@@ -76,14 +83,18 @@ export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment
 export const messageStatusLabel = (
   message: Pick<Message, 'author_kind' | 'status'>,
 ): string | null => {
-  let label: string | null = null
+  if (message.author_kind !== 'admin') return null
 
-  if (message.author_kind === 'admin') {
-    if (message.status === 'queued' || message.status === 'sent') label = 'Sending…'
-    else if (message.status === 'failed') label = 'Failed to send'
-  }
+  return ADMIN_STATUS_LABELS[message.status] ?? null
+}
 
-  return label
+// A `message.updated` frame only ever changes a message already on screen; an id that isn't
+// there belongs to a page not loaded yet, and the refetch will carry it. Returning the same
+// array when nothing matched lets React Query skip the re-render.
+export const applyMessageUpdate = (thread: Message[], updated: Message): Message[] => {
+  if (!thread.some((message) => message.id === updated.id)) return thread
+
+  return thread.map((message) => (message.id === updated.id ? updated : message))
 }
 
 // Each fetched page is newest-first (`api-design.md:1531`) and `pages` runs from the newest

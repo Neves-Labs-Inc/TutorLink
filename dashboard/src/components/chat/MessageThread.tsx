@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import { Check, CheckCheck, CircleAlert, Clock, type LucideIcon } from 'lucide-react'
+
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { formatMessageTimestamp, messageAlignment, messageStatusLabel } from '@/lib/chatThread'
@@ -17,27 +20,64 @@ const bubbleByKind: Record<Message['author_kind'], string> = {
   admin: 'bg-primary text-primary-foreground',
 }
 
-export const MessageThread = ({ messages, hasMore, loadingMore, onLoadMore }: MessageThreadProps) => (
-  <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
-    {hasMore && (
-      <div className="flex justify-center">
-        <Button type="button" variant="outline" size="sm" disabled={loadingMore} onClick={onLoadMore}>
-          {loadingMore ? 'Loading…' : 'Load older messages'}
-        </Button>
-      </div>
-    )}
+const STATUS_ICONS: Partial<Record<Message['status'], LucideIcon>> = {
+  queued: Clock,
+  sent: Check,
+  delivered: CheckCheck,
+  failed: CircleAlert,
+}
 
-    {messages.length === 0 ? (
-      <p className="m-auto text-sm text-muted-foreground">No messages yet.</p>
-    ) : (
-      messages.map((message) => <MessageBubble key={message.id} message={message} />)
-    )}
-  </div>
-)
+const FAILED_ANNOUNCEMENT = 'A message failed to send.'
+
+// Only a message already on screen moving to `failed` counts: one loaded failed, or an echo
+// replacing an optimistic bubble (a new id), is not a live change and the composer already says so.
+const hasNewlyFailed = (previous: Message[], next: Message[]): boolean => {
+  const previousStatuses = new Map(previous.map((message) => [message.id, message.status]))
+
+  return next.some((message) => {
+    const before = previousStatuses.get(message.id)
+
+    return message.status === 'failed' && before !== undefined && before !== 'failed'
+  })
+}
+
+export const MessageThread = ({ messages, hasMore, loadingMore, onLoadMore }: MessageThreadProps) => {
+  const [previousMessages, setPreviousMessages] = useState(messages)
+  const [announcement, setAnnouncement] = useState('')
+
+  // Adjusted during render rather than in an effect, so the announcement lands with the update.
+  if (messages !== previousMessages) {
+    if (hasNewlyFailed(previousMessages, messages)) setAnnouncement(FAILED_ANNOUNCEMENT)
+    setPreviousMessages(messages)
+  }
+
+  return (
+    <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
+      <p className="sr-only" aria-live="polite">
+        {announcement}
+      </p>
+
+      {hasMore && (
+        <div className="flex justify-center">
+          <Button type="button" variant="outline" size="sm" disabled={loadingMore} onClick={onLoadMore}>
+            {loadingMore ? 'Loading…' : 'Load older messages'}
+          </Button>
+        </div>
+      )}
+
+      {messages.length === 0 ? (
+        <p className="m-auto text-sm text-muted-foreground">No messages yet.</p>
+      ) : (
+        messages.map((message) => <MessageBubble key={message.id} message={message} />)
+      )}
+    </div>
+  )
+}
 
 const MessageBubble = ({ message }: { message: Message }) => {
   const alignment = messageAlignment(message.author_kind)
   const statusLabel = messageStatusLabel(message)
+  const StatusIcon = STATUS_ICONS[message.status]
 
   return (
     <div className={cn('flex flex-col', alignment === 'end' ? 'items-end' : 'items-start')}>
@@ -56,7 +96,14 @@ const MessageBubble = ({ message }: { message: Message }) => {
       <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <span>{formatMessageTimestamp(message.created_at)}</span>
         {statusLabel !== null && (
-          <span className={cn(message.status === 'failed' && 'font-medium text-destructive')}>
+          <span
+            key={message.status}
+            className={cn(
+              'inline-flex items-center gap-1 animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none',
+              message.status === 'failed' && 'font-medium text-destructive',
+            )}
+          >
+            {StatusIcon !== undefined && <StatusIcon className="size-3 shrink-0" aria-hidden="true" />}
             {statusLabel}
           </span>
         )}

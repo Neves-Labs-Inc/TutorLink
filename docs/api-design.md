@@ -1996,6 +1996,7 @@ one.
 |---|---|---|
 | `ready` | — | Authenticated |
 | `message.created` | The message object, plus `conversation_id`, and `client_message_id` when echoing a send | A message was recorded, whatever its author |
+| `message.updated` | The message object, plus `conversation_id` | Twilio reported a delivery status change |
 | `conversation.updated` | The conversation object | Takeover claimed or released, or `last_message_at` moved |
 | `error` | `detail` | Same shape as a REST error body |
 

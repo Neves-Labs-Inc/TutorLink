@@ -95,6 +95,8 @@ from app.services.broadcast_service import (
     ConversationUpdated,
     MessageCreated,
     MessageNotice,
+    MessageUpdated,
+    MessageUpdatedNotice,
     Notice,
     deliver,
     listen,
@@ -484,7 +486,9 @@ def _rebuild(notice: Notice) -> BroadcastEvent | None:
     """
     with _session_factory() as db:
         if isinstance(notice, MessageNotice):
-            event = _message_created(db, notice)
+            event: BroadcastEvent | None = _message_created(db, notice)
+        elif isinstance(notice, MessageUpdatedNotice):
+            event = _message_updated(db, notice)
         else:
             event = _conversation_updated(db, notice)
 
@@ -504,6 +508,23 @@ def _message_created(db: Session, notice: MessageNotice) -> MessageCreated | Non
             conversation_id=row.message.conversation_id,
             message=_message(row).model_dump(mode="json"),
             client_message_id=notice.client_message_id,
+        )
+
+    return event
+
+
+def _message_updated(db: Session, notice: MessageUpdatedNotice) -> MessageUpdated | None:
+    row = get_thread_message(db, message_id=notice.message_id)
+
+    if row is None:
+        logger.info(
+            "skipped a status broadcast for message %s, which no longer exists", notice.message_id
+        )
+        event = None
+    else:
+        event = MessageUpdated(
+            conversation_id=row.message.conversation_id,
+            message=_message(row).model_dump(mode="json"),
         )
 
     return event

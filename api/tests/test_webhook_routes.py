@@ -67,7 +67,7 @@ from app.routers.webhook import (
 from app.schemas.bot import BotTurn
 from app.security import hash_password
 from app.services import bot_service, conversation_service, message_service
-from app.services.broadcast_service import BroadcastEvent, MessageCreated
+from app.services.broadcast_service import BroadcastEvent, MessageCreated, MessageUpdated
 
 AUTH_TOKEN = "an-auth-token-only-twilio-and-this-process-know"
 AUTH_TOKEN_ENV = "TWILIO_AUTH_TOKEN"
@@ -517,13 +517,41 @@ def test_the_status_callback_records_the_error_code_on_failure(
     ],
 )
 def test_a_status_callback_that_matches_nothing_is_acknowledged_with_204(
-    webhook_client: TestClient, db: Session, case: str, message_status: str
+    webhook_client: TestClient,
+    db: Session,
+    published: list[BroadcastEvent],
+    case: str,
+    message_status: str,
 ) -> None:
-    """Never a 404: a 404 only teaches Twilio to retry a row that no longer exists."""
+    """Never a 404: a 404 only teaches Twilio to retry a row that no longer exists.
+
+    And nothing is announced: no row moved, so there is nothing for an open thread to redraw.
+    """
+    if case == "a status this schema does not model":
+        _admin_message(db)
+
     response = _post_status(webhook_client, message_status=message_status)
 
     assert response.status_code == 204
     assert response.content == b""
+    assert published == []
+
+
+def test_a_status_callback_that_advances_a_row_publishes_one_message_updated(
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
+) -> None:
+    """#72: an open thread hears about the delivery, or the bubble says "Sending…" for good."""
+    message = _admin_message(db)
+
+    response = _post_status(webhook_client, message_status="delivered")
+
+    assert response.status_code == 204
+    assert [
+        (event.type, event.conversation_id, event.message["id"], event.message["status"])
+        for event in published
+        if isinstance(event, MessageUpdated)
+    ] == [("message.updated", message.conversation_id, str(message.id), "delivered")]
+    assert len(published) == 1
 
 
 def test_a_bad_signature_on_the_status_callback_is_403_and_changes_nothing(

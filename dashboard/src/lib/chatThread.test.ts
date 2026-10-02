@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { api } from './api'
 import {
+  applyMessageUpdate,
   canMarkHandled,
   isHeldByAdmin,
   isHeldByOtherAdmin,
@@ -43,17 +44,13 @@ describe('messageAlignment', () => {
 })
 
 describe('messageStatusLabel', () => {
-  it('shows sending for a queued or sent admin message', () => {
-    expect(messageStatusLabel({ author_kind: 'admin', status: 'queued' })).toBe('Sending…')
-    expect(messageStatusLabel({ author_kind: 'admin', status: 'sent' })).toBe('Sending…')
-  })
-
-  it('shows failed for a failed admin message', () => {
-    expect(messageStatusLabel({ author_kind: 'admin', status: 'failed' })).toBe('Failed to send')
-  })
-
-  it('shows nothing for a delivered admin message', () => {
-    expect(messageStatusLabel({ author_kind: 'admin', status: 'delivered' })).toBeNull()
+  it.each([
+    ['queued', 'Sending…'],
+    ['sent', 'Sent'],
+    ['delivered', 'Delivered'],
+    ['failed', 'Failed to send'],
+  ] as const)('labels an admin message at %s as %s', (status, label) => {
+    expect(messageStatusLabel({ author_kind: 'admin', status })).toBe(label)
   })
 
   it('shows nothing for a bot message sitting at sent by design (P7-3)', () => {
@@ -110,6 +107,25 @@ describe('reconcileLiveMessage', () => {
 
     expect(next).toHaveLength(1)
     expect(next[0].status).toBe('delivered')
+  })
+})
+
+describe('applyMessageUpdate', () => {
+  it('replaces only the message with the matching id and keeps the order', () => {
+    const thread = [
+      message({ id: '1', author_kind: 'admin', status: 'sent' }),
+      message({ id: '2', author_kind: 'admin', status: 'sent' }),
+      message({ id: '3' }),
+    ]
+    const updated = message({ id: '2', author_kind: 'admin', status: 'delivered' })
+
+    expect(applyMessageUpdate(thread, updated)).toEqual([thread[0], updated, thread[2]])
+  })
+
+  it('leaves the thread unchanged when the id is not on screen', () => {
+    const thread = [message({ id: '1' })]
+
+    expect(applyMessageUpdate(thread, message({ id: 'elsewhere', status: 'delivered' }))).toBe(thread)
   })
 })
 

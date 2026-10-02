@@ -105,20 +105,23 @@ def handle_inbound(db: Session, *, twilio_from: str, body: str, twilio_sid: str)
 
 def handle_status(
     db: Session, *, twilio_sid: str, twilio_status: str, error_code: str | None
-) -> None:
+) -> Message | None:
     """Apply one delivery callback, if it names a message this deployment still models.
 
-    Silent on both misses by design. An unknown `MessageSid` is an ordinary event — retention
+    Returns the advanced row for the router to broadcast after it commits, or `None` on either
+    miss. Silent on both by design. An unknown `MessageSid` is an ordinary event — retention
     deletes messages on a schedule and Twilio's callbacks are not bounded by it — and a 404
     would only teach Twilio to retry a row that no longer exists
     (`docs/api-design.md:533-536`). An unmodelled status is the same shape of miss.
     """
     status = TWILIO_STATUSES.get(twilio_status)
 
-    if status is not None:
-        message_service.advance_status(
-            db, twilio_sid=twilio_sid, status=status, error_code=error_code
-        )
+    if status is None:
+        return None
+
+    return message_service.advance_status(
+        db, twilio_sid=twilio_sid, status=status, error_code=error_code
+    )
 
 
 def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> InboundTurn:

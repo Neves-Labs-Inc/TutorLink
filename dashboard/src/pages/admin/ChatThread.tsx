@@ -14,6 +14,7 @@ import { useConversationStream } from '@/hooks/use-conversation-stream/useConver
 import { errorDetail } from '@/lib/api'
 import { decodeAccessToken } from '@/lib/auth/auth'
 import {
+  applyMessageUpdate,
   isHeldByAdmin,
   isHeldByOtherAdmin,
   markConversationRead,
@@ -25,6 +26,7 @@ import {
   takeoverConversation,
 } from '@/lib/chatThread'
 import { conversationQueries, type Message } from '@/lib/queries/conversations'
+import type { Page } from '@/lib/queries/page'
 import { useAuthStore } from '@/stores/authStore'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -42,6 +44,10 @@ export const ChatThread = () => {
 }
 
 type ChatThreadViewProps = { conversationId: string }
+
+// Every page of this thread's messages, whatever its `before` cursor.
+const messagesQueryPrefix = (conversationId: string) =>
+  conversationQueries.messages(conversationId).queryKey.slice(0, -1)
 
 const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   const queryClient = useQueryClient()
@@ -85,6 +91,23 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
           queryKey: conversationQueries.detail(id).queryKey,
           exact: true,
         })
+      }
+    },
+    // A status change swaps the message in place, in every cached page and in the pending list
+    // (which wins over the pages when the thread is assembled), so the bubble never refetches.
+    onMessageUpdated: (frame) => {
+      if (frame.conversation_id === id) {
+        setPendingMessages((current) => applyMessageUpdate(current, frame.message))
+        queryClient.setQueriesData<Page<Message>>(
+          { queryKey: messagesQueryPrefix(id) },
+          (page) => {
+            if (page === undefined) return page
+
+            const items = applyMessageUpdate(page.items, frame.message)
+
+            return items === page.items ? page : { ...page, items }
+          },
+        )
       }
     },
     onConversationUpdated: (updated) => {

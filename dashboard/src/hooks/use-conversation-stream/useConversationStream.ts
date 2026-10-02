@@ -16,6 +16,11 @@ export type MessageCreatedFrame = {
   client_message_id?: string
 }
 
+export type MessageUpdatedFrame = {
+  message: Message
+  conversation_id: string
+}
+
 type ClientFrame =
   | { type: 'auth'; access_token: string }
   | { type: 'send'; conversation_id: string; body: string; client_message_id: string }
@@ -23,6 +28,7 @@ type ClientFrame =
 type ServerFrame =
   | { type: 'ready' }
   | ({ type: 'message.created' } & MessageCreatedFrame)
+  | ({ type: 'message.updated' } & MessageUpdatedFrame)
   | { type: 'conversation.updated'; conversation: Conversation }
   | { type: 'error'; detail: string }
 
@@ -31,6 +37,7 @@ export type ConversationStreamListener = {
   onError: (detail: string) => void
   onMessageCreated: (frame: MessageCreatedFrame) => void
   onConversationUpdated: (conversation: Conversation) => void
+  onMessageUpdated: (frame: MessageUpdatedFrame) => void
 }
 
 export type ConversationStreamDeps = {
@@ -44,6 +51,7 @@ export type ConversationStreamDeps = {
 export type UseConversationStreamHandlers = {
   onMessageCreated?: (frame: MessageCreatedFrame) => void
   onConversationUpdated?: (conversation: Conversation) => void
+  onMessageUpdated?: (frame: MessageUpdatedFrame) => void
 }
 
 // The socket is shared by every mounted view (`api-design.md:1608-1611`): one connection per
@@ -139,6 +147,8 @@ export class ConversationStreamClient {
       this.deps.invalidateConversations()
     } else if (frame.type === 'message.created') {
       for (const listener of this.listeners) listener.onMessageCreated(frame)
+    } else if (frame.type === 'message.updated') {
+      for (const listener of this.listeners) listener.onMessageUpdated(frame)
     } else if (frame.type === 'conversation.updated') {
       for (const listener of this.listeners) listener.onConversationUpdated(frame.conversation)
     } else {
@@ -215,6 +225,7 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
       onMessageCreated: (frame) => handlersRef.current.onMessageCreated?.(frame),
       onConversationUpdated: (conversation) =>
         handlersRef.current.onConversationUpdated?.(conversation),
+      onMessageUpdated: (frame) => handlersRef.current.onMessageUpdated?.(frame),
     })
 
     return unsubscribe

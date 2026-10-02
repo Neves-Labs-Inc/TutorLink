@@ -123,6 +123,13 @@ export const toggleStatus = (
   return STATUS_OPTIONS.filter((option) => next.includes(option))
 }
 
+// Each status counts on its own, and so do from and to: the badge mirrors how many controls are set.
+export const activeFilterCount = (state: BookingFilterState): number =>
+  state.statuses.length +
+  [state.tutorId, state.subjectId, state.childId, state.from, state.to].filter(
+    (value) => value !== '',
+  ).length
+
 export const statusLabel = (status: BookingStatus): string => STATUS_LABELS[status]
 
 export const bookingTimeLabel = (booking: BookingTimes): string =>

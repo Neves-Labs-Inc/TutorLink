@@ -29,7 +29,7 @@ names below. They never use raw hex, `oklch()`, or Tailwind palette colours (`re
 | Primary | `bg-primary` / `text-primary-foreground` | Primary buttons, active tab, admin chat bubble, unread dot, selected-row rail |
 | Secondary | `bg-secondary` / `text-secondary-foreground` | Secondary buttons, bot chat bubble |
 | Muted | `bg-muted`, `text-muted-foreground` | Hover fills, client chat bubble, skeleton bars, captions, labels in `dt`, meta text, empty-state text |
-| Accent | `bg-accent` / `text-accent-foreground` | Highlighted picker option |
+| Accent | `bg-accent` / `text-accent-foreground` | Highlighted picker option, pressed clickable card |
 | Destructive | `text-destructive`, `bg-destructive/10` | Error text, destructive buttons, failed message ring |
 | Border / input / ring | `border-border`, `border-input`, `ring-ring/50` | Dividers, field outlines, focus rings |
 | Sidebar | `bg-sidebar`, `bg-sidebar-primary`, `bg-sidebar-accent`, `border-sidebar-border` | Admin sidebar, tutor nav, mobile headers |
@@ -193,6 +193,7 @@ toast.
 - **Hover.** Buttons and rows get a fill: `hover:bg-muted`, or `hover:bg-primary/80` for primary
   buttons. Nav uses `hover:bg-sidebar-accent`. Links use `hover:underline` or `hover:text-foreground`.
 - **Press.** Buttons use `active:translate-y-px` (built into `buttonVariants`).
+- **Clickable card.** A card that opens one record uses a stretched link: the record's own name `Link` carries `data-card-target` and `after:absolute after:inset-0 after:rounded-xl after:content-['']`, and the `Card` gets `relative cursor-pointer transition-colors duration-150 ease-out motion-reduce:transition-none hover:bg-muted has-[a[data-card-target]:active]:bg-accent` plus a whole-card focus ring (`has-[a[data-card-target]:focus-visible]:ring-3 has-[a[data-card-target]:focus-visible]:ring-ring/50`, link `focus-visible:outline-none`). Other links on the card get `relative z-10`, the text-link focus outline, and a 4px hit margin (`before:absolute before:-inset-1 before:content-['']`). No chevron, no `onClick`, no `tabIndex`. Reference: `HouseholdCard` in `pages/admin/Guardians.tsx`.
 - **Disabled.** `disabled:opacity-50 disabled:pointer-events-none`.
 - **Colour changes.** `transition-colors` at the Tailwind default (150ms).
 - **Overlays.** Dialogs and slide-overs use `tw-animate-css` enter/exit on Radix

@@ -10,6 +10,7 @@ The double validates the way the SDK validates — `messages.parse` runs the mod
 `ValidationError` here that it would in production, rather than a canned stand-in for one.
 """
 
+import datetime
 import inspect
 import logging
 
@@ -24,7 +25,7 @@ from anthropic import (
 from anthropic.lib._parse._transform import transform_schema
 from pydantic import ValidationError
 
-from app.schemas.bot import BotIntent, ParsedIntent
+from app.schemas.bot import AnswerKind, BotIntent, ParsedIntent
 from app.services import bot_service, parser_service
 from app.services.parser_service import (
     MAX_RETRIES,
@@ -49,6 +50,14 @@ STEP = "which_day"
 QUESTION = "Which day works best for the session?"
 BODY = "tuesday after school for Amelia"
 CONTEXT = {"child_name": "Amelia", "subject": "Maths"}
+REQUEST = {
+    "step": STEP,
+    "question": QUESTION,
+    "body": BODY,
+    "context": CONTEXT,
+    "answer_kind": AnswerKind.DATE,
+    "today": datetime.date(2026, 10, 1),
+}
 
 WELL_FORMED = (
     '{"intent": "book", "answer": "tuesday",'
@@ -101,7 +110,7 @@ def test_a_well_formed_answer_becomes_a_validated_parsed_intent(
 ) -> None:
     _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parsed = parse_intent(**REQUEST)
 
     assert parsed.intent is BotIntent.BOOK
     assert parsed.answer == "tuesday"
@@ -119,7 +128,7 @@ def test_a_null_answer_means_the_message_did_not_answer_the_question(
         ),
     )
 
-    assert parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT).answer is None
+    assert parse_intent(**REQUEST).answer is None
 
 
 def test_a_repeated_field_name_folds_to_the_value_the_model_settled_on(
@@ -140,7 +149,7 @@ def test_a_repeated_field_name_folds_to_the_value_the_model_settled_on(
         ),
     )
 
-    parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parsed = parse_intent(**REQUEST)
 
     assert parsed.fields == {"which_day": "wednesday"}
 
@@ -166,7 +175,7 @@ def test_an_unnamed_field_is_dropped_loudly_and_its_siblings_survive(
     )
 
     with caplog.at_level(logging.WARNING, logger=parser_service.__name__):
-        parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+        parsed = parse_intent(**REQUEST)
 
     assert parsed.fields == {"child_name": "Amelia"}
     assert "dropped an unnamed field" in caplog.text
@@ -189,9 +198,7 @@ def test_a_padded_field_name_is_stripped_rather_than_left_as_a_near_miss(
         ),
     )
 
-    assert parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT).fields == {
-        "which_day": "tuesday"
-    }
+    assert parse_intent(**REQUEST).fields == {"which_day": "tuesday"}
 
 
 def test_the_prompt_pins_child_name_as_the_key_for_a_named_child() -> None:
@@ -220,7 +227,7 @@ def test_a_named_child_folds_under_child_name(monkeypatch: pytest.MonkeyPatch) -
         ),
     )
 
-    parsed = parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parsed = parse_intent(**REQUEST)
 
     assert parsed.fields == {"child_name": "Sam", "menu": "book"}
 
@@ -237,10 +244,7 @@ def test_the_models_own_low_confidence_signal_is_passed_through_untouched(
         ),
     )
 
-    assert (
-        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT).confidence_is_low
-        is True
-    )
+    assert parse_intent(**REQUEST).confidence_is_low is True
 
 
 def test_the_request_names_the_model_as_a_literal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,7 +252,7 @@ def test_the_request_names_the_model_as_a_literal(monkeypatch: pytest.MonkeyPatc
     that was never chosen fails here instead of shipping."""
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parse_intent(**REQUEST)
 
     assert MODEL == "claude-haiku-4-5"
     assert messages.calls[0]["model"] == "claude-haiku-4-5"
@@ -265,7 +269,7 @@ def test_the_request_carries_no_reasoning_or_caching_parameters(
     """
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parse_intent(**REQUEST)
 
     call = messages.calls[0]
     assert "thinking" not in call
@@ -279,7 +283,7 @@ def test_the_request_is_one_call_with_a_small_extraction_budget(
 ) -> None:
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parse_intent(**REQUEST)
 
     assert len(messages.calls) == 1
     assert messages.calls[0]["max_tokens"] == MAX_TOKENS
@@ -291,7 +295,7 @@ def test_the_prompt_carries_the_step_the_message_and_the_collected_context(
 ) -> None:
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parse_intent(**REQUEST)
 
     prompt = messages.calls[0]["messages"][0]["content"]
     assert STEP in prompt
@@ -306,7 +310,7 @@ def test_the_prompt_shows_the_question_being_answered_once_outside_the_collected
 ) -> None:
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
-    parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+    parse_intent(**REQUEST)
 
     prompt = messages.calls[0]["messages"][0]["content"]
     collected = prompt.split("Collected so far:", 1)[1]
@@ -343,7 +347,7 @@ def test_every_sdk_failure_becomes_parse_failed_with_the_original_chained(
     _install(monkeypatch, _StubClient(error=error))
 
     with pytest.raises(ParseFailed) as raised:
-        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+        parse_intent(**REQUEST)
 
     assert raised.value.__cause__ is error
 
@@ -357,7 +361,7 @@ def test_a_timeout_is_caught_before_its_connection_error_base(
     _install(monkeypatch, _StubClient(error=APITimeoutError(request=_REQUEST)))
 
     with pytest.raises(ParseFailed, match="did not answer within"):
-        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+        parse_intent(**REQUEST)
 
 
 def test_an_answer_truncated_at_max_tokens_becomes_parse_failed(
@@ -368,7 +372,7 @@ def test_an_answer_truncated_at_max_tokens_becomes_parse_failed(
     _install(monkeypatch, _StubClient(text='{"intent": "book", "fields": [{"name": "whi'))
 
     with pytest.raises(ParseFailed) as raised:
-        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+        parse_intent(**REQUEST)
 
     assert isinstance(raised.value.__cause__, ValidationError)
 
@@ -382,7 +386,7 @@ def test_a_response_with_no_parsable_content_becomes_parse_failed(
     _install(monkeypatch, _StubClient(text=None))
 
     with pytest.raises(ParseFailed):
-        parse_intent(step=STEP, question=QUESTION, body=BODY, context=CONTEXT)
+        parse_intent(**REQUEST)
 
 
 def test_the_schema_sent_to_the_api_can_still_carry_extracted_fields() -> None:

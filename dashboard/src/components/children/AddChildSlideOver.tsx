@@ -8,7 +8,7 @@ import { SlideOver } from '@/components/shared/SlideOver'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
-import { childDraftErrors, childInput, homesToOffer, EMPTY_CHILD_DRAFT, type ChildDraft } from '@/lib/children/children'
+import { GRADE_LEVEL_ERROR, childDraftErrors, childInput, homesToOffer, EMPTY_CHILD_DRAFT, type ChildDraft } from '@/lib/children/children'
 import { formatPhoneForDisplay } from '@/lib/guardians/guardians'
 import { createChild, type ChildRecord } from '@/lib/queries/children'
 import { guardianQueries, type GuardianDetail } from '@/lib/queries/guardians'
@@ -233,6 +233,7 @@ export const AddChildSlideOver = ({
     >
       <form
         id={FORM_ID}
+        noValidate
         onSubmit={(event) => {
           event.preventDefault()
           handleSubmit()
@@ -293,6 +294,7 @@ export const AddChildSlideOver = ({
           value={draft}
           onChange={setDraft}
           disabled={busy}
+          isGradeInvalid={submitted && localErrors.includes(GRADE_LEVEL_ERROR)}
           today={new Date()}
         />
       </form>

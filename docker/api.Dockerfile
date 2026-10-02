@@ -1,22 +1,6 @@
-# Three stages, built from the repository root.
-#
-#   dashboard-build   npm run build -> /dashboard/dist. tsc -b && vite build; a type error fails
-#                      the image build, which is intended.
-#   runtime           today's Python stage. `target: runtime` is what dev compose builds, since
-#                      it bind-mounts ./api over /app and has no use for the dashboard bundle.
-#   production        runtime + the dashboard bundle at /opt/dashboard. Last, so an untargeted
-#                      build is production.
-
-FROM node:22-alpine AS dashboard-build
-
-WORKDIR /dashboard
-
-COPY dashboard/package.json dashboard/package-lock.json ./
-RUN npm ci
-
-COPY dashboard/ ./
-RUN npm run build
-
+# One stage, built from the repository root. `target: runtime` is what dev compose builds, since
+# it bind-mounts ./api over /app. Production builds docker/api.prod.Dockerfile, and Caddy in the
+# web image serves the dashboard.
 
 FROM python:3.12-slim AS runtime
 
@@ -70,10 +54,3 @@ EXPOSE 8000
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
      "--no-proxy-headers", "--timeout-graceful-shutdown", "25"]
 
-
-FROM runtime AS production
-
-# /opt, not /app: dev compose bind-mounts ./api over /app, and the venv lives at /opt/venv for
-# the same reason.
-COPY --from=dashboard-build /dashboard/dist /opt/dashboard
-ENV DASHBOARD_DIST_DIR=/opt/dashboard

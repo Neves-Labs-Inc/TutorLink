@@ -43,6 +43,7 @@ from app.models.user import User
 from app.routers.booking_writes import REFERENCE_NOT_FOUND_ERROR
 from app.routers.slots import DATE_OUT_OF_WINDOW_ERROR
 from app.security import create_access_token, hash_password
+from app.services import clock
 from app.services.scheduling_service import (
     MAX_SLOTS_OFFERED_SETTING,
     MIN_BOOKING_LEAD_SETTING,
@@ -86,10 +87,9 @@ class SlotWorld:
 
 
 def _today() -> datetime.date:
-    """The same clock the route reads — UTC with the offset stripped, as
-    `routers/slots.py:_now` and `routers/booking_writes.py:_now` both do, since every
-    scheduling column is naive and the window gates compare against exactly this."""
-    return datetime.datetime.now(tz=datetime.UTC).date()
+    """The business clock the route reads, unfrozen; under the default `UTC` zone this is the
+    UTC date, since every scheduling column is naive business wall-clock."""
+    return clock.business_today()
 
 
 def _upcoming(weekday: int) -> datetime.date:
@@ -104,6 +104,8 @@ def _upcoming(weekday: int) -> datetime.date:
 
 
 DATE = _upcoming(2)
+# The date `business_evening` freezes; UTC is already on the 29th.
+BUSINESS_TODAY = datetime.date(2026, 9, 28)
 SUNDAY = _upcoming(6)
 MONDAY = _upcoming(0)
 
@@ -354,6 +356,35 @@ def test_the_grade_ceiling_is_a_comparison_and_not_a_membership_test(
     response = api.get(_url(world, grade_level=grade_level), headers=_bearer(admin))
 
     assert _windows(response) == expected
+
+
+def test_omitting_grade_level_offers_a_tutor_whatever_their_ceiling(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """A child with no grade yet is offered every active tutor who teaches the subject: the
+    lowest possible ceiling refuses grade 2, but without a grade there is nothing to compare."""
+    world = _make_world(db, date=DATE, max_grade_level=1)
+
+    graded = api.get(_url(world, grade_level=2), headers=_bearer(admin))
+    ungraded = api.get(_url(world, grade_level=None), headers=_bearer(admin))
+
+    assert _windows(graded) == []
+    assert ungraded.status_code == 200
+    assert _windows(ungraded) == DEFAULT_GRID
+
+
+def test_omitting_grade_level_still_never_offers_a_tutor_who_does_not_teach_the_subject(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    world = _make_world(db, date=DATE)
+    unassigned = _make_subject(db)
+
+    response = api.get(
+        _url(world, subject_id=unassigned.id, grade_level=None), headers=_bearer(admin)
+    )
+
+    assert response.status_code == 200
+    assert _windows(response) == []
 
 
 def test_a_tutor_with_no_assignment_for_the_subject_is_never_offered(
@@ -612,6 +643,29 @@ def test_a_slot_earlier_today_is_withheld_once_the_lead_covers_it(
     assert _windows(response) == []
 
 
+def test_the_business_date_is_inside_the_window_even_once_utc_is_on_the_next_day(
+    api: TestClient, db: Session, admin: User, business_evening: datetime.datetime
+) -> None:
+    """At 22:00 the 09:00-12:00 range has already passed, so it is in the window but withheld
+    by the lead time measured on the same business clock."""
+    world = _make_world(db, date=BUSINESS_TODAY)
+
+    response = api.get(_url(world), headers=_bearer(admin))
+
+    assert response.status_code == 200
+    assert _windows(response) == []
+
+
+def test_the_day_before_the_business_date_is_out_of_the_window(
+    api: TestClient, db: Session, admin: User, business_evening: datetime.datetime
+) -> None:
+    world = _make_world(db, date=BUSINESS_TODAY - datetime.timedelta(days=1))
+
+    response = api.get(_url(world), headers=_bearer(admin))
+
+    _assert_detail(response, 400, DATE_OUT_OF_WINDOW_ERROR)
+
+
 # --- RBAC and the request envelope ------------------------------------------------------------
 
 
@@ -644,7 +698,7 @@ def test_an_unauthenticated_request_is_401(api: TestClient, world: SlotWorld) ->
     _assert_detail(response, 401, CREDENTIALS_ERROR)
 
 
-@pytest.mark.parametrize("omitted", ["subject_id", "grade_level", "date"])
+@pytest.mark.parametrize("omitted", ["subject_id", "date"])
 def test_a_missing_required_parameter_is_400_never_422(
     api: TestClient, world: SlotWorld, admin: User, omitted: str
 ) -> None:
@@ -702,15 +756,16 @@ def _url(
     world: SlotWorld | None,
     *,
     subject_id: uuid.UUID | str | None = None,
-    grade_level: int | str = 7,
+    grade_level: int | str | None = 7,
     date: datetime.date | str | None = None,
     tutor_id: uuid.UUID | None = None,
 ) -> str:
     query = {
         "subject_id": str(subject_id if subject_id is not None else world.subject_id),
-        "grade_level": str(grade_level),
         "date": _isoformat(date if date is not None else world.date),
     }
+    if grade_level is not None:
+        query["grade_level"] = str(grade_level)
     if tutor_id is not None:
         query["tutor_id"] = str(tutor_id)
 

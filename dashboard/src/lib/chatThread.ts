@@ -48,7 +48,13 @@ export const markConversationHandled = async (
   return response.data
 }
 
-const HANDLEABLE_FLAG_REASONS: readonly FlagReason[] = ['stuck', 'parse_error', 'guardian_link_request']
+const HANDLEABLE_FLAG_REASONS: readonly FlagReason[] = [
+  'stuck',
+  'parse_error',
+  'guardian_link_request',
+  'booking_request',
+  'question',
+]
 
 export const canMarkHandled = (
   conversation: Pick<ConversationDetail, 'flag_reason' | 'flagged_at'>,

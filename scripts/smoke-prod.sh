@@ -34,7 +34,8 @@ TWILIO_TEST_AUTH_TOKEN="$(openssl rand -hex 16)"
 STATUS_WEBHOOK_SID="SM00000000000000000000000000000000"
 
 compose() {
-  docker compose -p "$PROJECT_NAME" -f "$WORK_DIR/docker-compose.prod.yml" "$@"
+  docker compose -p "$PROJECT_NAME" -f "$WORK_DIR/docker-compose.prod.yml" \
+    -f "$WORK_DIR/docker-compose.postgres.yml" "$@"
 }
 
 cleanup() {
@@ -114,10 +115,29 @@ docker build -q -f "$REPO_ROOT/docker/web.Dockerfile" -t "$WEB_IMAGE" "$REPO_ROO
 echo "==> Writing throwaway config to $WORK_DIR"
 cp "$REPO_ROOT/docker-compose.prod.yml" "$WORK_DIR/docker-compose.prod.yml"
 POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+# Production uses RDS; this throwaway Postgres stands in for it, so the prod file stays untouched.
+cat >"$WORK_DIR/docker-compose.postgres.yml" <<EOF
+services:
+  postgres:
+    image: $POSTGRES_IMAGE
+    environment:
+      POSTGRES_USER: tutorlink
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
+      POSTGRES_DB: tutorlink
+    volumes:
+      - $DATA_DIR/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP so a first boot isn't healthy until initdb has finished.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U tutorlink -d tutorlink"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+EOF
 cat >"$WORK_DIR/.env" <<EOF
-POSTGRES_USER=tutorlink
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-POSTGRES_DB=tutorlink
 DATABASE_URL=postgresql+psycopg://tutorlink:$POSTGRES_PASSWORD@postgres:5432/tutorlink
 SECRET_KEY=$(openssl rand -hex 32)
 DEBUG=false

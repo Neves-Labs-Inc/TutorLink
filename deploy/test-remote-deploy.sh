@@ -22,10 +22,10 @@ REAL_BOT_VALUES=(
   "+15551234567"
   "sk-ant-test-secret-value"
 )
+DATABASE_PASSWORD="database-password-secret-value"
+DATABASE_URL="postgresql+psycopg://tutorlink:$DATABASE_PASSWORD@db.example.internal:5432/tutorlink?sslmode=require"
 REQUIRED_PARAMETER_LINES=(
-  "POSTGRES_USER	tutorlink"
-  "POSTGRES_PASSWORD	postgres-password-secret-value"
-  "POSTGRES_DB	tutorlink"
+  "DATABASE_URL	$DATABASE_URL"
   "SECRET_KEY	secret-key-secret-value"
   "SITE_ADDRESS	$SITE_ADDRESS"
 )
@@ -33,6 +33,7 @@ ALWAYS_WRITTEN_LINES=(
   "TWILIO_STATUS_CALLBACK_URL=https://$SITE_ADDRESS/webhook/whatsapp/status"
   "API_DOCS_ENABLED=false"
   "COOKIE_SECURE=true"
+  "BUSINESS_TIMEZONE=America/New_York"
   "TRUSTED_PROXIES="
 )
 
@@ -161,6 +162,26 @@ bot_assignments() {
 
 write_stubs
 
+echo "==> Database connection"
+prepare_case
+run_deploy
+assert_succeeded "database"
+assert_env_line "database" "DATABASE_URL=$DATABASE_URL"
+pass "database: writes DATABASE_URL verbatim"
+! grep -q 'POSTGRES_' "$ENV_FILE" || fail "database: .env has a POSTGRES_ line"
+pass "database: writes no POSTGRES_ line"
+! grep '^docker compose' "$STUB_CALL_LOG" | grep -qw postgres || fail "database: a compose call starts postgres"
+pass "database: never starts postgres"
+! grep -qF -- "$DATABASE_PASSWORD" "$OUTPUT_FILE" || fail "database: output contains the database password"
+pass "database: prints no database password"
+
+echo "==> DATABASE_URL missing"
+prepare_case
+grep -v "^${PARAMETER_PATH}DATABASE_URL" "$STUB_PARAMETERS_FILE" >"$STUB_PARAMETERS_FILE.new"
+mv "$STUB_PARAMETERS_FILE.new" "$STUB_PARAMETERS_FILE"
+run_deploy
+assert_rejected "no database url" DATABASE_URL
+
 echo "==> Bot parameters all '$PLACEHOLDER'"
 mapfile -t assignments < <(bot_assignments "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER")
 prepare_case "${assignments[@]}"
@@ -183,7 +204,7 @@ for assignment in "${assignments[@]}"; do
   assert_env_line "all set" "$assignment"
 done
 pass "all set: writes the four real values"
-for secret in "${REAL_BOT_VALUES[@]}" postgres-password-secret-value secret-key-secret-value; do
+for secret in "${REAL_BOT_VALUES[@]}" "$DATABASE_PASSWORD" secret-key-secret-value; do
   ! grep -qF -- "$secret" "$OUTPUT_FILE" || fail "all set: output contains the secret '$secret'"
 done
 pass "all set: prints no secret value"

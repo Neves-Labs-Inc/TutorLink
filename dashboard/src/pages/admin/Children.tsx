@@ -24,6 +24,7 @@ import {
   type ChildRecord,
   type ChildSummary,
 } from '@/lib/queries/children'
+import { gradeLabel } from '@/lib/children/children'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -90,7 +91,7 @@ export const Children = () => {
 
   const columns: Column<ChildSummary>[] = [
     { id: 'name', header: 'Name', primary: true, cell: (row) => row.name },
-    { id: 'grade', header: 'Grade', cell: (row) => `Grade ${row.grade_level}` },
+    { id: 'grade', header: 'Grade', cell: (row) => gradeLabel(row.grade_level) },
     { id: 'school', header: 'School', cell: (row) => row.school_name },
     { id: 'guardians', header: 'Guardians', cell: (row) => guardianNames(row) },
     { id: 'homes', header: 'Homes', cell: (row) => homeNames(row) },

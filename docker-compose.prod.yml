@@ -3,24 +3,6 @@
 name: tutorlink
 
 services:
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
-    # No ports: the database is reachable only from the compose network.
-    volumes:
-      - ${DATA_DIR:?DATA_DIR is required}/pgdata:/var/lib/postgresql/data
-    healthcheck:
-      # Over TCP: during initdb Postgres listens only on the Unix socket, so a first boot isn't
-      # reported healthy (and migrations don't start) until initialization has finished.
-      test: ["CMD-SHELL", "pg_isready -h localhost -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
   api:
     image: ${API_IMAGE:?API_IMAGE is required}
     env_file: .env
@@ -32,9 +14,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    depends_on:
-      postgres:
-        condition: service_healthy
     restart: unless-stopped
 
   web:
@@ -47,7 +26,7 @@ services:
       - "443:443/udp"
     volumes:
       # Certificates and the ACME account live here, so they survive instance replacement.
-      - ${DATA_DIR}/caddy/data:/data
+      - ${DATA_DIR:?DATA_DIR is required}/caddy/data:/data
       - ${DATA_DIR}/caddy/config:/config
     # Caddy runs as root to bind 80/443; drop every other capability so a compromise gets
     # little more than the ability to serve files and bind ports.

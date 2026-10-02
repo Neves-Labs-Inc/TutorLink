@@ -6,10 +6,10 @@ own `send` handler. This module is that one way.
 
 **It is PostgreSQL `LISTEN`/`NOTIFY` and not an in-process `set[WebSocket]`, and the difference
 is invisible until it matters (P7-K).** More than one API process exists on every topology this
-project runs: ECS deploys are canaries, so the outgoing and incoming tasks serve side by side
-for the length of every deploy; autoscaling may add a second task; and `uvicorn --workers N`
-does the same on one host. Twilio's POST and an admin's WebSocket are two independent
-connections with no affinity to each other, so they land on different processes routinely.
+project runs: a deploy's `compose run` migration runs a second API process next to the
+serving one, and `uvicorn --workers N` does the same on one host. Twilio's POST and an admin's
+WebSocket are two independent connections with no affinity to each other, so they land on
+different processes routinely.
 With an in-process registry the webhook broadcasts into process A's empty set while the admin
 sits on process B: nothing raises, nothing logs, the socket stays open and healthy, and the
 admin simply never sees the client's message. The contract's own safety net

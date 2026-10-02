@@ -9,12 +9,22 @@ type ChildFieldsProps = {
   value: ChildDraft
   onChange: (next: ChildDraft) => void
   disabled?: boolean
+  isGradeInvalid?: boolean
+  isGradeRequired?: boolean
   today: Date
 }
 
 const NOTES_MAX_LENGTH = 2000
 
-export const ChildFields = ({ idPrefix, value, onChange, disabled, today }: ChildFieldsProps) => (
+export const ChildFields = ({
+  idPrefix,
+  value,
+  onChange,
+  disabled,
+  isGradeInvalid,
+  isGradeRequired,
+  today,
+}: ChildFieldsProps) => (
   <div className="space-y-4">
     <div className="space-y-1.5">
       <Label htmlFor={`${idPrefix}-name`}>Name</Label>
@@ -39,15 +49,18 @@ export const ChildFields = ({ idPrefix, value, onChange, disabled, today }: Chil
     </div>
 
     <div className="space-y-1.5">
-      <Label htmlFor={`${idPrefix}-grade`}>Grade level</Label>
+      <Label htmlFor={`${idPrefix}-grade`}>{isGradeRequired ? 'Grade level' : 'Grade level (optional)'}</Label>
       <Input
         id={`${idPrefix}-grade`}
-        type="number"
-        min={1}
+        inputMode="numeric"
         value={value.gradeLevel}
         disabled={disabled}
+        aria-invalid={isGradeInvalid || undefined}
         onChange={(event) => onChange({ ...value, gradeLevel: event.target.value })}
       />
+      {!isGradeRequired && (
+        <p className="text-xs text-muted-foreground">Leave blank if you don't know it yet.</p>
+      )}
     </div>
 
     <div className="space-y-1.5">

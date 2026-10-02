@@ -21,7 +21,7 @@ class HouseholdGuardian(BaseModel):
 class HouseholdChild(BaseModel):
     id: uuid.UUID
     name: str
-    grade_level: int
+    grade_level: int | None
     is_active: bool
 
 

@@ -21,7 +21,19 @@ class BotIntent(str, enum.Enum):
     CANCEL = "cancel"
     RESCHEDULE = "reschedule"
     LINK_GUARDIAN = "link_guardian"
+    CHIT_CHAT = "chit_chat"
+    QUESTION = "question"
     UNKNOWN = "unknown"
+
+
+class AnswerKind(str, enum.Enum):
+    """The form a step needs its answer in, which the parser is told to produce."""
+
+    TEXT = "text"
+    YES_NO = "yes_no"
+    NUMBER = "number"
+    DATE = "date"
+    CHOICE = "choice"
 
 
 class ParsedIntent(BaseModel):

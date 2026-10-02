@@ -12,14 +12,13 @@ shape and for the same reason as `routers/client_bookings.py:29`.
 `CONSTITUTION.md` §8 has no exceptions and `schemas/common.py` names this endpoint — and its
 `total` is the count before the cap, which is what lets the bot say "showing 5 of 8".
 
-The clock is read here and handed to the service as a **naive** datetime, matching
-`routers/booking_writes.py:117-118` exactly. That is not a stylistic echo: OB-13 requires the
-offer surface and the write path to read the same rows by the same rules, and two endpoints
-disagreeing about what "now" is would put the lead-time gate and rule 1's window on different
-clocks. Naive because `scheduled_date`, `start_time` and `end_time` are naive columns and
-comparing an aware `now` against `combine(date, start_time)` raises `TypeError`; UTC with the
-offset stripped rather than `datetime.now()`, which is the same instant under the container's
-UTC clock and does not change meaning with a stray `TZ`.
+The clock is read here, through `clock.business_now`, and handed to the service as a **naive**
+business wall-clock datetime (`BUSINESS_TIMEZONE`), exactly as `routers/booking_writes.py`
+does. That is not a stylistic echo: OB-13 requires the offer surface and the write path to read
+the same rows by the same rules, and two endpoints disagreeing about what "now" is would put the
+lead-time gate and rule 1's window on different clocks. Naive because `scheduled_date`, `start_time` and `end_time` are naive columns and
+comparing an aware `now` against `combine(date, start_time)` raises `TypeError`; business
+wall-clock because those columns hold the times staff typed in that zone.
 
 A read: nothing here commits.
 """
@@ -35,6 +34,7 @@ from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.schemas.common import DEFAULT_PAGE, Page
 from app.schemas.slot import SlotRead
+from app.services import clock
 from app.services.scheduling_service import DateOutOfWindow
 from app.services.slot_service import OpenSlot, find_available_slots
 
@@ -53,7 +53,8 @@ def list_available_slots(
     date: datetime.date,
     # `ge=1` because grade 0 is nobody's grade: Phase 3's review found `?grade_level=0` matched
     # every assignment's ceiling and returned the whole roster, and this is the same hole.
-    grade_level: Annotated[int, Query(ge=1)],
+    # Optional because a child may have no grade yet; omitted, the ceiling filter is skipped.
+    grade_level: Annotated[int | None, Query(ge=1)] = None,
     tutor_id: uuid.UUID | None = None,
 ) -> Page[SlotRead]:
     try:
@@ -63,7 +64,7 @@ def list_available_slots(
             grade_level=grade_level,
             date=date,
             tutor_id=tutor_id,
-            now=_now(),
+            now=clock.business_now(),
         )
     except DateOutOfWindow as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, DATE_OUT_OF_WINDOW_ERROR) from exc
@@ -74,10 +75,6 @@ def list_available_slots(
         page=DEFAULT_PAGE,
         page_size=result.page_size,
     )
-
-
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)
 
 
 def _read(slot: OpenSlot) -> SlotRead:

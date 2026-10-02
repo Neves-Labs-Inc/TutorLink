@@ -16,6 +16,18 @@ variable "data_volume_size_gb" {
   default     = 5
 }
 
+variable "db_instance_class" {
+  description = "RDS instance class for the PostgreSQL database."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage_gb" {
+  description = "Allocated gp3 storage for the RDS database, in GB. Can be grown later, never shrunk."
+  type        = number
+  default     = 20
+}
+
 variable "domain" {
   description = "Public hostname for the site. When null, the site uses <elastic-ip-with-dashes>.sslip.io."
   type        = string

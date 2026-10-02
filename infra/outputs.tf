@@ -18,6 +18,11 @@ output "instance_id" {
   value       = aws_instance.app.id
 }
 
+output "db_address" {
+  description = "Private hostname of the RDS database (the full connection string is the DATABASE_URL parameter)."
+  value       = aws_db_instance.app.address
+}
+
 output "ecr_api_repo_url" {
   description = "ECR repository URL for the API image (GitHub variable ECR_API_REPO)."
   value       = aws_ecr_repository.app["api"].repository_url

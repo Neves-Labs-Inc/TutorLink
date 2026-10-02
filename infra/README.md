@@ -3,8 +3,12 @@
 Everything TutorLink needs to run on one EC2 instance in `us-east-1`: the default VPC's subnet in
 one AZ, a security group (80/443 TCP and 443 UDP in, no SSH), an Amazon Linux 2023 instance with
 Docker and the Compose plugin, a persistent encrypted data volume mounted at `/srv/tutorlink`, an
-Elastic IP, the `tutorlink-api` and `tutorlink-web` ECR repositories, app secrets in SSM Parameter
-Store under `/tutorlink/prod/`, and a GitHub OIDC role the deploy workflow assumes. Every
+Elastic IP, a private encrypted Amazon RDS PostgreSQL 17 instance (`db.t4g.micro`, single-AZ in
+the instance's AZ, TLS required, 7-day backups, deletion protection) behind a `tutorlink-db`
+security group that allows only 5432/TCP from the app security group, the `tutorlink-api` and
+`tutorlink-web` ECR repositories, app secrets in SSM Parameter Store under `/tutorlink/prod/`
+(including the database's full connection string as the `DATABASE_URL` SecureString), and a
+GitHub OIDC role the deploy workflow assumes. Every
 resource is tagged `Project=tutorlink`, `Environment=prod`, `ManagedBy=terraform`.
 
 State lives in the S3 bucket created by [`bootstrap/`](bootstrap/README.md); apply that first.
@@ -38,6 +42,8 @@ backups yet), so Terraform refuses any plan that would delete it.
 | `region` | `us-east-1` | Region for everything. |
 | `instance_type` | `t3.micro` | EC2 instance type. |
 | `data_volume_size_gb` | `5` | Size of the data volume. Can be grown later (apply, then `sudo xfs_growfs /srv/tutorlink`), never shrunk. |
+| `db_instance_class` | `db.t4g.micro` | RDS instance class. |
+| `db_allocated_storage_gb` | `20` | RDS gp3 storage in GB. Can be grown later, never shrunk. |
 | `domain` | `null` | Real hostname; when null the site uses `<ip-with-dashes>.sslip.io`. |
 | `github_repo` | `Siraneves@313945357/TutorLink@1325618027` | Repository allowed to assume the deploy role, in GitHub's immutable `owner@id/repo@id` subject format. |
 | `github_deploy_ref` | `refs/heads/main` | Git ref whose workflow runs may deploy. |
@@ -50,6 +56,7 @@ backups yet), so Terraform refuses any plan that would delete it.
 | `site_address` | Hostname Caddy serves and requests a certificate for. |
 | `site_url` | GitHub variable `SITE_URL`; the deploy polls `<site_url>/health/ready`. |
 | `instance_id` | Target for SSM shell sessions. Not a GitHub variable: the deploy workflow finds the running instance tagged `Project=tutorlink`, `Environment=prod`. |
+| `db_address` | Private hostname of the RDS database. The full connection string is the `DATABASE_URL` parameter. |
 | `ecr_api_repo_url` | GitHub variable `ECR_API_REPO`. |
 | `ecr_web_repo_url` | GitHub variable `ECR_WEB_REPO`. |
 | `deploy_role_arn` | GitHub variable `AWS_DEPLOY_ROLE_ARN`. |

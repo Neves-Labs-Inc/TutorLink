@@ -354,10 +354,20 @@ def flag(db: Session, *, conversation: Conversation, reason: FlagReason) -> Conv
     reason only). Releasing a takeover does not, and neither does a later successful turn —
     `status` already says who is answering, and `flag_reason` is the independent question of why
     somebody had to look (`erd.md:290-299`, **P7-D**).
+
+    One exception to overwriting: a `question` only lands on an unflagged thread or one already
+    flagged `question`. Marking the question handled would clear the flag, and a booking or link
+    request or a failed handoff has no column to bring it back, so it would drop out of every
+    queue unseen. Every other reason still overwrites.
     """
-    conversation.flag_reason = reason
-    conversation.flagged_at = datetime.datetime.now(tz=datetime.UTC)
-    db.flush()
+    is_buried_question = reason is FlagReason.QUESTION and conversation.flag_reason not in (
+        None,
+        FlagReason.QUESTION,
+    )
+    if not is_buried_question:
+        conversation.flag_reason = reason
+        conversation.flagged_at = datetime.datetime.now(tz=datetime.UTC)
+        db.flush()
 
     return conversation
 

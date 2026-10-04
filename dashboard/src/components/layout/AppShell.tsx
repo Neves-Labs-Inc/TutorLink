@@ -3,14 +3,15 @@ import type { ReactNode } from 'react'
 import { isAdminRole } from '@/lib/auth/auth'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
-import { AdminSidebar } from './AdminSidebar'
+import { AdminSidebar, type AdminSidebarProps } from './AdminSidebar'
 import { TutorNav } from './TutorNav'
 
 type AppShellProps = {
   children: ReactNode
+  sidebar?: AdminSidebarProps
 }
 
-export const AppShell = ({ children }: AppShellProps) => {
+export const AppShell = ({ children, sidebar }: AppShellProps) => {
   const role = useAuthStore((state) => state.role)
   // The chrome follows the authenticated role; a guard has already established a non-null one.
   // Asked as "not admin-or-above" rather than "is tutor" so this stays in step with
@@ -19,7 +20,7 @@ export const AppShell = ({ children }: AppShellProps) => {
 
   return (
     <div className="flex min-h-dvh w-full flex-col bg-background text-foreground md:flex-row">
-      {isTutor ? <TutorNav /> : <AdminSidebar />}
+      {isTutor ? <TutorNav /> : <AdminSidebar {...sidebar} />}
       <div className="flex min-w-0 flex-1 flex-col">
         <main
           className={cn(

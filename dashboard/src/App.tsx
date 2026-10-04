@@ -21,6 +21,7 @@ import { Schedule } from '@/pages/tutor/Schedule'
 import { Sessions } from '@/pages/tutor/Sessions'
 import { TimeOff } from '@/pages/tutor/TimeOff'
 import { NotFound } from '@/pages/NotFound'
+import { StaffScreensPrototype } from '@/pages/prototype/StaffScreensPrototype'
 
 export const App = () => (
   <BrowserRouter>
@@ -179,6 +180,8 @@ export const App = () => (
             </RouteGuard>
           }
         />
+        {/* PROTOTYPE ONLY (ticket #112): no guard, hard-coded data, fakes its own Admin chrome. */}
+        <Route path="/prototype/staff-screens" element={<StaffScreensPrototype />} />
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="*" element={<NotFound />} />
       </Routes>

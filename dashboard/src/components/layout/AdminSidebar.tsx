@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
+import type { LucideIcon } from 'lucide-react'
 import {
   BookOpen,
   CalendarDays,
@@ -19,7 +20,17 @@ import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
 import { useUiStore } from '@/stores/uiStore'
 
-type NavBodyProps = {
+export type SidebarNavItem = { to: string; label: string; icon: LucideIcon }
+
+export type SidebarFooterAction = { label: string; icon: LucideIcon; onClick: () => void }
+
+// Optional slots used only by the prototype route; real routes pass nothing.
+export type AdminSidebarProps = {
+  extraNavItems?: SidebarNavItem[]
+  footerAction?: SidebarFooterAction
+}
+
+type NavBodyProps = AdminSidebarProps & {
   onNavigate?: () => void
 }
 
@@ -53,7 +64,7 @@ const logoutButtonClasses = cn(
 const iconButtonClasses =
   'inline-flex size-10 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none'
 
-export const AdminSidebar = () => {
+export const AdminSidebar = ({ extraNavItems, footerAction }: AdminSidebarProps) => {
   const mobileNavOpen = useUiStore((state) => state.mobileNavOpen)
   const toggleMobileNav = useUiStore((state) => state.toggleMobileNav)
   const closeMobileNav = useUiStore((state) => state.closeMobileNav)
@@ -129,7 +140,7 @@ export const AdminSidebar = () => {
         <div className="flex h-14 items-center border-b border-sidebar-border px-6">
           <Brand />
         </div>
-        <NavBody />
+        <NavBody extraNavItems={extraNavItems} footerAction={footerAction} />
       </aside>
 
       <div
@@ -168,7 +179,11 @@ export const AdminSidebar = () => {
               <X aria-hidden="true" className="size-5" />
             </button>
           </div>
-          <NavBody onNavigate={closeMobileNav} />
+          <NavBody
+            onNavigate={closeMobileNav}
+            extraNavItems={extraNavItems}
+            footerAction={footerAction}
+          />
         </div>
       </div>
     </>
@@ -181,7 +196,7 @@ const Brand = () => (
   </span>
 )
 
-const NavBody = ({ onNavigate }: NavBodyProps) => {
+const NavBody = ({ onNavigate, extraNavItems = [], footerAction }: NavBodyProps) => {
   const { logout } = useAuth()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
 
@@ -194,14 +209,27 @@ const NavBody = ({ onNavigate }: NavBodyProps) => {
   return (
     <>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Admin">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {[...NAV_ITEMS, ...extraNavItems].map(({ to, label, icon: Icon }) => (
           <NavLink key={to} to={to} className={linkClasses} onClick={onNavigate}>
             <Icon aria-hidden="true" className="size-4 shrink-0" />
             <span className="truncate">{label}</span>
           </NavLink>
         ))}
       </nav>
-      <div className="border-t border-sidebar-border px-3 py-3">
+      <div className="space-y-1 border-t border-sidebar-border px-3 py-3">
+        {footerAction && (
+          <button
+            type="button"
+            onClick={() => {
+              onNavigate?.()
+              footerAction.onClick()
+            }}
+            className={logoutButtonClasses}
+          >
+            <footerAction.icon aria-hidden="true" className="size-4 shrink-0" />
+            <span>{footerAction.label}</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={handleLogout}

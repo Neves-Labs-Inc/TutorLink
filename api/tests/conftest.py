@@ -90,7 +90,8 @@ def _get_test_engine() -> Engine:
     finally:
         admin_engine.dispose()
 
-    engine = create_engine(test_url, pool_pre_ping=True)
+    # `hide_parameters` as in `app.db`, so no test can come to rely on parameters in error text.
+    engine = create_engine(test_url, pool_pre_ping=True, hide_parameters=True)
     with engine.begin() as connection:
         # The shared ENUM objects carry `create_type=False`, so `create_all` will not emit
         # them; migration 0001 creates them by hand and the harness has to do the same.

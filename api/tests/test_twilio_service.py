@@ -4,11 +4,13 @@
 """
 
 import json
+import socket
 from collections.abc import Generator
 
 import pytest
 import requests
-from twilio.base.exceptions import TwilioRestException
+from twilio.base.exceptions import TwilioRestException, TwilioServiceException
+from twilio.http import HttpClient
 
 from app.config import get_settings
 from app.services import twilio_service
@@ -49,9 +51,12 @@ class FakeMessages:
 class FakeClient:
     last_instance: "FakeClient | None" = None
 
-    def __init__(self, account_sid: str, auth_token: str) -> None:
+    def __init__(
+        self, account_sid: str, auth_token: str, http_client: HttpClient | None = None
+    ) -> None:
         self.account_sid = account_sid
         self.auth_token = auth_token
+        self.http_client = http_client
         self.messages = FakeMessages()
         FakeClient.last_instance = self
 
@@ -62,7 +67,7 @@ class FailingMessages:
 
 
 class FailingClient:
-    def __init__(self, account_sid: str, auth_token: str) -> None:
+    def __init__(self, account_sid: str, auth_token: str, **kwargs: object) -> None:
         self.messages = FailingMessages()
 
 
@@ -74,7 +79,7 @@ def _client_raising(error: Exception) -> type:
             raise error
 
     class RaisingClient:
-        def __init__(self, account_sid: str, auth_token: str) -> None:
+        def __init__(self, account_sid: str, auth_token: str, **kwargs: object) -> None:
             self.messages = RaisingMessages()
 
     return RaisingClient
@@ -110,6 +115,24 @@ def test_send_addresses_to_and_from_on_the_whatsapp_channel(
     assert call["to"] == f"whatsapp:{TO}"
     assert call["from_"] == f"whatsapp:{WHATSAPP_NUMBER}"
     assert call["body"] == BODY
+
+
+@pytest.mark.parametrize("send", ["free-form", "template"])
+def test_every_send_is_made_with_a_finite_timeout(
+    monkeypatch: pytest.MonkeyPatch, configured: None, send: str
+) -> None:
+    # Without one the SDK waits forever, holding whatever the caller holds (a row lock, a
+    # pooled connection, the scheduler's lock) for as long as Twilio does not answer.
+    monkeypatch.setattr(twilio_service, "Client", FakeClient)
+
+    if send == "free-form":
+        send_whatsapp_message(to=TO, body=BODY)
+    else:
+        send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
+
+    http_client = FakeClient.last_instance.http_client
+    assert http_client is not None
+    assert http_client.timeout is not None and 0 < http_client.timeout <= 30
 
 
 def test_send_passes_status_callback_when_the_setting_is_present(
@@ -213,6 +236,19 @@ def test_template_send_refuses_when_a_credential_is_unset(
         send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
 
 
+def _caused_by(error: Exception, cause: BaseException) -> Exception:
+    """`error` chained to `cause` the way `requests` chains urllib3's failure to the socket's."""
+    error.__cause__ = cause
+
+    return error
+
+
+def _rfc9457(*, status: int, code: int) -> TwilioServiceException:
+    return TwilioServiceException(
+        type_uri="https://www.twilio.com/docs/errors", title="Error", status=status, code=code
+    )
+
+
 @pytest.mark.parametrize(
     ("error", "code", "is_retryable"),
     [
@@ -220,10 +256,39 @@ def test_template_send_refuses_when_a_credential_is_unset(
         (TwilioRestException(status=400, uri="/Messages", msg="", code=63049), "63049", False),
         (TwilioRestException(status=503, uri="/Messages", msg="", code=20503), "20503", True),
         (TwilioRestException(status=500, uri="/Messages", msg=""), None, True),
-        (requests.ConnectionError("connection reset"), None, True),
-        (requests.Timeout("read timed out"), None, True),
+        # What the SDK builds from a body it cannot parse: the HTTP status in the code field.
+        (TwilioRestException(status=502, uri="/Messages", msg="", code=502), None, True),
+        (_rfc9457(status=400, code=63016), "63016", False),
+        (_rfc9457(status=503, code=20503), "20503", True),
+        (
+            _caused_by(requests.ConnectionError("max retries"), ConnectionRefusedError(61, "")),
+            None,
+            True,
+        ),
+        (
+            _caused_by(requests.ConnectionError("max retries"), socket.gaierror(8, "")),
+            None,
+            True,
+        ),
+        # Either can happen after Twilio accepted the message, so a retry could send it twice.
+        (requests.ConnectionError("connection reset"), None, False),
+        (requests.Timeout("read timed out"), None, False),
+        (ValueError("an SDK bug"), None, False),
     ],
-    ids=["63016", "63049", "http-503", "http-500-no-code", "connection-error", "timeout"],
+    ids=[
+        "63016",
+        "63049",
+        "http-503",
+        "http-500-no-code",
+        "unparsed-502-body",
+        "rfc9457-63016",
+        "rfc9457-503",
+        "connection-refused",
+        "name-not-resolved",
+        "connection-reset",
+        "read-timeout",
+        "unexpected-error",
+    ],
 )
 def test_template_send_failure_carries_the_twilio_code_and_whether_to_retry(
     monkeypatch: pytest.MonkeyPatch,
@@ -250,6 +315,26 @@ def test_free_form_send_failure_carries_the_twilio_code(
         send_whatsapp_message(to=TO, body=BODY)
 
     assert (raised.value.code, raised.value.is_retryable) == ("63016", False)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TwilioRestException(status=400, uri="/Messages", msg=f"bad number whatsapp:{TO}", code=1),
+        requests.ConnectionError("connection reset"),
+        ValueError("an SDK bug"),
+    ],
+    ids=["refused", "network", "unexpected"],
+)
+def test_a_send_failure_never_names_the_recipient(
+    monkeypatch: pytest.MonkeyPatch, configured: None, error: Exception
+) -> None:
+    monkeypatch.setattr(twilio_service, "Client", _client_raising(error))
+
+    with pytest.raises(TwilioSendFailed) as raised:
+        send_whatsapp_message(to=TO, body=BODY)
+
+    assert TO not in str(raised.value)
 
 
 def test_twiml_empty_is_byte_for_byte() -> None:

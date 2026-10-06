@@ -399,9 +399,15 @@ def _record_and_send(
     try:
         twilio_sid = send_whatsapp_message(to=phone_number, body=frame.body)
     except TwilioServiceError as exc:
-        logger.exception("an admin message was recorded but Twilio did not accept it")
         # A missing configuration carries no Twilio code; a refusal does, and staff need it.
         error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        # No traceback: the chained Twilio error quotes the Guardian's number.
+        logger.error(
+            "admin message %s was recorded but Twilio did not accept it: %s (code %s)",
+            message.id,
+            exc,
+            error_code,
+        )
         mark_failed(db, message=message, error_code=error_code)
         failure = ErrorFrame(detail=SEND_FAILED_ERROR)
     else:

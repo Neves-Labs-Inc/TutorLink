@@ -12,7 +12,7 @@ Registered for every test by the import in `tests/conftest.py`.
 
 import importlib
 import itertools
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 
 import pytest
@@ -27,6 +27,7 @@ from app.services.twilio_service import TwilioSendFailed
 SEND_CALLERS = (
     "app.routers.conversation_stream",
     "app.services.notice_service",
+    "app.services.reminder_service",
     "app.services.webhook_service",
 )
 SEND_FUNCTION_NAMES = ("send_whatsapp_message", "send_whatsapp_template")
@@ -62,6 +63,7 @@ class FakeTwilio:
         self.sent: list[SentMessage] = []
         self._failures: list[TwilioSendFailed] = []
         self._sid_numbers = itertools.count(1)
+        self._during_send: Callable[[str], None] | None = None
 
     def send_whatsapp_message(self, *, to: str, body: str) -> str:
         return self._accept(to=to, body=body)
@@ -81,13 +83,30 @@ class FakeTwilio:
         """Fail the next `times` sends the way a Twilio 5xx does: retryable."""
         self._arm(code=SERVER_ERROR_CODE, is_retryable=True, times=times)
 
+    def during_next_send(self, action: Callable[[str], None]) -> None:
+        """Run `action(sid)` inside the next accepted send, before it returns its SID: what a
+        callback from Twilio arriving before the caller has stored that SID looks like."""
+        self._during_send = action
+
+    def fail_next_with_network_error(self, *, times: int = 1) -> None:
+        """Fail the next `times` sends the way a refused connection does: retryable, no code."""
+        self._arm(code=None, is_retryable=True, times=times)
+
     def post_status(
-        self, client: TestClient, *, sid: str, status: str, error_code: str | None = None
+        self,
+        client: TestClient,
+        *,
+        sid: str,
+        status: str,
+        error_code: str | None = None,
+        to: str | None = None,
     ) -> Response:
         """Post a status callback to the real route, signed the way Twilio signs it."""
         form = {"MessageSid": sid, "MessageStatus": status, "AccountSid": TEST_ACCOUNT_SID}
         if error_code is not None:
             form["ErrorCode"] = error_code
+        if to is not None:
+            form["To"] = f"whatsapp:{to}"
         signature = RequestValidator(TEST_AUTH_TOKEN).compute_signature(
             TEST_CLIENT_BASE_URL + STATUS_CALLBACK_PATH, form
         )
@@ -110,7 +129,7 @@ class FakeTwilio:
 
         return client.post(INBOUND_PATH, data=form, headers={SIGNATURE_HEADER: signature})
 
-    def _arm(self, *, code: str, is_retryable: bool, times: int) -> None:
+    def _arm(self, *, code: str | None, is_retryable: bool, times: int) -> None:
         failure = TwilioSendFailed(
             f"fake Twilio refused the send with {code}", code=code, is_retryable=is_retryable
         )
@@ -122,6 +141,9 @@ class FakeTwilio:
 
         sid = f"SM{next(self._sid_numbers):032d}"
         self.sent.append(SentMessage(sid=sid, to=to, **content))
+        action, self._during_send = self._during_send, None
+        if action is not None:
+            action(sid)
 
         return sid
 

@@ -58,6 +58,7 @@ from app.services import (
     conversation_service,
     message_service,
     reminder_consent_service,
+    reminder_service,
     twilio_service,
 )
 from app.services.twilio_service import (
@@ -130,7 +131,12 @@ def handle_inbound(db: Session, *, twilio_from: str, body: str, twilio_sid: str)
 
 
 def handle_status(
-    db: Session, *, twilio_sid: str, twilio_status: str, error_code: str | None
+    db: Session,
+    *,
+    twilio_sid: str,
+    twilio_status: str,
+    error_code: str | None,
+    twilio_to: str | None = None,
 ) -> Message | None:
     """Apply one delivery callback, if it names a message this deployment still models.
 
@@ -139,7 +145,19 @@ def handle_status(
     deletes messages on a schedule and Twilio's callbacks are not bounded by it — and a 404
     would only teach Twilio to retry a row that no longer exists
     (`docs/api-design.md:533-536`). An unmodelled status is the same shape of miss.
+
+    A Booking reminder's row is moved first, from Twilio's own status: it keeps `read`, which
+    `messages.status` folds into `delivered`. That step may wait for a reminder send still
+    being recorded (`twilio_to`, the callback's `To`), after which the message's SID is
+    committed too.
     """
+    reminder_service.apply_delivery_status(
+        db,
+        twilio_sid=twilio_sid,
+        twilio_status=twilio_status,
+        error_code=error_code,
+        twilio_to=twilio_to,
+    )
     status = TWILIO_STATUSES.get(twilio_status)
 
     if status is None:
@@ -214,13 +232,17 @@ def send_notice(db: Session, *, notice: Message) -> Message:
     try:
         twilio_sid = send_whatsapp_message(to=conversation.phone_number, body=notice.body)
     except TwilioServiceError as exc:
-        logger.exception(
-            "consent notice %s on conversation %s was recorded but Twilio did not accept it",
-            notice.id,
-            conversation.id,
-        )
         # A missing configuration carries no Twilio code; a refusal does, and Staff need it.
         error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        # No traceback: the chained Twilio error quotes the Guardian's number.
+        logger.error(
+            "consent notice %s on conversation %s was recorded but Twilio did not accept it:"
+            " %s (code %s)",
+            notice.id,
+            conversation.id,
+            exc,
+            error_code,
+        )
         sent = message_service.mark_failed(db, message=notice, error_code=error_code)
     else:
         sent = message_service.attach_twilio_sid(db, message=notice, twilio_sid=twilio_sid)

@@ -89,6 +89,19 @@ def test_a_fake_armed_with_a_server_error_raises_a_retryable_failure(
     assert raised.value.is_retryable is True
 
 
+def test_a_fake_armed_with_a_network_error_raises_a_retryable_failure_with_no_code(
+    fake_twilio: FakeTwilio,
+) -> None:
+    fake_twilio.fail_next_with_network_error()
+
+    with pytest.raises(TwilioSendFailed) as raised:
+        fake_twilio.send_whatsapp_template(
+            to=PHONE_NUMBER, content_sid=CONTENT_SID, content_variables={}
+        )
+
+    assert (raised.value.code, raised.value.is_retryable) == (None, True)
+
+
 def test_a_fake_armed_with_a_template_code_raises_it_from_a_template_send(
     fake_twilio: FakeTwilio,
 ) -> None:

@@ -98,6 +98,7 @@ def receive_status(request: Request, form: TwilioForm, db: DbSession) -> Respons
         twilio_sid=_required(form, "MessageSid"),
         twilio_status=form.get("MessageStatus", ""),
         error_code=form.get("ErrorCode") or None,
+        twilio_to=form.get("To") or None,
     )
 
     db.commit()

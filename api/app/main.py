@@ -39,6 +39,7 @@ from app.routers import (
     users,
     webhook,
 )
+from app.services.reminder_scheduler import run_forever as run_reminders_forever
 from app.services.retention_scheduler import run_forever
 
 app_logger = logging.getLogger("app")
@@ -51,21 +52,26 @@ if not app_logger.handlers:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the retention scheduler for exactly as long as the application is being served.
+    """Run the retention and reminder schedulers for exactly as long as the app is served.
 
-    Here rather than in `retention_scheduler`, which is service code and knows nothing about
-    FastAPI. The task touches no database until its first top-of-hour tick, so entering this is
-    free. On shutdown it is cancelled and awaited, so it never outlives the process's event
-    loop; a purge already running on its worker thread finishes or fails on its own, inside its
-    one transaction.
+    Here rather than in the scheduler modules, which are service code and know nothing about
+    FastAPI. Neither task touches the database until its first top-of-hour tick, so entering
+    this is free. On shutdown both are cancelled and awaited, so neither outlives the process's
+    event loop; a purge or reminder run already on its worker thread finishes or fails on its
+    own.
     """
-    scheduler = asyncio.create_task(run_forever(SessionLocal))
+    schedulers = [
+        asyncio.create_task(run_forever(SessionLocal)),
+        asyncio.create_task(run_reminders_forever(SessionLocal)),
+    ]
     try:
         yield
     finally:
-        scheduler.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await scheduler
+        for scheduler in schedulers:
+            scheduler.cancel()
+        for scheduler in schedulers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await scheduler
 
 
 def create_app() -> FastAPI:

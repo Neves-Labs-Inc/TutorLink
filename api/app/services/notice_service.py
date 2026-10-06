@@ -273,13 +273,17 @@ def _send(
         try:
             twilio_sid = _deliver(to=conversation.phone_number, plan=plan)
         except TwilioServiceError as exc:
-            logger.exception(
-                "notice %s on conversation %s was recorded but Twilio did not accept it",
-                message.id,
-                conversation.id,
-            )
             # A missing configuration carries no Twilio code; a refusal does, and Staff need it.
             error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+            # No traceback: the chained Twilio error quotes the Guardian's number.
+            logger.error(
+                "notice %s on conversation %s was recorded but Twilio did not accept it:"
+                " %s (code %s)",
+                message.id,
+                conversation.id,
+                exc,
+                error_code,
+            )
             message_service.mark_failed(db, message=message, error_code=error_code)
         else:
             message_service.attach_twilio_sid(db, message=message, twilio_sid=twilio_sid)

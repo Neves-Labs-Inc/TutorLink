@@ -873,6 +873,7 @@ def _make_tutor(db: Session) -> Tutor:
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("exception-password"),
         role=role,
         tutor_id=tutor_id,

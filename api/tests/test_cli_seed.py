@@ -22,6 +22,20 @@ def test_creates_exactly_one_admin_whose_password_verifies(db: Session) -> None:
     assert verify_password("change-me-please", admin.hashed_password)
 
 
+def test_a_seeded_admin_is_displayed_by_its_email_local_part(db: Session) -> None:
+    seed_admin(db, email="jane@x.com", password="change-me-please")
+
+    admin = db.scalars(select(User).where(User.email == "jane@x.com")).one()
+    assert (admin.display_name, admin.display_name_is_default) == ("jane", True)
+
+
+def test_a_seeded_developer_takes_a_display_name_when_given_one(db: Session) -> None:
+    seed_developer(db, email="dev@x.com", password="change-me-please", display_name="Dev Ops")
+
+    developer = db.scalars(select(User).where(User.email == "dev@x.com")).one()
+    assert (developer.display_name, developer.display_name_is_default) == ("Dev Ops", False)
+
+
 def test_second_call_creates_nothing_and_returns_exists(db: Session) -> None:
     seed_admin(db, email="admin@tutorlink.test", password="change-me-please")
 

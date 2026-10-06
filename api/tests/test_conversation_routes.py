@@ -55,7 +55,7 @@ from app.models.user import User
 from app.routers import conversations as conversations_router
 from app.routers.conversations import CONVERSATION_NOT_FOUND_ERROR, HELD_BY_ANOTHER_ERROR
 from app.security import create_access_token, hash_password
-from app.services.broadcast_service import ConversationUpdated
+from app.services.broadcast_service import BroadcastEvent, ConversationUpdated
 from app.services.conversation_service import claim
 
 PASSWORD = "correct horse battery staple"
@@ -280,6 +280,8 @@ def test_the_detail_carries_the_counts_the_thread_header_shows(
         "unread_count",
         "created_at",
         "reactivation_request",
+        "is_window_open",
+        "last_client_message_at",
     }
     assert body["message_count"] == 2
     assert body["unread_count"] == 1
@@ -376,7 +378,17 @@ def test_only_an_admins_message_carries_an_author(api: TestClient, db: Session) 
         "items"
     ]
 
-    assert set(items[0]) == {"id", "author_kind", "author", "body", "status", "created_at"}
+    assert set(items[0]) == {
+        "id",
+        "author_kind",
+        "author",
+        "body",
+        "status",
+        "created_at",
+        "system_kind",
+        "error_code",
+        "reminder_child_names",
+    }
     assert items[0]["author"] == {"id": str(admin.id), "email": admin.email}
     assert items[1]["author"] is None
     assert items[1]["author_kind"] == "client"
@@ -413,8 +425,12 @@ def test_a_takeover_claims_the_conversation_and_broadcasts_once(
     assert body["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
     assert body["taken_over_at"] is not None
     assert _row(db, conversation.id).taken_over_by_user_id == admin.id
-    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
-    assert broadcasts[0].frame()["type"] == "conversation.updated"
+    # The conversation, then the Takeover notice line (#109).
+    assert [event.frame()["type"] for event in broadcasts] == [
+        "conversation.updated",
+        "message.created",
+    ]
+    assert broadcasts[0].conversation["id"] == str(conversation.id)
 
 
 def test_a_reclaim_by_the_holder_is_a_no_op_200(api: TestClient, db: Session) -> None:
@@ -469,7 +485,12 @@ def test_any_admin_may_release_not_only_the_holder(
     assert body["taken_over_by"] is None
     assert body["taken_over_at"] is None
     assert _row(db, conversation.id).taken_over_by_user_id is None
-    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
+    # The conversation, then the Hand-back notice line (#109).
+    assert [event.frame()["type"] for event in broadcasts] == [
+        "conversation.updated",
+        "message.created",
+    ]
+    assert broadcasts[0].conversation["id"] == str(conversation.id)
 
 
 def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_200(
@@ -647,15 +668,16 @@ def test_no_route_in_the_module_takes_a_tutor_scope() -> None:
 
 
 @pytest.fixture(autouse=True)
-def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[ConversationUpdated]:
-    """Every `conversation.updated` the routes publish.
+def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[BroadcastEvent]:
+    """Every event the routes publish: `conversation.updated`, and since #109 the notice line's
+    `message.created`.
 
     Autouse rather than opt-in: these tests exercise the routes, not the transport, so none of
     them may reach the real `publish` and its NOTIFY — that is `test_broadcast_service.py`'s
     subject. Recording the calls is also what makes "exactly one event" and "no event at all"
     assertable — "it did not raise" would not be.
     """
-    recorded: list[ConversationUpdated] = []
+    recorded: list[BroadcastEvent] = []
     monkeypatch.setattr(
         conversations_router,
         "publish",
@@ -855,6 +877,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,

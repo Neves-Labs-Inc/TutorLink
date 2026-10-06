@@ -6,6 +6,7 @@ import { defaultWindow } from '@/lib/tutor-sessions/tutorSessions'
 import type { ChildDetail } from '@/lib/queries/children'
 import {
   bookingBlockedReason,
+  backToChildrenPath,
   bookButtonLabel,
   childSessionParams,
   EMPTY_CHILD_SESSION_STATE,
@@ -25,6 +26,8 @@ const child = (overrides: Partial<ChildDetail> = {}): ChildDetail => ({
   upcoming_session_count: 0,
   guardians: [],
   homes: [{ id: 'home-1', label: null, address: '123 Main St', access_code: '1234', is_active: true }],
+  levels: [],
+  evaluated: null,
   ...overrides,
 })
 
@@ -114,6 +117,23 @@ describe('bookButtonLabel', () => {
 
   it('reads "Reactivate and book" only for an inactive child', () => {
     expect(bookButtonLabel(child({ is_active: false }))).toBe('Reactivate and book')
+  })
+})
+
+describe('backToChildrenPath', () => {
+  it('returns to the list URL the Child was opened from', () => {
+    expect(backToChildrenPath({ back: '/children?tab=awaiting&page=2' })).toBe(
+      '/children?tab=awaiting&page=2',
+    )
+  })
+
+  it('falls back to the list when opened directly', () => {
+    expect(backToChildrenPath(null)).toBe('/children')
+    expect(backToChildrenPath({})).toBe('/children')
+  })
+
+  it('refuses a back target that is not the children list', () => {
+    expect(backToChildrenPath({ back: 'https://evil.example/children' })).toBe('/children')
   })
 })
 

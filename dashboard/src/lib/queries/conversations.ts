@@ -10,11 +10,18 @@ export type FlagReason =
   | 'reactivation_request'
   | 'booking_request'
   | 'question'
-export type MessageAuthorKind = 'client' | 'bot' | 'admin'
-export type MessageStatus = 'received' | 'queued' | 'sent' | 'delivered' | 'failed'
+export type MessageAuthorKind = 'client' | 'bot' | 'admin' | 'system'
+export type MessageStatus = 'received' | 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
+export type SystemMessageKind =
+  | 'takeover_notice'
+  | 'transfer_notice'
+  | 'handback_notice'
+  | 'booking_reminder'
+  | 'consent_notice'
 
 export type ConversationGuardianRef = { id: string; name: string }
-export type ConversationAdminRef = { id: string; email: string }
+// `display_name` arrives with the Staff Display name work; until then `email` is what shows.
+export type ConversationAdminRef = { id: string; email: string; display_name?: string | null }
 
 export type ReactivationRequest = {
   child: { id: string; name: string; is_active: boolean }
@@ -40,6 +47,8 @@ export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'un
   created_at: string
   reactivation_request: ReactivationRequest | null
   flagged_at: string | null
+  is_window_open: boolean
+  last_client_message_at: string | null
 }
 
 export type Message = {
@@ -49,6 +58,9 @@ export type Message = {
   body: string
   status: MessageStatus
   created_at: string
+  system_kind: SystemMessageKind | null
+  error_code: string | null
+  reminder_child_names: string[] | null
 }
 
 export type ConversationListParams = {
@@ -77,6 +89,22 @@ export const approveReactivation = async (conversationId: string): Promise<Conve
 export const denyReactivation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
     `/api/conversations/${conversationId}/reactivation/deny`,
+  )
+
+  return response.data
+}
+
+export const transferConversation = async (conversationId: string): Promise<ConversationDetail> => {
+  const response = await api.post<ConversationDetail>(
+    `/api/conversations/${conversationId}/transfer`,
+  )
+
+  return response.data
+}
+
+export const retryNotice = async (conversationId: string, messageId: string): Promise<Message> => {
+  const response = await api.post<Message>(
+    `/api/conversations/${conversationId}/messages/${messageId}/retry`,
   )
 
   return response.data

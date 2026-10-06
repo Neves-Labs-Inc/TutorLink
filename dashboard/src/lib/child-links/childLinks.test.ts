@@ -33,6 +33,8 @@ const baseChild: ChildDetail = {
   upcoming_session_count: 0,
   guardians: [],
   homes: [],
+  levels: [],
+  evaluated: null,
 }
 
 describe('phoneCheckOutcome', () => {

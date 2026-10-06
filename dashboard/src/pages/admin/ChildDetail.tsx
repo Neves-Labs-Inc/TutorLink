@@ -1,10 +1,12 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft } from 'lucide-react'
 
 import { BookingDetailPanel } from '@/components/bookings/BookingDetailPanel'
 import { BookingForm } from '@/components/bookings/BookingForm'
+import { ChildDetailSkeleton } from '@/components/children/ChildDetailSkeleton'
+import { ChildEvaluationSection } from '@/components/children/ChildEvaluationSection'
 import { ChildLinksSection } from '@/components/children/ChildLinksSection'
 import { EditChildSlideOver } from '@/components/children/EditChildSlideOver'
 import { DataTable, type Column } from '@/components/shared/DataTable'
@@ -16,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
 import {
+  backToChildrenPath,
   bookingBlockedReason,
   bookButtonLabel,
   childSessionParams,
@@ -23,6 +26,7 @@ import {
   isNotFoundError,
   type ChildSessionState,
 } from '@/lib/child-detail/childDetail'
+import { OVERALL_GRADE_HINT, OVERALL_GRADE_LABEL } from '@/lib/child-evaluation/childEvaluation'
 import { formatDateOfBirth, gradeLabel } from '@/lib/children/children'
 import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates/dates'
 import type { Booking } from '@/lib/queries/bookings'
@@ -35,7 +39,6 @@ type DetailFieldProps = { label: string; children: ReactNode }
 
 const FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const NOT_FOUND_MESSAGE = 'Child not found'
-const LOADING_ROWS = [0, 1, 2]
 
 const SESSION_TABS: { value: SessionTab; label: string }[] = [
   { value: 'upcoming', label: 'Upcoming' },
@@ -56,6 +59,7 @@ const COLUMNS: Column<Booking>[] = [
 
 export const ChildDetail = () => {
   const { id = '' } = useParams()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const { data, isPending, isError, error, refetch } = useQuery(childQueries.detail(id))
 
@@ -99,16 +103,7 @@ export const ChildDetail = () => {
   let content: ReactNode
 
   if (isPending) {
-    content = (
-      <Card>
-        <CardContent aria-busy="true" className="space-y-3">
-          <p className="text-sm text-muted-foreground">Loading child…</p>
-          {LOADING_ROWS.map((row) => (
-            <div key={row} className="h-8 animate-pulse rounded-lg bg-muted" />
-          ))}
-        </CardContent>
-      </Card>
-    )
+    content = <ChildDetailSkeleton />
   } else if (isError) {
     content = (
       <Card>
@@ -144,12 +139,17 @@ export const ChildDetail = () => {
               <DetailField label="Date of birth">
                 {formatDateOfBirth(child.date_of_birth, new Date())}
               </DetailField>
-              <DetailField label="Grade">{gradeLabel(child.grade_level)}</DetailField>
+              <DetailField label={OVERALL_GRADE_LABEL}>
+                {gradeLabel(child.grade_level)}
+                <span className="block text-xs text-muted-foreground">{OVERALL_GRADE_HINT}</span>
+              </DetailField>
               <DetailField label="School">{child.school_name}</DetailField>
               <DetailField label="Notes">{child.notes ?? '—'}</DetailField>
             </dl>
           </CardContent>
         </Card>
+
+        <ChildEvaluationSection child={child} />
 
         <ChildLinksSection childId={id} />
 
@@ -257,7 +257,7 @@ export const ChildDetail = () => {
     <div className="space-y-6">
       <div className="space-y-2">
         <Link
-          to="/children"
+          to={backToChildrenPath(location.state)}
           className="inline-flex items-center gap-1 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           <ChevronLeft aria-hidden="true" className="size-4" />

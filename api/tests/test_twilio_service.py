@@ -3,9 +3,11 @@
 `Client` is monkeypatched with a stub throughout — no test in this module makes a network call.
 """
 
+import json
 from collections.abc import Generator
 
 import pytest
+import requests
 from twilio.base.exceptions import TwilioRestException
 
 from app.config import get_settings
@@ -14,6 +16,7 @@ from app.services.twilio_service import (
     TwilioNotConfigured,
     TwilioSendFailed,
     send_whatsapp_message,
+    send_whatsapp_template,
     twiml_empty,
     twiml_reply,
 )
@@ -25,6 +28,8 @@ STATUS_CALLBACK_URL = "https://example.com/webhook/whatsapp/status"
 TO = "+15550002222"
 BODY = "Your session is confirmed."
 MESSAGE_SID = "SMtest"
+CONTENT_SID = "HXtest"
+CONTENT_VARIABLES = {"1": "Ana", "2": "Lunes 3 de noviembre"}
 
 
 class FakeMessageInstance:
@@ -59,6 +64,20 @@ class FailingMessages:
 class FailingClient:
     def __init__(self, account_sid: str, auth_token: str) -> None:
         self.messages = FailingMessages()
+
+
+def _client_raising(error: Exception) -> type:
+    """A `Client` stand-in whose every send raises `error`."""
+
+    class RaisingMessages:
+        def create(self, **kwargs: object) -> FakeMessageInstance:
+            raise error
+
+    class RaisingClient:
+        def __init__(self, account_sid: str, auth_token: str) -> None:
+            self.messages = RaisingMessages()
+
+    return RaisingClient
 
 
 @pytest.fixture
@@ -138,6 +157,99 @@ def test_send_wraps_a_twilio_failure_as_a_domain_exception(
 
     with pytest.raises(TwilioSendFailed):
         send_whatsapp_message(to=TO, body=BODY)
+
+
+def test_template_send_returns_the_message_sid(
+    monkeypatch: pytest.MonkeyPatch, configured: None
+) -> None:
+    monkeypatch.setattr(twilio_service, "Client", FakeClient)
+
+    sid = send_whatsapp_template(
+        to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES
+    )
+
+    assert sid == MESSAGE_SID
+
+
+def test_template_send_passes_the_content_sid_and_json_variables_without_a_body(
+    monkeypatch: pytest.MonkeyPatch, configured: None
+) -> None:
+    monkeypatch.setattr(twilio_service, "Client", FakeClient)
+
+    send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
+
+    call = FakeClient.last_instance.messages.calls[0]
+    assert call["to"] == f"whatsapp:{TO}"
+    assert call["from_"] == f"whatsapp:{WHATSAPP_NUMBER}"
+    assert call["content_sid"] == CONTENT_SID
+    assert json.loads(call["content_variables"]) == CONTENT_VARIABLES
+    assert "body" not in call
+
+
+def test_template_send_passes_the_same_status_callback_as_the_free_form_send(
+    monkeypatch: pytest.MonkeyPatch, configured: None
+) -> None:
+    monkeypatch.setenv("TWILIO_STATUS_CALLBACK_URL", STATUS_CALLBACK_URL)
+    get_settings.cache_clear()
+    monkeypatch.setattr(twilio_service, "Client", FakeClient)
+
+    send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
+
+    call = FakeClient.last_instance.messages.calls[0]
+    assert call["status_callback"] == STATUS_CALLBACK_URL
+
+
+@pytest.mark.parametrize(
+    "missing_env",
+    ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_NUMBER"],
+)
+def test_template_send_refuses_when_a_credential_is_unset(
+    monkeypatch: pytest.MonkeyPatch, configured: None, missing_env: str
+) -> None:
+    monkeypatch.delenv(missing_env, raising=False)
+    get_settings.cache_clear()
+
+    with pytest.raises(TwilioNotConfigured):
+        send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "is_retryable"),
+    [
+        (TwilioRestException(status=400, uri="/Messages", msg="", code=63016), "63016", False),
+        (TwilioRestException(status=400, uri="/Messages", msg="", code=63049), "63049", False),
+        (TwilioRestException(status=503, uri="/Messages", msg="", code=20503), "20503", True),
+        (TwilioRestException(status=500, uri="/Messages", msg=""), None, True),
+        (requests.ConnectionError("connection reset"), None, True),
+        (requests.Timeout("read timed out"), None, True),
+    ],
+    ids=["63016", "63049", "http-503", "http-500-no-code", "connection-error", "timeout"],
+)
+def test_template_send_failure_carries_the_twilio_code_and_whether_to_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: None,
+    error: Exception,
+    code: str | None,
+    is_retryable: bool,
+) -> None:
+    monkeypatch.setattr(twilio_service, "Client", _client_raising(error))
+
+    with pytest.raises(TwilioSendFailed) as raised:
+        send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
+
+    assert (raised.value.code, raised.value.is_retryable) == (code, is_retryable)
+
+
+def test_free_form_send_failure_carries_the_twilio_code(
+    monkeypatch: pytest.MonkeyPatch, configured: None
+) -> None:
+    error = TwilioRestException(status=400, uri="/Messages", msg="", code=63016)
+    monkeypatch.setattr(twilio_service, "Client", _client_raising(error))
+
+    with pytest.raises(TwilioSendFailed) as raised:
+        send_whatsapp_message(to=TO, body=BODY)
+
+    assert (raised.value.code, raised.value.is_retryable) == ("63016", False)
 
 
 def test_twiml_empty_is_byte_for_byte() -> None:

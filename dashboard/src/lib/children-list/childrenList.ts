@@ -6,16 +6,16 @@ export type ChildrenFilterState = {
   showInactive: boolean
   page: number
   pageSize: number
+  awaitingEvaluation?: boolean
 }
 
 // The Tutors/Clients toggle semantics: active by default, `is_active: false` behind "Show
-// inactive", never both (constitution §9).
+// inactive", never both (constitution §9). The Awaiting tab lists active Children only, so the
+// API needs no `is_active` there.
 export const childListParams = (state: ChildrenFilterState): ChildListParams => {
-  const params: ChildListParams = {
-    is_active: !state.showInactive,
-    page: state.page,
-    page_size: state.pageSize,
-  }
+  const params: ChildListParams = state.awaitingEvaluation
+    ? { awaiting_evaluation: true, page: state.page, page_size: state.pageSize }
+    : { is_active: !state.showInactive, page: state.page, page_size: state.pageSize }
   const term = state.q.trim()
 
   if (term !== '') {

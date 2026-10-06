@@ -1,16 +1,28 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronRight } from 'lucide-react'
 
 import { AddChildSlideOver } from '@/components/children/AddChildSlideOver'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
+import { SegmentedTabs } from '@/components/shared/SegmentedTabs'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
+import {
+  AWAITING_EMPTY,
+  AWAITING_SEARCH_EMPTY,
+  awaitingRow,
+  awaitingTabLabel,
+  childTabFrom,
+  evaluatedCell,
+  type AwaitingRow,
+  type ChildTab,
+} from '@/lib/child-evaluation/childEvaluation'
 import {
   childListParams,
   deactivateMessage,
@@ -25,12 +37,46 @@ import {
   type ChildSummary,
 } from '@/lib/queries/children'
 import { gradeLabel } from '@/lib/children/children'
+import { segmentedTabId } from '@/lib/segmented-tabs/segmentedTabs'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 
 const SEARCH_DEBOUNCE_MS = 300
 const checkboxClasses = 'size-4 rounded border-input'
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const REACTIVATE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
+const PANEL_ID = 'children-panel'
+const TAB_PARAM = 'tab'
+const PAGE_PARAM = 'page'
+const AWAITING_TAB: ChildTab = 'awaiting'
+const COUNT_PAGE_SIZE = 1
+const openLinkClasses =
+  'inline-flex min-h-11 items-center gap-0.5 rounded-sm text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring md:min-h-0'
+
+// `back` is the list URL, so the child screen's "Back to children" returns to this tab and page.
+const awaitingColumns = (back: { back: string }): Column<AwaitingRow>[] => [
+  { id: 'name', header: 'Child', primary: true, cell: (row) => row.name },
+  { id: 'guardians', header: 'Guardian', cell: (row) => row.guardians },
+  { id: 'grade', header: 'Overall grade', cell: (row) => row.grade },
+  { id: 'since', header: 'Since', cell: (row) => row.since },
+  {
+    id: 'open',
+    header: 'Child screen',
+    align: 'end',
+    cell: (row) => (
+      <Link
+        to={`/children/${row.id}`}
+        state={back}
+        aria-label={`Open ${row.name}`}
+        // The row navigates on click too; the link must not trigger it a second time.
+        onClick={(event) => event.stopPropagation()}
+        className={openLinkClasses}
+      >
+        Open
+        <ChevronRight aria-hidden="true" className="size-4" />
+      </Link>
+    ),
+  },
+]
 
 export const Children = () => {
   const navigate = useNavigate()
@@ -38,7 +84,13 @@ export const Children = () => {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [showInactive, setShowInactive] = useState(false)
-  const [page, setPage] = useState(1)
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  // The page lives in the URL beside the tab, so browser back restores both together.
+  const page = Number(searchParams.get(PAGE_PARAM)) || 1
+  const backState = { back: `${location.pathname}${location.search}` }
+  const tab = childTabFrom(searchParams.get(TAB_PARAM))
+  const isAwaiting = tab === AWAITING_TAB
   const [addOpen, setAddOpen] = useState(false)
   const [deactivateTarget, setDeactivateTarget] = useState<ChildSummary | null>(null)
   const [reactivateTarget, setReactivateTarget] = useState<ChildSummary | null>(null)
@@ -49,9 +101,30 @@ export const Children = () => {
     return () => clearTimeout(timer)
   }, [searchInput])
 
+  const setPage = (nextPage: number) => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current)
+
+        if (nextPage > 1) {
+          next.set(PAGE_PARAM, String(nextPage))
+        } else {
+          next.delete(PAGE_PARAM)
+        }
+
+        return next
+      },
+      { replace: true },
+    )
+  }
+
   const handleSearchInputChange = (nextSearchInput: string) => {
     setSearchInput(nextSearchInput)
     setPage(1)
+  }
+
+  const handleTabChange = (nextTab: ChildTab) => {
+    setSearchParams(nextTab === AWAITING_TAB ? { [TAB_PARAM]: nextTab } : {}, { replace: true })
   }
 
   const handleShowInactiveChange = (nextShowInactive: boolean) => {
@@ -59,14 +132,37 @@ export const Children = () => {
     setPage(1)
   }
 
-  const { data, isPending, isError, error, refetch } = useQuery(
-    childQueries.list(childListParams({ q: search, showInactive, page, pageSize: DEFAULT_PAGE_SIZE })),
+  const listOptions = childQueries.list(
+    childListParams({
+      q: search,
+      showInactive,
+      page,
+      pageSize: DEFAULT_PAGE_SIZE,
+      awaitingEvaluation: isAwaiting,
+    }),
+  )
+  const { data, isPending, isError, error, refetch } = useQuery({
+    ...listOptions,
+    // Keep the old page while paging or searching, but never show the other tab's rows.
+    placeholderData: (previous, previousQuery) => {
+      const previousParams = previousQuery?.queryKey[2] as { awaiting_evaluation?: boolean } | undefined
+
+      return Boolean(previousParams?.awaiting_evaluation) === isAwaiting
+        ? keepPreviousData(previous)
+        : undefined
+    },
+  })
+  // The tab count ignores the search, so it reads the same on both tabs.
+  const awaitingCount = useQuery(
+    childQueries.list({ awaiting_evaluation: true, page: 1, page_size: COUNT_PAGE_SIZE }),
   )
 
   const children = data?.items ?? []
   let emptyMessage: string
 
-  if (search.trim() !== '') {
+  if (isAwaiting) {
+    emptyMessage = search.trim() !== '' ? AWAITING_SEARCH_EMPTY : AWAITING_EMPTY
+  } else if (search.trim() !== '') {
     emptyMessage = 'No children match that search.'
   } else if (showInactive) {
     emptyMessage = 'No inactive children.'
@@ -91,7 +187,8 @@ export const Children = () => {
 
   const columns: Column<ChildSummary>[] = [
     { id: 'name', header: 'Name', primary: true, cell: (row) => row.name },
-    { id: 'grade', header: 'Grade', cell: (row) => gradeLabel(row.grade_level) },
+    { id: 'grade', header: 'Overall grade', cell: (row) => gradeLabel(row.grade_level) },
+    { id: 'evaluated', header: 'Evaluated', cell: (row) => <span className="whitespace-nowrap">{evaluatedCell(row.evaluated)}</span> },
     { id: 'school', header: 'School', cell: (row) => row.school_name },
     { id: 'guardians', header: 'Guardians', cell: (row) => guardianNames(row) },
     { id: 'homes', header: 'Homes', cell: (row) => homeNames(row) },
@@ -136,6 +233,24 @@ export const Children = () => {
         </Button>
       </div>
 
+      <SegmentedTabs
+        ariaLabel="Children"
+        panelId={PANEL_ID}
+        value={tab}
+        onChange={handleTabChange}
+        tabs={[
+          { value: 'all', label: 'All' },
+          {
+            value: AWAITING_TAB,
+            label: (
+              <span className="tabular-nums">
+                {awaitingTabLabel(awaitingCount.isSuccess ? awaitingCount.data.total : null)}
+              </span>
+            ),
+          },
+        ]}
+      />
+
       <div className="flex flex-wrap items-end gap-6">
         <div className="w-full max-w-xs space-y-1.5">
           <Label htmlFor="children-search">Search children or guardians</Label>
@@ -146,38 +261,61 @@ export const Children = () => {
             onChange={(event) => handleSearchInputChange(event.target.value)}
           />
         </div>
-        <Label className="w-fit">
-          <input
-            type="checkbox"
-            checked={showInactive}
-            onChange={(event) => handleShowInactiveChange(event.target.checked)}
-            className={checkboxClasses}
-          />
-          Show inactive
-        </Label>
+        {!isAwaiting && (
+          <Label className="w-fit">
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(event) => handleShowInactiveChange(event.target.checked)}
+              className={checkboxClasses}
+            />
+            Show inactive
+          </Label>
+        )}
       </div>
 
-      <DataTable
-        caption="Children"
-        columns={columns}
-        rows={children}
-        rowKey={(row) => row.id}
-        status={isPending ? 'pending' : isError ? 'error' : 'ready'}
-        errorMessage={errorDetail(error) ?? LOAD_FALLBACK_ERROR}
-        onRetry={() => refetch()}
-        emptyMessage={emptyMessage}
-        onRowSelect={(row) => navigate(`/children/${row.id}`)}
-      />
+      <div
+        id={PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={segmentedTabId(PANEL_ID, tab)}
+        className="space-y-6"
+      >
+        {isAwaiting ? (
+          <DataTable
+            caption="Children awaiting evaluation"
+            columns={awaitingColumns(backState)}
+            rows={children.map(awaitingRow)}
+            rowKey={(row) => row.id}
+            status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+            errorMessage={errorDetail(error) ?? LOAD_FALLBACK_ERROR}
+            onRetry={() => refetch()}
+            emptyMessage={emptyMessage}
+            onRowSelect={(row) => navigate(`/children/${row.id}`, { state: backState })}
+          />
+        ) : (
+          <DataTable
+            caption="Children"
+            columns={columns}
+            rows={children}
+            rowKey={(row) => row.id}
+            status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+            errorMessage={errorDetail(error) ?? LOAD_FALLBACK_ERROR}
+            onRetry={() => refetch()}
+            emptyMessage={emptyMessage}
+            onRowSelect={(row) => navigate(`/children/${row.id}`, { state: backState })}
+          />
+        )}
 
-      {data && (
-        <Pager
-          page={page}
-          pageSize={data.page_size}
-          total={data.total}
-          onPageChange={setPage}
-          disabled={isPending}
-        />
-      )}
+        {data && (
+          <Pager
+            page={page}
+            pageSize={data.page_size}
+            total={data.total}
+            onPageChange={setPage}
+            disabled={isPending}
+          />
+        )}
+      </div>
 
       <AddChildSlideOver
         open={addOpen}

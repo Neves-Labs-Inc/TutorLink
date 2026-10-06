@@ -6,18 +6,22 @@ import { shouldSubmitOnKey } from '@/lib/message-composer/shouldSubmitOnKey'
 
 export type MessageComposerProps = {
   disabled: boolean
+  // Set when WhatsApp's 24-hour window has closed: the composer explains why and locks.
+  closedNotice?: string | null
   onSend: (body: string) => void
 }
 
-export const MessageComposer = ({ disabled, onSend }: MessageComposerProps) => {
+export const MessageComposer = ({ disabled, closedNotice = null, onSend }: MessageComposerProps) => {
   const [body, setBody] = useState('')
 
   const hintId = useId()
+  const noticeId = useId()
+  const isClosed = closedNotice !== null
 
   const submit = () => {
     const trimmed = body.trim()
 
-    if (trimmed !== '') {
+    if (trimmed !== '' && !isClosed) {
       onSend(trimmed)
       setBody('')
     }
@@ -33,29 +37,39 @@ export const MessageComposer = ({ disabled, onSend }: MessageComposerProps) => {
 
     // Also stops Enter from inserting a newline when the reply is empty.
     event.preventDefault()
-    if (!disabled) submit()
+    if (!disabled && !isClosed) submit()
   }
 
   return (
     <form onSubmit={handleSubmit} className="border-t border-border p-3 md:space-y-1.5">
+      {isClosed && (
+        <p
+          id={noticeId}
+          className="mb-2 text-sm text-muted-foreground animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none"
+        >
+          {closedNotice}
+        </p>
+      )}
       <div className="flex items-end gap-2">
         <Textarea
           value={body}
-          disabled={disabled}
+          disabled={disabled || isClosed}
           onChange={(event) => setBody(event.target.value)}
           onKeyDown={handleKeyDown}
-          aria-describedby={hintId}
-          placeholder="Write a reply…"
+          aria-describedby={isClosed ? noticeId : hintId}
+          placeholder={isClosed ? 'Replies are closed' : 'Write a reply…'}
           rows={2}
           className="min-h-0 flex-1 resize-none"
         />
-        <Button type="submit" disabled={disabled || body.trim() === ''}>
+        <Button type="submit" disabled={disabled || isClosed || body.trim() === ''}>
           Send
         </Button>
       </div>
-      <p id={hintId} className="sr-only text-xs text-muted-foreground md:not-sr-only">
-        Enter to send · Shift+Enter for a new line
-      </p>
+      {!isClosed && (
+        <p id={hintId} className="sr-only text-xs text-muted-foreground md:not-sr-only">
+          Enter to send · Shift+Enter for a new line
+        </p>
+      )}
     </form>
   )
 }

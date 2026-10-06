@@ -29,6 +29,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -54,6 +56,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,
@@ -113,6 +116,20 @@ def _payload(**overrides: object) -> dict[str, object]:
     }
     body.update(overrides)
     return body
+
+
+def _make_levelled_child(db: Session, setter: User, *, levels: dict[Subject, int]) -> Child:
+    child = Child(name=f"Child {uuid.uuid4().hex[:8]}", grade_level=7, school_name="Test School")
+    db.add(child)
+    db.flush()
+    db.add_all(
+        ChildSubjectLevel(
+            child_id=child.id, subject_id=subject.id, level=level, set_by_user_id=setter.id
+        )
+        for subject, level in levels.items()
+    )
+    db.flush()
+    return child
 
 
 def _ids(body: dict[str, Any]) -> list[str]:
@@ -405,13 +422,9 @@ def test_grade_level_is_a_ceiling_not_a_membership_test(api: TestClient, db: Ses
     assert body["total"] == 2
 
 
-@pytest.mark.parametrize("grade_level", ["0", "-1", "-12"])
-def test_grade_level_below_one_is_400_not_the_whole_roster(
-    api: TestClient, db: Session, grade_level: str
-) -> None:
-    """`max_grade_level >= 0` is true of every assignment, so an unbounded parameter turns the
-    filter into "list everyone". `TutorSubjectCreate` already carries `Field(ge=1)`; this is
-    the same floor on the read side."""
+@pytest.mark.parametrize("grade_level", ["-1", "-12", "13"])
+def test_grade_level_outside_k_to_12_is_400(api: TestClient, db: Session, grade_level: str) -> None:
+    """The same K-12 bounds `TutorSubjectCreate` carries on the write side."""
     admin = _make_user(db)
     tutor = _make_tutor(db)
     _assign(db, tutor, _make_subject(db), 12)
@@ -422,15 +435,51 @@ def test_grade_level_below_one_is_400_not_the_whole_roster(
     assert "grade_level" in response.json()["detail"]
 
 
-def test_grade_level_one_is_the_lowest_accepted_grade(api: TestClient, db: Session) -> None:
+def test_kindergarten_is_the_lowest_accepted_grade(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     tutor = _make_tutor(db)
-    _assign(db, tutor, _make_subject(db), 1)
+    _assign(db, tutor, _make_subject(db), 0)
 
-    body = api.get("/api/tutors?grade_level=1", headers=_auth(admin)).json()
+    body = api.get("/api/tutors?grade_level=0", headers=_auth(admin)).json()
 
     assert _ids(body) == [str(tutor.id)]
     assert body["total"] == 1
+
+
+def test_child_id_matches_on_the_childs_level_for_the_subject(api: TestClient, db: Session) -> None:
+    """Math level 5: ceilings 5 and 8 qualify, 4 does not, and the Overall grade of 7 is never
+    compared. A level in another subject does not stand in for this one."""
+    admin = _make_user(db)
+    math, science = _make_subject(db), _make_subject(db)
+    exactly, above, below = _make_tutor(db), _make_tutor(db), _make_tutor(db)
+    _assign(db, exactly, math, 5)
+    _assign(db, above, math, 8)
+    _assign(db, below, math, 4)
+    _assign(db, below, science, 12)
+    child = _make_levelled_child(db, admin, levels={math: 5, science: 1})
+
+    body = api.get(
+        f"/api/tutors?subject_id={math.id}&child_id={child.id}", headers=_auth(admin)
+    ).json()
+
+    assert set(_ids(body)) == {str(exactly.id), str(above.id)}
+    assert body["total"] == 2
+
+
+def test_child_id_with_no_level_for_the_subject_matches_no_tutor(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    math = _make_subject(db)
+    _assign(db, _make_tutor(db), math, 12)
+    child = _make_levelled_child(db, admin, levels={})
+
+    body = api.get(
+        f"/api/tutors?subject_id={math.id}&child_id={child.id}", headers=_auth(admin)
+    ).json()
+
+    assert body["items"] == []
+    assert body["total"] == 0
 
 
 def test_a_ceiling_of_eight_matches_a_request_for_grade_seven(api: TestClient, db: Session) -> None:

@@ -35,6 +35,7 @@ from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
@@ -396,15 +397,16 @@ def test_a_partial_day_exception_overlapping_the_booking_is_409(
     assert _count(db) == 0
 
 
-# --- rule 5: the per-subject grade ceiling, 422 ---------------------------------------------
+# --- rule 5: the per-subject ceiling against the Child's Subject level, 422 ------------------
 
 
-def test_a_ceiling_below_the_childs_grade_is_422(
+def test_a_ceiling_below_the_childs_subject_level_is_422(
     api: TestClient, db: Session, family: Family
 ) -> None:
     """422, not 400: the request is well-formed and conflicts with nothing, it names a
     combination that is not permitted — `CONSTITUTION.md` §10's own parenthetical."""
-    family.assignment.max_grade_level = CHILD_GRADE - 1
+    _set_level(db, family, family.subject, level=6)
+    family.assignment.max_grade_level = 5
     db.flush()
     user = _make_user(db)
 
@@ -414,10 +416,53 @@ def test_a_ceiling_below_the_childs_grade_is_422(
     assert _count(db) == 0
 
 
-def test_a_ceiling_equal_to_the_childs_grade_is_accepted(
+def test_a_ceiling_equal_to_the_childs_subject_level_is_accepted(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    family.assignment.max_grade_level = CHILD_GRADE
+    _set_level(db, family, family.subject, level=5)
+    family.assignment.max_grade_level = 5
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    assert response.status_code == 201
+
+
+def test_the_overall_grade_is_never_compared_against_the_ceiling(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Overall grade 7, Math level 5, ceiling 5: the level decides, so the booking lands."""
+    _set_level(db, family, family.subject, level=5)
+    family.child.grade_level = 7
+    family.assignment.max_grade_level = 5
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    assert response.status_code == 201
+
+
+def test_a_child_with_no_level_for_the_subject_skips_the_ceiling(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Staff book the Evaluation session before any level exists, whatever the Overall grade."""
+    family.child.grade_level = 12
+    family.assignment.max_grade_level = 5
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    assert response.status_code == 201
+
+
+def test_a_level_in_another_subject_is_not_compared(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    _set_level(db, family, family.other_subject, level=12)
+    family.assignment.max_grade_level = 5
     db.flush()
     user = _make_user(db)
 
@@ -453,25 +498,11 @@ def test_a_tutor_qualified_in_a_different_subject_is_refused_for_this_one(
     assert _count(db) == 0
 
 
-def test_a_child_with_no_grade_is_accepted_by_any_tutor_who_teaches_the_subject(
+def test_a_child_with_a_level_is_still_refused_a_tutor_who_does_not_teach_the_subject(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """With no grade there is no ceiling comparison, so even the lowest ceiling passes."""
-    family.child.grade_level = None
-    family.assignment.max_grade_level = 1
-    db.flush()
-    user = _make_user(db)
-
-    response = _post(api, user, family)
-
-    assert response.status_code == 201
-
-
-def test_a_child_with_no_grade_is_still_refused_a_tutor_who_does_not_teach_the_subject(
-    api: TestClient, db: Session, family: Family
-) -> None:
-    """A missing grade skips the comparison, never the assignment check (#36)."""
-    family.child.grade_level = None
+    """A level never stands in for the assignment check (#36)."""
+    _set_level(db, family, family.subject, level=1)
     db.delete(family.assignment)
     db.flush()
     user = _make_user(db)
@@ -846,6 +877,18 @@ def _make_family(db: Session) -> Family:
     )
 
 
+def _set_level(db: Session, family: Family, subject: Subject, *, level: int) -> None:
+    db.add(
+        ChildSubjectLevel(
+            child_id=family.child.id,
+            subject_id=subject.id,
+            level=level,
+            set_by_user_id=_make_user(db).id,
+        )
+    )
+    db.flush()
+
+
 def _make_guardian(db: Session) -> Guardian:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
@@ -976,6 +1019,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("booking-write-password"),
         role=role,
         tutor_id=tutor_id,

@@ -21,21 +21,34 @@ from app.db import Base
 from app.models.enums import (
     MessageAuthor,
     MessageStatus,
+    SystemMessageKind,
+    in_values_predicate,
     message_author_enum,
     message_status_enum,
+    varchar_enum,
 )
 from app.models.mixins import HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.conversation import Conversation
 
-ADMIN_AUTHOR_PAIR_PREDICATE = "(author_kind = 'admin') = (author_user_id IS NOT NULL)"
+# `admin` requires the user who typed it, `client` and `bot` forbid one, and `system` may carry
+# the Staff member who caused the notice (NULL for a weekly reminder).
+ADMIN_AUTHOR_PAIR_PREDICATE = (
+    "author_kind = 'system' OR (author_kind = 'admin') = (author_user_id IS NOT NULL)"
+)
+SYSTEM_KIND_PAIR_PREDICATE = "(author_kind = 'system') = (system_kind IS NOT NULL)"
+SYSTEM_KIND_LENGTH = 32
 
 
 class Message(HasID, HasTimestamps, Base):
     __tablename__ = "messages"
     __table_args__ = (
         CheckConstraint(ADMIN_AUTHOR_PAIR_PREDICATE, name="ck_messages_admin_author_pair"),
+        CheckConstraint(SYSTEM_KIND_PAIR_PREDICATE, name="ck_messages_system_kind_pair"),
+        CheckConstraint(
+            in_values_predicate("system_kind", SystemMessageKind), name="ck_messages_system_kind"
+        ),
         Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
     )
 
@@ -43,7 +56,7 @@ class Message(HasID, HasTimestamps, Base):
         UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
     )
     author_kind: Mapped[MessageAuthor] = mapped_column(message_author_enum, nullable=False)
-    # Set only when `author_kind` is `admin`; the paired CHECK above enforces both directions.
+    # Required for `admin`, forbidden for `client` and `bot`, optional for `system`.
     author_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
@@ -58,5 +71,8 @@ class Message(HasID, HasTimestamps, Base):
     twilio_sid: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     status: Mapped[MessageStatus] = mapped_column(message_status_enum, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    system_kind: Mapped[SystemMessageKind | None] = mapped_column(
+        varchar_enum(SystemMessageKind, length=SYSTEM_KIND_LENGTH), nullable=True
+    )
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

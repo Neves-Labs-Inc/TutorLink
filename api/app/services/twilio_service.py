@@ -1,5 +1,5 @@
-"""Sending an outbound WhatsApp message through Twilio's REST API, and building the two TwiML
-responses the webhook returns.
+"""Sending an outbound WhatsApp message (free-form or approved template) through Twilio's REST
+API, and building the two TwiML responses the webhook returns.
 
 Two mechanisms, two status lifecycles (amendment P7-3, `docs/erd.md:349-356`,
 `docs/api-design.md:527-534`). `send_whatsapp_message` is the REST path: it starts a message
@@ -14,12 +14,15 @@ No FastAPI import, no `Session` parameter: this module raises the domain excepti
 knows nothing about routers, sockets or the database.
 """
 
+import json
 from xml.sax.saxutils import escape
 
-from twilio.base.exceptions import TwilioException
+from twilio.base.exceptions import TwilioException, TwilioRestException
 from twilio.rest import Client
 
 from app.config import get_settings
+
+HTTP_SERVER_ERROR = 500
 
 
 class TwilioServiceError(Exception):
@@ -35,10 +38,36 @@ class TwilioNotConfigured(TwilioServiceError):
 
 
 class TwilioSendFailed(TwilioServiceError):
-    """Twilio rejected the send or could not be reached."""
+    """Twilio rejected the send or could not be reached.
+
+    `code` is Twilio's own error code (`"63016"`: outside the 24-hour window), stored on the
+    failed message so the dashboard can say why; `None` when Twilio was never reached.
+    `is_retryable` is true only for a network error or an HTTP 5xx, the failures a later
+    attempt can fix. A 4xx is Twilio's final answer about this send.
+    """
+
+    def __init__(self, message: str, *, code: str | None, is_retryable: bool) -> None:
+        super().__init__(message)
+        self.code = code
+        self.is_retryable = is_retryable
 
 
 def send_whatsapp_message(*, to: str, body: str) -> str:
+    return _create_message(to=to, body=body)
+
+
+def send_whatsapp_template(*, to: str, content_sid: str, content_variables: dict[str, str]) -> str:
+    """Send an approved WhatsApp template, the only kind allowed outside the 24-hour window.
+
+    Twilio takes the variables as one JSON string keyed by placeholder (`{"1": "Ana"}`).
+    """
+    return _create_message(
+        to=to, content_sid=content_sid, content_variables=json.dumps(content_variables)
+    )
+
+
+def _create_message(*, to: str, **content: str) -> str:
+    """The one REST send both public functions share: credentials, addressing, callback, errors."""
     settings = get_settings()
 
     if not (
@@ -59,11 +88,27 @@ def send_whatsapp_message(*, to: str, body: str) -> str:
         message = client.messages.create(
             to=f"whatsapp:{to}",
             from_=f"whatsapp:{settings.twilio_whatsapp_number}",
-            body=body,
+            **content,
             **kwargs,
         )
+    except TwilioRestException as exc:
+        raise TwilioSendFailed(
+            f"Twilio refused the WhatsApp message to {to!r} (HTTP {exc.status})",
+            code=None if exc.code is None else str(exc.code),
+            is_retryable=exc.status >= HTTP_SERVER_ERROR,
+        ) from exc
     except TwilioException as exc:
-        raise TwilioSendFailed(f"failed to send WhatsApp message to {to!r}") from exc
+        raise TwilioSendFailed(
+            f"failed to send WhatsApp message to {to!r}", code=None, is_retryable=False
+        ) from exc
+    except OSError as exc:
+        # The SDK lets `requests`' connection errors and timeouts through unwrapped; every one
+        # of them is an `OSError`, and Twilio never saw the send, so it is safe to try again.
+        raise TwilioSendFailed(
+            f"could not reach Twilio to send WhatsApp message to {to!r}",
+            code=None,
+            is_retryable=True,
+        ) from exc
 
     return message.sid
 

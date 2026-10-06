@@ -56,6 +56,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,
@@ -561,3 +562,51 @@ def test_a_refused_profile_leaves_no_account_behind(api: TestClient, db: Session
     assert response.status_code == 409
     db.flush()
     assert db.scalars(select(User).where(User.email == payload["email"])).first() is None
+
+
+# --- Display name, until creation requires one ------------------------------------------------
+
+
+def test_a_tutor_account_with_a_new_profile_is_displayed_by_the_tutors_name(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+
+    body = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(tutor=_profile(name="Nadia Okafor")),
+    ).json()
+
+    created = db.get(User, uuid.UUID(body["id"]))
+    assert (created.display_name, created.display_name_is_default) == ("Nadia Okafor", False)
+
+
+def test_a_tutor_account_linked_by_id_is_displayed_by_that_tutors_name(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    existing = _make_tutor(db)
+
+    body = api.post(
+        "/api/users", headers=_auth(admin), json=_create_payload(tutor_id=str(existing.id))
+    ).json()
+
+    created = db.get(User, uuid.UUID(body["id"]))
+    assert (created.display_name, created.display_name_is_default) == (existing.name, False)
+
+
+def test_an_admin_account_is_displayed_by_its_email_local_part(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+
+    body = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(email="jane@x.com", role="admin"),
+    ).json()
+
+    created = db.get(User, uuid.UUID(body["id"]))
+    # Derived from the email, so no Guardian is ever shown it (#109).
+    assert (created.display_name, created.display_name_is_default) == ("jane", True)

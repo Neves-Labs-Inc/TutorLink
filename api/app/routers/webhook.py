@@ -76,8 +76,15 @@ def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Respo
 
     db.commit()
 
-    for message in turn.recorded:
-        publish(_message_created(message))
+    # Record, commit, send, attach: the notice is a line in the thread before it is sent.
+    notice = None
+    if turn.notice is not None:
+        notice = webhook_service.send_notice(db, notice=turn.notice)
+        db.commit()
+
+    for message in (*turn.recorded, notice):
+        if message is not None:
+            publish(_message_created(message))
 
     return Response(content=turn.twiml, media_type=TWIML_MEDIA_TYPE)
 
@@ -159,4 +166,7 @@ def _serialised(message: Message) -> dict[str, object]:
         body=message.body,
         status=message.status,
         created_at=message.created_at,
+        system_kind=message.system_kind,
+        error_code=message.error_code,
+        reminder_child_names=None,
     ).model_dump(mode="json")

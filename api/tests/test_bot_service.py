@@ -38,7 +38,7 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 
 import pytest
-from sqlalchemy import Column, event, func, select, update
+from sqlalchemy import Column, delete, event, func, select, update
 from sqlalchemy.orm import ORMExecuteState, Session
 from sqlalchemy.sql import visitors
 
@@ -46,23 +46,27 @@ from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.bot_flow_state import BotFlowState
 from app.models.child import NOTES_MAX_LENGTH, Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
-from app.models.enums import BookingStatus, FlagReason
+from app.models.enums import BookingStatus, FlagReason, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor, TutorSubject
-from app.schemas.bot import AnswerKind, BotIntent, BotTurn, ParsedIntent
+from app.models.user import User
+from app.schemas.bot import AnswerKind, BotIntent, BotTurn, GuardianLanguage, ParsedIntent
 from app.services import (
     booking_status_service,
     bot_service,
     booking_write_service,
+    bot_messages,
     client_service,
     clock,
     conversation_service,
     parser_service,
 )
+from app.services.bot_messages import render
 from app.services.bot_state import FlowState, load_state, save_state
 from app.services.scheduling_service import MAX_SLOTS_OFFERED_SETTING
 
@@ -75,6 +79,23 @@ INBOUND_NUMBER = "+1 (202) 555-0123"
 CANONICAL_NUMBER = "+12025550123"
 
 DATE_OF_BIRTH = datetime.date(2016, 4, 23)
+
+# The fixture Child's Subject level in the world's subject; every world tutor's ceiling is 12.
+CHILD_LEVEL = 7
+
+
+# The reminder question's re-prompt is named for the question rather than its step.
+_NUDGE_IDS = {bot_service.STEP_REMINDERS_OPT_IN: "NUDGE_reminders"}
+
+
+def _nudge(step: str) -> str:
+    # `name` fills the grade nudge's child, which is the parked `child_name`; the rest ignore it.
+    return render(_NUDGE_IDS.get(step, f"NUDGE_{step}"), "en", name="Sam")
+
+
+def _text_before_placeholder(message_id: str) -> str:
+    """The fixed opening of a message that ends in values this test does not pin."""
+    return bot_messages.MESSAGES[message_id]["en"].split("{")[0]
 
 
 def _today() -> datetime.date:
@@ -92,6 +113,8 @@ def _upcoming(weekday: int) -> datetime.date:
 
 
 DATE = _upcoming(2)
+# The US wording written out by hand, so the pinned tests below do not share the formatter's logic.
+US_DATE = f"{DATE:%A}, {DATE:%B} {DATE.day}"
 TOMORROW = _today() + datetime.timedelta(days=1)
 
 # Midday, so that a 09:00 session tomorrow is 21 hours away and therefore *inside* the seeded
@@ -174,6 +197,9 @@ class Chat:
     phone_number: str = INBOUND_NUMBER
     guardian_id: uuid.UUID | None = None
     reactivation_pending: bool = False
+    # `conversations.language` as the webhook would pass it, updated from each turn the way
+    # the webhook's `_apply` stores it.
+    language: GuardianLanguage | None = None
     replies: list[BotTurn] = field(default_factory=list)
 
     def say(
@@ -185,8 +211,10 @@ class Chat:
         intent: BotIntent = BotIntent.UNKNOWN,
         confidence_is_low: bool = False,
         fails: bool = False,
+        language: GuardianLanguage | None = None,
     ) -> BotTurn:
-        """`value` is scripted as the parser's `answer`; `fields` as its named extras."""
+        """`value` is scripted as the parser's `answer`; `fields` as its named extras;
+        `language` as the language the parser read the message in."""
         self.parser.script(
             parser_service.ParseFailed("scripted outage")
             if fails
@@ -195,6 +223,7 @@ class Chat:
                 answer=None if value is None else str(value),
                 fields=fields or {},
                 confidence_is_low=confidence_is_low,
+                language=language,
             )
         )
         turn = bot_service.reply_for(
@@ -203,8 +232,11 @@ class Chat:
             body=body,
             guardian_id=self.guardian_id,
             reactivation_pending=self.reactivation_pending,
+            language=self.language,
         )
         self.replies.append(turn)
+        if turn.language is not None:
+            self.language = turn.language
 
         return turn
 
@@ -312,8 +344,12 @@ def world(db: Session) -> BotWorld:
 
 
 @pytest.fixture
-def client(db: Session) -> ClientWorld:
-    return _make_client(db)
+def client(db: Session, world: BotWorld) -> ClientWorld:
+    """A returning family whose Child is Evaluated, with a level in `world`'s subject."""
+    client = _make_client(db)
+    _evaluate(db, client.child_id, levels={world.subject_id: CHILD_LEVEL})
+
+    return client
 
 
 @pytest.fixture
@@ -375,7 +411,7 @@ def executed_sql(db: Session) -> Generator[list[str], None, None]:
 def test_a_first_message_from_an_unknown_number_opens_the_intake_flow(chat: Chat) -> None:
     turn = chat.say("hello?")
 
-    assert bot_service.ASK_GUARDIAN_NAME in turn.reply
+    assert render("ASK_GUARDIAN_NAME", "en") in turn.reply
     assert chat.step == bot_service.STEP_INTAKE_NAME
     assert turn.flag_reason is None
 
@@ -386,17 +422,19 @@ def test_a_first_message_from_a_known_number_opens_the_menu(
     """REQ-075.1 — recognition is by phone number alone, with no challenge."""
     turn = chat.say("hi")
 
-    assert bot_service.ASK_MENU in turn.reply
+    assert render("ASK_MENU", "en") in turn.reply
     assert chat.step == bot_service.STEP_MENU
 
 
-def test_the_opening_turn_does_not_spend_the_message_on_the_parser(chat: Chat) -> None:
+def test_the_opening_turn_is_parsed_for_its_language_only(chat: Chat) -> None:
     """ "hi" is not an answer to a question the bot has not asked yet, so it costs no
-    re-prompt and no parse call."""
-    chat.say("hi")
+    re-prompt; the one parse call is there to read the language the parent wrote in."""
+    chat.say("hi", value="hi")
 
-    assert chat.parser.calls == []
+    assert [call["step"] for call in chat.parser.calls] == [bot_service.OPENING_STEP]
+    assert chat.parser.calls[0]["question"] == bot_service.OPENING_QUESTION
     assert chat.state.misses == 0
+    assert chat.state.collected_data == {}
 
 
 # --- intake (REQ-073) ---------------------------------------------------------------------------
@@ -408,7 +446,7 @@ def test_a_completed_intake_writes_the_five_row_kinds_in_one_turn(chat: Chat, db
     Nothing is written until the last answer of the first child — the notes answer — arrives,
     so a refused intake leaves none of it behind rather than only none of its tail.
     """
-    _answer_up_to_the_school(chat)
+    _answer_up_to_the_notes(chat)
     after_the_school = _count(db, Guardian)
     writing_turn = chat.say(value="Peanut allergy")
 
@@ -422,7 +460,7 @@ def test_a_completed_intake_writes_the_five_row_kinds_in_one_turn(chat: Chat, db
     assert writing_turn.link_guardian_id == guardian.id
     assert chat.step == bot_service.STEP_CHILD_MORE
     assert child.date_of_birth == DATE_OF_BIRTH
-    assert child.grade_level is None
+    assert child.grade_level == 5
     assert child.school_name == "Test School"
     assert child.notes == "Peanut allergy"
     assert _count(db, Home) == 1
@@ -453,7 +491,7 @@ def test_the_home_label_is_optional_and_skipping_it_costs_no_re_prompt(
 
     turn = chat.say("no thanks", value="skip")
 
-    assert bot_service.ASK_CHILD_REGISTERED in turn.reply
+    assert render("ASK_CHILD_REGISTERED", "en") in turn.reply
     assert chat.state.misses == 0
 
 
@@ -472,6 +510,7 @@ def test_an_over_long_answer_is_truncated_to_the_column_it_lands_in(
     chat.say(value="Sam")
     chat.say(value=DATE_OF_BIRTH.isoformat())
     chat.say(value="C" * 300)
+    chat.say(value="5")
     chat.say(value="D" * 2500)
 
     guardian = db.execute(select(Guardian)).scalar_one()
@@ -487,11 +526,11 @@ def test_an_over_long_answer_is_truncated_to_the_column_it_lands_in(
 @pytest.mark.parametrize(
     ("raw", "lead"),
     [
-        ("April 23rd 2016", bot_service.UNREADABLE_DATE),
-        ("23/04/2016", bot_service.UNREADABLE_DATE),
-        ("2016-02-30", bot_service.UNREADABLE_DATE),
-        ("1899-12-31", bot_service.IMPLAUSIBLE_BIRTH_DATE),
-        (TOMORROW.isoformat(), bot_service.IMPLAUSIBLE_BIRTH_DATE),
+        ("April 23rd 2016", render("UNREADABLE_DATE", "en")),
+        ("23/04/2016", render("UNREADABLE_DATE", "en")),
+        ("2016-02-30", render("UNREADABLE_DATE", "en")),
+        ("1899-12-31", render("IMPLAUSIBLE_BIRTH_DATE", "en")),
+        (TOMORROW.isoformat(), render("IMPLAUSIBLE_BIRTH_DATE", "en")),
         (None, None),
     ],
 )
@@ -505,7 +544,7 @@ def test_a_date_of_birth_that_is_not_a_plausible_iso_date_is_re_prompted(
 
     turn = chat.say(value=raw)
 
-    nudge = bot_service.NUDGES[bot_service.STEP_CHILD_DOB]
+    nudge = _nudge(bot_service.STEP_CHILD_DOB)
     assert turn.reply == (nudge if lead is None else f"{lead} {nudge}")
     assert chat.step == bot_service.STEP_CHILD_DOB
     assert chat.state.misses == 1
@@ -523,7 +562,7 @@ def test_three_unusable_dates_of_birth_bail_out_stuck(chat: Chat, db: Session) -
     assert first.flag_reason is None
     assert second.flag_reason is None
     assert third.flag_reason is FlagReason.STUCK
-    assert third.reply == bot_service.BAILED_OUT
+    assert third.reply == render("BAILED_OUT", "en")
     assert chat.step == bot_service.STEP_CHILD_DOB
     assert _count(db, Guardian) == 0
 
@@ -533,7 +572,7 @@ def test_the_earliest_plausible_date_of_birth_is_accepted(chat: Chat) -> None:
 
     turn = chat.say(value="1900-01-01")
 
-    assert turn.reply == bot_service.ASK_CHILD_SCHOOL
+    assert turn.reply == render("ASK_CHILD_SCHOOL", "en")
     assert chat.step == bot_service.STEP_CHILD_SCHOOL
     assert chat.state.collected_data["child_date_of_birth"] == "1900-01-01"
 
@@ -544,7 +583,7 @@ def test_declining_the_notes_question_stores_null_without_a_re_prompt(
 ) -> None:
     """A-45. "None" is an answer, and so is a reply the parser extracted nothing from: the
     notes step never spends one of the parent's re-prompts."""
-    _answer_up_to_the_school(chat)
+    _answer_up_to_the_notes(chat)
 
     turn = chat.say(value=answer)
 
@@ -553,14 +592,14 @@ def test_declining_the_notes_question_stores_null_without_a_re_prompt(
     assert child.notes is None
     assert chat.step == bot_service.STEP_CHILD_MORE
     assert chat.state.misses == 0
-    assert turn.reply.startswith(bot_service.CHILD_ADDED.format(name="Sam"))
+    assert turn.reply.startswith(render("CHILD_ADDED", "en", name="Sam"))
 
 
 def test_the_notes_question_does_not_promise_a_tutor_will_read_it() -> None:
     """A-43 is reversed — the assigned tutor now sees a child's notes on the session detail
     (7C TN) — but the parent-facing copy is deliberately left neutral (OQ-88), so it still
     names no tutor."""
-    assert "tutor" not in bot_service.ASK_CHILD_NOTES.casefold()
+    assert "tutor" not in render("ASK_CHILD_NOTES", "en").casefold()
 
 
 def test_the_parser_is_told_to_answer_the_date_of_birth_as_a_date(chat: Chat) -> None:
@@ -572,7 +611,7 @@ def test_the_parser_is_told_to_answer_the_date_of_birth_as_a_date(chat: Chat) ->
     call = chat.parser.calls[-1]
 
     assert call["step"] == bot_service.STEP_CHILD_DOB
-    assert call["question"] == bot_service.ASK_CHILD_DOB
+    assert call["question"] == render("ASK_CHILD_DOB", "en")
     assert call["answer_kind"] is AnswerKind.DATE
     assert call["today"] == NOW.date()
 
@@ -585,7 +624,7 @@ def test_the_parser_is_told_to_answer_the_booking_day_as_a_date(
     call = chat.parser.calls[-1]
 
     assert call["step"] == bot_service.STEP_BOOK_DATE
-    assert call["question"] == bot_service.ASK_DATE
+    assert call["question"] == render("ASK_DATE", "en")
     assert call["answer_kind"] is AnswerKind.DATE
     assert call["today"] == NOW.date()
 
@@ -599,7 +638,7 @@ def test_the_cancel_list_labels_a_booking_with_a_human_date_and_time(
     turn = chat.say("cancel please", intent=BotIntent.CANCEL)
 
     expected = (
-        f"{DATE:%A} {DATE.day} {DATE:%B}, 4:00pm-5:00pm: "
+        f"{US_DATE}, 4:00-5:00 PM: "
         f"{world.subject_name} for Sam Guardian with {world.first_tutor_name}"
     )
     assert expected in turn.reply
@@ -609,7 +648,7 @@ def test_the_date_of_birth_and_notes_are_never_sent_to_the_parser_again(chat: Ch
     """A-55. Neither is needed to understand any later step, and notes can be health
     information; both would otherwise ride along to a third-party model on every message.
     The date is deliberately not `ASK_CHILD_DOB`'s own example, which a prompt may carry."""
-    _answer_up_to_the_school(chat, date_of_birth="2015-11-30")
+    _answer_up_to_the_notes(chat, date_of_birth="2015-11-30")
     collected_at = len(chat.parser.calls)
     chat.say(value="Has dyslexia")
     chat.say(value="yes")
@@ -678,7 +717,7 @@ def test_a_returning_guardian_asking_to_be_linked_is_flagged_rather_than_linked(
     turn = chat.say("add me to my son's account", intent=BotIntent.LINK_GUARDIAN)
 
     assert turn.flag_reason is FlagReason.GUARDIAN_LINK_REQUEST
-    assert bot_service.GUARDIAN_LINK_REPLY == turn.reply
+    assert render("GUARDIAN_LINK_REPLY", "en") == turn.reply
 
 
 def test_a_second_child_reuses_the_guardian_written_by_the_first(chat: Chat, db: Session) -> None:
@@ -687,6 +726,7 @@ def test_a_second_child_reuses_the_guardian_written_by_the_first(chat: Chat, db:
     chat.say(value="Robin")
     chat.say(value="2017-09-01")
     chat.say(value="Test School")
+    chat.say(value="3")
     chat.say(value="none")
 
     assert _count(db, Guardian) == 1
@@ -709,15 +749,18 @@ def test_a_returning_guardian_with_no_children_is_asked_the_full_child_questions
     chat.say(value="no")
     dob_question = chat.say(value="Sam")
     chat.say(value=DATE_OF_BIRTH.isoformat())
-    notes_question = chat.say(value="Test School")
+    grade_question = chat.say(value="Test School")
+    notes_question = chat.say(value="5")
     chat.say(value="Peanut allergy")
 
     child = db.execute(select(Child)).scalar_one()
     link = db.execute(select(ChildGuardian)).scalar_one()
 
-    assert dob_question.reply == bot_service.ASK_CHILD_DOB
-    assert notes_question.reply == bot_service.ASK_CHILD_NOTES
+    assert dob_question.reply == render("ASK_CHILD_DOB", "en")
+    assert grade_question.reply == render("ASK_CHILD_GRADE", "en", name="Sam")
+    assert notes_question.reply == render("ASK_CHILD_NOTES", "en")
     assert child.date_of_birth == DATE_OF_BIRTH
+    assert child.grade_level == 5
     assert child.notes == "Peanut allergy"
     assert link.guardian_id == detail.client.id
     assert _count(db, Guardian) == 1
@@ -741,35 +784,7 @@ def test_a_booking_is_written_confirmed_through_the_write_service(
     assert booking.child_id == client.child_id
     assert booking.home_id == client.home_id
     assert chat.step is None
-    assert bot_service.BOOKING_CONFIRMED.split("{")[0] in turn.reply
-
-
-@pytest.mark.parametrize(
-    ("day", "expected"),
-    [
-        (datetime.date(2026, 10, 13), "Tuesday 13 October"),
-        (datetime.date(2026, 3, 5), "Thursday 5 March"),
-        (datetime.date(2026, 12, 31), "Thursday 31 December"),
-    ],
-)
-def test_a_date_reads_as_weekday_day_and_month(day: datetime.date, expected: str) -> None:
-    assert bot_service.format_date(day) == expected
-
-
-@pytest.mark.parametrize(
-    ("start", "end", "expected"),
-    [
-        (datetime.time(16, 0), datetime.time(17, 0), "4:00pm-5:00pm"),
-        (datetime.time(9, 30), datetime.time(10, 5), "9:30am-10:05am"),
-        (datetime.time(11, 0), datetime.time(12, 0), "11:00am-12:00pm"),
-        (datetime.time(12, 0), datetime.time(13, 0), "12:00pm-1:00pm"),
-        (datetime.time(0, 0), datetime.time(0, 45), "12:00am-12:45am"),
-    ],
-)
-def test_a_time_range_reads_in_twelve_hour_form(
-    start: datetime.time, end: datetime.time, expected: str
-) -> None:
-    assert bot_service.format_time_range(start, end) == expected
+    assert _text_before_placeholder("BOOKING_CONFIRMED") in turn.reply
 
 
 def test_the_slot_offer_shows_a_human_date_and_times_but_stores_iso(
@@ -777,8 +792,8 @@ def test_the_slot_offer_shows_a_human_date_and_times_but_stores_iso(
 ) -> None:
     turn = _book(chat, world, stop_after_offer=True)
 
-    assert f"{DATE:%A} {DATE.day} {DATE:%B}" in turn.reply
-    assert "9:00am-10:00am with " in turn.reply
+    assert turn.reply.startswith(f"These times are available on {US_DATE}:\n1. 9:00-10:00 AM with ")
+    assert "\n3. 10:30-11:30 AM with " in turn.reply
     assert DATE.isoformat() not in turn.reply
     assert "09:00" not in turn.reply
     assert chat.state.collected_data["book_date"] == DATE.isoformat()
@@ -793,7 +808,7 @@ def test_the_offer_says_how_many_slots_it_is_not_showing(
 
     turn = _book(chat, world, stop_after_offer=True)
 
-    assert bot_service.SHOWING_SOME.format(shown=1, total=4) in turn.reply
+    assert render("SHOWING_SOME", "en", shown=1, total=4) in turn.reply
 
 
 def test_a_named_tutor_narrows_the_offer_to_that_tutor(
@@ -819,7 +834,7 @@ def test_an_ambiguous_choice_is_re_prompted_rather_than_guessed(
 
     turn = chat.say(value=world.first_tutor_name)
 
-    assert turn.reply.startswith(f"{bot_service.AMBIGUOUS_NAME}\n1. ")
+    assert turn.reply.startswith(f"{render('AMBIGUOUS_NAME', 'en')}\n1. ")
     assert chat.step == bot_service.STEP_BOOK_TUTOR
 
 
@@ -832,7 +847,7 @@ def test_more_than_one_active_home_asks_which_one(
 
     turn = _book(chat, world, stop_after_date=True)
 
-    assert bot_service.ASK_WHICH_HOME in turn.reply
+    assert render("ASK_WHICH_HOME", "en") in turn.reply
     assert "Dad's" in turn.reply
     assert chat.step == bot_service.STEP_BOOK_HOME
 
@@ -843,7 +858,7 @@ def test_exactly_one_active_home_is_not_asked_about(
     """The common path must not cost a needless turn (#39)."""
     turn = _book(chat, world, stop_after_date=True)
 
-    assert bot_service.ASK_WHICH_HOME not in turn.reply
+    assert render("ASK_WHICH_HOME", "en") not in turn.reply
     assert chat.step == bot_service.STEP_BOOK_SLOT
 
 
@@ -856,7 +871,7 @@ def test_a_deactivated_home_is_not_counted_and_is_never_offered(
 
     turn = _book(chat, world, stop_after_date=True)
 
-    assert bot_service.ASK_WHICH_HOME not in turn.reply
+    assert render("ASK_WHICH_HOME", "en") not in turn.reply
     assert "Old place" not in turn.reply
 
 
@@ -883,7 +898,7 @@ def test_a_conflict_on_the_write_re_offers_rather_than_erroring(
 
     turn = _book(chat, world)
 
-    assert bot_service.SLOT_JUST_TAKEN in turn.reply
+    assert render("SLOT_JUST_TAKEN", "en") in turn.reply
     assert turn.flag_reason is None
     assert chat.step == bot_service.STEP_BOOK_SLOT
 
@@ -894,11 +909,11 @@ def test_a_date_outside_the_booking_window_asks_for_another_day(
     chat.say("hi")
     chat.say("book please", intent=BotIntent.BOOK)
     chat.say(value=world.subject_name)
-    chat.say(value=bot_service.ANY_TUTOR_LABEL)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
 
     turn = chat.say(value=(_today() - datetime.timedelta(days=1)).isoformat())
 
-    assert bot_service.DATE_NOT_BOOKABLE in turn.reply
+    assert render("DATE_NOT_BOOKABLE", "en") in turn.reply
     assert chat.step == bot_service.STEP_BOOK_DATE
 
 
@@ -912,11 +927,11 @@ def test_an_iso_date_is_accepted_with_or_without_a_time_attached(
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
     chat.say(value=world.subject_name)
-    chat.say(value=bot_service.ANY_TUTOR_LABEL)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
 
     turn = chat.say(value=f"{DATE.isoformat()}{suffix}")
 
-    assert bot_service.ASK_SLOT.format(date=bot_service.format_date(DATE)) in turn.reply
+    assert render("ASK_SLOT", "en", date=bot_messages.format_date(DATE, "en")) in turn.reply
     assert chat.step == bot_service.STEP_BOOK_SLOT
 
 
@@ -927,24 +942,22 @@ def test_a_date_the_parser_did_not_resolve_is_re_prompted_rather_than_guessed(
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
     chat.say(value=world.subject_name)
-    chat.say(value=bot_service.ANY_TUTOR_LABEL)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
 
     turn = chat.say(value=raw)
 
-    nudge = bot_service.NUDGES[bot_service.STEP_BOOK_DATE]
-    assert turn.reply == (nudge if raw == "" else f"{bot_service.UNREADABLE_DATE} {nudge}")
+    nudge = _nudge(bot_service.STEP_BOOK_DATE)
+    assert turn.reply == (nudge if raw == "" else f"{render('UNREADABLE_DATE', 'en')} {nudge}")
     assert chat.step == bot_service.STEP_BOOK_DATE
 
 
-# --- the first session for a child with no grade on file ----------------------------------------
+# --- the office handoff: not Evaluated, or no level for the subject ----------------------------
 
 
-def test_a_child_with_no_grade_is_handed_to_the_office_after_the_subject_and_day(
+def test_a_child_not_evaluated_is_handed_to_the_office_after_the_subject_and_day(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
-    sibling = _add_child(db, client, name="Robin Guardian")
-    sibling.grade_level = None
-    db.flush()
+    _add_child(db, client, name="Robin Guardian")
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
 
@@ -952,10 +965,47 @@ def test_a_child_with_no_grade_is_handed_to_the_office_after_the_subject_and_day
     day_question = chat.say(value=world.subject_name)
     turn = chat.say(value=DATE.isoformat())
 
-    assert subject_question.reply.startswith(bot_service.ASK_SUBJECT)
-    assert day_question.reply == bot_service.ASK_DATE
+    assert subject_question.reply.startswith(render("ASK_SUBJECT", "en"))
+    assert day_question.reply == render("ASK_DATE", "en")
     assert turn.reply == (
-        "Thank you. Our office will arrange the first session for Robin Guardian "
+        "Thank you. Robin Guardian's first session will be an evaluation session. "
+        "Our office will arrange it and be in touch shortly."
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert chat.state is None
+    assert _count(db, Booking) == 0
+
+
+def test_a_child_whose_evaluation_was_cleared_goes_to_the_handoff_despite_its_levels(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _clear_evaluation(db, client.child_id)
+    chat.say("hi")
+
+    subject_question = chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value=world.subject_name)
+    turn = chat.say(value=DATE.isoformat())
+
+    assert subject_question.reply.startswith(render("ASK_SUBJECT", "en"))
+    assert chat.replies[-2].reply == render("ASK_DATE", "en")
+    assert turn.reply == render("FIRST_SESSION_HANDOFF", "en", name="Sam Guardian")
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert _count(db, Booking) == 0
+
+
+def test_an_evaluated_child_with_no_level_for_the_subject_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    science, _ = _make_subject_taught_at(db, name="Science", ceilings=(12,))
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    day_question = chat.say(value=science.name)
+    turn = chat.say(value=DATE.isoformat())
+
+    assert day_question.reply == render("ASK_DATE", "en")
+    assert turn.reply == (
+        f"Thank you. Our office will arrange Sam Guardian's {science.name} sessions "
         "and be in touch shortly."
     )
     assert turn.flag_reason is FlagReason.BOOKING_REQUEST
@@ -963,29 +1013,10 @@ def test_a_child_with_no_grade_is_handed_to_the_office_after_the_subject_and_day
     assert _count(db, Booking) == 0
 
 
-def test_an_only_active_child_with_no_grade_goes_straight_to_the_handoff(
-    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
-) -> None:
-    db.get_one(Child, client.child_id).grade_level = None
-    db.flush()
-    chat.say("hi")
-
-    subject_question = chat.say("book", intent=BotIntent.BOOK)
-    chat.say(value=world.subject_name)
-    turn = chat.say(value=DATE.isoformat())
-
-    assert subject_question.reply.startswith(bot_service.ASK_SUBJECT)
-    assert chat.replies[-2].reply == bot_service.ASK_DATE
-    assert turn.reply == bot_service.FIRST_SESSION_HANDOFF.format(name="Sam Guardian")
-    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
-    assert _count(db, Booking) == 0
-
-
 def test_a_handoff_day_outside_the_window_asks_again_and_an_unreadable_one_re_prompts(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
-    db.get_one(Child, client.child_id).grade_level = None
-    db.flush()
+    _clear_evaluation(db, client.child_id)
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
     chat.say(value=world.subject_name)
@@ -993,59 +1024,159 @@ def test_a_handoff_day_outside_the_window_asks_again_and_an_unreadable_one_re_pr
     past = chat.say(value=(_today() - datetime.timedelta(days=1)).isoformat())
     unreadable = chat.say(value="next tuesday")
 
-    assert past.reply == f"{bot_service.DATE_NOT_BOOKABLE} {bot_service.ASK_DATE}"
+    assert past.reply == f"{render('DATE_NOT_BOOKABLE', 'en')} {render('ASK_DATE', 'en')}"
     assert past.flag_reason is None
     assert unreadable.reply == (
-        f"{bot_service.UNREADABLE_DATE} {bot_service.NUDGES[bot_service.STEP_FIRST_SESSION_DATE]}"
+        f"{render('UNREADABLE_DATE', 'en')} {_nudge(bot_service.STEP_FIRST_SESSION_DATE)}"
     )
     assert chat.step == bot_service.STEP_FIRST_SESSION_DATE
     assert _count(db, Booking) == 0
 
 
-def test_a_child_with_a_grade_is_still_asked_for_a_tutor_and_booked(
+def test_an_evaluated_child_with_a_level_is_still_asked_for_a_tutor_and_booked(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
 
     tutor_question = chat.say(value=world.subject_name)
-    chat.say(value=bot_service.ANY_TUTOR_LABEL)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
     offer = chat.say(value=DATE.isoformat())
     chat.say(value="1")
     turn = chat.say(value="yes")
 
-    assert tutor_question.reply.startswith(bot_service.ASK_TUTOR)
-    assert offer.reply.startswith(bot_service.ASK_SLOT.format(date=bot_service.format_date(DATE)))
+    assert tutor_question.reply.startswith(render("ASK_TUTOR", "en"))
+    assert offer.reply.startswith(
+        render("ASK_SLOT", "en", date=bot_messages.format_date(DATE, "en"))
+    )
     assert turn.flag_reason is None
     assert db.execute(select(Booking)).scalar_one().status is BookingStatus.CONFIRMED
 
 
-def test_rescheduling_a_session_for_a_child_with_no_grade_moves_it(
+# --- matching tutors on the Subject level ------------------------------------------------------
+
+
+def test_only_tutors_whose_ceiling_reaches_the_childs_level_are_offered(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    math, (at_five, at_eight, at_four) = _make_subject_taught_at(
+        db, name="Math", ceilings=(5, 8, 4)
+    )
+    _set_level(db, client.child_id, math.id, level=5)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    tutor_question = chat.say(value=math.name)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
+    offer = chat.say(value=DATE.isoformat())
+
+    assert at_five.name in tutor_question.reply
+    assert at_eight.name in tutor_question.reply
+    assert at_four.name not in tutor_question.reply
+    assert at_four.name not in offer.reply
+    assert at_five.name in offer.reply
+
+
+def test_a_kindergarten_level_matches_a_tutor_whose_ceiling_is_kindergarten(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    phonics, (kindergarten_tutor,) = _make_subject_taught_at(db, name="Phonics", ceilings=(0,))
+    _set_level(db, client.child_id, phonics.id, level=0)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    tutor_question = chat.say(value=phonics.name)
+
+    assert tutor_question.reply.startswith(render("ASK_TUTOR", "en"))
+    assert kindergarten_tutor.name in tutor_question.reply
+
+
+def test_the_overall_grade_plays_no_part_in_matching(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """The Overall grade (7 here) is a Staff estimate; only the Subject level is matched."""
+    math, (at_three,) = _make_subject_taught_at(db, name="Math", ceilings=(3,))
+    _set_level(db, client.child_id, math.id, level=2)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    tutor_question = chat.say(value=math.name)
+
+    assert at_three.name in tutor_question.reply
+
+
+def test_rescheduling_a_session_for_a_child_not_evaluated_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """The Evaluation session Staff booked can be moved, but only by the office: the bot books
+    nothing for a Child it cannot match on a level, and the old session stays as it was. The
+    reply names that session and the day asked for, so Staff reading the flagged thread move
+    it rather than booking a second one."""
+    original = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _clear_evaluation(db, client.child_id)
+    chat.say("hi")
+    chat.say("move it", intent=BotIntent.RESCHEDULE)
+    day_question = chat.say(value="1")
+    turn = chat.say(value=DATE.isoformat())
+
+    assert day_question.reply == render("ASK_NEW_DATE", "en")
+    assert turn.reply == (
+        f"Thank you. Our office will help you move Sam Guardian's {world.subject_name} session "
+        f"on {US_DATE}, 2:00-3:00 PM to {US_DATE}, and will be in touch shortly. "
+        "The session stays booked until then."
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert chat.state is None
+    assert db.get_one(Booking, original.id).status is BookingStatus.CONFIRMED
+    assert _count(db, Booking) == 1
+
+
+def test_rescheduling_a_session_in_a_subject_with_no_level_is_handed_to_the_office(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
 ) -> None:
     original = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
-    db.get_one(Child, client.child_id).grade_level = None
-    db.flush()
+    db.execute(delete(ChildSubjectLevel).where(ChildSubjectLevel.child_id == client.child_id))
     chat.say("hi")
     chat.say("move it", intent=BotIntent.RESCHEDULE)
     chat.say(value="1")
-    offer = chat.say(value=DATE.isoformat())
+    turn = chat.say(value=DATE.isoformat())
+
+    assert turn.reply == render(
+        "RESCHEDULE_NEEDS_OFFICE",
+        "en",
+        child="Sam Guardian",
+        subject=world.subject_name,
+        old_date=US_DATE,
+        old_time="2:00-3:00 PM",
+        date=US_DATE,
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert db.get_one(Booking, original.id).status is BookingStatus.CONFIRMED
+
+
+def test_a_new_booking_after_a_reschedule_handoff_is_not_treated_as_a_move(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """The handoff ends the flow, so the next request starts without the session to move."""
+    _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _clear_evaluation(db, client.child_id)
+    chat.say("hi")
+    chat.say("move it", intent=BotIntent.RESCHEDULE)
     chat.say(value="1")
-    turn = chat.say(value="yes")
+    chat.say(value=DATE.isoformat())
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value=world.subject_name)
 
-    live = db.scalars(select(Booking).where(Booking.status == BookingStatus.CONFIRMED)).all()
+    turn = chat.say(value=DATE.isoformat())
 
-    assert world.first_tutor_name in offer.reply
-    assert world.second_tutor_name not in offer.reply
-    assert db.get_one(Booking, original.id).status is BookingStatus.CANCELLED
-    assert [booking.tutor_id for booking in live] == [world.first_tutor_id]
-    assert bot_service.BOOKING_MOVED.split("{")[0] in turn.reply
+    assert turn.reply == render("FIRST_SESSION_HANDOFF", "en", name="Sam Guardian")
 
 
-def test_a_subject_step_saved_with_a_none_grade_string_carries_on_without_a_grade_filter(
+def test_a_flow_saved_with_the_retired_grade_key_resumes_on_the_childs_level(
     chat: Chat, world: BotWorld, client: ClientWorld
 ) -> None:
-    """The shape builds before the handoff wrote for a child with no grade."""
+    """Builds before Subject levels kept the Overall grade in `book_grade_level`."""
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
     state = chat.state
@@ -1054,7 +1185,7 @@ def test_a_subject_step_saved_with_a_none_grade_string_carries_on_without_a_grad
 
     turn = chat.say(value=world.subject_name)
 
-    assert turn.reply.startswith(bot_service.ASK_TUTOR)
+    assert turn.reply.startswith(render("ASK_TUTOR", "en"))
     assert chat.step == bot_service.STEP_BOOK_TUTOR
 
 
@@ -1064,13 +1195,13 @@ def test_a_subject_step_saved_with_a_none_grade_string_carries_on_without_a_grad
 def test_a_handoff_step_missing_its_child_restarts_cleanly(
     chat: Chat, client: ClientWorld, step: str
 ) -> None:
-    _park_at(chat, step, prompt=bot_service.ASK_DATE, collected_data={"book_subject_id": "x"})
+    _park_at(chat, step, prompt=render("ASK_DATE", "en"), collected_data={"book_subject_id": "x"})
 
     turn = chat.say(value=DATE.isoformat())
 
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.collected_data == {}
-    assert bot_service.ASK_MENU in turn.reply
+    assert render("ASK_MENU", "en") in turn.reply
 
 
 def test_a_guardian_sees_only_the_children_they_are_linked_to(
@@ -1096,7 +1227,7 @@ def test_an_inactive_child_beside_an_active_one_is_never_offered(
 
     turn = chat.say("book", intent=BotIntent.BOOK)
 
-    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
     assert chat.step == bot_service.STEP_BOOK_SUBJECT
     assert chat.state.collected_data["book_child_id"] == str(client.child_id)
     assert all("Retired Child" not in reply.reply for reply in chat.replies)
@@ -1112,7 +1243,7 @@ def test_the_which_child_list_leaves_out_an_inactive_child(
 
     turn = chat.say("book", intent=BotIntent.BOOK)
 
-    assert turn.reply.startswith(bot_service.ASK_WHICH_CHILD)
+    assert turn.reply.startswith(render("ASK_WHICH_CHILD", "en"))
     assert "Sam Guardian" in turn.reply
     assert "Robin Guardian" in turn.reply
     assert "Retired Child" not in turn.reply
@@ -1121,8 +1252,8 @@ def test_the_which_child_list_leaves_out_an_inactive_child(
 @pytest.mark.parametrize(
     ("retirement", "opener"),
     [
-        ("unlinked", bot_service.NO_CHILDREN_YET),
-        ("deactivated", bot_service.NO_ACTIVE_CHILDREN),
+        ("unlinked", render("NO_CHILDREN_YET", "en")),
+        ("deactivated", render("NO_ACTIVE_CHILDREN", "en")),
     ],
 )
 def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
@@ -1147,7 +1278,7 @@ def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
 
     turn = chat.say("book", intent=BotIntent.BOOK)
 
-    assert turn.reply == f"{opener} {bot_service.ASK_CHILD_REGISTERED}"
+    assert turn.reply == f"{opener} {render('ASK_CHILD_REGISTERED', 'en')}"
     assert chat.step == bot_service.STEP_CHILD_REGISTERED
     assert child.name not in turn.reply
 
@@ -1171,7 +1302,7 @@ def test_a_child_deactivated_after_the_offer_is_refused_at_the_write_without_rai
 
     turn = _book(chat, world)
 
-    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.reply == render("CANNOT_CONTINUE", "en")
     assert turn.flag_reason is FlagReason.STUCK
     assert chat.step is None
     assert _count(db, Booking) == 0
@@ -1194,7 +1325,7 @@ def test_cancelling_outside_the_cutoff_moves_the_booking_to_cancelled(
 
     assert db.get(Booking, booking.id).status is BookingStatus.CANCELLED
     assert turn.flag_reason is None
-    assert turn.reply == bot_service.CANCELLED
+    assert turn.reply == render("CANCELLED", "en")
     assert chat.state is None
 
 
@@ -1210,8 +1341,7 @@ def test_picking_a_session_to_cancel_asks_for_confirmation_before_cancelling(
     turn = chat.say(value="1")
 
     assert turn.reply == (
-        f"Cancel Sam Guardian's session on {bot_service.format_date(DATE)}, 4:00pm-5:00pm? "
-        "Please reply yes or no."
+        f"Cancel Sam Guardian's session on {US_DATE}, 4:00-5:00 PM? Please reply yes or no."
     )
     assert chat.step == bot_service.STEP_CANCEL_CONFIRM
     assert db.get(Booking, booking.id).status is BookingStatus.CONFIRMED
@@ -1228,7 +1358,7 @@ def test_a_no_at_the_cancel_confirmation_keeps_the_session_and_returns_to_the_me
     turn = chat.say("no thanks", value="no")
 
     assert db.get(Booking, booking.id).status is BookingStatus.CONFIRMED
-    assert turn.reply == f"{bot_service.CANCEL_KEPT} {bot_service.ASK_MENU}"
+    assert turn.reply == f"{render('CANCEL_KEPT', 'en')} {render('ASK_MENU', 'en')}"
     assert turn.flag_reason is None
     assert chat.step == bot_service.STEP_MENU
     assert "cancel_booking_id" not in chat.state.collected_data
@@ -1244,7 +1374,7 @@ def test_an_unclear_answer_at_the_cancel_confirmation_nudges_and_cancels_nothing
 
     turn = chat.say("hmm", value="maybe")
 
-    assert turn.reply == bot_service.NUDGES[bot_service.STEP_CANCEL_CONFIRM]
+    assert turn.reply == _nudge(bot_service.STEP_CANCEL_CONFIRM)
     assert chat.step == bot_service.STEP_CANCEL_CONFIRM
     assert chat.state.misses == 1
     assert db.get(Booking, booking.id).status is BookingStatus.CONFIRMED
@@ -1257,7 +1387,7 @@ def test_a_flow_saved_at_the_cancel_pick_by_an_older_build_still_asks_to_confirm
     _park_at(
         chat,
         bot_service.STEP_CANCEL_PICK,
-        prompt=f"{bot_service.ASK_WHICH_TO_CANCEL}\n1. A session",
+        prompt=f"{render('ASK_WHICH_TO_CANCEL', 'en')}\n1. A session",
         collected_data={"options": [{"id": str(booking.id), "label": "A session"}]},
     )
 
@@ -1265,7 +1395,7 @@ def test_a_flow_saved_at_the_cancel_pick_by_an_older_build_still_asks_to_confirm
     turn = chat.say(value="yes")
 
     assert asked.reply.startswith("Cancel Sam Guardian's session")
-    assert turn.reply == bot_service.CANCELLED
+    assert turn.reply == render("CANCELLED", "en")
     assert db.get(Booking, booking.id).status is BookingStatus.CANCELLED
 
 
@@ -1285,7 +1415,7 @@ def test_cancelling_inside_the_cutoff_is_declined_and_is_not_flagged(
     turn = chat.say(value="1")
 
     assert db.get(Booking, booking.id).status is BookingStatus.CONFIRMED
-    assert turn.reply == bot_service.CUTOFF_DECLINED
+    assert turn.reply == render("CUTOFF_DECLINED", "en")
     assert turn.flag_reason is None
 
 
@@ -1306,8 +1436,8 @@ def test_the_cutoff_is_read_from_settings_rather_than_hardcoded(
     chat.say(value="1")
     accepted = chat.say(value="yes")
 
-    assert declined.reply == bot_service.CUTOFF_DECLINED
-    assert accepted.reply == bot_service.CANCELLED
+    assert declined.reply == render("CUTOFF_DECLINED", "en")
+    assert accepted.reply == render("CANCELLED", "en")
     assert db.get(Booking, booking.id).status is BookingStatus.CANCELLED
 
 
@@ -1321,7 +1451,7 @@ def test_rescheduling_inside_the_cutoff_is_declined_and_is_not_flagged(
     turn = chat.say(value="1")
 
     assert db.get(Booking, booking.id).status is BookingStatus.CONFIRMED
-    assert turn.reply == bot_service.CUTOFF_DECLINED
+    assert turn.reply == render("CUTOFF_DECLINED", "en")
     assert turn.flag_reason is None
 
 
@@ -1345,7 +1475,7 @@ def test_rescheduling_leaves_the_old_booking_cancelled_and_a_new_one_confirmed(
     assert db.get(Booking, original.id).status is BookingStatus.CANCELLED
     assert len(live) == 1
     assert live[0].id != original.id
-    assert bot_service.BOOKING_MOVED.split("{")[0] in turn.reply
+    assert _text_before_placeholder("BOOKING_MOVED") in turn.reply
 
 
 def test_the_reschedule_confirmation_names_the_session_being_replaced(
@@ -1362,10 +1492,9 @@ def test_the_reschedule_confirmation_names_the_session_being_replaced(
 
     turn = chat.say(value="1")
 
-    day = bot_service.format_date(DATE)
     assert turn.reply == (
-        f"To confirm: {label} on {day}, replacing Sam Guardian's session on {day}, "
-        "2:00pm-3:00pm. Shall I book it?"
+        f"To confirm: {label} on {US_DATE}, replacing Sam Guardian's session on {US_DATE}, "
+        "2:00-3:00 PM. Should I book it?"
     )
     assert chat.step == bot_service.STEP_BOOK_CONFIRM
 
@@ -1378,8 +1507,8 @@ def test_a_new_booking_confirmation_mentions_no_replacement(
 
     turn = chat.say(value="1")
 
-    assert turn.reply == bot_service.CONFIRM_SLOT.format(
-        label=label, date=bot_service.format_date(DATE)
+    assert turn.reply == render(
+        "CONFIRM_SLOT", "en", label=label, date=bot_messages.format_date(DATE, "en")
     )
 
 
@@ -1408,8 +1537,8 @@ def test_a_reschedule_whose_old_session_cannot_be_loaded_falls_back_to_the_plain
 
     turn = chat.say(value="1")
 
-    assert turn.reply == bot_service.CONFIRM_SLOT.format(
-        label=option["label"], date=bot_service.format_date(DATE)
+    assert turn.reply == render(
+        "CONFIRM_SLOT", "en", label=option["label"], date=bot_messages.format_date(DATE, "en")
     )
     assert chat.step == bot_service.STEP_BOOK_CONFIRM
 
@@ -1457,7 +1586,7 @@ def test_a_cancel_confirmed_after_the_guardian_was_unlinked_cancels_nothing(
     turn = chat.say(value="yes")
 
     assert db.get(Booking, booking.id).status is BookingStatus.CONFIRMED
-    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.reply == render("CANNOT_CONTINUE", "en")
     assert turn.flag_reason is FlagReason.STUCK
 
 
@@ -1470,7 +1599,7 @@ def test_a_reschedule_confirmed_after_the_guardian_was_unlinked_writes_and_cance
     turn = chat.say(value="yes")
 
     assert [booking.id for booking in _live_bookings(db)] == [original.id]
-    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.reply == render("CANNOT_CONTINUE", "en")
     assert turn.flag_reason is FlagReason.STUCK
 
 
@@ -1488,7 +1617,7 @@ def test_a_reschedule_whose_old_session_was_cancelled_meanwhile_is_still_moved(
     live = _live_bookings(db)
     assert len(live) == 1
     assert live[0].id != original.id
-    assert turn.reply.startswith(bot_service.BOOKING_MOVED.split("{")[0])
+    assert turn.reply.startswith(_text_before_placeholder("BOOKING_MOVED"))
     assert turn.flag_reason is None
 
 
@@ -1502,7 +1631,7 @@ def test_a_reschedule_whose_old_session_was_removed_meanwhile_is_still_moved(
     turn = chat.say(value="yes")
 
     assert len(_live_bookings(db)) == 1
-    assert turn.reply.startswith(bot_service.BOOKING_MOVED.split("{")[0])
+    assert turn.reply.startswith(_text_before_placeholder("BOOKING_MOVED"))
     assert turn.flag_reason is None
 
 
@@ -1528,7 +1657,7 @@ def test_an_unexpected_failure_cancelling_the_old_session_undoes_the_new_one(
     turn = chat.say(value="yes")
 
     assert [booking.id for booking in _live_bookings(db)] == [original.id]
-    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.reply == render("CANNOT_CONTINUE", "en")
     assert turn.flag_reason is FlagReason.STUCK
 
 
@@ -1539,7 +1668,7 @@ def test_a_guardian_with_no_upcoming_sessions_is_told_so_rather_than_flagged(
 
     turn = chat.say("cancel my session", intent=BotIntent.CANCEL)
 
-    assert bot_service.NO_UPCOMING in turn.reply
+    assert render("NO_UPCOMING", "en") in turn.reply
     assert turn.flag_reason is None
     assert chat.step == bot_service.STEP_MENU
 
@@ -1551,24 +1680,24 @@ def test_a_guardian_with_no_upcoming_sessions_is_told_so_rather_than_flagged(
     "answer", ["Yes please", "go ahead", "Sounds good!", "yes, thank you", "Of course"]
 )
 def test_a_common_way_of_saying_yes_is_read_as_yes(chat: Chat, answer: str) -> None:
-    _answer_up_to_the_school(chat)
+    _answer_up_to_the_notes(chat)
     chat.say(value="none")
 
     turn = chat.say(value=answer)
 
-    assert turn.reply == bot_service.ASK_CHILD_REGISTERED
+    assert turn.reply == render("ASK_CHILD_REGISTERED", "en")
     assert chat.step == bot_service.STEP_CHILD_REGISTERED
 
 
 @pytest.mark.parametrize("answer", ["No thanks", "no, thank you", "Not now.", "not right now"])
 def test_a_common_way_of_saying_no_is_read_as_no(chat: Chat, answer: str) -> None:
-    _answer_up_to_the_school(chat)
+    _answer_up_to_the_notes(chat)
     chat.say(value="none")
 
     turn = chat.say(value=answer)
 
-    assert turn.reply.startswith(bot_service.CLIENT_READY)
-    assert chat.step == bot_service.STEP_MENU
+    assert turn.reply.startswith(render("EVALUATION_NOTICE", "en"))
+    assert chat.step == bot_service.STEP_REMINDERS_OPT_IN
 
 
 @pytest.mark.parametrize("pick", ["2", "Blaise"])
@@ -1581,7 +1710,7 @@ def test_a_tutor_is_chosen_by_number_or_by_a_unique_name(
 
     turn = chat.say(value=pick)
 
-    assert turn.reply == bot_service.ASK_DATE
+    assert turn.reply == render("ASK_DATE", "en")
     assert chat.state.collected_data["book_tutor_id"] == str(world.second_tutor_id)
 
 
@@ -1597,7 +1726,7 @@ def test_an_option_number_outside_the_list_says_which_numbers_it_can_take(
     assert turn.reply == (
         "Please reply with a number from 1 to 3:\n"
         f"1. {world.first_tutor_name}\n2. {world.second_tutor_name}\n"
-        f"3. {bot_service.ANY_TUTOR_LABEL}"
+        f"3. {render('ANY_TUTOR_LABEL', 'en')}"
     )
     assert chat.step == bot_service.STEP_BOOK_TUTOR
     assert chat.state.misses == 1
@@ -1614,7 +1743,7 @@ def test_a_name_the_parser_numbered_at_the_child_list_still_finds_the_inactive_m
 
     turn = chat.say("Sam", value="2", fields={bot_service.STEP_CHILD_NAME: "Sam"})
 
-    assert turn.reply == f"{bot_service.AMBIGUOUS_CHILD}\n1. Ann Lee\n2. Sam Lee"
+    assert turn.reply == f"{render('AMBIGUOUS_CHILD', 'en')}\n1. Ann Lee\n2. Sam Lee"
     assert chat.step == bot_service.STEP_BOOK_CHILD
     assert "Sam Smith" not in turn.reply
 
@@ -1641,7 +1770,7 @@ def test_a_unicode_digit_at_a_choice_step_re_prompts_rather_than_crashing(
 
     turn = chat.say(value="\u00b2")
 
-    assert turn.reply.startswith(bot_service.NUDGES[bot_service.STEP_BOOK_TUTOR])
+    assert turn.reply.startswith(_nudge(bot_service.STEP_BOOK_TUTOR))
     assert chat.step == bot_service.STEP_BOOK_TUTOR
 
 
@@ -1657,7 +1786,7 @@ def test_a_punctuated_no_skips_the_home_label(chat: Chat, db: Session) -> None:
 
 
 def test_a_punctuated_none_stores_no_notes(chat: Chat, db: Session) -> None:
-    _answer_up_to_the_school(chat)
+    _answer_up_to_the_notes(chat)
 
     chat.say(value="Nothing.")
 
@@ -1667,30 +1796,32 @@ def test_a_punctuated_none_stores_no_notes(chat: Chat, db: Session) -> None:
 # Every step, with the question that leads to it. A choice step's question carries one option,
 # which its nudge must list again.
 _STEP_PROMPTS = {
-    bot_service.STEP_INTAKE_NAME: bot_service.ASK_GUARDIAN_NAME,
-    bot_service.STEP_INTAKE_ADDRESS: bot_service.ASK_ADDRESS,
-    bot_service.STEP_INTAKE_ACCESS_CODE: bot_service.ASK_ACCESS_CODE,
-    bot_service.STEP_INTAKE_LABEL: bot_service.ASK_HOME_LABEL,
-    bot_service.STEP_CHILD_REGISTERED: bot_service.ASK_CHILD_REGISTERED,
-    bot_service.STEP_CHILD_NAME: bot_service.ASK_CHILD_NAME,
-    bot_service.STEP_CHILD_DOB: bot_service.ASK_CHILD_DOB,
-    bot_service.STEP_CHILD_SCHOOL: bot_service.ASK_CHILD_SCHOOL,
-    bot_service.STEP_CHILD_NOTES: bot_service.ASK_CHILD_NOTES,
-    bot_service.STEP_CHILD_MORE: bot_service.ASK_MORE_CHILDREN,
-    bot_service.STEP_MENU: bot_service.ASK_MENU,
-    bot_service.STEP_BOOK_CHILD: f"{bot_service.ASK_WHICH_CHILD}\n1. Option",
-    bot_service.STEP_BOOK_SUBJECT: f"{bot_service.ASK_SUBJECT}\n1. Option",
-    bot_service.STEP_BOOK_TUTOR: f"{bot_service.ASK_TUTOR}\n1. Option",
-    bot_service.STEP_BOOK_DATE: bot_service.ASK_DATE,
-    bot_service.STEP_BOOK_HOME: f"{bot_service.ASK_WHICH_HOME}\n1. Option",
-    bot_service.STEP_BOOK_SLOT: "These times are available on Tuesday 14 October:\n1. Option",
-    bot_service.STEP_BOOK_CONFIRM: "To confirm: Option on Tuesday 14 October. Shall I book it?",
-    bot_service.STEP_FIRST_SESSION_SUBJECT: f"{bot_service.ASK_SUBJECT}\n1. Option",
-    bot_service.STEP_FIRST_SESSION_DATE: bot_service.ASK_DATE,
-    bot_service.STEP_CANCEL_PICK: f"{bot_service.ASK_WHICH_TO_CANCEL}\n1. Option",
-    bot_service.STEP_CANCEL_CONFIRM: "Cancel Sam's session on Tuesday 14 October? Please reply yes or no.",
-    bot_service.STEP_RESCHEDULE_PICK: f"{bot_service.ASK_WHICH_TO_MOVE}\n1. Option",
-    bot_service.STEP_REACTIVATION_CONFIRM: bot_service.REACTIVATION_OFFER.format(name="Sam Jones"),
+    bot_service.STEP_INTAKE_NAME: render("ASK_GUARDIAN_NAME", "en"),
+    bot_service.STEP_INTAKE_ADDRESS: render("ASK_ADDRESS", "en"),
+    bot_service.STEP_INTAKE_ACCESS_CODE: render("ASK_ACCESS_CODE", "en"),
+    bot_service.STEP_INTAKE_LABEL: render("ASK_HOME_LABEL", "en"),
+    bot_service.STEP_CHILD_REGISTERED: render("ASK_CHILD_REGISTERED", "en"),
+    bot_service.STEP_CHILD_NAME: render("ASK_CHILD_NAME", "en"),
+    bot_service.STEP_CHILD_DOB: render("ASK_CHILD_DOB", "en"),
+    bot_service.STEP_CHILD_SCHOOL: render("ASK_CHILD_SCHOOL", "en"),
+    bot_service.STEP_CHILD_GRADE: render("ASK_CHILD_GRADE", "en", name="Sam"),
+    bot_service.STEP_CHILD_NOTES: render("ASK_CHILD_NOTES", "en"),
+    bot_service.STEP_CHILD_MORE: render("ASK_MORE_CHILDREN", "en"),
+    bot_service.STEP_REMINDERS_OPT_IN: render("ASK_REMINDERS", "en"),
+    bot_service.STEP_MENU: render("ASK_MENU", "en"),
+    bot_service.STEP_BOOK_CHILD: f"{render('ASK_WHICH_CHILD', 'en')}\n1. Option",
+    bot_service.STEP_BOOK_SUBJECT: f"{render('ASK_SUBJECT', 'en')}\n1. Option",
+    bot_service.STEP_BOOK_TUTOR: f"{render('ASK_TUTOR', 'en')}\n1. Option",
+    bot_service.STEP_BOOK_DATE: render("ASK_DATE", "en"),
+    bot_service.STEP_BOOK_HOME: f"{render('ASK_WHICH_HOME', 'en')}\n1. Option",
+    bot_service.STEP_BOOK_SLOT: "These times are available on Tuesday, October 14:\n1. Option",
+    bot_service.STEP_BOOK_CONFIRM: "To confirm: Option on Tuesday, October 14. Should I book it?",
+    bot_service.STEP_FIRST_SESSION_SUBJECT: f"{render('ASK_SUBJECT', 'en')}\n1. Option",
+    bot_service.STEP_FIRST_SESSION_DATE: render("ASK_DATE", "en"),
+    bot_service.STEP_CANCEL_PICK: f"{render('ASK_WHICH_TO_CANCEL', 'en')}\n1. Option",
+    bot_service.STEP_CANCEL_CONFIRM: "Cancel Sam's session on Tuesday, October 14, 4:00-5:00 PM? Please reply yes or no.",
+    bot_service.STEP_RESCHEDULE_PICK: f"{render('ASK_WHICH_TO_MOVE', 'en')}\n1. Option",
+    bot_service.STEP_REACTIVATION_CONFIRM: render("REACTIVATION_OFFER", "en", name="Sam Jones"),
 }
 
 # Enough of every step's required keys for the flow to resume; a low-confidence parse never
@@ -1700,7 +1831,6 @@ _PARKED_DATA = {
     "child_date_of_birth": DATE_OF_BIRTH.isoformat(),
     "child_school": "Test School",
     "book_child_id": str(uuid.uuid4()),
-    "book_grade_level": "5",
     "book_subject_id": str(uuid.uuid4()),
     "book_tutor_id": "",
     "book_home_id": str(uuid.uuid4()),
@@ -1713,7 +1843,10 @@ _PARKED_DATA = {
 
 
 def test_every_step_has_a_nudge() -> None:
-    assert set(_STEP_PROMPTS) == set(bot_service.NUDGES)
+    steps = {value for name, value in vars(bot_service).items() if name.startswith("STEP_")}
+
+    assert set(_STEP_PROMPTS) == steps
+    assert all(_NUDGE_IDS.get(step, f"NUDGE_{step}") in bot_messages.MESSAGES for step in steps)
 
 
 @pytest.mark.parametrize(("step", "prompt"), _STEP_PROMPTS.items())
@@ -1728,7 +1861,7 @@ def test_a_re_prompt_rephrases_the_question_rather_than_repeating_it(
 
     turn = chat.say("hmm", value="something", confidence_is_low=True)
 
-    expected = bot_service.NUDGES[step] + ("\n1. Option" if has_options else "")
+    expected = _nudge(step) + ("\n1. Option" if has_options else "")
     assert turn.reply == expected
     assert turn.reply != prompt
     assert chat.step == step
@@ -1744,8 +1877,8 @@ def test_two_nudges_then_the_third_unusable_reply_hands_off_to_staff(
     second = chat.say("what")
     third = chat.say("?")
 
-    assert [first.reply, second.reply] == [bot_service.NUDGES[bot_service.STEP_MENU]] * 2
-    assert third.reply == bot_service.BAILED_OUT
+    assert [first.reply, second.reply] == [_nudge(bot_service.STEP_MENU)] * 2
+    assert third.reply == render("BAILED_OUT", "en")
     assert third.flag_reason is FlagReason.STUCK
     assert chat.state.misses == 0
 
@@ -1760,8 +1893,8 @@ def test_small_talk_at_the_menu_gets_a_polite_reply_and_costs_no_re_prompt(
 
     turn = chat.say("thanks!", intent=BotIntent.CHIT_CHAT)
 
-    assert turn.reply.endswith(bot_service.ASK_MENU)
-    assert turn.reply != bot_service.ASK_MENU
+    assert turn.reply.endswith(render("ASK_MENU", "en"))
+    assert turn.reply != render("ASK_MENU", "en")
     assert turn.flag_reason is None
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.misses == 0
@@ -1785,7 +1918,7 @@ def test_three_rounds_of_small_talk_in_a_row_never_bail_out(
 
     turns = [chat.say(body, intent=BotIntent.CHIT_CHAT) for body in ("thanks", "ok", "great")]
 
-    assert all(turn.reply != bot_service.BAILED_OUT for turn in turns)
+    assert all(turn.reply != render("BAILED_OUT", "en") for turn in turns)
     assert all(turn.flag_reason is None for turn in turns)
     assert chat.step == bot_service.STEP_MENU
 
@@ -1800,7 +1933,7 @@ def test_a_question_at_the_menu_is_passed_to_the_office_and_flagged(
 
     assert turn.reply == (
         "I'm not able to answer that here, so I've passed your question to our office and "
-        "someone will be in touch shortly. " + bot_service.ASK_MENU
+        "someone will be in touch shortly. " + render("ASK_MENU", "en")
     )
     assert turn.flag_reason is FlagReason.QUESTION
     assert chat.step == bot_service.STEP_MENU
@@ -1815,7 +1948,7 @@ def test_an_unreadable_message_after_small_talk_still_counts_as_a_miss(
 
     turn = chat.say("?")
 
-    assert turn.reply == bot_service.NUDGES[bot_service.STEP_MENU]
+    assert turn.reply == _nudge(bot_service.STEP_MENU)
     assert chat.state.misses == 1
 
 
@@ -1828,7 +1961,7 @@ def test_small_talk_away_from_the_menu_is_nudged_like_any_unusable_reply(
 
     turn = chat.say("thanks!", intent=BotIntent.CHIT_CHAT)
 
-    assert turn.reply.startswith(bot_service.NUDGES[bot_service.STEP_BOOK_SUBJECT])
+    assert turn.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
     assert chat.state.misses == 1
 
 
@@ -1850,9 +1983,9 @@ def test_two_failed_re_prompts_flag_stuck_and_leave_the_flow_where_it_was(
 
     assert first.flag_reason is None
     assert second.flag_reason is None
-    assert second.reply.startswith(bot_service.NUDGES[bot_service.STEP_BOOK_SUBJECT])
+    assert second.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
     assert third.flag_reason is FlagReason.STUCK
-    assert third.reply == bot_service.BAILED_OUT
+    assert third.reply == render("BAILED_OUT", "en")
     assert chat.step == bot_service.STEP_BOOK_SUBJECT
     assert chat.state.collected_data == collected_before
 
@@ -1868,7 +2001,7 @@ def test_a_usable_message_after_the_bail_out_resumes_mid_flow(
 
     turn = chat.say(value=world.subject_name)
 
-    assert bot_service.ASK_TUTOR in turn.reply
+    assert render("ASK_TUTOR", "en") in turn.reply
     assert chat.step == bot_service.STEP_BOOK_TUTOR
     assert chat.state.misses == 0
 
@@ -1895,9 +2028,9 @@ def test_the_bail_out_resets_the_miss_counter_so_the_next_stretch_re_prompts_aga
     third = chat.say("hmmmm")
 
     assert [first.flag_reason, second.flag_reason] == [None, None]
-    assert first.reply.startswith(bot_service.NUDGES[bot_service.STEP_BOOK_SUBJECT])
-    assert second.reply.startswith(bot_service.NUDGES[bot_service.STEP_BOOK_SUBJECT])
-    assert third.reply == bot_service.BAILED_OUT
+    assert first.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
+    assert second.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
+    assert third.reply == render("BAILED_OUT", "en")
     assert third.flag_reason is FlagReason.STUCK
 
 
@@ -1915,7 +2048,7 @@ def test_a_low_confidence_parse_re_prompts_rather_than_acting_on_a_guess(
         confidence_is_low=True,
     )
 
-    assert turn.reply.startswith(bot_service.NUDGES[bot_service.STEP_BOOK_SUBJECT])
+    assert turn.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
     assert chat.step == bot_service.STEP_BOOK_SUBJECT
     assert chat.state.misses == 1
 
@@ -1931,7 +2064,7 @@ def test_a_parse_failure_flags_parse_error_without_burning_a_re_prompt(
     turn = chat.say("book me in", fails=True)
 
     assert turn.flag_reason is FlagReason.PARSE_ERROR
-    assert turn.reply == bot_service.PARSER_UNAVAILABLE
+    assert turn.reply == render("PARSER_UNAVAILABLE", "en")
     assert chat.state == before
 
 
@@ -2041,7 +2174,7 @@ def test_an_expired_flow_restarts_with_no_stale_collected_data(
 
     turn = chat.say("hello again")
 
-    assert bot_service.ASK_MENU in turn.reply
+    assert render("ASK_MENU", "en") in turn.reply
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.collected_data == {}
     assert turn.flag_reason is None
@@ -2064,7 +2197,7 @@ def test_a_state_naming_a_step_this_build_does_not_know_restarts_cleanly(
 
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.collected_data == {}
-    assert bot_service.ASK_MENU in turn.reply
+    assert render("ASK_MENU", "en") in turn.reply
 
 
 def test_a_step_needing_a_guardian_restarts_rather_than_raising(chat: Chat) -> None:
@@ -2076,29 +2209,30 @@ def test_a_step_needing_a_guardian_restarts_rather_than_raising(chat: Chat) -> N
     turn = chat.say("still here")
 
     assert chat.step == bot_service.STEP_INTAKE_NAME
-    assert bot_service.ASK_GUARDIAN_NAME in turn.reply
+    assert render("ASK_GUARDIAN_NAME", "en") in turn.reply
 
 
-def test_a_state_on_the_retired_grade_step_restarts_as_a_fresh_flow(
+def test_a_state_on_the_grade_step_resumes_at_the_grade_answer(
     chat: Chat, client: ClientWorld
 ) -> None:
     save_state(
         chat.db,
         phone_number=chat.phone_number,
         state=FlowState(
-            step="child_grade",
+            step=bot_service.STEP_CHILD_GRADE,
             collected_data={
                 "child_name": "Sam",
                 "child_date_of_birth": DATE_OF_BIRTH.isoformat(),
+                "child_school": "Lincoln Elementary",
             },
         ),
     )
 
     turn = chat.say(value="5")
 
-    assert chat.step == bot_service.STEP_MENU
-    assert chat.state.collected_data == {}
-    assert bot_service.ASK_MENU in turn.reply
+    assert chat.step == bot_service.STEP_CHILD_NOTES
+    assert chat.state.collected_data["child_grade"] == 5
+    assert turn.reply == render("ASK_CHILD_NOTES", "en")
 
 
 def test_a_child_notes_state_written_before_the_grade_was_dropped_still_completes(
@@ -2153,7 +2287,7 @@ def test_a_state_with_a_payload_missing_a_key_its_handler_reads_restarts_visibly
 
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.collected_data == {}
-    assert bot_service.ASK_MENU in turn.reply
+    assert render("ASK_MENU", "en") in turn.reply
     assert "restarting a stale flow" in caplog.text
     assert "child_date_of_birth" in caplog.text
 
@@ -2251,7 +2385,7 @@ def test_yes_to_the_offer_returns_the_child_for_the_webhook_to_record(
 
     turn = chat.say(value="yes")
 
-    assert turn.reply == bot_service.REACTIVATION_REQUESTED.format(name="Sam Jones")
+    assert turn.reply == render("REACTIVATION_REQUESTED", "en", name="Sam Jones")
     assert turn.reactivation_child_id == sam.id
     assert turn.flag_reason is None
     assert chat.step is None
@@ -2265,7 +2399,7 @@ def test_no_to_the_offer_goes_back_to_the_menu_and_records_nothing(chat: Chat, d
 
     turn = chat.say(value="no")
 
-    assert turn.reply == bot_service.ASK_MENU
+    assert turn.reply == render("ASK_MENU", "en")
     assert chat.step == bot_service.STEP_MENU
     assert turn.reactivation_child_id is None
     assert turn.flag_reason is None
@@ -2281,7 +2415,7 @@ def test_an_unclear_answer_to_the_offer_re_prompts_and_keeps_the_offer(
 
     turn = chat.say(value="maybe later")
 
-    assert turn.reply == bot_service.NUDGES[bot_service.STEP_REACTIVATION_CONFIRM]
+    assert turn.reply == _nudge(bot_service.STEP_REACTIVATION_CONFIRM)
     assert chat.step == bot_service.STEP_REACTIVATION_CONFIRM
     assert _reactivation_keys(chat) == {"reactivation_child_id", "reactivation_child_name"}
 
@@ -2295,7 +2429,7 @@ def test_naming_an_inactive_child_while_cancelling_takes_the_cancel_path(
 
     turn = _name_at_menu(chat, "Sam", intent=BotIntent.CANCEL)
 
-    assert turn.reply == f"{bot_service.NO_UPCOMING} {bot_service.ASK_MENU}"
+    assert turn.reply == f"{render('NO_UPCOMING', 'en')} {render('ASK_MENU', 'en')}"
     assert chat.step == bot_service.STEP_MENU
 
 
@@ -2312,7 +2446,7 @@ def test_the_child_question_still_picks_an_active_child_as_before(
 
     turn = chat.say(value=answer)
 
-    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
     assert chat.state.collected_data["book_child_id"] == str(family.children[picked].id)
 
 
@@ -2340,14 +2474,14 @@ def test_a_returning_guardian_naming_an_inactive_child_at_the_name_question_is_o
     """REQ-132.2(c), .7 — criterion 5: the offer instead of a duplicate registration, and a
     "no" writes no `children` row."""
     _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
-    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=render("ASK_CHILD_NAME", "en"))
     children_before = _count(db, Child)
 
     offer = chat.say(value="Sam")
     declined = chat.say(value="no")
 
     assert offer.reply == _offer_for("Sam Jones")
-    assert declined.reply == bot_service.ASK_MENU
+    assert declined.reply == render("ASK_MENU", "en")
     assert "child_name" not in chat.state.collected_data
     assert _count(db, Child) == children_before
 
@@ -2356,11 +2490,11 @@ def test_a_name_matching_none_of_the_guardians_children_continues_the_registrati
     chat: Chat, db: Session
 ) -> None:
     _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
-    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=render("ASK_CHILD_NAME", "en"))
 
     turn = chat.say(value="Tom")
 
-    assert turn.reply == bot_service.ASK_CHILD_DOB
+    assert turn.reply == render("ASK_CHILD_DOB", "en")
     assert chat.state.collected_data["child_name"] == "Tom"
 
 
@@ -2373,7 +2507,7 @@ def test_a_new_guardian_is_never_offered_another_familys_inactive_child(
 
     _answer_up_to_the_child_name(chat)
 
-    assert chat.replies[-1].reply == bot_service.ASK_CHILD_DOB
+    assert chat.replies[-1].reply == render("ASK_CHILD_DOB", "en")
     assert chat.state.collected_data["child_name"] == "Sam"
 
 
@@ -2389,9 +2523,9 @@ def test_two_inactive_matches_at_the_menu_ask_which_child_and_then_re_prompt(
     asked = _name_at_menu(chat, "Sam")
     again = chat.say(value="Sam")
 
-    assert asked.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Ann Lee"
+    assert asked.reply == f"{render('ASK_WHICH_CHILD', 'en')}\n1. Ann Lee"
     assert chat.step == bot_service.STEP_BOOK_CHILD
-    assert again.reply == f"{bot_service.AMBIGUOUS_CHILD}\n1. Ann Lee"
+    assert again.reply == f"{render('AMBIGUOUS_CHILD', 'en')}\n1. Ann Lee"
     assert all("Sam " not in reply.reply for reply in chat.replies)
 
 
@@ -2403,7 +2537,7 @@ def test_an_active_and_an_inactive_match_at_the_child_question_re_prompt(
 
     turn = chat.say(value="Sam")
 
-    assert turn.reply == f"{bot_service.AMBIGUOUS_CHILD}\n1. Ann Lee\n2. Sam Lee"
+    assert turn.reply == f"{render('AMBIGUOUS_CHILD', 'en')}\n1. Ann Lee\n2. Sam Lee"
     assert chat.step == bot_service.STEP_BOOK_CHILD
 
 
@@ -2441,10 +2575,10 @@ def test_a_second_request_is_refused_while_one_is_pending(
         _reach_book_child(chat)
         turn = chat.say(value=named)
     else:
-        _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+        _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=render("ASK_CHILD_NAME", "en"))
         turn = chat.say(value=named)
 
-    assert turn.reply == f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}"
+    assert turn.reply == f"{render('REACTIVATION_PENDING', 'en')} {render('ASK_MENU', 'en')}"
     assert chat.step == bot_service.STEP_MENU
     assert turn.reactivation_child_id is None
     assert turn.flag_reason is None
@@ -2463,7 +2597,7 @@ def test_a_request_that_became_pending_since_the_offer_is_refused_at_the_yes(
 
     turn = chat.say(value="yes")
 
-    assert turn.reply == f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}"
+    assert turn.reply == f"{render('REACTIVATION_PENDING', 'en')} {render('ASK_MENU', 'en')}"
     assert chat.step == bot_service.STEP_MENU
     assert turn.reactivation_child_id is None
     assert turn.flag_reason is None
@@ -2481,7 +2615,7 @@ def test_a_child_reactivated_since_the_offer_needs_nothing_asked(chat: Chat, db:
     turn = chat.say(value="yes")
 
     assert turn.reply == (
-        f"{bot_service.REACTIVATION_NOT_NEEDED.format(name='Sam Jones')} {bot_service.ASK_MENU}"
+        f"{render('REACTIVATION_NOT_NEEDED', 'en', name='Sam Jones')} {render('ASK_MENU', 'en')}"
     )
     assert chat.step == bot_service.STEP_MENU
     assert turn.reactivation_child_id is None
@@ -2504,7 +2638,7 @@ def test_a_child_unlinked_since_the_offer_is_stuck_rather_than_requested(
 
     turn = chat.say(value="yes")
 
-    assert turn.reply == bot_service.CANNOT_CONTINUE
+    assert turn.reply == render("CANNOT_CONTINUE", "en")
     assert turn.flag_reason is FlagReason.STUCK
     assert turn.reactivation_child_id is None
 
@@ -2521,8 +2655,11 @@ def test_a_guardian_whose_children_are_all_inactive_is_offered_one_named_at_regi
     registered = chat.say(value="no")
     named = chat.say(value="Sam")
 
-    assert booked.reply == f"{bot_service.NO_ACTIVE_CHILDREN} {bot_service.ASK_CHILD_REGISTERED}"
-    assert registered.reply == bot_service.ASK_CHILD_NAME
+    assert (
+        booked.reply
+        == f"{render('NO_ACTIVE_CHILDREN', 'en')} {render('ASK_CHILD_REGISTERED', 'en')}"
+    )
+    assert registered.reply == render("ASK_CHILD_NAME", "en")
     assert named.reply == _offer_for("Sam Jones")
 
 
@@ -2548,7 +2685,7 @@ def test_an_approved_child_is_offered_for_booking_like_any_active_child(
     turn = _name_at_menu(chat, "Sam")
 
     assert family.children["Sam Jones"].is_active is True
-    assert turn.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Ann Lee\n2. Sam Jones"
+    assert turn.reply == f"{render('ASK_WHICH_CHILD', 'en')}\n1. Ann Lee\n2. Sam Jones"
 
 
 def test_a_stale_offer_missing_its_child_restarts_visibly(
@@ -2568,7 +2705,7 @@ def test_a_stale_offer_missing_its_child_restarts_visibly(
 
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.collected_data == {}
-    assert bot_service.ASK_MENU in turn.reply
+    assert render("ASK_MENU", "en") in turn.reply
     assert turn.reactivation_child_id is None
     assert "reactivation_child_id" in caplog.text
 
@@ -2589,7 +2726,7 @@ def test_a_one_edit_typo_at_the_menu_offers_and_a_two_edit_one_does_not(
     if offered:
         assert turn.reply == _offer_for("Olivia Brown")
     else:
-        assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+        assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
         assert "Olivia" not in turn.reply
 
 
@@ -2615,7 +2752,7 @@ def test_a_pick_among_the_offered_children_beats_a_typo_on_an_inactive_one(
 
     turn = chat.say(value="Anna")
 
-    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
     assert chat.state.collected_data["book_child_id"] == str(family.children["Annabel Hart"].id)
 
 
@@ -2630,12 +2767,12 @@ def test_an_exact_active_match_beats_a_typo_on_an_inactive_child(
         chat.say("hi")
         turn = _name_at_menu(chat, "Mark")
 
-        assert turn.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Ben Cole\n2. Mark Lee"
+        assert turn.reply == f"{render('ASK_WHICH_CHILD', 'en')}\n1. Ben Cole\n2. Mark Lee"
     else:
         _reach_book_child(chat)
         turn = chat.say(value="Mark")
 
-        assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+        assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
         assert chat.state.collected_data["book_child_id"] == str(family.children["Mark Lee"].id)
 
     assert all("Marc" not in reply.reply for reply in chat.replies)
@@ -2657,7 +2794,7 @@ def test_a_short_name_matches_only_as_a_whole_word(
     if offered:
         assert turn.reply == _offer_for("Sam Jones")
     else:
-        assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+        assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
 
 
 @pytest.mark.parametrize("named", ["Samuel", "Samual"])
@@ -2671,7 +2808,7 @@ def test_another_familys_inactive_child_never_matches_at_the_menu(
 
     turn = _name_at_menu(chat, named)
 
-    assert turn.reply.startswith(bot_service.ASK_SUBJECT)
+    assert turn.reply.startswith(render("ASK_SUBJECT", "en"))
     assert all("Samuel" not in reply.reply for reply in chat.replies)
 
 
@@ -2680,11 +2817,11 @@ def test_another_familys_inactive_child_never_matches_at_registration(
 ) -> None:
     _family(db, active=("Ann Lee",))
     _family(db, inactive=("Samuel Park",), phone_number="+12025550187")
-    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=bot_service.ASK_CHILD_NAME)
+    _park_at(chat, bot_service.STEP_CHILD_NAME, prompt=render("ASK_CHILD_NAME", "en"))
 
     turn = chat.say(value="Samual")
 
-    assert turn.reply == bot_service.ASK_CHILD_DOB
+    assert turn.reply == render("ASK_CHILD_DOB", "en")
 
 
 def test_a_typo_hitting_an_active_and_an_inactive_child_picks_neither(
@@ -2698,8 +2835,8 @@ def test_a_typo_hitting_an_active_and_an_inactive_child_picks_neither(
     asked = _name_at_menu(chat, "Anni")
     again = chat.say(value="Anni")
 
-    assert asked.reply == f"{bot_service.ASK_WHICH_CHILD}\n1. Anna Lee"
-    assert again.reply == f"{bot_service.NUDGES[bot_service.STEP_BOOK_CHILD]}\n1. Anna Lee"
+    assert asked.reply == f"{render('ASK_WHICH_CHILD', 'en')}\n1. Anna Lee"
+    assert again.reply == f"{_nudge(bot_service.STEP_BOOK_CHILD)}\n1. Anna Lee"
     assert all("Anne" not in reply.reply for reply in chat.replies)
 
 
@@ -2717,13 +2854,14 @@ def test_no_to_a_typo_only_offer_at_registration_resumes_it_with_the_typed_name(
     resumed_data = dict(chat.state.collected_data)
     chat.say(value=DATE_OF_BIRTH.isoformat())
     chat.say(value="Test School")
+    chat.say(value="5")
     chat.say(value="none")
 
     liam = db.execute(select(Child).where(Child.name == "Liam")).scalar_one()
 
     assert offer.reply == _offer_for("Lian Park")
     assert offered_data["reactivation_resume_name"] == "Liam"
-    assert resumed.reply == bot_service.ASK_CHILD_DOB
+    assert resumed.reply == render("ASK_CHILD_DOB", "en")
     assert resumed.reactivation_child_id is None
     assert resumed_data["child_name"] == "Liam"
     assert not any(key.startswith("reactivation_") for key in resumed_data)
@@ -2739,15 +2877,15 @@ def test_yes_to_a_typo_only_offer_at_registration_requests_that_child(
 
     turn = chat.say(value="yes")
 
-    assert turn.reply == bot_service.REACTIVATION_REQUESTED.format(name="Lian Park")
+    assert turn.reply == render("REACTIVATION_REQUESTED", "en", name="Lian Park")
     assert turn.reactivation_child_id == family.children["Lian Park"].id
 
 
 @pytest.mark.parametrize(
     ("named", "expected"),
     [
-        ("Liam", bot_service.ASK_CHILD_DOB),
-        ("Lian Park", f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}"),
+        ("Liam", render("ASK_CHILD_DOB", "en")),
+        ("Lian Park", f"{render('REACTIVATION_PENDING', 'en')} {render('ASK_MENU', 'en')}"),
     ],
 )
 def test_while_pending_a_typo_at_registration_is_ignored_and_an_exact_name_refused(
@@ -2922,15 +3060,21 @@ def test_the_module_is_a_service_and_not_an_http_shell() -> None:
 
 def _run_intake(chat: Chat, *, add_another: bool = False) -> list[BotTurn]:
     """The whole REQ-073 sequence: guardian name → home → child, ending at the child loop."""
-    _answer_up_to_the_school(chat)
+    _answer_up_to_the_notes(chat)
     chat.say(value="Peanut allergy")
     chat.say(value="yes" if add_another else "no")
 
     return chat.replies
 
 
-def _answer_up_to_the_school(chat: Chat, *, date_of_birth: str = DATE_OF_BIRTH.isoformat()) -> None:
+def _answer_up_to_the_notes(chat: Chat, *, date_of_birth: str = DATE_OF_BIRTH.isoformat()) -> None:
     """Every intake answer before the notes question, which is the one that writes."""
+    _answer_up_to_the_grade(chat, date_of_birth=date_of_birth)
+    chat.say(value="5")
+
+
+def _answer_up_to_the_grade(chat: Chat, *, date_of_birth: str = DATE_OF_BIRTH.isoformat()) -> None:
+    """Every intake answer before the Overall grade question."""
     _answer_up_to_the_child_name(chat)
     chat.say(value=date_of_birth)
     chat.say(value="Test School")
@@ -2962,7 +3106,7 @@ def _book(
     chat.say("hi")
     chat.say("I'd like to book a session", intent=BotIntent.BOOK)
     chat.say(value=world.subject_name)
-    chat.say(value=tutor or bot_service.ANY_TUTOR_LABEL)
+    chat.say(value=tutor or render("ANY_TUTOR_LABEL", "en"))
     turn = chat.say(value=DATE.isoformat())
 
     if stop_after_date or stop_after_offer:
@@ -3002,8 +3146,27 @@ def _park_at(
     )
 
 
+@pytest.mark.parametrize(
+    ("answer", "next_step"),
+    [
+        ("No.", bot_service.STEP_REMINDERS_OPT_IN),
+        ("no  !", bot_service.STEP_REMINDERS_OPT_IN),
+        ("Yes ?", bot_service.STEP_CHILD_REGISTERED),
+        ("YES!!", bot_service.STEP_CHILD_REGISTERED),
+    ],
+)
+def test_a_yes_or_no_ignores_trailing_punctuation_and_extra_spaces(
+    chat: Chat, client: ClientWorld, answer: str, next_step: str
+) -> None:
+    _park_at(chat, bot_service.STEP_CHILD_MORE, prompt=render("ASK_MORE_CHILDREN", "en"))
+
+    chat.say(value=answer)
+
+    assert chat.step == next_step
+
+
 def _offer_for(name: str) -> str:
-    return bot_service.REACTIVATION_OFFER.format(name=name)
+    return render("REACTIVATION_OFFER", "en", name=name)
 
 
 def _reactivation_keys(chat: Chat) -> set[str]:
@@ -3145,6 +3308,73 @@ def _add_child(db: Session, client: ClientWorld, *, name: str, is_active: bool =
     db.flush()
 
     return child
+
+
+def _evaluate(db: Session, child_id: uuid.UUID, *, levels: dict[uuid.UUID, int]) -> None:
+    """Mark the Child Evaluated by a Staff member, with these Subject levels."""
+    staff = _make_staff(db)
+    child = db.get_one(Child, child_id)
+    child.evaluated_at = NOW.replace(tzinfo=datetime.UTC)
+    child.evaluated_by_user_id = staff.id
+    db.add_all(
+        ChildSubjectLevel(
+            child_id=child_id, subject_id=subject_id, level=level, set_by_user_id=staff.id
+        )
+        for subject_id, level in levels.items()
+    )
+    db.flush()
+
+
+def _set_level(db: Session, child_id: uuid.UUID, subject_id: uuid.UUID, *, level: int) -> None:
+    db.add(
+        ChildSubjectLevel(
+            child_id=child_id,
+            subject_id=subject_id,
+            level=level,
+            set_by_user_id=_make_staff(db).id,
+        )
+    )
+    db.flush()
+
+
+def _clear_evaluation(db: Session, child_id: uuid.UUID) -> None:
+    """Staff clearing Evaluated: both columns go NULL and the levels stay."""
+    child = db.get_one(Child, child_id)
+    child.evaluated_at = None
+    child.evaluated_by_user_id = None
+    db.flush()
+
+
+def _make_subject_taught_at(
+    db: Session, *, name: str, ceilings: tuple[int, ...]
+) -> tuple[Subject, list[Tutor]]:
+    """A subject with one tutor per ceiling, each free 9:00-12:00 on `DATE`."""
+    subject = Subject(name=f"{name} {uuid.uuid4().hex[:6]}")
+    db.add(subject)
+    db.flush()
+    tutors = [_make_tutor(db, name=f"Ceiling {ceiling}") for ceiling in ceilings]
+
+    for tutor, ceiling in zip(tutors, ceilings, strict=True):
+        db.add(TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=ceiling))
+        _make_availability(db, tutor.id, date=DATE, start=NINE, end=TWELVE)
+
+    db.flush()
+
+    return subject, tutors
+
+
+def _make_staff(db: Session) -> User:
+    user = User(
+        email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test Staff",
+        # Never logged in with, so no real hash is needed.
+        hashed_password="not-a-hash",
+        role=UserRole.ADMIN,
+    )
+    db.add(user)
+    db.flush()
+
+    return user
 
 
 def _add_home(db: Session, client: ClientWorld, *, label: str, address: str) -> Home:

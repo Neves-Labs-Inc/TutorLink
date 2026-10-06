@@ -16,6 +16,7 @@ from app.routers import (
     booking_status,
     booking_writes,
     bookings,
+    child_evaluation,
     child_guardians,
     children,
     children_read,
@@ -28,6 +29,7 @@ from app.routers import (
     health,
     homes,
     households,
+    me,
     settings,
     slots,
     stats,
@@ -114,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(users.router)
+    app.include_router(me.router)
     app.include_router(exceptions.router)
     app.include_router(settings.router)
     app.include_router(subjects.router)
@@ -123,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(children.router)
     app.include_router(children_read.router)
     app.include_router(child_guardians.router)
+    app.include_router(child_evaluation.router)
     app.include_router(households.router)
     app.include_router(homes.router)
     app.include_router(tutors.router)

@@ -19,6 +19,7 @@ PASSWORD = "correct horse battery staple"
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         is_active=True,

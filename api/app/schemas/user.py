@@ -32,6 +32,13 @@ class UserRead(BaseModel):
     is_active: bool
 
 
+class MeRead(BaseModel):
+    id: uuid.UUID
+    email: str
+    role: UserRole
+    display_name: str
+
+
 class TutorProfileCreate(BaseModel):
     # No `email`, deliberately: the profile takes the account's, so the address a tutor logs in
     # with and the one the office reaches them on cannot drift apart. `phone_number` is a plain

@@ -6,6 +6,7 @@ import {
   childInput,
   childUpdate,
   formatDateOfBirth,
+  gradeLabel,
   homesToOffer,
   type ChildDraft,
 } from './children'
@@ -107,15 +108,13 @@ describe('childDraftErrors', () => {
     )
   })
 
-  it('refuses grade 0', () => {
-    expect(childDraftErrors({ ...VALID_DRAFT, gradeLevel: '0' }, TODAY)).toContain(
-      'Grade level must be a whole number of at least 1.',
-    )
+  it.each(['0', '12'])('accepts grade %s (0 is Kindergarten)', (gradeLevel) => {
+    expect(childDraftErrors({ ...VALID_DRAFT, gradeLevel }, TODAY)).toEqual([])
   })
 
-  it('refuses grade 2.5', () => {
-    expect(childDraftErrors({ ...VALID_DRAFT, gradeLevel: '2.5' }, TODAY)).toContain(
-      'Grade level must be a whole number of at least 1.',
+  it.each(['-1', '13', '2.5'])('refuses grade %s', (gradeLevel) => {
+    expect(childDraftErrors({ ...VALID_DRAFT, gradeLevel }, TODAY)).toContain(
+      'Overall grade must be K to 12.',
     )
   })
 
@@ -160,6 +159,8 @@ const CHILD_DETAIL: ChildDetail = {
   upcoming_session_count: 0,
   guardians: [],
   homes: [],
+  levels: [],
+  evaluated: null,
 }
 
 describe('childDraftFrom', () => {
@@ -223,5 +224,16 @@ describe('homesToOffer', () => {
 
   it('returns [] with no guardians', () => {
     expect(homesToOffer([])).toEqual([])
+  })
+})
+
+describe('gradeLabel', () => {
+  it.each([
+    [0, 'Kindergarten'],
+    [7, 'Grade 7'],
+    [12, 'Grade 12'],
+    [null, 'Grade not set'],
+  ])('labels %s as %j', (gradeLevel, label) => {
+    expect(gradeLabel(gradeLevel)).toBe(label)
   })
 })

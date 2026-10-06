@@ -50,6 +50,7 @@ from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
     FlagReason,
+    Language,
     MessageAuthor,
     MessageStatus,
     UserRole,
@@ -64,9 +65,10 @@ from app.routers.webhook import (
     get_twilio_form,
     signed_request_url,
 )
-from app.schemas.bot import BotTurn
+from app.schemas.bot import BotTurn, GuardianLanguage
 from app.security import hash_password
 from app.services import bot_service, conversation_service, message_service
+from app.services.bot_messages import render
 from app.services.broadcast_service import BroadcastEvent, MessageCreated, MessageUpdated
 
 AUTH_TOKEN = "an-auth-token-only-twilio-and-this-process-know"
@@ -105,6 +107,7 @@ def test_a_bot_conversation_gets_the_reply_back_as_twiml(
             "body": INBOUND_BODY,
             "guardian_id": None,
             "reactivation_pending": False,
+            "language": None,
         }
     ]
 
@@ -543,7 +546,7 @@ def test_a_refused_second_request_leaves_the_pending_one_untouched(
     conversation_service.request_reactivation(db, conversation=conversation, child_id=child_id)
     db.refresh(conversation)
     flagged_at = conversation.flagged_at
-    bot.turn = BotTurn(reply=f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}")
+    bot.turn = BotTurn(reply=f"{render('REACTIVATION_PENDING', 'en')} {render('ASK_MENU', 'en')}")
 
     _post_inbound(webhook_client)
     db.refresh(conversation)
@@ -552,6 +555,43 @@ def test_a_refused_second_request_leaves_the_pending_one_untouched(
     assert conversation.reactivation_child_id == child_id
     assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
     assert conversation.flagged_at == flagged_at
+
+
+def test_the_stored_language_is_passed_to_the_bot(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.language = Language.ES
+    db.flush()
+
+    _post_inbound(webhook_client)
+
+    assert bot.calls[0]["language"] == "es"
+
+
+def test_a_language_the_turn_adopted_is_stored_on_the_conversation(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.language = Language.ES
+    db.flush()
+    bot.turn = BotTurn(reply=BOT_REPLY, language="en")
+
+    _post_inbound(webhook_client)
+
+    assert _conversation(db, phone_number=PHONE_NUMBER).language is Language.EN
+
+
+def test_a_turn_that_adopted_no_language_leaves_the_stored_one(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.language = Language.ES
+    db.flush()
+
+    _post_inbound(webhook_client)
+
+    assert _conversation(db, phone_number=PHONE_NUMBER).language is Language.ES
 
 
 @pytest.mark.parametrize("field", ["From", "MessageSid"])
@@ -709,6 +749,7 @@ class BotDouble:
         body: str,
         guardian_id: uuid.UUID | None,
         reactivation_pending: bool = False,
+        language: GuardianLanguage | None = None,
     ) -> BotTurn:
         self.calls.append(
             {
@@ -716,6 +757,7 @@ class BotDouble:
                 "body": body,
                 "guardian_id": guardian_id,
                 "reactivation_pending": reactivation_pending,
+                "language": language,
             }
         )
 
@@ -913,6 +955,7 @@ def _published(events: list[BroadcastEvent]) -> list[tuple[str, str, str]]:
 def _taken_over_conversation(db: Session) -> Conversation:
     holder = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("webhook-password"),
         role=UserRole.ADMIN,
     )
@@ -941,6 +984,7 @@ def _admin_message(db: Session) -> Message:
     db.flush()
     holder = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("webhook-password"),
         role=UserRole.ADMIN,
     )

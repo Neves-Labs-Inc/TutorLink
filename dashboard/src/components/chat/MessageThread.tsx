@@ -3,7 +3,13 @@ import { Check, CheckCheck, CircleAlert, Clock, type LucideIcon } from 'lucide-r
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { formatMessageTimestamp, messageAlignment, messageStatusLabel } from '@/lib/chatThread'
+import {
+  formatMessageTimestamp,
+  messageAlignment,
+  messageStatusLabel,
+  staffName,
+  systemLineLabel,
+} from '@/lib/chatThread'
 import type { Message } from '@/lib/queries/conversations'
 import { isFollowingAfter } from '@/lib/thread-scroll/followTracking'
 import { threadScrollDecision, type ThreadSnapshot } from '@/lib/thread-scroll/threadScrollDecision'
@@ -14,10 +20,23 @@ export type MessageThreadProps = {
   loadingMore: boolean
   onLoadMore: () => void
   lastSentId: string | null
+  retry: NoticeRetry
 }
 
+export type NoticeRetry = {
+  isPending: boolean
+  pendingId: string | null
+  error: { messageId: string; text: string } | null
+  onRetry: (messageId: string) => void
+}
+
+type BubbleMessage = Message & { author_kind: Exclude<Message['author_kind'], 'system'> }
+
+const isBubbleMessage = (message: Message): message is BubbleMessage =>
+  message.author_kind !== 'system'
+
 const bubbleBase = 'max-w-[85%] rounded-lg px-3 py-2 text-sm sm:max-w-[70%]'
-const bubbleByKind: Record<Message['author_kind'], string> = {
+const bubbleByKind: Record<BubbleMessage['author_kind'], string> = {
   client: 'bg-muted text-foreground',
   bot: 'bg-secondary text-secondary-foreground',
   admin: 'bg-primary text-primary-foreground',
@@ -62,6 +81,7 @@ export const MessageThread = ({
   loadingMore,
   onLoadMore,
   lastSentId,
+  retry,
 }: MessageThreadProps) => {
   const [previousMessages, setPreviousMessages] = useState(messages)
   const [announcement, setAnnouncement] = useState('')
@@ -148,13 +168,19 @@ export const MessageThread = ({
       {messages.length === 0 ? (
         <p className="m-auto text-sm text-muted-foreground">No messages yet.</p>
       ) : (
-        messages.map((message) => <MessageBubble key={message.id} message={message} />)
+        messages.map((message) =>
+          isBubbleMessage(message) ? (
+            <MessageBubble key={message.id} message={message} />
+          ) : (
+            <SystemLine key={message.id} message={message} retry={retry} />
+          ),
+        )
       )}
     </div>
   )
 }
 
-const MessageBubble = ({ message }: { message: Message }) => {
+const MessageBubble = ({ message }: { message: BubbleMessage }) => {
   const alignment = messageAlignment(message.author_kind)
   const statusLabel = messageStatusLabel(message)
   const StatusIcon = STATUS_ICONS[message.status]
@@ -162,7 +188,7 @@ const MessageBubble = ({ message }: { message: Message }) => {
   return (
     <div className={cn('flex flex-col', alignment === 'end' ? 'items-end' : 'items-start')}>
       {message.author_kind === 'admin' && message.author !== null && (
-        <span className="mb-0.5 text-xs text-muted-foreground">{message.author.email}</span>
+        <span className="mb-0.5 text-xs text-muted-foreground">{staffName(message.author)}</span>
       )}
       <div
         className={cn(
@@ -188,6 +214,54 @@ const MessageBubble = ({ message }: { message: Message }) => {
           </span>
         )}
       </div>
+    </div>
+  )
+}
+
+// 24px button + 10px either side = 44px below md. Retryable lines get py-1, so two in a row sit
+// 44px apart (32px line + the thread's 12px gap) and their hit areas meet without overlapping.
+const RETRY_HIT_AREA =
+  "relative before:absolute before:-inset-y-2.5 before:-inset-x-1 before:content-[''] md:before:hidden"
+
+const SystemLine = ({ message, retry }: { message: Message; retry: NoticeRetry }) => {
+  const { text, isFailed, canRetry } = systemLineLabel(message)
+  const isRetrying = retry.pendingId === message.id
+  const errorText = retry.error?.messageId === message.id ? retry.error.text : null
+
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-6 text-center text-xs',
+        canRetry && 'py-1 md:py-0',
+      )}
+    >
+      <span
+        key={message.status}
+        className={cn(
+          'animate-in fade-in-0 transition-colors duration-150 ease-out motion-reduce:animate-none motion-reduce:transition-none',
+          isFailed ? 'font-medium text-destructive' : 'text-muted-foreground',
+        )}
+      >
+        {text}
+      </span>
+      {canRetry && (
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          className={RETRY_HIT_AREA}
+          data-retry={message.id}
+          disabled={retry.isPending}
+          onClick={() => retry.onRetry(message.id)}
+        >
+          {isRetrying ? 'Retrying…' : 'Retry'}
+        </Button>
+      )}
+      {errorText !== null && (
+        <p role="alert" className="basis-full text-xs font-medium text-destructive">
+          {errorText}
+        </p>
+      )}
     </div>
   )
 }

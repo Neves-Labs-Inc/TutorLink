@@ -95,6 +95,7 @@ Reuse these before writing anything new. A new primitive is a decision for Frank
 | Status / flag / role chip | `components/shared/StatusBadge.tsx` |
 | Create / edit form panel | `components/shared/SlideOver.tsx` (Radix Dialog; full-screen on mobile, right panel `sm:max-w-md`) |
 | Confirm an action | `components/shared/ConfirmDialog.tsx` (focuses Cancel; `destructive` prop; `pending` shows "Working…") |
+| Tabs (segmented tablist) | `components/shared/SegmentedTabs.tsx` (`tabs`, `value`, `onChange`, `ariaLabel`, `panelId`; roving tabindex with Arrow Left/Right; the caller renders the `role="tabpanel"`) |
 | Async search select | `components/pickers/SearchPicker.tsx` (label + muted `description` line per option) |
 | Chat bubbles | `components/chat/MessageThread.tsx` |
 | App chrome | `components/layout/AppShell.tsx`, `AdminSidebar.tsx`, `TutorNav.tsx` |
@@ -228,6 +229,8 @@ closing.
    no keyboard access, focus ring, or pressed state. Mobile cards have no hover or press feedback.
 4. **Hand-rolled tabs.** The ChildDetail session tabs are buttons with no focus-visible style.
    The inactive tab has no hover fill.
+   Fixed for new tablists: use `SegmentedTabs`. The ChildDetail Sessions and TimeOff tablists
+   still hand-roll and move over in a later cleanup.
 5. **Two backdrop colours.** Dialogs use `bg-black/60`; the nav drawer uses `bg-foreground/60`.
 6. **Exits as slow as enters.** The tw-animate defaults use the same duration both ways.
 7. **Commented-out code.** `DataTable` has a `PrimaryCell` comment.

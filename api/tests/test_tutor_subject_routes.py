@@ -22,6 +22,7 @@ PASSWORD = "correct horse battery staple"
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         is_active=True,
@@ -120,8 +121,26 @@ def test_the_constraint_answers_when_the_pre_check_does_not(
     assert db.scalars(select(Tutor).where(Tutor.id == tutor.id)).first() is not None
 
 
-@pytest.mark.parametrize("max_grade_level", [0, -1])
-def test_assign_rejects_a_non_positive_grade_ceiling(
+@pytest.mark.parametrize("max_grade_level", [0, 12])
+def test_assign_accepts_a_ceiling_from_kindergarten_to_grade_12(
+    api: TestClient, db: Session, max_grade_level: int
+) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    subject = _make_subject(db)
+
+    response = api.post(
+        f"/api/tutors/{tutor.id}/subjects",
+        headers=_auth(admin),
+        json={"subject_id": str(subject.id), "max_grade_level": max_grade_level},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["max_grade_level"] == max_grade_level
+
+
+@pytest.mark.parametrize("max_grade_level", [-1, 13])
+def test_assign_rejects_a_ceiling_outside_k_to_12(
     api: TestClient, db: Session, max_grade_level: int
 ) -> None:
     admin = _make_user(db)

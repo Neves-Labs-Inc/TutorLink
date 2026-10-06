@@ -493,6 +493,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("stats-password"),
         role=role,
         tutor_id=tutor_id,

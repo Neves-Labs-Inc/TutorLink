@@ -48,6 +48,14 @@ class TutorProfileInput:
     bio: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DisplayName:
+    """A new account's Display name, and whether it is the email's local part."""
+
+    value: str
+    is_default: bool
+
+
 class UserServiceError(Exception):
     """Base class for every failure this module reports."""
 
@@ -106,6 +114,7 @@ def create_user(
     role: UserRole,
     tutor_id: uuid.UUID | None,
     tutor: TutorProfileInput | None,
+    display_name: str | None = None,
 ) -> User:
     """The account, and the tutor profile too when `tutor` is given rather than `tutor_id`.
 
@@ -142,9 +151,17 @@ def create_user(
         ).id
 
     _assert_profile_matches_role(db, role=role, tutor_id=profile_id)
+    profile = db.get(Tutor, profile_id) if profile_id is not None else None
 
+    name = resolve_display_name(
+        display_name=display_name,
+        email=normalized_email,
+        tutor_name=profile.name if profile else None,
+    )
     user = User(
         email=normalized_email,
+        display_name=name.value,
+        display_name_is_default=name.is_default,
         hashed_password=hash_password(password),
         role=role,
         tutor_id=profile_id,
@@ -154,6 +171,32 @@ def create_user(
     db.flush()
 
     return user
+
+
+def default_display_name(*, email: str, tutor_name: str | None) -> str:
+    """The Display name for an account created without one: the tutor's name, else the email's
+    local part. A stopgap until every creation path requires a Display name."""
+    name = email.split("@", 1)[0]
+    if tutor_name:
+        name = tutor_name
+
+    return name
+
+
+def resolve_display_name(
+    *, display_name: str | None, email: str, tutor_name: str | None
+) -> DisplayName:
+    """The given name, else `default_display_name`'s, flagged when it came from the email.
+
+    The flag is what keeps an email-derived name from ever reaching a Guardian (#109): a
+    takeover by such a holder sends the nameless notice instead.
+    """
+    is_from_email = not display_name and not tutor_name
+
+    return DisplayName(
+        value=display_name or default_display_name(email=email, tutor_name=tutor_name),
+        is_default=is_from_email,
+    )
 
 
 def update_user(

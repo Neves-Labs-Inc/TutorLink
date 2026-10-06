@@ -28,11 +28,16 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models.enums import UserRole
-from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
+from app.models.system_setting import (
+    SETTING_VALUE_TYPE_INTEGER,
+    SETTING_VALUE_TYPE_STRING,
+    SystemSetting,
+)
 from app.services.retention_scheduler import RETENTION_PURGE_HOUR_SETTING
 from app.services.settings_service import (
     SettingKeyDuplicated,
     SettingNotAnInteger,
+    SettingNotAString,
     SettingNotEditable,
     SettingNotFound,
     SettingUpdate,
@@ -40,10 +45,21 @@ from app.services.settings_service import (
     SettingValueTypeUnsupported,
     apply_setting_updates,
     get_int_setting,
+    get_str_setting,
     list_settings,
 )
 
 KEY = "a_test_only_setting"
+
+# Seeded developer-only by 0021, so a developer always sees these beyond what an admin sees.
+TEMPLATE_SID_KEYS = {
+    "reminder_template_sid_en",
+    "reminder_template_sid_es",
+    "takeover_template_sid_en",
+    "takeover_template_sid_es",
+    "takeover_generic_template_sid_en",
+    "takeover_generic_template_sid_es",
+}
 
 
 def test_an_integer_setting_comes_back_as_an_int(db: Session) -> None:
@@ -72,6 +88,30 @@ def test_a_row_of_another_value_type_raises(db: Session) -> None:
         get_int_setting(db, key=KEY)
 
 
+def test_a_string_setting_comes_back_as_stored(db: Session) -> None:
+    _make_setting(db, value="America/Chicago", value_type=SETTING_VALUE_TYPE_STRING)
+
+    assert get_str_setting(db, key=KEY) == "America/Chicago"
+
+
+def test_a_blank_string_setting_comes_back_blank(db: Session) -> None:
+    _make_setting(db, value="", value_type=SETTING_VALUE_TYPE_STRING)
+
+    assert get_str_setting(db, key=KEY) == ""
+
+
+def test_an_integer_row_asked_for_as_a_string_raises(db: Session) -> None:
+    _make_setting(db, value="42")
+
+    with pytest.raises(SettingNotAString):
+        get_str_setting(db, key=KEY)
+
+
+def test_a_missing_string_key_raises_rather_than_defaulting(db: Session) -> None:
+    with pytest.raises(SettingNotFound):
+        get_str_setting(db, key="no_such_setting")
+
+
 def test_list_settings_shows_a_developer_only_row_to_a_developer_and_not_to_an_admin(
     db: Session,
 ) -> None:
@@ -83,7 +123,7 @@ def test_list_settings_shows_a_developer_only_row_to_a_developer_and_not_to_an_a
 
     assert key in developer_keys
     assert key not in admin_keys
-    assert developer_keys - admin_keys == {key}
+    assert developer_keys - admin_keys == {key, *TEMPLATE_SID_KEYS}
 
 
 def test_list_settings_hides_a_row_whose_flag_was_left_to_the_server_default(db: Session) -> None:

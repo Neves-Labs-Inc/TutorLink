@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import AdminPrincipal, Principal, TutorScope, assert_can_access_tutor
+from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.models.tutor import Tutor
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.tutor import TutorCreate, TutorRead, TutorSubjectRead, TutorUpdate
@@ -77,8 +78,10 @@ def list_all(
     db: DbSession,
     is_active: bool = True,
     subject_id: uuid.UUID | None = None,
-    grade_level: Annotated[int | None, Query(ge=1)] = None,
+    grade_level: Annotated[int | None, Query(ge=LOWEST_GRADE, le=HIGHEST_GRADE)] = None,
     q: str | None = None,
+    # Matches on that Child's Subject level instead of a grade; see `matching_tutors`.
+    child_id: uuid.UUID | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[TutorRead]:
@@ -91,6 +94,7 @@ def list_all(
         subject_id=subject_id,
         grade_level=grade_level,
         q=q,
+        child_id=child_id,
         limit=page_size,
         offset=(page - 1) * page_size,
     )

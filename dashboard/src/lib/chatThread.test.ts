@@ -3,7 +3,20 @@ import { api } from './api'
 import {
   applyMessageUpdate,
   canMarkHandled,
+  canTransfer,
+  composerClosedNotice,
+  handBackConfirmBody,
+  joinNames,
+  lastWroteAgo,
+  staffName,
+  systemLineLabel,
+  transferConfirmBody,
   isHeldByAdmin,
+  markMessagesFailed,
+  socketSaysClosed,
+  focusRequest,
+  retryFocusTargets,
+  isFocusRequestLive,
   isHeldByOtherAdmin,
   markConversationHandled,
   mergeMessagePages,
@@ -21,6 +34,9 @@ const message = (overrides: Partial<Message> & Pick<Message, 'id'>): Message => 
   body: 'hello',
   status: 'received',
   created_at: '2026-09-22T09:00:00Z',
+  system_kind: null,
+  error_code: null,
+  reminder_child_names: null,
   ...overrides,
 })
 
@@ -213,5 +229,295 @@ describe('oldestCreatedAt', () => {
 
   it('is null for an empty thread', () => {
     expect(oldestCreatedAt([])).toBeNull()
+  })
+})
+
+const systemMessage = (overrides: Partial<Message>): Message =>
+  message({ id: 's1', author_kind: 'system', status: 'sent', ...overrides })
+
+const marta = { id: 'u1', email: 'marta@example.com', display_name: 'Marta' }
+
+describe('systemLineLabel', () => {
+  it('reads a sent takeover notice with the staff name', () => {
+    expect(
+      systemLineLabel(systemMessage({ system_kind: 'takeover_notice', author: marta })),
+    ).toEqual({ text: 'Marta joined the chat · notice sent', isFailed: false, canRetry: false })
+  })
+
+  it('moves a takeover notice through sending, delivered and read', () => {
+    const textFor = (status: Message['status']) =>
+      systemLineLabel(systemMessage({ system_kind: 'transfer_notice', author: marta, status })).text
+
+    expect(textFor('queued')).toBe('Marta joined the chat · sending notice')
+    expect(textFor('delivered')).toBe('Marta joined the chat · delivered')
+    expect(textFor('read')).toBe('Marta joined the chat · read')
+  })
+
+  it('falls back to the email, then to Staff, for the notice author', () => {
+    const noName = { id: 'u2', email: 'a@b.co' }
+
+    expect(systemLineLabel(systemMessage({ system_kind: 'takeover_notice', author: noName })).text).toBe(
+      'a@b.co joined the chat · notice sent',
+    )
+    expect(systemLineLabel(systemMessage({ system_kind: 'takeover_notice' })).text).toBe(
+      'Staff joined the chat · notice sent',
+    )
+  })
+
+  it('fails a takeover notice with a readable reason and offers Retry', () => {
+    const failed = (error_code: string | null) =>
+      systemLineLabel(
+        systemMessage({ system_kind: 'takeover_notice', status: 'failed', error_code }),
+      )
+
+    expect(failed('template_not_approved')).toEqual({
+      text: 'Takeover notice not delivered (template not approved)',
+      isFailed: true,
+      canRetry: true,
+    })
+    expect(failed('63016').text).toBe('Takeover notice not delivered (error 63016)')
+    expect(failed(null).text).toBe('Takeover notice not delivered')
+  })
+
+  it('labels a failed transfer notice and offers Retry', () => {
+    expect(
+      systemLineLabel(
+        systemMessage({ system_kind: 'transfer_notice', status: 'failed', error_code: 'window_closed' }),
+      ),
+    ).toEqual({
+      text: 'Transfer notice not delivered (window closed)',
+      isFailed: true,
+      canRetry: true,
+    })
+  })
+
+  it('reads hand-back notices, including the closed-window failure', () => {
+    expect(systemLineLabel(systemMessage({ system_kind: 'handback_notice' })).text).toBe(
+      'Hand-back notice sent',
+    )
+    expect(
+      systemLineLabel(systemMessage({ system_kind: 'handback_notice', status: 'queued' })).text,
+    ).toBe('Hand-back notice sending')
+    expect(
+      systemLineLabel(
+        systemMessage({ system_kind: 'handback_notice', status: 'failed', error_code: 'window_closed' }),
+      ),
+    ).toEqual({ text: 'Hand-back notice not sent (window closed)', isFailed: true, canRetry: false })
+    expect(
+      systemLineLabel(
+        systemMessage({ system_kind: 'handback_notice', status: 'failed', error_code: '63016' }),
+      ).text,
+    ).toBe('Hand-back notice not delivered (error 63016)')
+  })
+
+  it('names the children on a weekly reminder', () => {
+    expect(
+      systemLineLabel(
+        systemMessage({
+          system_kind: 'booking_reminder',
+          status: 'delivered',
+          reminder_child_names: ['Ana', 'Luis'],
+        }),
+      ).text,
+    ).toBe('Weekly reminder sent: Ana and Luis · delivered')
+    expect(systemLineLabel(systemMessage({ system_kind: 'booking_reminder' })).text).toBe(
+      'Weekly reminder sent · sent',
+    )
+    expect(
+      systemLineLabel(
+        systemMessage({
+          system_kind: 'booking_reminder',
+          status: 'failed',
+          error_code: '63016',
+          reminder_child_names: ['Ana'],
+        }),
+      ),
+    ).toEqual({
+      text: 'Weekly reminder not delivered: Ana (error 63016)',
+      isFailed: true,
+      canRetry: false,
+    })
+  })
+
+  it('reads consent notices and their failure without Retry', () => {
+    expect(
+      systemLineLabel(systemMessage({ system_kind: 'consent_notice', status: 'queued' })).text,
+    ).toBe('Reminder setting confirmed to Guardian · sending')
+    expect(
+      systemLineLabel(
+        systemMessage({ system_kind: 'consent_notice', status: 'failed', error_code: 'window_closed' }),
+      ),
+    ).toEqual({
+      text: 'Reminder setting confirmation not delivered (window closed)',
+      isFailed: true,
+      canRetry: false,
+    })
+  })
+})
+
+describe('staffName and joinNames', () => {
+  it('prefers the display name over the email', () => {
+    expect(staffName(marta)).toBe('Marta')
+    expect(staffName({ email: 'a@b.co', display_name: null })).toBe('a@b.co')
+  })
+
+  it('joins one, two and three names', () => {
+    expect(joinNames(['Ana'])).toBe('Ana')
+    expect(joinNames(['Ana', 'Luis'])).toBe('Ana and Luis')
+    expect(joinNames(['Ana', 'Luis', 'Sofía'])).toBe('Ana, Luis and Sofía')
+    expect(joinNames([])).toBe('')
+  })
+})
+
+describe('lastWroteAgo', () => {
+  const now = new Date('2026-09-23T12:00:00Z')
+
+  it('counts whole hours under 48 hours', () => {
+    expect(lastWroteAgo('2026-09-22T09:30:00Z', now)).toBe('26 hours ago')
+    expect(lastWroteAgo('2026-09-23T10:30:00Z', now)).toBe('1 hour ago')
+  })
+
+  it('switches to whole days from 48 hours', () => {
+    expect(lastWroteAgo('2026-09-21T12:00:00Z', now)).toBe('2 days ago')
+    expect(lastWroteAgo('2026-09-19T01:00:00Z', now)).toBe('4 days ago')
+  })
+})
+
+describe('composerClosedNotice', () => {
+  const now = new Date('2026-09-23T12:00:00Z')
+  const detail = {
+    is_window_open: false,
+    last_client_message_at: '2026-09-22T09:00:00Z',
+    guardian: { id: 'g1', name: 'Rosa Martínez' },
+    phone_number: '+5550101',
+  }
+
+  it('is null while the window is open', () => {
+    expect(composerClosedNotice({ ...detail, is_window_open: true }, now, false)).toBeNull()
+  })
+
+  it('explains a closed window', () => {
+    expect(composerClosedNotice(detail, now, false)).toBe(
+      'Rosa Martínez last wrote 27 hours ago. WhatsApp only allows replies within 24 hours of their last message.',
+    )
+  })
+
+  it('treats a socket window_closed as closed even when the data says open', () => {
+    expect(composerClosedNotice({ ...detail, is_window_open: true }, now, true)).not.toBeNull()
+  })
+
+  it('uses the phone number and says so when the guardian never wrote', () => {
+    expect(
+      composerClosedNotice({ ...detail, guardian: null, last_client_message_at: null }, now, false),
+    ).toBe(
+      "+5550101 hasn't written yet. WhatsApp only allows replies within 24 hours of their last message.",
+    )
+  })
+})
+
+describe('canTransfer', () => {
+  it('shows only when someone else holds the chat', () => {
+    expect(canTransfer(conversation({ status: 'human', taken_over_by: marta }), 'u2')).toBe(true)
+    expect(canTransfer(conversation({ status: 'human', taken_over_by: marta }), 'u1')).toBe(false)
+    expect(canTransfer(conversation({ status: 'bot' }), 'u1')).toBe(false)
+  })
+})
+
+describe('confirm bodies', () => {
+  it('names who takes over, and drops that while the caller is unknown', () => {
+    expect(transferConfirmBody('Marta', 'Joao')).toBe(
+      'Marta is holding this chat. Take it over as Joao? Marta can no longer reply here.',
+    )
+    expect(transferConfirmBody('Marta', null)).toBe(
+      'Marta is holding this chat. Take it over? Marta can no longer reply here.',
+    )
+  })
+
+  it('falls back to "another Staff member", capitalised to open the sentence, when the holder is unknown', () => {
+    expect(transferConfirmBody(null, null)).toBe(
+      'Another Staff member is holding this chat. Take it over? another Staff member can no longer reply here.',
+    )
+  })
+
+  it('keeps an email holder exactly as written', () => {
+    expect(transferConfirmBody('marta@test.com', null)).toBe(
+      'marta@test.com is holding this chat. Take it over? marta@test.com can no longer reply here.',
+    )
+  })
+
+  it('warns that the hand-back starts a fresh flow', () => {
+    expect(handBackConfirmBody('Rosa')).toBe(
+      'The bot starts a fresh flow, not from where this conversation left off. Rosa is told the booking assistant is back if they wrote in the last 24 hours.',
+    )
+  })
+})
+
+describe('markMessagesFailed', () => {
+  it('fails only the named messages and keeps their text', () => {
+    const thread = [
+      message({ id: 'a', author_kind: 'admin', status: 'queued', body: 'hi' }),
+      message({ id: 'b', author_kind: 'admin', status: 'queued' }),
+    ]
+
+    const next = markMessagesFailed(thread, new Set(['a']))
+
+    expect(next[0]).toMatchObject({ status: 'failed', body: 'hi' })
+    expect(next[1].status).toBe('queued')
+  })
+})
+
+describe('markMessagesFailed with several unsent bubbles', () => {
+  it('fails every named bubble', () => {
+    const thread = [
+      message({ id: 'a', author_kind: 'admin', status: 'queued' }),
+      message({ id: 'b', author_kind: 'admin', status: 'queued' }),
+    ]
+
+    expect(markMessagesFailed(thread, new Set(['a', 'b'])).map((m) => m.status)).toEqual([
+      'failed',
+      'failed',
+    ])
+  })
+})
+
+describe('socketSaysClosed', () => {
+  const flag = { lastClientMessageAt: '2026-09-22T09:00:00Z' }
+
+  it('holds while the Guardian has not written again', () => {
+    expect(socketSaysClosed(flag, { last_client_message_at: '2026-09-22T09:00:00Z' })).toBe(true)
+  })
+
+  it('resets once the Guardian writes again', () => {
+    expect(socketSaysClosed(flag, { last_client_message_at: '2026-09-23T10:00:00Z' })).toBe(false)
+  })
+
+  it('is false when the socket never said closed', () => {
+    expect(socketSaysClosed(null, { last_client_message_at: null })).toBe(false)
+  })
+
+  it('holds for a Guardian who never wrote', () => {
+    expect(socketSaysClosed({ lastClientMessageAt: null }, { last_client_message_at: null })).toBe(true)
+  })
+})
+
+describe('focus requests', () => {
+  const NOW = 1_000_000
+
+  it('stays live right after it is made', () => {
+    expect(isFocusRequestLive(focusRequest(['textarea'], NOW), NOW + 100)).toBe(true)
+  })
+
+  it('lapses a second after it is made, so an unmatched target never pulls focus later', () => {
+    expect(isFocusRequestLive(focusRequest(['textarea'], NOW), NOW + 1_000)).toBe(false)
+  })
+
+  it('is not live when there is none', () => {
+    expect(isFocusRequestLive(null, NOW)).toBe(false)
+  })
+})
+
+describe('retryFocusTargets', () => {
+  it('points back at the Retry of the notice that failed to retry', () => {
+    expect(retryFocusTargets('notice-1')).toEqual(['[data-retry="notice-1"]:not([disabled])'])
   })
 })

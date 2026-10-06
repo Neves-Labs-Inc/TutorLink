@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
@@ -15,27 +15,69 @@ import { errorDetail } from '@/lib/api'
 import { decodeAccessToken } from '@/lib/auth/auth'
 import {
   applyMessageUpdate,
+  canTransfer,
+  composerClosedNotice,
+  focusRequest,
+  OTHER_HOLDER_FALLBACK,
+  retryFocusTargets,
+  handBackConfirmBody,
+  isFocusRequestLive,
   isHeldByAdmin,
-  isHeldByOtherAdmin,
   markConversationRead,
+  markMessagesFailed,
   mergeMessagePages,
   oldestCreatedAt,
   optimisticMessage,
   reconcileLiveMessage,
   releaseConversation,
+  socketSaysClosed,
+  staffName,
   takeoverConversation,
+  transferConfirmBody,
+  type FocusRequest,
 } from '@/lib/chatThread'
-import { conversationQueries, type Message } from '@/lib/queries/conversations'
+import {
+  conversationQueries,
+  retryNotice,
+  transferConversation,
+  type Message,
+} from '@/lib/queries/conversations'
+import { meQueries } from '@/lib/queries/me'
 import type { Page } from '@/lib/queries/page'
 import { useAuthStore } from '@/stores/authStore'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const TAKEOVER_FALLBACK_ERROR = 'Could not take over this conversation.'
-const RELEASE_FALLBACK_ERROR = 'Could not release this conversation.'
-const LOADING_ROWS = [0, 1, 2, 3]
+const RELEASE_FALLBACK_ERROR = 'Could not hand back this conversation.'
+const TRANSFER_FALLBACK_ERROR = 'Could not transfer this conversation.'
+const RETRY_FALLBACK_ERROR = 'Could not retry this notice.'
+// Where focus goes after a change unmounts or disables what had it, tried in order.
+const COMPOSER_FOCUS_TARGETS = ['textarea:not([disabled])', '[data-hand-back]']
+const RETRY_FOCUS_TARGETS = ['[data-retry]:not([disabled])', ...COMPOSER_FOCUS_TARGETS]
+const WINDOW_CLOSED_FOCUS_TARGETS = ['[data-hand-back]']
+const WINDOW_CLOSED_CODE = 'window_closed'
 
 const backLinkClasses =
   'inline-flex items-center gap-1 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'
+
+const ChatPanelSkeleton = () => (
+  <div
+    aria-busy="true"
+    className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card"
+  >
+    <span className="sr-only">Loading conversation…</span>
+    <div className="flex flex-1 flex-col gap-3 p-4">
+      <div className="h-10 w-2/3 animate-pulse rounded-lg bg-muted motion-reduce:animate-none sm:w-2/5" />
+      <div className="h-3 w-48 animate-pulse self-center rounded-lg bg-muted motion-reduce:animate-none" />
+      <div className="h-10 w-1/2 animate-pulse self-end rounded-lg bg-muted motion-reduce:animate-none sm:w-1/3" />
+      <div className="h-16 w-3/4 animate-pulse rounded-lg bg-muted motion-reduce:animate-none sm:w-1/2" />
+      <div className="h-10 w-2/5 animate-pulse self-end rounded-lg bg-muted motion-reduce:animate-none sm:w-1/4" />
+    </div>
+    <div className="border-t border-border p-3">
+      <div className="h-16 rounded-lg bg-muted" />
+    </div>
+  </div>
+)
 
 export const ChatThread = () => {
   const { id = '' } = useParams()
@@ -58,6 +100,33 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   const [pendingMessages, setPendingMessages] = useState<Message[]>([])
   const [lastSentId, setLastSentId] = useState<string | null>(null)
   const [releaseDialogOpen, setReleaseDialogOpen] = useState(false)
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const pendingFocusRef = useRef<FocusRequest | null>(null)
+  const sentIdsRef = useRef(new Set<string>())
+  // The Guardian's last message when the socket refused a send as window_closed. The flag only
+  // holds while that stays true: a newer Guardian message reopens the window by itself.
+  const [socketClosedFor, setSocketClosedFor] = useState<{ lastClientMessageAt: string | null } | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Runs after every render until its target exists or the request lapses: the target may mount a
+  // render later (the transfer response lands after the dialog closes), and the dialog's focus trap
+  // pulls focus back while it is still open.
+  useEffect(() => {
+    const request = pendingFocusRef.current
+
+    if (request !== null && !isFocusRequestLive(request, Date.now())) {
+      pendingFocusRef.current = null
+    } else if (request !== null && !transferDialogOpen) {
+      const found = request.targets
+        .map((selector) => panelRef.current?.querySelector<HTMLElement>(selector))
+        .find((element) => element !== null && element !== undefined)
+
+      if (found) {
+        found.focus()
+        pendingFocusRef.current = null
+      }
+    }
+  })
 
   useEffect(() => {
     if (id !== '') {
@@ -68,6 +137,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   }, [id, queryClient])
 
   const conversation = useQuery(conversationQueries.detail(id))
+  const me = useQuery(meQueries.detail())
 
   const pages = useQueries({
     queries: cursors.map((cursor) =>
@@ -111,6 +181,18 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
         )
       }
     },
+    onError: (_detail, code) => {
+      if (code === WINDOW_CLOSED_CODE) {
+        setSocketClosedFor({ lastClientMessageAt: conversation.data?.last_client_message_at ?? null })
+        setPendingMessages((current) => markMessagesFailed(current, sentIdsRef.current))
+        pendingFocusRef.current = focusRequest(WINDOW_CLOSED_FOCUS_TARGETS, Date.now())
+        // The cached "last wrote" time may be stale: the server just said the window is closed.
+        queryClient.invalidateQueries({
+          queryKey: conversationQueries.detail(id).queryKey,
+          exact: true,
+        })
+      }
+    },
     onConversationUpdated: (updated) => {
       if (updated.id === id) {
         queryClient.invalidateQueries({
@@ -131,6 +213,34 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
     onSuccess: (updated) => {
       queryClient.setQueryData(conversationQueries.detail(id).queryKey, updated)
       setReleaseDialogOpen(false)
+    },
+  })
+
+  const transfer = useMutation({
+    mutationFn: () => transferConversation(id),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(conversationQueries.detail(id).queryKey, updated)
+      pendingFocusRef.current = focusRequest(COMPOSER_FOCUS_TARGETS, Date.now())
+      setTransferDialogOpen(false)
+    },
+  })
+
+  const retry = useMutation({
+    mutationFn: (messageId: string) => retryNotice(id, messageId),
+    // The button was disabled while pending, which dropped focus to <body>.
+    onError: (_error, messageId) => {
+      pendingFocusRef.current = focusRequest(retryFocusTargets(messageId), Date.now())
+    },
+    onSuccess: (updated) => {
+      pendingFocusRef.current = focusRequest(RETRY_FOCUS_TARGETS, Date.now())
+      setPendingMessages((current) => applyMessageUpdate(current, updated))
+      queryClient.setQueriesData<Page<Message>>({ queryKey: messagesQueryPrefix(id) }, (page) => {
+        if (page === undefined) return page
+
+        const items = applyMessageUpdate(page.items, updated)
+
+        return items === page.items ? page : { ...page, items }
+      })
     },
   })
 
@@ -157,21 +267,19 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
         optimisticMessage(clientMessageId, body, holder.id, holder.email),
       ])
       setLastSentId(clientMessageId)
+      sentIdsRef.current.add(clientMessageId)
       stream.send(id, body, clientMessageId)
     }
   }
 
+  const holder = conversation.data?.taken_over_by
+  const holderName = holder === null || holder === undefined ? null : staffName(holder)
+  const guardianName = conversation.data?.guardian?.name ?? conversation.data?.phone_number ?? 'The Guardian'
+
   let content: ReactNode
 
   if (conversation.isPending) {
-    content = (
-      <div aria-busy="true" className="space-y-3">
-        <p className="text-sm text-muted-foreground">Loading conversation…</p>
-        {LOADING_ROWS.map((row) => (
-          <div key={row} className="h-8 animate-pulse rounded-lg bg-muted" />
-        ))}
-      </div>
-    )
+    content = <ChatPanelSkeleton />
   } else if (conversation.isError) {
     content = (
       <div className="space-y-4">
@@ -186,7 +294,10 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   } else {
     const detail = conversation.data
     const heldByMe = currentUserId !== null && isHeldByAdmin(detail, currentUserId)
-    const heldByOther = currentUserId !== null && isHeldByOtherAdmin(detail, currentUserId)
+    const heldByOther = currentUserId !== null && canTransfer(detail, currentUserId)
+    const closedNotice = heldByMe
+      ? composerClosedNotice(detail, new Date(), socketSaysClosed(socketClosedFor, detail))
+      : null
 
     content = (
       <div className="space-y-3">
@@ -194,20 +305,43 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
           <ReactivationRequestPanel conversationId={id} request={detail.reactivation_request} />
         )}
 
-        <div className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card">
+        <div
+          ref={panelRef}
+          className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card"
+        >
           {detail.status === 'human' && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm">
-              <p className="text-muted-foreground">
-                The bot is paused — held by {detail.taken_over_by?.email ?? 'another admin'}.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setReleaseDialogOpen(true)}
-              >
-                Release to bot
-              </Button>
+              <p className="text-muted-foreground">{heldByMe ? 'Held by you' : `Held by ${holderName ?? OTHER_HOLDER_FALLBACK}`}</p>
+              {heldByOther ? (
+                <Button
+                  key="transfer"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-11 md:h-7"
+                  onClick={() => {
+                    transfer.reset()
+                    setTransferDialogOpen(true)
+                  }}
+                >
+                  Transfer to me
+                </Button>
+              ) : heldByMe ? (
+                <Button
+                  key="hand-back"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-11 md:h-7"
+                  data-hand-back
+                  onClick={() => {
+                    release.reset()
+                    setReleaseDialogOpen(true)
+                  }}
+                >
+                  Hand back to bot
+                </Button>
+              ) : null}
             </div>
           )}
 
@@ -217,16 +351,28 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
             lastSentId={lastSentId}
+            retry={{
+              isPending: retry.isPending,
+              pendingId: retry.isPending ? retry.variables : null,
+              error: retry.isError
+                ? { messageId: retry.variables, text: errorDetail(retry.error) ?? RETRY_FALLBACK_ERROR }
+                : null,
+              onRetry: (messageId) => retry.mutate(messageId),
+            }}
           />
 
           {heldByMe && (
             <>
-              {stream.error !== null && (
+              {stream.error !== null && stream.errorCode !== WINDOW_CLOSED_CODE && closedNotice === null && (
                 <p role="alert" className="border-t border-border px-3 pt-2 text-sm font-medium text-destructive">
                   {stream.error}
                 </p>
               )}
-              <MessageComposer disabled={stream.status !== 'connected'} onSend={handleSend} />
+              <MessageComposer
+                disabled={stream.status !== 'connected'}
+                closedNotice={closedNotice}
+                onSend={handleSend}
+              />
             </>
           )}
 
@@ -273,13 +419,24 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
       <ConfirmDialog
         open={releaseDialogOpen}
         onOpenChange={setReleaseDialogOpen}
-        title="Release to bot"
-        body="The bot resumes from a fresh flow, not from where this conversation left off. The client will not see this handoff."
-        confirmLabel="Release"
+        title="Hand back to bot"
+        body={handBackConfirmBody(guardianName)}
+        confirmLabel="Hand back"
         destructive
         pending={release.isPending}
         errorMessage={release.isError ? (errorDetail(release.error) ?? RELEASE_FALLBACK_ERROR) : null}
         onConfirm={() => release.mutate()}
+      />
+
+      <ConfirmDialog
+        open={transferDialogOpen}
+        onOpenChange={setTransferDialogOpen}
+        title="Transfer to me"
+        body={transferConfirmBody(holderName, me.data?.display_name ?? null)}
+        confirmLabel="Transfer to me"
+        pending={transfer.isPending}
+        errorMessage={transfer.isError ? (errorDetail(transfer.error) ?? TRANSFER_FALLBACK_ERROR) : null}
+        onConfirm={() => transfer.mutate()}
       />
     </div>
   )

@@ -7,8 +7,8 @@ they arrive from any process in the deployment and already serialise themselves 
 to one wire format. `ready` and `error` are the frames the socket writes to its own client and
 nobody publishes.
 
-`ErrorFrame` carries `detail` and nothing else, so a failure on the socket reads exactly like a
-failure on REST (`CONSTITUTION.md` §10).
+`ErrorFrame` carries `detail`, so a failure on the socket reads exactly like a failure on REST
+(`CONSTITUTION.md` §10), plus a `code` only on the window-closed refusal (#109).
 
 There is no `MessageSend` here and no `MessageCreate` in `schemas/message.py`: sending lives on
 this socket, and `api-design.md:1655-1660` refuses a REST twin for it outright.
@@ -58,6 +58,18 @@ class ReadyFrame(BaseModel):
     type: Literal["ready"] = "ready"
 
 
+# The one refusal the composer branches on rather than just showing: the Guardian's 24-hour
+# window has closed, so it disables itself and explains why.
+WINDOW_CLOSED_CODE = "window_closed"
+
+
 class ErrorFrame(BaseModel):
+    """`code` is set only for a refusal the client acts on, and is left out of the frame
+    otherwise, so every other error still reads exactly like a REST error body."""
+
     type: Literal["error"] = "error"
     detail: str
+    code: str | None = None
+
+    def frame(self) -> dict[str, str]:
+        return self.model_dump(exclude_none=True)

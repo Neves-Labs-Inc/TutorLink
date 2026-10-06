@@ -33,6 +33,7 @@ webhook's own response and is recorded `sent` with a NULL `twilio_sid`, so it ca
 an admin's reply typed on the socket.
 """
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -41,10 +42,31 @@ from twilio.request_validator import RequestValidator
 
 from app.config import get_settings
 from app.models.conversation import Conversation
-from app.models.enums import ConversationStatus, MessageStatus
+from app.models.enums import (
+    ConsentAction,
+    ConsentSource,
+    ConversationStatus,
+    Language,
+    MessageStatus,
+    SystemMessageKind,
+)
 from app.models.message import Message
 from app.schemas.bot import BotTurn
-from app.services import bot_service, conversation_service, message_service, twilio_service
+from app.services import (
+    bot_messages,
+    bot_service,
+    conversation_service,
+    message_service,
+    reminder_consent_service,
+    twilio_service,
+)
+from app.services.twilio_service import (
+    TwilioSendFailed,
+    TwilioServiceError,
+    send_whatsapp_message,
+)
+
+logger = logging.getLogger(__name__)
 
 WHATSAPP_PREFIX = "whatsapp:"
 
@@ -71,10 +93,14 @@ class InboundTurn:
     `recorded` is empty on a redelivery, one row when an admin holds the thread, and two when
     the bot answered. It carries `Message` rows rather than serialised events so the mapping to
     a response shape stays in the router (§5).
+
+    `notice` is a reminder-consent confirmation recorded `queued` under Takeover. The router
+    sends it with `send_notice` after the commit, then broadcasts it.
     """
 
     twiml: str
     recorded: tuple[Message, ...]
+    notice: Message | None = None
 
 
 def signature_is_valid(*, url: str, params: Mapping[str, str], signature: str | None) -> bool:
@@ -139,9 +165,12 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
     if inbound is None:
         return InboundTurn(twiml=twilio_service.twiml_empty(), recorded=())
 
+    notice = None
+
     if conversation.status is ConversationStatus.HUMAN:
         reply = None
         twiml = twilio_service.twiml_empty()
+        notice = _confirm_consent_keyword(db, conversation=conversation, inbound=inbound)
     else:
         # REQ-130.4 / P7D-I. Re-read the pending request from the row, never from the identity
         # map, and under the row lock held to the commit: two overlapping turns must not both
@@ -152,10 +181,11 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
         # depends on it, so a change to how recording touches the conversation cannot quietly
         # drop it. Conversation first, children after — the order `resolve_reactivation`
         # takes them in (P7D-E), so an approval racing this turn waits rather than deadlocks.
-        # `flag_reason` is re-read under the same lock: `flag()` decides precedence from it.
+        # `flag_reason` is re-read under the same lock: `flag()` decides precedence from it,
+        # and so is `language`, which Staff can change from the dashboard.
         db.refresh(
             conversation,
-            attribute_names=["reactivation_child_id", "flag_reason"],
+            attribute_names=["reactivation_child_id", "flag_reason", "language"],
             with_for_update=True,
         )
         decided = bot_service.reply_for(
@@ -164,21 +194,95 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
             body=body,
             guardian_id=conversation.guardian_id,
             reactivation_pending=conversation.reactivation_child_id is not None,
+            language=None if conversation.language is None else conversation.language.value,
         )
-        _apply(db, conversation=conversation, decided=decided)
+        _apply(db, conversation=conversation, decided=decided, inbound=inbound)
         reply = message_service.record_bot_reply(db, conversation=conversation, body=decided.reply)
         twiml = twilio_service.twiml_reply(decided.reply)
 
     recorded = tuple(row for row in (inbound, reply) if row is not None)
 
-    return InboundTurn(twiml=twiml, recorded=recorded)
+    return InboundTurn(twiml=twiml, recorded=recorded, notice=notice)
 
 
-def _apply(db: Session, *, conversation: Conversation, decided: BotTurn) -> None:
+def send_notice(db: Session, *, notice: Message) -> Message:
+    """Send a committed `queued` notice and record the outcome: its SID, or `failed` with
+    Twilio's code. The caller commits; the record was committed first, so a notice the process
+    dies before sending is still a line in the thread (`notice_service`'s order)."""
+    conversation = db.get_one(Conversation, notice.conversation_id)
+
+    try:
+        twilio_sid = send_whatsapp_message(to=conversation.phone_number, body=notice.body)
+    except TwilioServiceError as exc:
+        logger.exception(
+            "consent notice %s on conversation %s was recorded but Twilio did not accept it",
+            notice.id,
+            conversation.id,
+        )
+        # A missing configuration carries no Twilio code; a refusal does, and Staff need it.
+        error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        sent = message_service.mark_failed(db, message=notice, error_code=error_code)
+    else:
+        sent = message_service.attach_twilio_sid(db, message=notice, twilio_sid=twilio_sid)
+
+    return sent
+
+
+def _confirm_consent_keyword(
+    db: Session, *, conversation: Conversation, inbound: Message
+) -> Message | None:
+    """Under Takeover, record a STOP/BAJA/PARAR or START/ALTA keyword and queue its confirmation.
+
+    Only the exact keywords: the parser is not called while Staff hold the thread, so a
+    free-text phrase is theirs to handle. A thread with no Guardian has nothing to record
+    against, and is left to Staff the same way. A Spanish-only keyword (BAJA, PARAR, ALTA)
+    switches the thread to Spanish, as it would with the bot, and is confirmed in Spanish.
+    """
+    if bot_messages.is_stop_keyword(inbound.body):
+        action: ConsentAction | None = ConsentAction.OPT_OUT
+    elif bot_messages.is_start_keyword(inbound.body):
+        action = ConsentAction.OPT_IN
+    else:
+        action = None
+
+    notice = None
+    if action is not None and conversation.guardian_id is not None:
+        # The bot's language rule for a keyword: a Spanish-only one switches the thread.
+        detected = bot_service.keyword_language(inbound.body)
+        if detected is not None and conversation.language is not Language(detected):
+            conversation_service.set_language(
+                db, conversation=conversation, language=Language(detected)
+            )
+        reminder_consent_service.record_consent(
+            db,
+            guardian_id=conversation.guardian_id,
+            action=action,
+            source=ConsentSource.MESSAGE,
+            message_id=inbound.id,
+        )
+        language = None if conversation.language is None else conversation.language.value
+        is_stop = action is ConsentAction.OPT_OUT
+        notice = message_service.record_system_notice(
+            db,
+            conversation=conversation,
+            body=bot_messages.render("OPTED_OUT" if is_stop else "OPTED_IN", language),
+            system_kind=SystemMessageKind.CONSENT_NOTICE,
+            author_user_id=None,
+        )
+
+    return notice
+
+
+def _apply(db: Session, *, conversation: Conversation, decided: BotTurn, inbound: Message) -> None:
     """Write the conversation mutations the bot decided on but left to its caller (P7-C).
 
     A flag does **not** suppress the reply (`docs/api-design.md:479-500`): the client is told
     an admin will reach out, and that reply is recorded and returned like any other.
+
+    A Guardian language the turn adopted is stored, so the next turn replies in it.
+
+    A reminder consent is recorded with the inbound message as its evidence, after the link so
+    a thread linked on this very turn still has its Guardian.
 
     A reactivation request is recorded last, and flags the thread `reactivation_request`
     (REQ-132.3). The bot only returns one when the column read under the row lock said nothing
@@ -187,6 +291,27 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn) -> None
     if decided.link_guardian_id is not None:
         conversation_service.link_guardian(
             db, conversation=conversation, guardian_id=decided.link_guardian_id
+        )
+
+    if decided.language is not None:
+        conversation_service.set_language(
+            db, conversation=conversation, language=Language(decided.language)
+        )
+
+    if decided.consent is not None and conversation.guardian_id is None:
+        # The bot asks only at a step that has a Guardian, and reports the link on that turn.
+        logger.warning(
+            "dropped a %s consent on conversation %s: it has no guardian",
+            decided.consent.action.value,
+            conversation.id,
+        )
+    elif decided.consent is not None:
+        reminder_consent_service.record_consent(
+            db,
+            guardian_id=conversation.guardian_id,
+            action=decided.consent.action,
+            source=decided.consent.source,
+            message_id=inbound.id,
         )
 
     if decided.flag_reason is not None:

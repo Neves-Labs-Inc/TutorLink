@@ -7,6 +7,9 @@ as well as path, so `GET` reaches these routes and `POST`/`PATCH` reach those (P
 Both routes take `AdminPrincipal` and neither takes the tutor scope (P7C-G, CONSTITUTION §15):
 tutors cannot call either route, and an unread scope would arm the guard that 500s the
 `bookings` read behind `next_session`.
+
+`?awaiting_evaluation=true` is the Awaiting evaluation tab: active Children not yet Evaluated,
+oldest `created_at` first.
 """
 
 import uuid
@@ -18,14 +21,19 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.booking import Booking
+from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.schemas.booking import NamedRef
 from app.schemas.child import (
     ChildDetail,
     ChildGuardianRead,
     ChildHomeRead,
     ChildHomeRef,
+    ChildLevelRead,
     ChildSummary,
+    EvaluatedRead,
     NextSession,
+    StaffRef,
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.child_read_service import (
@@ -49,11 +57,17 @@ def list_all(
     db: DbSession,
     is_active: bool = True,
     q: str | None = None,
+    awaiting_evaluation: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ChildSummary]:
     rows, total = list_children(
-        db, is_active=is_active, q=q, limit=page_size, offset=(page - 1) * page_size
+        db,
+        is_active=is_active,
+        q=q,
+        limit=page_size,
+        offset=(page - 1) * page_size,
+        awaiting_evaluation=awaiting_evaluation,
     )
 
     return Page[ChildSummary](
@@ -89,6 +103,8 @@ def _summary(row: ChildRow) -> ChildSummary:
             for home in row.homes
         ],
         next_session=_next_session(row.next_session),
+        evaluated=_evaluated(row.child),
+        created_at=row.child.created_at,
     )
 
 
@@ -136,4 +152,29 @@ def _detail(row: ChildDetailRow) -> ChildDetail:
             )
             for home in row.homes
         ],
+        levels=[_level(level) for level in row.levels],
+        evaluated=_evaluated(row.child),
+    )
+
+
+def _level(row: ChildSubjectLevel) -> ChildLevelRead:
+    return ChildLevelRead(
+        subject_id=row.subject_id,
+        name=row.subject.name,
+        is_active=row.subject.is_active,
+        level=row.level,
+        set_by=StaffRef(id=row.set_by.id, display_name=row.set_by.display_name),
+        updated_at=row.updated_at,
+    )
+
+
+def _evaluated(child: Child) -> EvaluatedRead | None:
+    by = child.evaluated_by
+
+    return (
+        None
+        if child.evaluated_at is None or by is None
+        else EvaluatedRead(
+            at=child.evaluated_at, by=StaffRef(id=by.id, display_name=by.display_name)
+        )
     )

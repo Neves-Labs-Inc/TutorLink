@@ -40,6 +40,18 @@ export const bookingBlockedReason = (child: ChildDetail): string | null =>
 export const bookButtonLabel = (child: ChildDetail): string =>
   child.is_active ? 'Book a session' : 'Reactivate and book'
 
+const CHILDREN_PATH = '/children'
+
+// Router state carries the list URL (tab, page, search) the Child was opened from. Anything that is
+// not a path under the list falls back to it, so a stray state value cannot send Staff elsewhere.
+export const backToChildrenPath = (state: unknown): string => {
+  const back = (state as { back?: unknown } | null)?.back
+  const isListPath =
+    typeof back === 'string' && (back === CHILDREN_PATH || back.startsWith(`${CHILDREN_PATH}?`))
+
+  return isListPath ? back : CHILDREN_PATH
+}
+
 export const isNotFoundError = (error: unknown): boolean =>
   axios.isAxiosError(error) && error.response?.status === 404
 

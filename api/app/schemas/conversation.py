@@ -97,6 +97,10 @@ class ConversationRead(BaseModel):
     unread_count: int
     created_at: datetime.datetime
     reactivation_request: ReactivationRequestRead | None
+    # The composer's two facts (#109): whether a free-form reply can still reach the Guardian,
+    # and the latest client message the 24-hour window is measured from.
+    is_window_open: bool
+    last_client_message_at: datetime.datetime | None
 
 
 class FlagHandled(BaseModel):

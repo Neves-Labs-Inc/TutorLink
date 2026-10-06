@@ -23,6 +23,25 @@ export type NextSession = {
   subject: NamedRef
 }
 
+export type StaffRef = {
+  id: string
+  display_name: string
+}
+
+export type Evaluated = {
+  at: string
+  by: StaffRef
+}
+
+export type ChildLevel = {
+  subject_id: string
+  name: string
+  is_active: boolean
+  level: number
+  set_by: StaffRef
+  updated_at: string
+}
+
 export type ChildSummary = {
   id: string
   name: string
@@ -32,6 +51,8 @@ export type ChildSummary = {
   guardians: NamedRef[]
   homes: ChildHomeRef[]
   next_session: NextSession | null
+  evaluated: Evaluated | null
+  created_at: string
 }
 
 export type ChildGuardian = {
@@ -52,6 +73,8 @@ export type ChildDetail = {
   upcoming_session_count: number
   guardians: ChildGuardian[]
   homes: ChildHome[]
+  levels: ChildLevel[]
+  evaluated: Evaluated | null
 }
 
 export type ChildRecord = {
@@ -69,6 +92,7 @@ export type ChildRecord = {
 export type ChildListParams = {
   q?: string
   is_active?: boolean
+  awaiting_evaluation?: boolean
   page?: number
   page_size?: number
 }
@@ -141,4 +165,30 @@ export const linkGuardian = async (
   const response = await api.post<ChildRecord>(`/api/children/${childId}/guardians`, data)
 
   return response.data
+}
+
+export const setChildLevel = async (
+  childId: string,
+  subjectId: string,
+  level: number,
+): Promise<ChildLevel> => {
+  const response = await api.put<ChildLevel>(`/api/children/${childId}/levels/${subjectId}`, {
+    level,
+  })
+
+  return response.data
+}
+
+export const removeChildLevel = async (childId: string, subjectId: string): Promise<void> => {
+  await api.delete(`/api/children/${childId}/levels/${subjectId}`)
+}
+
+export const markChildEvaluated = async (childId: string): Promise<Evaluated> => {
+  const response = await api.post<Evaluated>(`/api/children/${childId}/evaluated`)
+
+  return response.data
+}
+
+export const clearChildEvaluated = async (childId: string): Promise<void> => {
+  await api.delete(`/api/children/${childId}/evaluated`)
 }

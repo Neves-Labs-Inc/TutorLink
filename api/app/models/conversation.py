@@ -34,10 +34,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.enums import (
+    LANGUAGE_CODE_LENGTH,
     ConversationStatus,
     FlagReason,
+    Language,
     conversation_status_enum,
     flag_reason_enum,
+    in_values_predicate,
+    varchar_enum,
 )
 from app.models.mixins import HasID, HasTimestamps
 
@@ -57,6 +61,9 @@ class Conversation(HasID, HasTimestamps, Base):
         # `tutor_availability_exceptions`: a state with no coherent meaning is rejected by the
         # database, not left for the application to remember to avoid.
         CheckConstraint(TAKEOVER_PAIR_PREDICATE, name="ck_conversations_takeover_pair"),
+        CheckConstraint(
+            in_values_predicate("language", Language), name="ck_conversations_language"
+        ),
         # Not unique: a guardian who has changed handsets has more than one thread, the older
         # one still readable as history.
         Index("ix_conversations_guardian_id", "guardian_id"),
@@ -104,6 +111,11 @@ class Conversation(HasID, HasTimestamps, Base):
     # webhook, cleared only by an admin's approve or deny. At most one per conversation.
     reactivation_child_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("children.id"), nullable=True
+    )
+
+    # The Guardian's language on this thread. NULL means not detected yet, so English is used.
+    language: Mapped[Language | None] = mapped_column(
+        varchar_enum(Language, length=LANGUAGE_CODE_LENGTH), nullable=True
     )
 
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation")

@@ -500,6 +500,7 @@ def test_a_malformed_booking_subject_id_is_400_not_422(
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=None,

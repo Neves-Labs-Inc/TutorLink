@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import AdminPrincipal
+from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.schemas.common import DEFAULT_PAGE, Page
 from app.schemas.slot import SlotRead
 from app.services import clock
@@ -51,16 +52,19 @@ def list_available_slots(
     db: DbSession,
     subject_id: uuid.UUID,
     date: datetime.date,
-    # `ge=1` because grade 0 is nobody's grade: Phase 3's review found `?grade_level=0` matched
-    # every assignment's ceiling and returned the whole roster, and this is the same hole.
-    # Optional because a child may have no grade yet; omitted, the ceiling filter is skipped.
-    grade_level: Annotated[int | None, Query(ge=1)] = None,
+    # 0 is Kindergarten. Optional because a child may have no grade yet; omitted, the ceiling
+    # filter is skipped (the subject join still limits the set to the subject's tutors).
+    grade_level: Annotated[int | None, Query(ge=LOWEST_GRADE, le=HIGHEST_GRADE)] = None,
     tutor_id: uuid.UUID | None = None,
+    # Matches on the Child's Subject level for `subject_id` (no level, no tutor), the way the
+    # bot does. Prefer it to `grade_level` whenever a Child is known.
+    child_id: uuid.UUID | None = None,
 ) -> Page[SlotRead]:
     try:
         result = find_available_slots(
             db,
             subject_id=subject_id,
+            child_id=child_id,
             grade_level=grade_level,
             date=date,
             tutor_id=tutor_id,

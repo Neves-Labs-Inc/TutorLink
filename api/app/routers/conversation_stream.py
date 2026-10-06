@@ -85,6 +85,7 @@ from app.schemas.stream import (
     AuthFrame,
     ErrorFrame,
     ReadyFrame,
+    WINDOW_CLOSED_CODE,
     SendFrame,
     client_frame_adapter,
 )
@@ -112,7 +113,11 @@ from app.services.message_service import (
     mark_failed,
     record_admin_message,
 )
-from app.services.twilio_service import TwilioServiceError, send_whatsapp_message
+from app.services.twilio_service import (
+    TwilioSendFailed,
+    TwilioServiceError,
+    send_whatsapp_message,
+)
 
 AUTH_REQUIRED_ERROR = "The first frame must be an auth frame"
 AUTH_TIMEOUT_ERROR = "No auth frame arrived in time"
@@ -122,6 +127,9 @@ UNEXPECTED_FRAME_ERROR = "Expected a send frame"
 CONVERSATION_NOT_FOUND_ERROR = "No such conversation"
 NOT_TAKEN_OVER_ERROR = "Take over the conversation before sending a message"
 SEND_FAILED_ERROR = "WhatsApp did not accept the message"
+WINDOW_CLOSED_ERROR = (
+    "The Guardian last wrote over 24 hours ago, so WhatsApp only allows a template message"
+)
 PUMP_STOPPED_ERROR = "The live-update subscription stopped"
 
 # Ten seconds, from the contract (`api-design.md:1630`) rather than from `system_settings`: it
@@ -301,21 +309,25 @@ async def _read_frames(websocket: WebSocket, db: Session, admin: _Admin) -> None
         if isinstance(frame, SendFrame):
             failure = await run_in_threadpool(_send, db, admin=admin, frame=frame)
         elif isinstance(frame, AuthFrame):
-            failure = UNEXPECTED_FRAME_ERROR
+            failure = ErrorFrame(detail=UNEXPECTED_FRAME_ERROR)
         else:
-            failure = frame
+            failure = ErrorFrame(detail=frame)
 
         if failure is not None:
-            await websocket.send_json(ErrorFrame(detail=failure).model_dump())
+            await websocket.send_json(failure.frame())
 
 
-def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> str | None:
-    """Handle one `send`. Returns the `error` frame's detail, or `None` when it went out.
+def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> ErrorFrame | None:
+    """Handle one `send`. Returns the `error` frame, or `None` when it went out.
 
     A conversation the bot is still answering is refused and **nothing is recorded**: an admin
     must claim the thread before speaking into it, so the client never receives an admin line
     interleaved with a bot line answering the same message. The pause is what makes the admin
     the only outbound voice.
+
+    So is a send after the Guardian's 24-hour window has closed (#109): Twilio would refuse it
+    with 63016, and a line that could never be delivered is not one to record. The frame
+    carries `window_closed` so the composer can disable itself.
 
     The trailing commit ends the transaction the refusals opened by reading, for the reason
     `_resolve_admin` gives: on the write path there is nothing left to commit, and on a refusal
@@ -327,9 +339,11 @@ def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> str | None:
         conversation = None
 
     if conversation is None:
-        failure = CONVERSATION_NOT_FOUND_ERROR
+        failure: ErrorFrame | None = ErrorFrame(detail=CONVERSATION_NOT_FOUND_ERROR)
     elif conversation.status is not ConversationStatus.HUMAN:
-        failure = NOT_TAKEN_OVER_ERROR
+        failure = ErrorFrame(detail=NOT_TAKEN_OVER_ERROR)
+    elif not conversation_service.window_is_open(db, conversation_id=conversation.id):
+        failure = ErrorFrame(detail=WINDOW_CLOSED_ERROR, code=WINDOW_CLOSED_CODE)
     else:
         failure = _record_and_send(db, admin=admin, frame=frame, conversation=conversation)
 
@@ -344,7 +358,7 @@ def _record_and_send(
     admin: _Admin,
     frame: SendFrame,
     conversation: Conversation,
-) -> str | None:
+) -> ErrorFrame | None:
     """Record, commit, send, attach, broadcast — in that order, which is the only safe one.
 
     Recording before sending is what keeps the thread honest across a crash: the other order
@@ -384,10 +398,12 @@ def _record_and_send(
 
     try:
         twilio_sid = send_whatsapp_message(to=phone_number, body=frame.body)
-    except TwilioServiceError:
+    except TwilioServiceError as exc:
         logger.exception("an admin message was recorded but Twilio did not accept it")
-        mark_failed(db, message=message, error_code=None)
-        failure = SEND_FAILED_ERROR
+        # A missing configuration carries no Twilio code; a refusal does, and staff need it.
+        error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        mark_failed(db, message=message, error_code=error_code)
+        failure = ErrorFrame(detail=SEND_FAILED_ERROR)
     else:
         attach_twilio_sid(db, message=message, twilio_sid=twilio_sid)
         failure = None
@@ -399,6 +415,9 @@ def _record_and_send(
         body=message.body,
         status=message.status,
         created_at=message.created_at,
+        system_kind=message.system_kind,
+        error_code=message.error_code,
+        reminder_child_names=None,
     )
     db.commit()
 

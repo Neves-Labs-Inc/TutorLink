@@ -26,11 +26,12 @@ from app.models.enums import UserRole
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
 from app.services.retention_scheduler import run_guarded_purge
+from app.services.user_service import resolve_display_name
 
 MIN_PASSWORD_LENGTH = 8
 
 
-def seed_admin(db: Session, *, email: str, password: str) -> str:
+def seed_admin(db: Session, *, email: str, password: str, display_name: str | None = None) -> str:
     """Create the first admin, or confirm one already exists. Never resets a password."""
     normalized_email = email.strip().lower()
     existing = db.scalars(select(User).where(User.email == normalized_email)).first()
@@ -38,8 +39,13 @@ def seed_admin(db: Session, *, email: str, password: str) -> str:
     if existing is not None:
         outcome = "exists"
     else:
+        name = resolve_display_name(
+            display_name=display_name, email=normalized_email, tutor_name=None
+        )
         user = User(
             email=normalized_email,
+            display_name=name.value,
+            display_name_is_default=name.is_default,
             hashed_password=hash_password(password),
             role=UserRole.ADMIN,
             tutor_id=None,
@@ -52,7 +58,9 @@ def seed_admin(db: Session, *, email: str, password: str) -> str:
     return outcome
 
 
-def seed_developer(db: Session, *, email: str, password: str) -> str:
+def seed_developer(
+    db: Session, *, email: str, password: str, display_name: str | None = None
+) -> str:
     """Create the first developer, or leave an existing account alone.
 
     Three outcomes rather than two. `conflict` is the one that matters: an email already held
@@ -65,8 +73,13 @@ def seed_developer(db: Session, *, email: str, password: str) -> str:
     existing = db.scalars(select(User).where(User.email == normalized_email)).first()
 
     if existing is None:
+        name = resolve_display_name(
+            display_name=display_name, email=normalized_email, tutor_name=None
+        )
         user = User(
             email=normalized_email,
+            display_name=name.value,
+            display_name_is_default=name.is_default,
             hashed_password=hash_password(password),
             role=UserRole.DEVELOPER,
             tutor_id=None,

@@ -5,6 +5,7 @@ import {
   consentSentence,
   lastReminderView,
   nextConsentAction,
+  shouldShowBlockedReason,
   type GuardianConsent,
 } from './reminders'
 
@@ -63,14 +64,38 @@ describe('the record button', () => {
 describe('blockedReason', () => {
   it('does not repeat the block when the latest row is the system opt-out', () => {
     expect(blockedReason(consent({ state: 'opt_out', source: 'system', blocked_by_whatsapp: true }))).toBe(
-      'Only the Guardian can turn reminders back on, by messaging START.',
+      'Only the Guardian can turn reminders back on, by messaging START from this number.',
     )
   })
 
   it('explains the block when Staff opted out after it', () => {
-    expect(blockedReason(consent({ state: 'opt_out', source: 'staff', blocked_by_whatsapp: true }))).toContain(
-      'WhatsApp reported the number blocked us.',
+    expect(blockedReason(consent({ state: 'opt_out', source: 'staff', blocked_by_whatsapp: true }))).toBe(
+      'WhatsApp reported the number blocked us. Only the Guardian can turn reminders back on, by messaging START from this number.',
     )
+  })
+
+  it('explains the block when the Guardian is opted in but blocked on the current number', () => {
+    expect(blockedReason(consent({ state: 'opt_in', source: 'message', blocked_by_whatsapp: true }))).toBe(
+      'WhatsApp reported the number blocked us. Only the Guardian can turn reminders back on, by messaging START from this number.',
+    )
+  })
+})
+
+describe('shouldShowBlockedReason', () => {
+  it('shows when blocked and opted out', () => {
+    expect(shouldShowBlockedReason(consent({ state: 'opt_out', source: 'system', blocked_by_whatsapp: true }))).toBe(true)
+  })
+
+  it('shows when blocked and opted in, while the opt-out button stays', () => {
+    const blockedOptedIn = consent({ state: 'opt_in', blocked_by_whatsapp: true })
+
+    expect(shouldShowBlockedReason(blockedOptedIn)).toBe(true)
+    expect(canRecordConsent(blockedOptedIn)).toBe(true)
+  })
+
+  it('stays hidden when not blocked', () => {
+    expect(shouldShowBlockedReason(consent({ state: 'opt_out' }))).toBe(false)
+    expect(shouldShowBlockedReason(consent())).toBe(false)
   })
 })
 
@@ -124,5 +149,19 @@ describe('lastReminderView', () => {
       detail: 'Template not approved.',
       tone: 'muted',
     })
+  })
+})
+
+describe('lastReminderView with a WhatsApp block', () => {
+  it('shows "Blocked by WhatsApp." in muted tone', () => {
+    const view = lastReminderView({
+      week_start: '2026-09-28',
+      status: 'skipped',
+      error_code: null,
+      skip_reason: 'blocked_by_whatsapp',
+    })
+
+    expect(view.detail).toBe('Blocked by WhatsApp.')
+    expect(view.tone).toBe('muted')
   })
 })

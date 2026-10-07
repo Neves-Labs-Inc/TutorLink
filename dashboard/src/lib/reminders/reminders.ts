@@ -2,7 +2,7 @@ import type { Role } from '@/lib/auth/auth'
 import { ADMIN_ROLES } from '@/lib/auth/auth'
 import { addDaysIso, formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates/dates'
 
-export type SkipReason = 'takeover' | 'template_not_approved'
+export type SkipReason = 'blocked_by_whatsapp' | 'takeover' | 'template_not_approved'
 export type ReminderStatus = 'sent' | 'delivered' | 'read' | 'failed' | 'undeliverable' | 'skipped'
 export type Language = 'en' | 'es'
 
@@ -40,10 +40,12 @@ export const NO_VALUE = '—'
 
 const ATTENTION_SET: ReadonlySet<ReminderStatus> = new Set(['undeliverable', 'failed', 'skipped'])
 const PREVIEW_REASONS: Record<SkipReason, string> = {
+  blocked_by_whatsapp: 'Blocked by WhatsApp.',
   takeover: 'A Staff member is holding the chat (takeover).',
   template_not_approved: 'Template not approved.',
 }
 const SENT_REASONS: Record<SkipReason, string> = {
+  blocked_by_whatsapp: 'Blocked by WhatsApp.',
   takeover: 'A Staff member held the chat (takeover).',
   template_not_approved: 'Template not approved.',
 }

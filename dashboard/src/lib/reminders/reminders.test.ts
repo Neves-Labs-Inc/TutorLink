@@ -46,6 +46,35 @@ describe('previewOutcome', () => {
   })
 })
 
+describe('blocked by WhatsApp', () => {
+  it('reads as will-skip in the preview', () => {
+    expect(previewOutcome({ skip_reason: 'blocked_by_whatsapp' })).toEqual({
+      key: 'will_skip',
+      reason: 'Blocked by WhatsApp.',
+    })
+  })
+
+  it('shows in muted tone on a week row', () => {
+    const row = {
+      guardian_id: 'g',
+      guardian_name: 'G',
+      child_names: [],
+      language: 'en' as const,
+      status: 'skipped' as const,
+      skip_reason: 'blocked_by_whatsapp' as const,
+      error_code: null,
+      may_have_been_delivered: false,
+      sent_at: null,
+    }
+
+    expect(sentDetail(row)).toEqual({ text: 'Blocked by WhatsApp.', tone: 'muted' })
+  })
+
+  it('does not pause the week', () => {
+    expect(isPaused([{ skip_reason: 'blocked_by_whatsapp' }])).toBe(false)
+  })
+})
+
 describe('sentDetail', () => {
   it('is empty for a delivered row', () => {
     expect(sentDetail(row({ status: 'delivered' }))).toEqual({ text: null, tone: 'none' })

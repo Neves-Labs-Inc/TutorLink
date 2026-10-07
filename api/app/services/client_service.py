@@ -28,8 +28,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.child import Child
+from app.models.conversation import Conversation
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.services.conversation_service import LATEST_CONVERSATION_FIRST
 from app.services.phone_service import normalize_phone_number
 
 _LIKE_ESCAPE = "\\"
@@ -55,6 +57,9 @@ class ClientDetail:
     client: Guardian
     homes: list[Home]
     children: list[Child]
+    # The Guardian's most recently active conversation, whose `language` is the Guardian
+    # language; `None` when the Guardian has never written, so English is used.
+    language_conversation: Conversation | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +157,8 @@ def create_client(
     if home is not None:
         homes = [_attach_home(db, client=client, home=home)]
 
-    return ClientDetail(client=client, homes=homes, children=[])
+    # Nothing can link a conversation to a client that did not exist until now.
+    return ClientDetail(client=client, homes=homes, children=[], language_conversation=None)
 
 
 def update_client(
@@ -313,4 +319,16 @@ def _detail(db: Session, client: Guardian) -> ClientDetail:
         ).all()
     )
 
-    return ClientDetail(client=client, homes=homes, children=children)
+    language_conversation = db.scalars(
+        select(Conversation)
+        .where(Conversation.guardian_id == client.id)
+        .order_by(*LATEST_CONVERSATION_FIRST)
+        .limit(1)
+    ).first()
+
+    return ClientDetail(
+        client=client,
+        homes=homes,
+        children=children,
+        language_conversation=language_conversation,
+    )

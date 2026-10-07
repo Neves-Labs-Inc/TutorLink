@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.child import Child
-from app.models.enums import UserRole
+from app.models.conversation import Conversation
+from app.models.enums import Language, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.tutor import Tutor
@@ -31,6 +32,7 @@ PHONE = "+12025550123"
 OTHER_PHONE = "+12025550187"
 PHONE_TAKEN_ERROR = "A client with that phone number already exists"
 DATE_OF_BIRTH = datetime.date(2014, 5, 2)
+NOON = datetime.datetime(2026, 1, 5, 12, 0, tzinfo=datetime.UTC)
 
 
 def _make_user(
@@ -596,3 +598,81 @@ def test_patching_an_unknown_client_is_404(api: TestClient, db: Session) -> None
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Client not found"
+
+
+# --- the Guardian language ------------------------------------------------------------------
+
+
+def test_the_read_carries_the_language_of_the_most_recently_active_conversation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _make_conversation(db, client=client, language=Language.EN, last_message_at=NOON)
+    recent = _make_conversation(
+        db, client=client, language=Language.ES, last_message_at=NOON + datetime.timedelta(hours=1)
+    )
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert (body["language"], body["language_conversation_id"]) == ("es", str(recent.id))
+
+
+def test_two_conversations_active_at_the_same_instant_are_decided_by_the_higher_id(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    lower_id, higher_id = sorted([uuid.uuid4(), uuid.uuid4()])
+    # The lower id is written first: without the tie-break the sort keeps insertion order.
+    for conversation_id, language in [(lower_id, None), (higher_id, Language.ES)]:
+        conversation = _make_conversation(
+            db, client=client, language=language, last_message_at=NOON
+        )
+        conversation.id = conversation_id
+        db.flush()
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert (body["language"], body["language_conversation_id"]) == ("es", str(higher_id))
+
+
+def test_a_not_detected_language_reads_null_with_its_conversation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    conversation = _make_conversation(db, client=client, language=None, last_message_at=NOON)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert (body["language"], body["language_conversation_id"]) == (None, str(conversation.id))
+
+
+def test_a_guardian_with_no_conversation_has_no_language_conversation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert (body["language"], body["language_conversation_id"]) == (None, None)
+
+
+def _make_conversation(
+    db: Session,
+    *,
+    client: Guardian,
+    language: Language | None,
+    last_message_at: datetime.datetime,
+) -> Conversation:
+    conversation = Conversation(
+        phone_number=f"+1{uuid.uuid4().int % 10**10:010d}",
+        guardian_id=client.id,
+        last_message_at=last_message_at,
+        language=language,
+    )
+    db.add(conversation)
+    db.flush()
+    return conversation

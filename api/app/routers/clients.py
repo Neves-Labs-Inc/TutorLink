@@ -154,6 +154,8 @@ def _home_input(home: HomeCreate | None) -> HomeInput | None:
 
 
 def _to_read(detail: ClientDetail) -> ClientRead:
+    conversation = detail.language_conversation
+
     return ClientRead(
         id=detail.client.id,
         name=detail.client.name,
@@ -161,4 +163,6 @@ def _to_read(detail: ClientDetail) -> ClientRead:
         is_active=detail.client.is_active,
         homes=[HomeRead.model_validate(home) for home in detail.homes],
         children=[ChildRead.model_validate(child) for child in detail.children],
+        language=None if conversation is None else conversation.language,
+        language_conversation_id=None if conversation is None else conversation.id,
     )

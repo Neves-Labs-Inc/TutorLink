@@ -10,6 +10,7 @@ from app.models.enums import UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
+from app.schemas.common import MAX_PAGE_SIZE
 from app.security import create_access_token, hash_password
 from app.services import subject_service
 
@@ -34,8 +35,12 @@ def _auth(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_subject(db: Session, *, name: str | None = None, is_active: bool = True) -> Subject:
-    subject = Subject(name=name or f"Subject {uuid.uuid4().hex[:12]}", is_active=is_active)
+def _make_subject(
+    db: Session, *, name: str | None = None, is_active: bool = True, name_es: str | None = None
+) -> Subject:
+    subject = Subject(
+        name=name or f"Subject {uuid.uuid4().hex[:12]}", name_es=name_es, is_active=is_active
+    )
     db.add(subject)
     db.flush()
     return subject
@@ -316,3 +321,163 @@ def test_unknown_id_is_404(api: TestClient, db: Session) -> None:
     )
 
     assert response.status_code == 404
+
+
+# --- name_es: the Spanish name ------------------------------------------------------------------
+
+SPANISH_NAME = "Matemáticas"
+MAX_SPANISH_NAME_LENGTH = 128
+# The Display name's rule: the bot sends this name to Guardians, so it may carry no control,
+# invisible or line-separator character. NUL in particular must be a 4xx, not a 500 at flush.
+HIDDEN_CHARACTER_NAMES = {
+    "nul": "Mate\x00máticas",
+    "newline": "Mate\nmáticas",
+    "zero-width space": "Mate​máticas",
+    "bidi override": "Mate‮máticas",
+    "line separator": "Mate máticas",
+    "paragraph separator": "Mate máticas",
+}
+
+
+@pytest.mark.parametrize("name_es", HIDDEN_CHARACTER_NAMES.values(), ids=HIDDEN_CHARACTER_NAMES)
+def test_a_spanish_name_with_hidden_characters_is_400_on_create(
+    api: TestClient, db: Session, name_es: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/subjects",
+        headers=_auth(admin),
+        json={"name": f"Math {uuid.uuid4().hex[:8]}", "name_es": name_es},
+    )
+
+    assert response.status_code == 400
+    assert "control or invisible characters" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("name_es", HIDDEN_CHARACTER_NAMES.values(), ids=HIDDEN_CHARACTER_NAMES)
+def test_a_spanish_name_with_hidden_characters_is_400_on_update_and_changes_nothing(
+    api: TestClient, db: Session, name_es: str
+) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name_es=SPANISH_NAME)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}", headers=_auth(admin), json={"name_es": name_es}
+    )
+
+    assert response.status_code == 400
+    db.refresh(subject)
+    assert subject.name_es == SPANISH_NAME
+
+
+def test_a_run_of_spaces_inside_the_spanish_name_is_stored_as_one(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}",
+        headers=_auth(admin),
+        json={"name_es": "  Ciencias      Naturales "},
+    )
+
+    assert response.json()["name_es"] == "Ciencias Naturales"
+
+
+def test_a_subject_is_created_with_its_spanish_name_trimmed(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/subjects",
+        headers=_auth(admin),
+        json={"name": f"Math {uuid.uuid4().hex[:8]}", "name_es": f"  {SPANISH_NAME} "},
+    )
+
+    assert (response.status_code, response.json()["name_es"]) == (201, SPANISH_NAME)
+
+
+def test_a_subject_created_without_a_spanish_name_reads_null(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/subjects", headers=_auth(admin), json={"name": f"Math {uuid.uuid4().hex[:8]}"}
+    )
+
+    assert (response.status_code, response.json()["name_es"]) == (201, None)
+
+
+def test_a_manager_sets_the_spanish_name_and_the_list_reads_it(
+    api: TestClient, db: Session
+) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    # Sorts early, so the first page holds it whatever else the test database carries.
+    subject = _make_subject(db, name=f"Aaa {uuid.uuid4().hex[:8]}")
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}", headers=_auth(manager), json={"name_es": SPANISH_NAME}
+    )
+    listed = api.get(
+        "/api/subjects", headers=_auth(manager), params={"page_size": MAX_PAGE_SIZE}
+    ).json()["items"]
+
+    assert (response.status_code, response.json()["name_es"]) == (200, SPANISH_NAME)
+    assert {item["id"]: item["name_es"] for item in listed}[str(subject.id)] == SPANISH_NAME
+
+
+@pytest.mark.parametrize("cleared", [None, "", "   "], ids=["null", "empty", "blank"])
+def test_a_null_or_blank_spanish_name_clears_it(
+    api: TestClient, db: Session, cleared: str | None
+) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name_es=SPANISH_NAME)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}", headers=_auth(admin), json={"name_es": cleared}
+    )
+
+    assert (response.status_code, response.json()["name_es"]) == (200, None)
+    db.refresh(subject)
+    assert subject.name_es is None
+
+
+def test_a_patch_that_omits_the_spanish_name_keeps_it(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name_es=SPANISH_NAME)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}", headers=_auth(admin), json={"description": "Numbers"}
+    )
+
+    assert response.json()["name_es"] == SPANISH_NAME
+
+
+def test_a_spanish_name_over_128_characters_is_400_on_create(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/subjects",
+        headers=_auth(admin),
+        json={
+            "name": f"Math {uuid.uuid4().hex[:8]}",
+            "name_es": "x" * (MAX_SPANISH_NAME_LENGTH + 1),
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_a_spanish_name_over_128_characters_is_400_on_update(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name_es=SPANISH_NAME)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}",
+        headers=_auth(admin),
+        json={"name_es": "x" * (MAX_SPANISH_NAME_LENGTH + 1)},
+    )
+
+    assert response.status_code == 400
+    db.refresh(subject)
+    assert subject.name_es == SPANISH_NAME

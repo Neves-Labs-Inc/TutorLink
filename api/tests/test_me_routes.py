@@ -16,14 +16,16 @@ from app.models.user import User
 from app.security import create_access_token
 
 ORIGINAL_NAME = "Original Name"
-# Control (Cc) and invisible format (Cf) characters a Display name may not carry: NUL breaks
-# the write, a newline breaks the WhatsApp template, and the last two make a name look blank or
-# read backwards.
+# Control (Cc), invisible format (Cf) and line or paragraph separator (Zl, Zp) characters a
+# Display name may not carry: NUL breaks the write, a line break breaks the WhatsApp template,
+# and zero-width and bidi characters make a name look blank or read backwards.
 HIDDEN_CHARACTER_NAMES = {
     "nul": "Ana\x00",
     "newline": "Ana\nPay to IBAN X",
     "zero-width space": "Ana\u200bLopez",
     "bidi override": "Ana\u202eevil",
+    "line separator": "Ana\u2028Lopez",
+    "paragraph separator": "Ana\u2029Lopez",
 }
 NEW_NAME = "Maria Lopez"
 MAX_DISPLAY_NAME_LENGTH = 255
@@ -88,6 +90,17 @@ def test_the_name_is_stored_trimmed(api: TestClient, db: Session) -> None:
     response = api.patch("/api/me", headers=_auth(caller), json={"display_name": "  Ana  "})
 
     assert response.json()["display_name"] == "Ana"
+
+
+def test_a_run_of_spaces_inside_the_name_is_stored_as_one(api: TestClient, db: Session) -> None:
+    """WhatsApp refuses a template parameter with more than four consecutive spaces."""
+    caller = _make_user(db, role=UserRole.MANAGER)
+
+    response = api.patch(
+        "/api/me", headers=_auth(caller), json={"display_name": "Ana      Maria  Lopez"}
+    )
+
+    assert (response.status_code, response.json()["display_name"]) == (200, "Ana Maria Lopez")
 
 
 @pytest.mark.parametrize(

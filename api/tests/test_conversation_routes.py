@@ -44,6 +44,7 @@ from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
     FlagReason,
+    Language,
     MessageAuthor,
     MessageStatus,
     UserRole,
@@ -282,6 +283,7 @@ def test_the_detail_carries_the_counts_the_thread_header_shows(
         "reactivation_request",
         "is_window_open",
         "last_client_message_at",
+        "language",
     }
     assert body["message_count"] == 2
     assert body["unread_count"] == 1
@@ -406,6 +408,83 @@ def test_a_malformed_before_marker_is_400_not_422(api: TestClient, db: Session) 
 
     assert response.status_code == 400
     assert set(response.json()) == {"detail"}
+
+
+# --- PATCH /api/conversations/{id}: the Guardian language ---------------------------------------
+
+
+@pytest.mark.parametrize("language", ["es", "en", None], ids=["spanish", "english", "not detected"])
+def test_staff_set_the_language_and_the_read_returns_it(
+    api: TestClient, db: Session, broadcasts: list[BroadcastEvent], language: str | None
+) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, marker=_marker())
+    conversation.language = Language.ES if language is None else None
+    db.flush()
+
+    response = api.patch(
+        f"/api/conversations/{conversation.id}",
+        headers=_auth(admin),
+        json={"language": language},
+    )
+    read = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert (response.status_code, response.json()["language"]) == (200, language)
+    assert read["language"] == language
+    assert [event.frame()["type"] for event in broadcasts] == ["conversation.updated"]
+    assert broadcasts[0].conversation["language"] == language
+
+
+def test_a_manager_may_set_the_language(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    conversation = _make_conversation(db, marker=_marker())
+
+    response = api.patch(
+        f"/api/conversations/{conversation.id}", headers=_auth(manager), json={"language": "es"}
+    )
+
+    assert (response.status_code, response.json()["language"]) == (200, "es")
+
+
+def test_a_tutor_may_not_set_the_language(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor_user(db)
+    conversation = _make_conversation(db, marker=_marker())
+
+    response = api.patch(
+        f"/api/conversations/{conversation.id}", headers=_auth(tutor), json={"language": "es"}
+    )
+
+    assert response.status_code == 403
+    assert _row(db, conversation.id).language is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"language": "fr"}, {"language": "ES"}, {"language": ""}, {}],
+    ids=["unsupported", "upper case", "empty", "missing"],
+)
+def test_a_language_that_is_not_en_es_or_null_is_400(
+    api: TestClient, db: Session, body: dict[str, str]
+) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, marker=_marker())
+
+    response = api.patch(f"/api/conversations/{conversation.id}", headers=_auth(admin), json=body)
+
+    assert response.status_code == 400
+    assert _row(db, conversation.id).language is None
+
+
+def test_setting_the_language_of_an_unknown_conversation_is_404(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(
+        f"/api/conversations/{uuid.uuid4()}", headers=_auth(admin), json={"language": "es"}
+    )
+
+    _assert_detail(response, 404, CONVERSATION_NOT_FOUND_ERROR)
 
 
 # --- takeover, release, read -------------------------------------------------------------------

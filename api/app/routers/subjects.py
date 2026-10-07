@@ -11,6 +11,7 @@ from app.dependencies import StaffPrincipal, Principal
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.subject import SubjectCreate, SubjectRead, SubjectUpdate
 from app.services.subject_service import (
+    KEEP,
     SubjectNameTaken,
     SubjectNotFound,
     SubjectWithCount,
@@ -32,6 +33,7 @@ def _read(row: SubjectWithCount) -> SubjectRead:
     return SubjectRead(
         id=row.subject.id,
         name=row.subject.name,
+        name_es=row.subject.name_es,
         description=row.subject.description,
         is_active=row.subject.is_active,
         tutor_count=row.tutor_count,
@@ -61,7 +63,9 @@ def list_all(
 @router.post("", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
 def create(payload: SubjectCreate, user: StaffPrincipal, db: DbSession) -> SubjectRead:
     try:
-        created = create_subject(db, name=payload.name, description=payload.description)
+        created = create_subject(
+            db, name=payload.name, name_es=payload.name_es, description=payload.description
+        )
     except SubjectNameTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, SUBJECT_NAME_TAKEN_ERROR) from exc
 
@@ -81,6 +85,8 @@ def update(
             name=payload.name,
             description=payload.description,
             is_active=payload.is_active,
+            # Left out keeps the stored name; `null` or blank clears it.
+            name_es=payload.name_es if "name_es" in payload.model_fields_set else KEEP,
         )
     except SubjectNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, SUBJECT_NOT_FOUND_ERROR) from exc

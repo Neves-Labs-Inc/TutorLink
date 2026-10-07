@@ -22,6 +22,7 @@ from app.routers import (
     children_read,
     client_bookings,
     client_homes,
+    client_reminders,
     clients,
     conversation_stream,
     conversations,
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(subjects.router)
     app.include_router(clients.router)
     app.include_router(client_bookings.router)
+    app.include_router(client_reminders.router)
     app.include_router(client_homes.router)
     app.include_router(children.router)
     app.include_router(children_read.router)

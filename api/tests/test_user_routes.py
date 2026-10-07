@@ -33,6 +33,8 @@ HIDDEN_CHARACTER_NAMES = {
     "newline": "Ana\nPay to IBAN X",
     "zero-width space": "Ana\u200bLopez",
     "bidi override": "Ana\u202eevil",
+    "line separator": "Ana\u2028Lopez",
+    "paragraph separator": "Ana\u2029Lopez",
 }
 
 _serials = itertools.count()
@@ -690,6 +692,27 @@ def test_an_accented_display_name_is_accepted_on_create_and_update(
         f"/api/users/{created.json()['id']}",
         headers=_auth(admin),
         json={"display_name": "Zoë Ångström"},
+    )
+
+    assert (created.status_code, created.json()["display_name"]) == (201, "José Núñez")
+    assert (updated.status_code, updated.json()["display_name"]) == (200, "Zoë Ångström")
+
+
+def test_a_run_of_spaces_in_the_display_name_is_stored_as_one_on_create_and_update(
+    api: TestClient, db: Session
+) -> None:
+    """WhatsApp refuses a template parameter with more than four consecutive spaces."""
+    admin = _make_user(db)
+
+    created = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(role="manager", display_name=" José      Núñez "),
+    )
+    updated = api.patch(
+        f"/api/users/{created.json()['id']}",
+        headers=_auth(admin),
+        json={"display_name": "Zoë     Ångström"},
     )
 
     assert (created.status_code, created.json()["display_name"]) == (201, "José Núñez")

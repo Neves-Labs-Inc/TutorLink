@@ -1,10 +1,10 @@
 """Request and response shapes for `/api/conversations`.
 
-There is no `ConversationCreate` and no `ConversationUpdate`. Nothing creates a conversation
-over HTTP — the webhook opens one on the first inbound message — and of the nine routes exactly
-one carries a request body: `FlagHandled`, on `POST /handled`. Takeover and release are empty
-POST/DELETE, `POST /read` moves a watermark to now, approve and deny are empty POSTs, and
-sending a message lives on the WebSocket rather than on a REST twin
+There is no `ConversationCreate`. Nothing creates a conversation over HTTP — the webhook opens
+one on the first inbound message. Two routes carry a request body: `FlagHandled`, on
+`POST /handled`, and `ConversationUpdate`, on `PATCH`, which sets only the Guardian language.
+Takeover and release are empty POST/DELETE, `POST /read` moves a watermark to now, approve and
+deny are empty POSTs, and sending a message lives on the WebSocket rather than on a REST twin
 (`docs/api-design.md:1655-1660`).
 
 `FlagHandled` is a compare token, not data to write (`07D-CONTEXT.md` §4b, SA-38): it carries
@@ -45,7 +45,7 @@ import uuid
 
 from pydantic import AwareDatetime, BaseModel
 
-from app.models.enums import ConversationStatus, FlagReason
+from app.models.enums import ConversationStatus, FlagReason, Language
 
 
 class GuardianRef(BaseModel):
@@ -101,7 +101,16 @@ class ConversationRead(BaseModel):
     # and the latest client message the 24-hour window is measured from.
     is_window_open: bool
     last_client_message_at: datetime.datetime | None
+    # The Guardian language on this thread; `null` is not detected, so English is used.
+    language: Language | None
 
 
 class FlagHandled(BaseModel):
     flagged_at: AwareDatetime
+
+
+class ConversationUpdate(BaseModel):
+    """`PATCH /api/conversations/{id}`: Staff set the Guardian language. The field is required
+    so that an empty body is a 400 rather than a silent reset to "not detected"."""
+
+    language: Language | None

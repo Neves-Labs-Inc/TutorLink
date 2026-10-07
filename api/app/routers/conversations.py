@@ -22,11 +22,13 @@ and logs rather than raising, deliberately — the write has already committed b
 reached, so raising would turn a database error on the notify into a 500 on an action that
 succeeded, and it would not get the event to the admin either.
 
-Exactly one route here takes a request body — `FlagHandled` on `POST /handled` — and it is a
-compare token rather than data: the `flagged_at` the admin saw, so that a flag the bot raised
-after they opened the thread is refused with a 409 instead of being cleared unseen
-(`07D-CONTEXT.md` §4b, SA-38). There is no `POST /api/conversations/{id}/messages`: sending
-lives on the socket and `docs/api-design.md:1655-1660` refuses a REST twin outright.
+Two routes here take a request body. `PATCH` sets the Guardian language (`null` is "not
+detected", so English is used) and publishes `conversation.updated`; nothing is sent to the
+Guardian. `FlagHandled` on `POST /handled` is a compare token rather than data: the
+`flagged_at` the admin saw, so that a flag the bot raised after they opened the thread is
+refused with a 409 instead of being cleared unseen (`07D-CONTEXT.md` §4b, SA-38). There is
+no `POST /api/conversations/{id}/messages`: sending lives on the socket and
+`docs/api-design.md:1655-1660` refuses a REST twin outright.
 
 **Takeover, transfer and release tell the Guardian** (#109) through `notice_service`, which
 owns their commits: the ownership change first, then the notice line, then the send. Each
@@ -56,6 +58,7 @@ from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, P
 from app.schemas.conversation import (
     ConversationRead,
     ConversationSummary,
+    ConversationUpdate,
     FlagHandled,
     GuardianRef,
     ReactivationChildRef,
@@ -80,6 +83,7 @@ from app.services.conversation_service import (
     FlagChanged,
     FlagNeedsReactivationDecision,
     NoReactivationPending,
+    change_language,
     get_detail,
     list_conversations,
     mark_handled,
@@ -150,6 +154,22 @@ def read_one(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) ->
         raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
 
     return _read(detail)
+
+
+@router.patch("/{conversation_id}", response_model=ConversationRead)
+def update(
+    conversation_id: uuid.UUID, payload: ConversationUpdate, user: StaffPrincipal, db: DbSession
+) -> ConversationRead:
+    try:
+        detail = change_language(db, conversation_id=conversation_id, language=payload.language)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+
+    db.commit()
+    conversation = _read(detail)
+    _publish_update(conversation)
+
+    return conversation
 
 
 @router.get("/{conversation_id}/messages", response_model=Page[MessageRead])
@@ -379,6 +399,7 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         reactivation_request=_reactivation_request(detail.reactivation_child),
         is_window_open=detail.is_window_open,
         last_client_message_at=detail.last_client_message_at,
+        language=detail.conversation.language,
     )
 
 

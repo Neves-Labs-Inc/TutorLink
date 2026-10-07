@@ -560,14 +560,15 @@ def _template_sids(db: Session) -> dict[Language, str]:
 def _languages(db: Session, *, guardian_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, Language]:
     """Each Guardian's language, from their most recently active conversation that has one set.
 
-    Only the latest conversation counts: a NULL there means English even if an older thread was
-    Spanish. Guardians with no conversation are absent, which also means English.
+    Only the latest conversation counts (`LATEST_CONVERSATION_FIRST`, the Guardian screen's
+    order): a NULL there means English even if an older thread was Spanish. Guardians with no
+    conversation are absent, which also means English.
     """
     latest = db.execute(
         select(Conversation.guardian_id, Conversation.language)
         .where(Conversation.guardian_id.in_(guardian_ids))
         .distinct(Conversation.guardian_id)
-        .order_by(Conversation.guardian_id, Conversation.last_message_at.desc())
+        .order_by(Conversation.guardian_id, *conversation_service.LATEST_CONVERSATION_FIRST)
     ).all()
 
     return {guardian_id: language for guardian_id, language in latest if language is not None}

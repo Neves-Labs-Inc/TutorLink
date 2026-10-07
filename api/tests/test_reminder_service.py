@@ -421,6 +421,30 @@ def test_the_most_recently_active_conversation_decides_the_language(
     assert candidate is not None and candidate.language is Language.ES
 
 
+def test_two_conversations_active_at_the_same_instant_are_decided_by_the_higher_id(
+    world: World, db: Session
+) -> None:
+    """The same tie-break the Guardian screen uses, so the run speaks the language Staff see."""
+    guardian = world.guardian()
+    world.child(guardian)
+    at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
+    lower_id, higher_id = sorted([uuid.uuid4(), uuid.uuid4()])
+    # The lower id is written first: without the tie-break the sort keeps insertion order.
+    for conversation_id, language in [(lower_id, None), (higher_id, Language.ES)]:
+        conversation = world.conversation(
+            guardian,
+            language=language,
+            last_message_at=at,
+            phone_number=f"+1{uuid.uuid4().int % 10**10:010d}",
+        )
+        conversation.id = conversation_id
+        db.flush()
+
+    candidate = candidate_for(db, guardian)
+
+    assert candidate is not None and candidate.language is Language.ES
+
+
 def test_a_latest_conversation_with_no_language_means_english(world: World, db: Session) -> None:
     guardian = world.guardian()
     world.child(guardian)

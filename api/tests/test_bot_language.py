@@ -24,10 +24,12 @@ from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import BookingStatus, FlagReason, Language
+from app.models.enums import BookingStatus, FlagReason, Language, UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
+from app.models.user import User
 from app.schemas.bot import BotIntent, GuardianLanguage
+from app.security import create_access_token
 from app.services import bot_service, parser_service
 from app.services.bot_messages import (
     format_date,
@@ -263,6 +265,33 @@ def test_the_subject_list_names_a_subject_in_spanish_only_when_it_has_a_spanish_
 
     label = world.subject_name if shown == "english" else shown
     assert turn.reply == f"{render('ASK_SUBJECT', language)}\n1. {label}"
+
+
+def test_a_spanish_name_staff_set_through_the_api_is_the_one_the_bot_shows(
+    api: TestClient, chat: Chat, db: Session, client: ClientWorld
+) -> None:
+    world = _make_world(db, name_es=None)
+    manager = User(
+        email=f"manager-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Mia Manager",
+        hashed_password="unused",
+        role=UserRole.MANAGER,
+        is_active=True,
+    )
+    db.add(manager)
+    db.flush()
+    token = create_access_token(user_id=manager.id, role=manager.role, tutor_id=None)
+    api.patch(
+        f"/api/subjects/{world.subject.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name_es": f" {SPANISH_SUBJECT} "},
+    )
+    chat.language = "es"
+    chat.say("hola")
+
+    turn = chat.say("quiero reservar", intent=BotIntent.BOOK)
+
+    assert turn.reply == f"{render('ASK_SUBJECT', 'es')}\n1. {SPANISH_SUBJECT}"
 
 
 # --- the Office handoff in Spanish (reply_for) ---------------------------------------------------

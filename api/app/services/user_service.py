@@ -29,7 +29,6 @@ at all, and a failure between the two writes is one rollback rather than a profi
 points at or an account whose profile never landed.
 """
 
-import unicodedata
 import uuid
 from dataclasses import dataclass
 
@@ -40,15 +39,12 @@ from app.models.enums import UserRole
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
+from app.services.text_rules import HiddenCharacters, clean_single_line
 from app.services.tutor_service import create_tutor
 
 MIN_PASSWORD_LENGTH = 8
 # The `users.display_name` column width.
 MAX_DISPLAY_NAME_LENGTH = 255
-# Unicode control (Cc: NUL, newline, tab...) and format (Cf: zero-width, bidi overrides and
-# isolates) categories. NUL cannot be stored, a newline or tab makes WhatsApp refuse the
-# takeover template, and the invisible ones let a name look blank or read backwards.
-HIDDEN_CHARACTER_CATEGORIES = frozenset({"Cc", "Cf"})
 DISPLAY_NAME_LENGTH_ERROR = "display_name must be 1 to 255 characters and not blank"
 DISPLAY_NAME_CHARACTERS_ERROR = (
     "display_name must not contain control or invisible characters "
@@ -184,17 +180,16 @@ def create_user(
 
 
 def normalize_display_name(display_name: str) -> str:
-    """The Display name as stored: trimmed, non-blank, within the column, and free of control
-    and invisible characters.
+    """The Display name as stored: `text_rules.clean_single_line` (trimmed, whitespace runs
+    collapsed, no control or invisible characters), non-blank and within the column.
 
     Every write goes through here — Users create and update, `PATCH /api/me` and the CLI seeds —
-    so one rule decides what a usable name is. Hidden characters are checked before trimming, so
-    a trailing newline is refused rather than silently dropped.
+    so one rule decides what a usable name is.
     """
-    name = display_name.strip()
-
-    if any(unicodedata.category(char) in HIDDEN_CHARACTER_CATEGORIES for char in display_name):
-        raise InvalidDisplayName(DISPLAY_NAME_CHARACTERS_ERROR)
+    try:
+        name = clean_single_line(display_name)
+    except HiddenCharacters as exc:
+        raise InvalidDisplayName(DISPLAY_NAME_CHARACTERS_ERROR) from exc
 
     if not name or len(name) > MAX_DISPLAY_NAME_LENGTH:
         raise InvalidDisplayName(DISPLAY_NAME_LENGTH_ERROR)

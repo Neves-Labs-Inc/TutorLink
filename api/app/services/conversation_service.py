@@ -76,6 +76,11 @@ from app.services import child_service
 # WhatsApp's customer-service window: free-form messages only within this of the last inbound.
 WHATSAPP_WINDOW = datetime.timedelta(hours=24)
 
+# Which of a Guardian's conversations (one per number they have written from) is theirs, and so
+# carries the Guardian language: the most recently active, a tie going to the higher id. Every
+# reader orders by this, so the Guardian screen and the weekly run always pick the same thread.
+LATEST_CONVERSATION_FIRST = (Conversation.last_message_at.desc(), Conversation.id.desc())
+
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
@@ -408,13 +413,27 @@ def link_guardian(
     return conversation
 
 
-def set_language(db: Session, *, conversation: Conversation, language: Language) -> Conversation:
-    """Store the Guardian language the bot detected on this thread (P7-C: the webhook writes
-    what `bot_service` decided)."""
+def set_language(
+    db: Session, *, conversation: Conversation, language: Language | None
+) -> Conversation:
+    """Store the Guardian language on this thread: what the bot detected (P7-C: the webhook
+    writes what `bot_service` decided), or what Staff chose. `None` is "not detected", so
+    English is used until the bot detects one again."""
     conversation.language = language
     db.flush()
 
     return conversation
+
+
+def change_language(
+    db: Session, *, conversation_id: uuid.UUID, language: Language | None
+) -> ConversationDetail:
+    """Staff's choice of the Guardian language on one thread, returned as the by-id read."""
+    conversation = set_language(
+        db, conversation=get(db, conversation_id=conversation_id), language=language
+    )
+
+    return _detail(db, conversation)
 
 
 def flag(db: Session, *, conversation: Conversation, reason: FlagReason) -> Conversation:

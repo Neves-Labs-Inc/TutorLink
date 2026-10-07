@@ -35,6 +35,7 @@ from app.schemas.bot import BotIntent, GuardianLanguage, ParsedIntent, Reminders
 from app.services import bot_service, parser_service
 from app.services.bot_messages import render
 from app.services.bot_state import FlowState, load_state
+from app.services.reminder_consent_service import reminder_status
 from tests.fake_twilio import CODE_UNDELIVERABLE, FakeTwilio
 from tests.test_bot_intake import _child_turns
 from tests.test_bot_language import SPANISH_SUBJECT, _make_world
@@ -248,6 +249,32 @@ def test_a_start_keyword_opts_in_and_confirms(
         ConsentSource.MESSAGE,
         thread.last_inbound().id,
     )
+
+
+def test_start_by_message_turns_reminders_back_on_after_whatsapp_reported_a_block(
+    thread: Thread, client: ClientWorld
+) -> None:
+    """Staff may not undo a `system` opt-out (#18); the Guardian's own START still does."""
+    thread.db.add(
+        ReminderConsent(
+            guardian_id=client.guardian_id,
+            action=ConsentAction.OPT_OUT,
+            source=ConsentSource.SYSTEM,
+            created_at=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        )
+    )
+    _at_menu(thread, client, "en")
+    before = reminder_status(thread.db, guardian_id=client.guardian_id)
+
+    reply = thread.say_unparsed("START")
+
+    consent = thread.consents()[-1]
+    assert before.is_blocked_by_whatsapp is True
+    assert reply == render("OPTED_IN", "en")
+    assert (consent.action, consent.source) == (ConsentAction.OPT_IN, ConsentSource.MESSAGE)
+    # The block lifts, so the Guardian screen offers Staff the usual buttons again.
+    status = reminder_status(thread.db, guardian_id=client.guardian_id)
+    assert status.is_blocked_by_whatsapp is False
 
 
 @pytest.mark.parametrize("language", ["en", "es"])

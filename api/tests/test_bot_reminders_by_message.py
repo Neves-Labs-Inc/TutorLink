@@ -260,6 +260,7 @@ def test_start_by_message_turns_reminders_back_on_after_whatsapp_reported_a_bloc
             guardian_id=client.guardian_id,
             action=ConsentAction.OPT_OUT,
             source=ConsentSource.SYSTEM,
+            phone_number=CANONICAL_NUMBER,
             created_at=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
         )
     )

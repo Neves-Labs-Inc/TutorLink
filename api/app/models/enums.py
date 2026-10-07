@@ -170,6 +170,7 @@ class ReminderStatus(str, enum.Enum):
 
 
 class ReminderSkipReason(str, enum.Enum):
+    BLOCKED_BY_WHATSAPP = "blocked_by_whatsapp"
     TAKEOVER = "takeover"
     TEMPLATE_NOT_APPROVED = "template_not_approved"
 

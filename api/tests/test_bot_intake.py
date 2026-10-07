@@ -424,6 +424,8 @@ def test_the_reminder_answer_is_recorded_with_the_reply_as_its_evidence(
         ConsentSource.INTAKE,
     )
     assert consent.message_id == _last_inbound(db, whatsapp).id
+    # The thread's number, which the Intake just stored as the Guardian's.
+    assert consent.phone_number == guardian.phone_number
 
 
 def test_two_unclear_reminder_answers_at_the_webhook_record_no_consent(
@@ -457,6 +459,7 @@ def test_an_existing_guardian_adding_a_child_is_asked_about_reminders_only_witho
             action=earlier,
             source=ConsentSource.STAFF,
             message_id=None,
+            phone_number=None,
         )
     whatsapp.say("hi")
     whatsapp.say("book", intent=BotIntent.BOOK)

@@ -18,7 +18,7 @@ NOON_HOUR = 12
 
 # `TAKEOVER_NOTICE_GENERIC` is not in the doc (Maye approved it separately). It is the nameless
 # notice for Staff without a real Display name.
-# `RESCHEDULE_NEEDS_OFFICE` is not in the doc either; its Spanish is a draft pending Maye's review.
+# `RESCHEDULE_NEEDS_OFFICE` is not in the doc either; Maye approved its Spanish separately too.
 MESSAGES: dict[str, dict[str, str]] = {
     "GREETING_NEW": {
         "en": "Hello, this is the Ms Helping Hands booking assistant. You don't have an account with us yet. Answering a few questions will set one up.",
@@ -116,8 +116,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Thank you. Our office will arrange {name}'s {subject} sessions and be in touch shortly.",
         "es": "Gracias. Nuestra oficina coordinará las sesiones de {subject} de {name} y se pondrá en contacto con usted pronto.",
     },
-    # Draft, pending Maye's review (the Spanish). It names the session being moved, so Staff
-    # reading the flagged thread move that one rather than booking a second.
+    # It names the session being moved, so Staff reading the flagged thread move that one rather
+    # than booking a second.
     "RESCHEDULE_NEEDS_OFFICE": {
         "en": "Thank you. Our office will help you move {child}'s {subject} session on {old_date}, {old_time} to {date}, and will be in touch shortly. The session stays booked until then.",
         "es": "Gracias. Nuestra oficina le ayudará a cambiar la sesión de {subject} de {child} del {old_date}, {old_time} al {date}, y se pondrá en contacto con usted pronto. La sesión sigue reservada hasta entonces.",
@@ -422,7 +422,6 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "An earlier request is still waiting for our team, so I can't send another one yet. They'll be in touch.",
         "es": "Una solicitud anterior todavía está pendiente con nuestro equipo, así que aún no puedo enviar otra. Se comunicarán con usted.",
     },
-    # Draft, pending Maye's review.
     "TAKEOVER_NOTICE_GENERIC": {
         "en": "A member of the Ms Helping Hands team has joined this chat and will reply to you here.",
         "es": "Una persona del equipo de Ms Helping Hands se ha unido a este chat y le responderá aquí.",

@@ -16,6 +16,7 @@ import {
   consentSentence,
   lastReminderView,
   nextConsentAction,
+  shouldShowBlockedReason,
   type ConsentAction,
 } from '@/lib/guardians/reminders'
 import {
@@ -187,7 +188,7 @@ export const GuardianRemindersSection = ({ guardianId, guardianName }: GuardianR
               className="text-sm font-medium outline-none focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               {consentSentence(data.consent)}
-              {!canRecord && (
+              {shouldShowBlockedReason(data.consent) && (
                 <span className="mt-1 block text-xs font-normal text-muted-foreground">{blockedReason(data.consent)}</span>
               )}
             </dd>

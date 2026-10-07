@@ -39,10 +39,10 @@ variable "github_repo" {
     Repository part of the OIDC subject the deploy role trusts. The repo uses GitHub's immutable
     subject format, <owner>@<owner-id>/<repo>@<repo-id>, which also survives a rename or a
     recreated repo of the same name. Read it with
-    `gh api repos/Siraneves/TutorLink/actions/oidc/customization/sub` (sub_claim_prefix, minus "repo:").
+    `gh api repos/Neves-Labs-Inc/TutorLink/actions/oidc/customization/sub` (sub_claim_prefix, minus "repo:").
   EOT
   type        = string
-  default     = "Siraneves@313945357/TutorLink@1325618027"
+  default     = "Neves-Labs-Inc@313945357/TutorLink@1325618027"
 }
 
 variable "github_deploy_ref" {

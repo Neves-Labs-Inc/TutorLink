@@ -20,12 +20,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from sqlalchemy import Select, func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.booking import Booking, upcoming_live_bookings
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
+from app.models.subject import Subject
 from app.services import clock
 
 _LIKE_ESCAPE = "\\"
@@ -46,6 +48,7 @@ class ChildDetailRow:
     guardians: list[Guardian]
     homes: list[Home]
     upcoming_session_count: int
+    levels: list[ChildSubjectLevel]
 
 
 class ChildReadServiceError(Exception):
@@ -57,17 +60,37 @@ class ChildNotFound(ChildReadServiceError):
 
 
 def list_children(
-    db: Session, *, is_active: bool, q: str | None, limit: int, offset: int
+    db: Session,
+    *,
+    is_active: bool,
+    q: str | None,
+    limit: int,
+    offset: int,
+    awaiting_evaluation: bool = False,
 ) -> tuple[list[ChildRow], int]:
     """Rows for one page, plus the total matching before paging.
 
     `homes` on a row is the child's active homes only (A-66); `guardians` is every linked
     guardian, active or not.
+
+    `awaiting_evaluation` narrows to active Children who aren't Evaluated, whatever
+    `is_active` says, oldest first: the Child waiting longest leads the tab.
     """
-    matching = _matching(is_active=is_active, q=q)
+    if awaiting_evaluation:
+        matching = _matching(is_active=True, q=q).where(Child.evaluated_at.is_(None))
+        order = (Child.created_at, Child.id)
+    else:
+        matching = _matching(is_active=is_active, q=q)
+        order = (Child.name, Child.id)
+
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     children = list(
-        db.scalars(matching.order_by(Child.name, Child.id).limit(limit).offset(offset)).all()
+        db.scalars(
+            matching.order_by(*order)
+            .limit(limit)
+            .offset(offset)
+            .options(selectinload(Child.evaluated_by))
+        ).all()
     )
     child_ids = [child.id for child in children]
     guardians = _guardians_by_child(db, child_ids=child_ids)
@@ -103,11 +126,22 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         or 0
     )
 
+    levels = list(
+        db.scalars(
+            select(ChildSubjectLevel)
+            .join(Subject, Subject.id == ChildSubjectLevel.subject_id)
+            .where(ChildSubjectLevel.child_id == child.id)
+            .order_by(Subject.name, Subject.id)
+            .options(joinedload(ChildSubjectLevel.subject), joinedload(ChildSubjectLevel.set_by))
+        ).all()
+    )
+
     return ChildDetailRow(
         child=child,
         guardians=_guardians_by_child(db, child_ids=[child.id])[child.id],
         homes=_homes_by_child(db, child_ids=[child.id], only_active=False)[child.id],
         upcoming_session_count=upcoming_session_count,
+        levels=levels,
     )
 
 

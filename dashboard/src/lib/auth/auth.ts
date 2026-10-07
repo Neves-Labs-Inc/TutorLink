@@ -1,4 +1,6 @@
-const ROLES = ['admin', 'tutor', 'developer'] as const
+import type { AuthStatus } from '@/stores/authStore'
+
+export const ROLES = ['admin', 'manager', 'tutor', 'developer'] as const
 
 export type Role = (typeof ROLES)[number]
 
@@ -9,13 +11,43 @@ export type AccessTokenClaims = {
   exp: number
 }
 
+// Every role that works the office side (Dashboard, Chats, Bookings...). Tutor is the only one out.
+export const STAFF_ROLES: readonly Role[] = ['admin', 'manager', 'developer']
+
+// The account-management subset: Users and Settings stay closed to a Manager.
 export const ADMIN_ROLES: readonly Role[] = ['admin', 'developer']
 
-const ADMIN_ROLE_SET: ReadonlySet<Role> = new Set(ADMIN_ROLES)
+const STAFF_ROLE_SET: ReadonlySet<Role> = new Set(STAFF_ROLES)
 
-export const isAdminRole = (role: Role): boolean => ADMIN_ROLE_SET.has(role)
+export const isStaffRole = (role: Role): boolean => STAFF_ROLE_SET.has(role)
 
-export const landingPath = (role: Role): string => (isAdminRole(role) ? '/dashboard' : '/schedule')
+const STAFF_LANDING_PATH = '/dashboard'
+const TUTOR_LANDING_PATH = '/schedule'
+const LOGIN_PATH = '/login'
+
+export const landingPath = (role: Role): string =>
+  isStaffRole(role) ? STAFF_LANDING_PATH : TUTOR_LANDING_PATH
+
+export type Chrome = 'staff' | 'tutor'
+
+// Asked as "is tutor", never "is not admin": a new Staff role must not inherit the tutor chrome.
+export const chromeFor = (role: Role): Chrome => (role === 'tutor' ? 'tutor' : 'staff')
+
+export type GuardDecision = { kind: 'wait' } | { kind: 'allow' } | { kind: 'redirect'; to: string }
+
+// The access token dies on reload while the refresh cookie survives, so on the first paint of
+// every page load the bootstrap refresh is still in flight and `role` is null without the visitor
+// being anonymous. Redirecting then would sign every user out on every reload.
+export const guardDecision = (
+  status: AuthStatus,
+  role: Role | null,
+  allow: readonly Role[],
+): GuardDecision => {
+  if (status === 'loading') return { kind: 'wait' }
+  if (role === null) return { kind: 'redirect', to: LOGIN_PATH }
+
+  return allow.includes(role) ? { kind: 'allow' } : { kind: 'redirect', to: landingPath(role) }
+}
 
 const isRole = (value: unknown): value is Role => (ROLES as readonly unknown[]).includes(value)
 

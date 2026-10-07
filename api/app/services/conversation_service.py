@@ -50,6 +50,11 @@ The webhook's inbound insert flushes `last_message_at`, which locks the conversa
 the bot reads any child; `resolve_reactivation` locks the conversation first and only then the
 child, through `child_service.update_child`. Taken the other way round, an approval racing a
 guardian's turn on the same conversation could deadlock.
+
+**WhatsApp's 24-hour window is measured from the Guardian's latest `client` message only**
+(#109). Outbound messages never extend it: Twilio refuses a free-form send (63016) once the
+Guardian has been silent for 24 hours, however much Staff or the bot wrote since. Exactly 24
+hours is closed. `is_window_open` is the rule and `window_is_open` reads it for one thread.
 """
 
 import datetime
@@ -62,11 +67,19 @@ from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import ConversationStatus, FlagReason
+from app.models.enums import ConversationStatus, FlagReason, Language, MessageAuthor
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
 from app.services import child_service
+
+# WhatsApp's customer-service window: free-form messages only within this of the last inbound.
+WHATSAPP_WINDOW = datetime.timedelta(hours=24)
+
+# Which of a Guardian's conversations (one per number they have written from) is theirs, and so
+# carries the Guardian language: the most recently active, a tie going to the higher id. Every
+# reader orders by this, so the Guardian screen and the weekly run always pick the same thread.
+LATEST_CONVERSATION_FIRST = (Conversation.last_message_at.desc(), Conversation.id.desc())
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -100,6 +113,20 @@ class ConversationDetail:
     message_count: int
     unread_count: int
     reactivation_child: Child | None
+    last_client_message_at: datetime.datetime | None
+    is_window_open: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OwnershipChange:
+    """A takeover, transfer or release, and whether it moved anything.
+
+    `is_changed` is false for the no-op successes (a re-claim by the holder, a release of a
+    thread the bot already has): those send the Guardian no notice.
+    """
+
+    detail: ConversationDetail
+    is_changed: bool
 
 
 class ConversationServiceError(Exception):
@@ -121,6 +148,14 @@ class ConversationHeldByAnother(ConversationServiceError):
     def __init__(self, holder: User) -> None:
         super().__init__(f"conversation is held by {holder.email}")
         self.holder = holder
+
+
+class ConversationNotHeld(ConversationServiceError):
+    """A transfer of a thread the bot holds: claiming it is the action for that."""
+
+
+class ConversationAlreadyHeld(ConversationServiceError):
+    """A transfer to the Staff member who already holds the thread."""
 
 
 class NoReactivationPending(ConversationServiceError):
@@ -243,7 +278,7 @@ def list_conversations(
     return items, total
 
 
-def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> ConversationDetail:
+def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> OwnershipChange:
     """Claim the conversation for `user_id`, pausing the bot. Raises if another admin holds it.
 
     A re-claim by the current holder is a no-op success, not a conflict: a double-click or a
@@ -261,17 +296,38 @@ def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> Con
         if conversation.taken_over_by_user_id != user_id:
             raise ConversationHeldByAnother(_holder(db, conversation))
 
-        return _detail(db, conversation)
+        return OwnershipChange(detail=_detail(db, conversation), is_changed=False)
 
     conversation.status = ConversationStatus.HUMAN
-    conversation.taken_over_by_user_id = user_id
-    conversation.taken_over_at = datetime.datetime.now(tz=datetime.UTC)
-    db.flush()
+    _hand_to(db, conversation, user_id=user_id)
+
+    return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
+
+
+def transfer(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> ConversationDetail:
+    """Move a thread another Staff member holds to `user_id`.
+
+    The deliberate way past `claim`'s `ConversationHeldByAnother` (#109): the caller has seen
+    who holds it and chosen to take it anyway. Judged under the row lock, so two transfers
+    racing each other cannot both read the old holder. A bot-held thread is refused (claim it
+    instead), and so is a transfer to the current holder, which would move nothing.
+    """
+    conversation = _locked(db, conversation_id=conversation_id)
+
+    if conversation.status is ConversationStatus.BOT:
+        raise ConversationNotHeld(f"conversation {conversation_id} is held by the bot")
+
+    if conversation.taken_over_by_user_id == user_id:
+        raise ConversationAlreadyHeld(
+            f"conversation {conversation_id} is already held by {user_id}"
+        )
+
+    _hand_to(db, conversation, user_id=user_id)
 
     return _detail(db, conversation)
 
 
-def release(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
+def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     """Hand the conversation back to the bot. Succeeds for **any** admin, not only the holder.
 
     The asymmetry with `claim` is intentional (`api-design.md:1579-1583`): a claim only its
@@ -287,14 +343,29 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
     conversation = _locked(db, conversation_id=conversation_id)
 
     if conversation.status is ConversationStatus.BOT:
-        return _detail(db, conversation)
+        return OwnershipChange(detail=_detail(db, conversation), is_changed=False)
 
     conversation.status = ConversationStatus.BOT
     conversation.taken_over_by_user_id = None
     conversation.taken_over_at = None
     db.flush()
 
-    return _detail(db, conversation)
+    return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
+
+
+def is_window_open(
+    last_client_message_at: datetime.datetime | None, *, now: datetime.datetime
+) -> bool:
+    """Whether a free-form message may still reach the Guardian (see the module docstring)."""
+    return last_client_message_at is not None and now - last_client_message_at < WHATSAPP_WINDOW
+
+
+def window_is_open(db: Session, *, conversation_id: uuid.UUID) -> bool:
+    """The window rule for one thread, read now. Checked before every send."""
+    return is_window_open(
+        _last_client_message_at(db, conversation_id),
+        now=datetime.datetime.now(tz=datetime.UTC),
+    )
 
 
 def mark_read(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
@@ -340,6 +411,29 @@ def link_guardian(
     db.flush()
 
     return conversation
+
+
+def set_language(
+    db: Session, *, conversation: Conversation, language: Language | None
+) -> Conversation:
+    """Store the Guardian language on this thread: what the bot detected (P7-C: the webhook
+    writes what `bot_service` decided), or what Staff chose. `None` is "not detected", so
+    English is used until the bot detects one again."""
+    conversation.language = language
+    db.flush()
+
+    return conversation
+
+
+def change_language(
+    db: Session, *, conversation_id: uuid.UUID, language: Language | None
+) -> ConversationDetail:
+    """Staff's choice of the Guardian language on one thread, returned as the by-id read."""
+    conversation = set_language(
+        db, conversation=get(db, conversation_id=conversation_id), language=language
+    )
+
+    return _detail(db, conversation)
 
 
 def flag(db: Session, *, conversation: Conversation, reason: FlagReason) -> Conversation:
@@ -568,6 +662,16 @@ def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
     return db.scalars(select(Conversation).where(Conversation.phone_number == phone_number)).first()
 
 
+def lock(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
+    """The row, locked for the rest of the caller's transaction (see `_locked`).
+
+    For a caller outside this module that must judge who holds the thread and act on it before
+    anyone can change that, as `notice_service` does before recording or retrying a notice.
+    Take it before any other row lock: the order is conversation first.
+    """
+    return _locked(db, conversation_id=conversation_id)
+
+
 def _locked(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
     """Load the row for a decide-once write, locked for the rest of the transaction.
 
@@ -597,6 +701,8 @@ def _locked(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
 
 
 def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
+    last_client_message_at = _last_client_message_at(db, conversation.id)
+
     return ConversationDetail(
         conversation=conversation,
         guardian=_guardian(db, conversation),
@@ -604,6 +710,26 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         message_count=_message_count(db, conversation, unread_only=False),
         unread_count=_message_count(db, conversation, unread_only=True),
         reactivation_child=_reactivation_child(db, conversation),
+        last_client_message_at=last_client_message_at,
+        is_window_open=is_window_open(
+            last_client_message_at, now=datetime.datetime.now(tz=datetime.UTC)
+        ),
+    )
+
+
+def _hand_to(db: Session, conversation: Conversation, *, user_id: uuid.UUID) -> None:
+    # Only `claim` moves `status`; the CHECK ties it to a non-NULL holder, which this sets.
+    conversation.taken_over_by_user_id = user_id
+    conversation.taken_over_at = datetime.datetime.now(tz=datetime.UTC)
+    db.flush()
+
+
+def _last_client_message_at(db: Session, conversation_id: uuid.UUID) -> datetime.datetime | None:
+    return db.scalar(
+        select(func.max(Message.created_at)).where(
+            Message.conversation_id == conversation_id,
+            Message.author_kind == MessageAuthor.CLIENT,
+        )
     )
 
 

@@ -63,7 +63,8 @@ WELL_FORMED = (
     '{"intent": "book", "answer": "tuesday",'
     ' "fields": [{"name": "which_day", "value": "tuesday"},'
     ' {"name": "preferred_time", "value": "after school"}],'
-    ' "confidence_is_low": false}'
+    ' "confidence_is_low": false,'
+    ' "language": null, "reminders": null}'
 )
 
 _REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -124,7 +125,8 @@ def test_a_null_answer_means_the_message_did_not_answer_the_question(
     _install(
         monkeypatch,
         _StubClient(
-            text='{"intent": "unknown", "answer": null, "fields": [], "confidence_is_low": false}'
+            text='{"intent": "unknown", "answer": null, "fields": [], "confidence_is_low": false,'
+            ' "language": null, "reminders": null}'
         ),
     )
 
@@ -144,7 +146,8 @@ def test_a_repeated_field_name_folds_to_the_value_the_model_settled_on(
                 '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": "which_day", "value": "tuesday"},'
                 ' {"name": "which_day", "value": "wednesday"}],'
-                ' "confidence_is_low": false}'
+                ' "confidence_is_low": false,'
+                ' "language": null, "reminders": null}'
             )
         ),
     )
@@ -169,7 +172,8 @@ def test_an_unnamed_field_is_dropped_loudly_and_its_siblings_survive(
                 '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": "  ", "value": "tuesday"},'
                 ' {"name": "child_name", "value": "Amelia"}],'
-                ' "confidence_is_low": false}'
+                ' "confidence_is_low": false,'
+                ' "language": null, "reminders": null}'
             )
         ),
     )
@@ -193,7 +197,8 @@ def test_a_padded_field_name_is_stripped_rather_than_left_as_a_near_miss(
             text=(
                 '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": " which_day ", "value": "tuesday"}],'
-                ' "confidence_is_low": false}'
+                ' "confidence_is_low": false,'
+                ' "language": null, "reminders": null}'
             )
         ),
     )
@@ -222,7 +227,8 @@ def test_a_named_child_folds_under_child_name(monkeypatch: pytest.MonkeyPatch) -
                 '{"intent": "book", "answer": null,'
                 ' "fields": [{"name": "child_name", "value": "Sam"},'
                 ' {"name": "menu", "value": "book"}],'
-                ' "confidence_is_low": false}'
+                ' "confidence_is_low": false,'
+                ' "language": null, "reminders": null}'
             )
         ),
     )
@@ -230,6 +236,54 @@ def test_a_named_child_folds_under_child_name(monkeypatch: pytest.MonkeyPatch) -
     parsed = parse_intent(**REQUEST)
 
     assert parsed.fields == {"child_name": "Sam", "menu": "book"}
+
+
+def test_the_language_and_a_reminders_request_fold_into_the_parsed_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(
+        monkeypatch,
+        _StubClient(
+            text='{"intent": "unknown", "answer": null, "fields": [], "confidence_is_low": false,'
+            ' "language": "es", "reminders": "stop"}'
+        ),
+    )
+
+    parsed = parse_intent(**REQUEST)
+
+    assert parsed.language == "es"
+    assert parsed.reminders == "stop"
+
+
+def test_a_message_too_neutral_to_tell_carries_no_language_and_no_reminders_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(monkeypatch, _StubClient(text=WELL_FORMED))
+
+    parsed = parse_intent(**REQUEST)
+
+    assert parsed.language is None
+    assert parsed.reminders is None
+
+
+def test_a_parsed_intent_built_without_a_language_has_none() -> None:
+    parsed = ParsedIntent(intent=BotIntent.BOOK, fields={}, confidence_is_low=False)
+
+    assert parsed.language is None
+    assert parsed.reminders is None
+
+
+def test_the_prompt_tells_the_parser_how_to_read_spanish_and_when_language_is_null() -> None:
+    assert "`language`" in SYSTEM_PROMPT
+    assert "`reminders`" in SYSTEM_PROMPT
+    assert "mañana" in SYSTEM_PROMPT
+    for neutral in ("name", "address", "school", "number", "date", '"ok"', '"STOP"'):
+        assert neutral in SYSTEM_PROMPT
+
+
+def test_the_prompt_reads_next_weekday_as_the_soonest_one() -> None:
+    assert '"next <weekday>"' in SYSTEM_PROMPT
+    assert "soonest" in SYSTEM_PROMPT
 
 
 def test_the_models_own_low_confidence_signal_is_passed_through_untouched(
@@ -240,7 +294,8 @@ def test_the_models_own_low_confidence_signal_is_passed_through_untouched(
     _install(
         monkeypatch,
         _StubClient(
-            text='{"intent": "book", "answer": null, "fields": [], "confidence_is_low": true}'
+            text='{"intent": "book", "answer": null, "fields": [], "confidence_is_low": true,'
+            ' "language": null, "reminders": null}'
         ),
     )
 
@@ -420,6 +475,23 @@ def test_the_schema_sent_to_the_api_requires_a_nullable_answer() -> None:
 
     assert "answer" in schema["required"]
     assert answer_types == {"string", "null"}
+
+
+@pytest.mark.parametrize(
+    ("name", "values"), [("language", {"en", "es"}), ("reminders", {"stop", "start"})]
+)
+def test_the_schema_sent_to_the_api_requires_a_nullable_language_and_reminders(
+    name: str, values: set[str]
+) -> None:
+    """Required for the same reason as `answer`: the model always states it, and null is how
+    it says the message does not tell."""
+    schema = transform_schema(_ModelOutput.model_json_schema())
+    options = schema["properties"][name]["anyOf"]
+    allowed = {value for option in options for value in option.get("enum", [])}
+
+    assert name in schema["required"]
+    assert allowed == values
+    assert {"type": "null"} in options
 
 
 def test_nothing_in_this_module_reaches_the_http_layer() -> None:

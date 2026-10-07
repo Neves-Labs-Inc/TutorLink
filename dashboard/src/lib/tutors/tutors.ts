@@ -1,3 +1,4 @@
+import { gradeShort, isGradeText } from '@/lib/grades/grades'
 import type { TutorCreate, TutorListParams, TutorSubject } from '@/lib/queries/tutors'
 
 export type TutorFilterState = {
@@ -18,6 +19,7 @@ export type TutorDraft = {
 export const ALL_SUBJECTS = 'all'
 
 const NO_SUBJECTS = '—'
+const CEILING_ERROR = 'Highest grade taught must be a whole number from 0 (Kindergarten) to 12.'
 
 export const tutorListParams = ({
   q,
@@ -43,7 +45,9 @@ export const tutorListParams = ({
 export const subjectSummary = (subjects: TutorSubject[]): string =>
   subjects.length === 0
     ? NO_SUBJECTS
-    : subjects.map((subject) => `${subject.name} (to ${subject.max_grade_level})`).join(', ')
+    : subjects
+        .map((subject) => `${subject.name} (to ${gradeShort(subject.max_grade_level)})`)
+        .join(', ')
 
 export const tutorFormErrors = (draft: TutorDraft): string[] => {
   const errors: string[] = []
@@ -64,6 +68,9 @@ export const tutorFormErrors = (draft: TutorDraft): string[] => {
 
   return errors
 }
+
+export const ceilingError = (text: string): string | null =>
+  isGradeText(text) ? null : CEILING_ERROR
 
 export const tutorBioPayload = (bio: string): string => bio.trim()
 

@@ -30,11 +30,11 @@ type ServerFrame =
   | ({ type: 'message.created' } & MessageCreatedFrame)
   | ({ type: 'message.updated' } & MessageUpdatedFrame)
   | { type: 'conversation.updated'; conversation: Conversation }
-  | { type: 'error'; detail: string }
+  | { type: 'error'; detail: string; code?: string }
 
 export type ConversationStreamListener = {
   onStatusChange: (status: ConversationStreamStatus) => void
-  onError: (detail: string) => void
+  onError: (detail: string, code?: string) => void
   onMessageCreated: (frame: MessageCreatedFrame) => void
   onConversationUpdated: (conversation: Conversation) => void
   onMessageUpdated: (frame: MessageUpdatedFrame) => void
@@ -52,6 +52,7 @@ export type UseConversationStreamHandlers = {
   onMessageCreated?: (frame: MessageCreatedFrame) => void
   onConversationUpdated?: (conversation: Conversation) => void
   onMessageUpdated?: (frame: MessageUpdatedFrame) => void
+  onError?: (detail: string, code?: string) => void
 }
 
 // The socket is shared by every mounted view (`api-design.md:1608-1611`): one connection per
@@ -152,7 +153,7 @@ export class ConversationStreamClient {
     } else if (frame.type === 'conversation.updated') {
       for (const listener of this.listeners) listener.onConversationUpdated(frame.conversation)
     } else {
-      for (const listener of this.listeners) listener.onError(frame.detail)
+      for (const listener of this.listeners) listener.onError(frame.detail, frame.code)
     }
   }
 
@@ -211,6 +212,7 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<ConversationStreamStatus>('connecting')
   const [error, setError] = useState<string | null>(null)
+  const [errorCode, setErrorCode] = useState<string | null>(null)
   const handlersRef = useRef(handlers)
 
   useEffect(() => {
@@ -221,7 +223,11 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
     const client = getSharedClient(queryClient)
     const unsubscribe = client.subscribe({
       onStatusChange: setStatus,
-      onError: setError,
+      onError: (detail, code) => {
+        setError(detail)
+        setErrorCode(code ?? null)
+        handlersRef.current.onError?.(detail, code)
+      },
       onMessageCreated: (frame) => handlersRef.current.onMessageCreated?.(frame),
       onConversationUpdated: (conversation) =>
         handlersRef.current.onConversationUpdated?.(conversation),
@@ -235,5 +241,5 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
     sharedClient?.send(conversationId, body, clientMessageId)
   }, [])
 
-  return { status, error, send }
+  return { status, error, errorCode, send }
 }

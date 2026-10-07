@@ -4,7 +4,7 @@ Shares the `/api/bookings` prefix with `routers/bookings.py` and `routers/bookin
 by design, so the three can be built concurrently.
 
 `PATCH /api/bookings/{id}` is admin-only (`docs/api-design.md:278`) and loads one row by id, so
-it takes `AdminPrincipal` rather than `TutorScope` — the unapplied-scope guard is not armed
+it takes `StaffPrincipal` rather than `TutorScope` — the unapplied-scope guard is not armed
 here, and does not need to be, because there is no tutor-visible query to narrow.
 """
 
@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.booking import Booking
 from app.schemas.booking_status import BookingStatusChanged, BookingStatusUpdate
 from app.services.booking_status_service import (
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 def update_booking_status(
     booking_id: uuid.UUID,
     payload: BookingStatusUpdate,
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
 ) -> BookingStatusChanged:
     try:

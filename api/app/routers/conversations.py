@@ -1,11 +1,12 @@
-"""The admin chat REST surface: listing conversations, a thread, takeover/release, the
-approve/deny that ends a reactivation request, and marking a flagged thread handled.
+"""The admin chat REST surface: listing conversations, a thread, takeover/transfer/release and
+the notices they send, the approve/deny that ends a reactivation request, and marking a flagged
+thread handled.
 
 Two routers share the `/api/conversations` prefix on purpose (D-G, P4-F): this one and
 `conversation_stream.py`, so the two can be built concurrently. The paths do not shadow each
 other.
 
-**`AdminPrincipal` on all nine, and the tutor-scope dependency on none of them** (§14, §15).
+**`StaffPrincipal` on every route, and the tutor-scope dependency on none of them** (§14, §15).
 This is not the "a route that lists is scoped to a tutor" case: chat is an admin surface, the
 RBAC table (`docs/api-design.md:1423-1424`) answers a tutor token with 403 on every one of
 these, and there is no tutor-scoped view of a conversation to narrow to. Taking a scope
@@ -21,11 +22,19 @@ and logs rather than raising, deliberately — the write has already committed b
 reached, so raising would turn a database error on the notify into a 500 on an action that
 succeeded, and it would not get the event to the admin either.
 
-Exactly one route here takes a request body — `FlagHandled` on `POST /handled` — and it is a
-compare token rather than data: the `flagged_at` the admin saw, so that a flag the bot raised
-after they opened the thread is refused with a 409 instead of being cleared unseen
-(`07D-CONTEXT.md` §4b, SA-38). There is no `POST /api/conversations/{id}/messages`: sending
-lives on the socket and `docs/api-design.md:1655-1660` refuses a REST twin outright.
+Two routes here take a request body. `PATCH` sets the Guardian language (`null` is "not
+detected", so English is used) and publishes `conversation.updated`; nothing is sent to the
+Guardian. `FlagHandled` on `POST /handled` is a compare token rather than data: the
+`flagged_at` the admin saw, so that a flag the bot raised after they opened the thread is
+refused with a 409 instead of being cleared unseen (`07D-CONTEXT.md` §4b, SA-38). There is
+no `POST /api/conversations/{id}/messages`: sending lives on the socket and
+`docs/api-design.md:1655-1660` refuses a REST twin outright.
+
+**Takeover, transfer and release tell the Guardian** (#109) through `notice_service`, which
+owns their commits: the ownership change first, then the notice line, then the send. Each
+publishes `conversation.updated` and then `message.created` for the notice line; a no-op
+takeover or release sends and publishes no notice. Retry re-sends a failed takeover or transfer
+notice on the same row and publishes `message.updated`.
 
 **Approve, deny and mark handled need no takeover** (`07D-CONTEXT.md` §4, §4b): none of them
 answers the guardian, so there is nothing for the bot to be paused for. None writes a message or
@@ -40,7 +49,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.enums import ConversationStatus
 from app.models.child import Child
 from app.models.guardian import Guardian
@@ -49,6 +58,7 @@ from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, P
 from app.schemas.conversation import (
     ConversationRead,
     ConversationSummary,
+    ConversationUpdate,
     FlagHandled,
     GuardianRef,
     ReactivationChildRef,
@@ -56,30 +66,48 @@ from app.schemas.conversation import (
     UserRef,
 )
 from app.schemas.message import MessageRead
-from app.services.broadcast_service import ConversationUpdated, publish
+from app.services import notice_service
+from app.services.broadcast_service import (
+    ConversationUpdated,
+    MessageCreated,
+    MessageUpdated,
+    publish,
+)
 from app.services.conversation_service import (
+    ConversationAlreadyHeld,
     ConversationDetail,
     ConversationHeldByAnother,
     ConversationListItem,
     ConversationNotFound,
+    ConversationNotHeld,
     FlagChanged,
     FlagNeedsReactivationDecision,
     NoReactivationPending,
-    claim,
+    change_language,
     get_detail,
     list_conversations,
     mark_handled,
     mark_read,
-    release,
     resolve_reactivation,
 )
 from app.services.message_service import ThreadMessage, list_thread
+from app.services.notice_service import (
+    NoticeNotFound,
+    NoticeNotRetryable,
+    NoticeOutcome,
+    NoticeOutdated,
+)
 
 CONVERSATION_NOT_FOUND_ERROR = "Conversation not found"
-HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {email}"
+HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {display_name}"
 NO_REACTIVATION_PENDING_ERROR = "No reactivation request is pending"
 FLAG_CHANGED_ERROR = "The flag changed since you opened this conversation; review it and try again"
 REACTIVATION_FLAG_ERROR = "Approve or deny the reactivation request instead"
+NOT_HELD_ERROR = "The assistant has this conversation; take it over instead"
+ALREADY_HELD_ERROR = "You already hold this conversation"
+MESSAGE_NOT_FOUND_ERROR = "Message not found"
+NOT_RETRYABLE_ERROR = "Only a failed takeover or transfer notice can be retried"
+NOTICE_OUTDATED_ERROR = "This takeover has ended, so its notice can no longer be sent"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -88,7 +116,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 @router.get("", response_model=Page[ConversationSummary])
 def list_all(
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
     conversation_status: Annotated[ConversationStatus | None, Query(alias="status")] = None,
     unread: bool | None = None,
@@ -119,7 +147,7 @@ def list_all(
 
 
 @router.get("/{conversation_id}", response_model=ConversationRead)
-def read_one(conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> ConversationRead:
+def read_one(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ConversationRead:
     try:
         detail = get_detail(db, conversation_id=conversation_id)
     except ConversationNotFound as exc:
@@ -128,10 +156,26 @@ def read_one(conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession) ->
     return _read(detail)
 
 
+@router.patch("/{conversation_id}", response_model=ConversationRead)
+def update(
+    conversation_id: uuid.UUID, payload: ConversationUpdate, user: StaffPrincipal, db: DbSession
+) -> ConversationRead:
+    try:
+        detail = change_language(db, conversation_id=conversation_id, language=payload.language)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+
+    db.commit()
+    conversation = _read(detail)
+    _publish_update(conversation)
+
+    return conversation
+
+
 @router.get("/{conversation_id}/messages", response_model=Page[MessageRead])
 def read_thread(
     conversation_id: uuid.UUID,
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
     before: datetime.datetime | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -162,46 +206,78 @@ def read_thread(
 
 
 @router.post("/{conversation_id}/takeover", response_model=ConversationRead)
-def take_over(conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> ConversationRead:
+def take_over(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ConversationRead:
     try:
-        detail = claim(db, conversation_id=conversation_id, user_id=user.id)
+        outcome = notice_service.take_over(db, conversation_id=conversation_id, user_id=user.id)
     except ConversationNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
     except ConversationHeldByAnother as exc:
         raise HTTPException(
-            status.HTTP_409_CONFLICT, HELD_BY_ANOTHER_ERROR.format(email=exc.holder.email)
+            status.HTTP_409_CONFLICT,
+            HELD_BY_ANOTHER_ERROR.format(display_name=exc.holder.display_name),
         ) from exc
 
-    db.commit()
-    conversation = _read(detail)
-    _publish_update(conversation)
+    return _publish_outcome(outcome)
 
-    return conversation
+
+@router.post("/{conversation_id}/transfer", response_model=ConversationRead)
+def transfer_to_me(
+    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+) -> ConversationRead:
+    # The broadcast is what locks the previous holder's open thread: their composer reads
+    # `taken_over_by` from the `conversation.updated` frame.
+    try:
+        outcome = notice_service.transfer(db, conversation_id=conversation_id, user_id=user.id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+    except ConversationNotHeld as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_HELD_ERROR) from exc
+    except ConversationAlreadyHeld as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_HELD_ERROR) from exc
+
+    return _publish_outcome(outcome)
 
 
 @router.delete("/{conversation_id}/takeover", response_model=ConversationRead)
 def release_takeover(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
 ) -> ConversationRead:
     # No holder check, and that asymmetry with `take_over` is the contract rather than an
     # omission (`api-design.md:1579-1583`): a claim only its owner could undo leaves a client
     # talking to nobody when that admin closes their laptop, and it is what answers a
     # deactivated holder (**OQ-28**) without any automatic machinery.
     try:
-        detail = release(db, conversation_id=conversation_id)
+        outcome = notice_service.hand_back(db, conversation_id=conversation_id, user_id=user.id)
     except ConversationNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
 
-    db.commit()
-    conversation = _read(detail)
-    _publish_update(conversation)
+    return _publish_outcome(outcome)
 
-    return conversation
+
+@router.post("/{conversation_id}/messages/{message_id}/retry", response_model=MessageRead)
+def retry_notice(
+    conversation_id: uuid.UUID, message_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+) -> MessageRead:
+    try:
+        row = notice_service.retry(db, conversation_id=conversation_id, message_id=message_id)
+    except NoticeNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, MESSAGE_NOT_FOUND_ERROR) from exc
+    except NoticeNotRetryable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_RETRYABLE_ERROR) from exc
+    except NoticeOutdated as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NOTICE_OUTDATED_ERROR) from exc
+
+    message = _message(row)
+    publish(
+        MessageUpdated(conversation_id=conversation_id, message=message.model_dump(mode="json"))
+    )
+
+    return message
 
 
 @router.post("/{conversation_id}/read", response_model=ConversationRead)
 def mark_thread_read(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
 ) -> ConversationRead:
     try:
         detail = mark_read(db, conversation_id=conversation_id)
@@ -215,14 +291,14 @@ def mark_thread_read(
 
 @router.post("/{conversation_id}/reactivation/approve", response_model=ConversationRead)
 def approve_reactivation(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
 ) -> ConversationRead:
     return _resolve_reactivation(db, conversation_id=conversation_id, approve=True)
 
 
 @router.post("/{conversation_id}/reactivation/deny", response_model=ConversationRead)
 def deny_reactivation(
-    conversation_id: uuid.UUID, user: AdminPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
 ) -> ConversationRead:
     return _resolve_reactivation(db, conversation_id=conversation_id, approve=False)
 
@@ -231,7 +307,7 @@ def deny_reactivation(
 def mark_flag_handled(
     conversation_id: uuid.UUID,
     payload: FlagHandled,
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
 ) -> ConversationRead:
     try:
@@ -272,6 +348,22 @@ def _publish_update(conversation: ConversationRead) -> None:
     publish(ConversationUpdated(conversation=conversation.model_dump(mode="json")))
 
 
+def _publish_outcome(outcome: NoticeOutcome) -> ConversationRead:
+    """Announce the ownership change, then its notice line, and return the conversation."""
+    conversation = _read(outcome.detail)
+    _publish_update(conversation)
+
+    if outcome.notice is not None:
+        publish(
+            MessageCreated(
+                conversation_id=conversation.id,
+                message=_message(outcome.notice).model_dump(mode="json"),
+            )
+        )
+
+    return conversation
+
+
 def _summary(row: ConversationListItem) -> ConversationSummary:
     # Built field by field rather than with `model_validate`: the constitution forbids an ORM
     # instance crossing the HTTP boundary, and an explicit constructor makes adding a column to
@@ -305,6 +397,9 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         unread_count=detail.unread_count,
         created_at=detail.conversation.created_at,
         reactivation_request=_reactivation_request(detail.reactivation_child),
+        is_window_open=detail.is_window_open,
+        last_client_message_at=detail.last_client_message_at,
+        language=detail.conversation.language,
     )
 
 
@@ -316,6 +411,9 @@ def _message(row: ThreadMessage) -> MessageRead:
         body=row.message.body,
         status=row.message.status,
         created_at=row.message.created_at,
+        system_kind=row.message.system_kind,
+        error_code=row.message.error_code,
+        reminder_child_names=row.reminder_child_names,
     )
 
 
@@ -343,6 +441,6 @@ def _user_ref(user: User | None) -> UserRef | None:
     if user is None:
         reference = None
     else:
-        reference = UserRef(id=user.id, email=user.email)
+        reference = UserRef(id=user.id, display_name=user.display_name)
 
     return reference

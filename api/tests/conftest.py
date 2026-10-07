@@ -1,4 +1,5 @@
 import datetime
+import functools
 import os
 from collections.abc import Callable, Generator
 
@@ -8,6 +9,9 @@ from sqlalchemy import create_engine, make_url, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
+
+# Imported, not `pytest_plugins`: only the rootdir conftest may declare plugins.
+from tests.fake_twilio import fake_twilio  # noqa: F401
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
@@ -22,13 +26,38 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Point the business clock's own session at `<db>_test`, before any module is collected.
+
+    `clock.business_now` reads the zone from `system_settings` through `clock.SessionLocal`,
+    which is bound to the application database the harness never builds. Some test modules
+    read the clock at import time (`test_slot_routes.DATE`), so a per-test fixture is too late.
+    The engine is still built lazily: a run that never reads the clock never needs PostgreSQL.
+    """
+    from app.services import clock
+
+    clock.SessionLocal = lambda: Session(bind=_get_test_engine())
+
+
 @pytest.fixture(scope="session")
 def _test_engine() -> Generator[Engine, None, None]:
     """An `Engine` bound to a dedicated `<database>_test`, created on first use.
 
     Session-scoped, so it is only built when a test actually asks for it: the pure-unit
-    modules still collect and run with no PostgreSQL anywhere. Application imports are
-    deferred into the fixture body for the same reason.
+    modules still collect and run with no PostgreSQL anywhere.
+    """
+    engine = _get_test_engine()
+
+    yield engine
+
+    engine.dispose()
+
+
+@functools.cache
+def _get_test_engine() -> Engine:
+    """Build `<database>_test` once per run; shared by `_test_engine` and the business clock.
+
+    Application imports are deferred into the body so importing this module needs no database.
     """
     from app.config import get_settings
     from app.models import metadata
@@ -61,10 +90,13 @@ def _test_engine() -> Generator[Engine, None, None]:
     finally:
         admin_engine.dispose()
 
-    engine = create_engine(test_url, pool_pre_ping=True)
+    # `hide_parameters` as in `app.db`, so no test can come to rely on parameters in error text.
+    engine = create_engine(test_url, pool_pre_ping=True, hide_parameters=True)
     with engine.begin() as connection:
         # The shared ENUM objects carry `create_type=False`, so `create_all` will not emit
         # them; migration 0001 creates them by hand and the harness has to do the same.
+        # `checkfirst` skips a type that exists, so a test database built before a new value
+        # (0022's `manager`, 0023's `system`) lacks it: drop `<db>_test` after such a migration.
         user_role_enum.create(connection, checkfirst=True)
         booking_status_enum.create(connection, checkfirst=True)
         exception_status_enum.create(connection, checkfirst=True)
@@ -79,13 +111,11 @@ def _test_engine() -> Generator[Engine, None, None]:
     metadata.create_all(engine)
     _seed_login_rate_limit_settings(engine)
 
-    yield engine
-
-    engine.dispose()
+    return engine
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migrations 0004, 0011, 0012, 0013, 0014 and 0018 seed.
+    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021 and 0025 seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
     /auth/token` now reads the four rate-limit rows on every request — without them every login
@@ -100,8 +130,11 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
     Committed rather than written through the rolled-back `db` fixture, because
     `session_per_request_api` opens its own sessions and would not see an uncommitted row.
     `ON CONFLICT DO NOTHING` keeps this idempotent — the test database outlives the run.
+
+    0021's rows are listed with their own type and visibility, because the template ids are
+    developer-only strings and the settings screens tell the two apart.
     """
-    from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER
+    from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SETTING_VALUE_TYPE_STRING
     from app.services.phone_service import DEFAULT_COUNTRY_CODE_SETTING
     from app.services.rate_limit_service import (
         EMAIL_MAX_ATTEMPTS_SETTING,
@@ -133,15 +166,32 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         CHAT_RETENTION_DAYS_SETTING: "365",
         RETENTION_PURGE_HOUR_SETTING: "3",
     }
+    rows = [(key, value, SETTING_VALUE_TYPE_INTEGER, False) for key, value in defaults.items()]
+    rows += [
+        ("reminder_weekday", "7", SETTING_VALUE_TYPE_INTEGER, False),
+        ("reminder_hour", "18", SETTING_VALUE_TYPE_INTEGER, False),
+        ("business_timezone", "America/New_York", SETTING_VALUE_TYPE_STRING, False),
+        ("reminder_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
+        ("reminder_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
+        ("takeover_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
+        ("takeover_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
+        ("takeover_generic_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
+        ("takeover_generic_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
+    ]
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"
-        " VALUES (:key, :value, :value_type, false) ON CONFLICT (key) DO NOTHING"
+        " VALUES (:key, :value, :value_type, :is_developer_only) ON CONFLICT (key) DO NOTHING"
     )
     with engine.begin() as connection:
-        for key, value in defaults.items():
+        for key, value, value_type, is_developer_only in rows:
             connection.execute(
                 statement,
-                {"key": key, "value": value, "value_type": SETTING_VALUE_TYPE_INTEGER},
+                {
+                    "key": key,
+                    "value": value,
+                    "value_type": value_type,
+                    "is_developer_only": is_developer_only,
+                },
             )
 
 
@@ -204,6 +254,18 @@ def set_int_setting(db: Session) -> Callable[[str, int], None]:
     return rewrite
 
 
+@pytest.fixture(autouse=True)
+def _business_zone_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with an empty business-zone cache.
+
+    The cache is process-level, so a test that writes `business_timezone` would otherwise leak
+    its zone into the next one.
+    """
+    from app.services import clock
+
+    monkeypatch.setattr(clock, "_cached_zone", None)
+
+
 @pytest.fixture
 def freeze_business_clock(monkeypatch: pytest.MonkeyPatch) -> Callable[[datetime.datetime], None]:
     """Freeze `clock.business_now`, the one scheduling clock read; `business_today` follows it."""
@@ -213,6 +275,44 @@ def freeze_business_clock(monkeypatch: pytest.MonkeyPatch) -> Callable[[datetime
         monkeypatch.setattr(clock, "business_now", lambda: now)
 
     return freeze
+
+
+# The two DST Sundays the reminder scheduler must survive, as naive New York wall-clock values
+# (the form `business_now` returns). 2027-03-14 02:00 never happens on a real clock: New York
+# jumps from 01:59 to 03:00, which is exactly the case a 2 AM reminder hour has to handle.
+FALL_BACK_SUNDAY_6PM = datetime.datetime(2026, 11, 1, 18, 0)
+SPRING_FORWARD_SUNDAY_6PM = datetime.datetime(2027, 3, 14, 18, 0)
+SPRING_FORWARD_SUNDAY_2AM = datetime.datetime(2027, 3, 14, 2, 0)
+
+
+@pytest.fixture
+def fall_back_sunday_6pm(
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> datetime.datetime:
+    """Freeze the business clock at 18:00 on Sunday 2026-11-01, the day New York falls back."""
+    freeze_business_clock(FALL_BACK_SUNDAY_6PM)
+
+    return FALL_BACK_SUNDAY_6PM
+
+
+@pytest.fixture
+def spring_forward_sunday_6pm(
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> datetime.datetime:
+    """Freeze the business clock at 18:00 on Sunday 2027-03-14, the day New York springs forward."""
+    freeze_business_clock(SPRING_FORWARD_SUNDAY_6PM)
+
+    return SPRING_FORWARD_SUNDAY_6PM
+
+
+@pytest.fixture
+def spring_forward_sunday_2am(
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> datetime.datetime:
+    """Freeze the business clock at the 02:00 that 2027-03-14 skips in New York."""
+    freeze_business_clock(SPRING_FORWARD_SUNDAY_2AM)
+
+    return SPRING_FORWARD_SUNDAY_2AM
 
 
 @pytest.fixture

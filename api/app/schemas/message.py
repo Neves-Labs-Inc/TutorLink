@@ -13,9 +13,11 @@ a client message is identified by the conversation it is in. It answers "which a
 this", which is not the same question as `ConversationRead.taken_over_by`'s "which admin holds
 the thread" — a takeover can change hands while the thread stays open.
 
-`twilio_sid` and `error_code` are not on this shape. Neither appears in the contract's response
-body and neither means anything to an admin reading a thread; they exist for the delivery
-callback to match on.
+`twilio_sid` is not on this shape: it exists for the delivery callback to match on. `error_code`
+is (#109): a failed line shows why, as a Twilio code (`63016`) or one of the reasons stored
+when nothing was sent (`window_closed`, `template_not_approved`). `system_kind` says which
+notice a `system` line is, and `reminder_child_names` lists the Children a `booking_reminder`
+line named (`null` on every other line).
 """
 
 import datetime
@@ -23,7 +25,7 @@ import uuid
 
 from pydantic import BaseModel
 
-from app.models.enums import MessageAuthor, MessageStatus
+from app.models.enums import MessageAuthor, MessageStatus, SystemMessageKind
 from app.schemas.conversation import UserRef
 
 
@@ -34,3 +36,6 @@ class MessageRead(BaseModel):
     body: str
     status: MessageStatus
     created_at: datetime.datetime
+    system_kind: SystemMessageKind | None
+    error_code: str | None
+    reminder_child_names: list[str] | None

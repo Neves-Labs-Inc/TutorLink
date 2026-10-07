@@ -43,18 +43,28 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.system_setting import SystemSetting
-from app.schemas.common import Page
-from app.schemas.settings import SettingRead, SettingsUpdate
+from app.schemas.settings import SettingRead, SettingsPage, SettingsUpdate
+from app.services import clock
 from app.services.settings_service import (
+    BUSINESS_TIMEZONE_SETTING,
+    BusinessTimezoneUnknown,
     SettingKeyDuplicated,
+    SettingLocked,
     SettingNotEditable,
     SettingNotFound,
     SettingUpdate,
     SettingValueInvalid,
     apply_setting_updates,
     list_settings,
+    read_settings_flags,
 )
 
+BUSINESS_TIMEZONE_INVALID_ERROR = (
+    "That is not a known IANA time zone; use a name like America/New_York"
+)
+BUSINESS_TIMEZONE_LOCKED_ERROR = (
+    "The business time zone is locked once a booking exists; only a developer can change it"
+)
 DUPLICATE_KEY_ERROR = "A setting may appear only once in one request"
 SETTING_VALUE_INVALID_ERROR = "That value is not valid for this setting's type"
 SETTING_NOT_FOUND_ERROR = "No such setting"
@@ -65,13 +75,13 @@ DbSession = Annotated[Session, Depends(get_db)]
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-@router.get("", response_model=Page[SettingRead])
-def read_all(user: AdminPrincipal, db: DbSession) -> Page[SettingRead]:
-    return _page(list_settings(db, actor_role=user.role))
+@router.get("", response_model=SettingsPage)
+def read_all(user: AdminPrincipal, db: DbSession) -> SettingsPage:
+    return _page(db, list_settings(db, actor_role=user.role))
 
 
-@router.patch("", response_model=Page[SettingRead])
-def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) -> Page[SettingRead]:
+@router.patch("", response_model=SettingsPage)
+def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) -> SettingsPage:
     try:
         rows = apply_setting_updates(
             db,
@@ -86,9 +96,17 @@ def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) ->
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=SETTING_NOT_FOUND_ERROR
         ) from exc
+    except SettingLocked as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=BUSINESS_TIMEZONE_LOCKED_ERROR
+        ) from exc
     except SettingNotEditable as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=SETTING_NOT_EDITABLE_ERROR
+        ) from exc
+    except BusinessTimezoneUnknown as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=BUSINESS_TIMEZONE_INVALID_ERROR
         ) from exc
     except SettingValueInvalid as exc:
         raise HTTPException(
@@ -102,10 +120,14 @@ def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) ->
 
     db.commit()
 
-    return _page(rows)
+    # After the commit, so the cache never holds a zone that a failed commit rolled back.
+    if any(item.key == BUSINESS_TIMEZONE_SETTING for item in payload.updates):
+        clock.refresh_business_zone(db)
+
+    return _page(db, rows)
 
 
-def _page(rows: Sequence[SystemSetting]) -> Page[SettingRead]:
+def _page(db: Session, rows: Sequence[SystemSetting]) -> SettingsPage:
     # Built field by field rather than with `model_validate(row)`: the constitution forbids an
     # ORM instance crossing the HTTP boundary, and an explicit constructor is what makes adding
     # a column to the table a decision to expose it rather than an accident.
@@ -122,4 +144,13 @@ def _page(rows: Sequence[SystemSetting]) -> Page[SettingRead]:
     # `page_size == total`, honestly reporting that this page held everything: the endpoint
     # takes no paging parameters, because a settings form that renders only some of its fields
     # is a defect (D-012).
-    return Page[SettingRead](items=items, total=len(items), page=1, page_size=len(items))
+    flags = read_settings_flags(db)
+
+    return SettingsPage(
+        items=items,
+        total=len(items),
+        page=1,
+        page_size=len(items),
+        business_timezone_locked=flags.business_timezone_locked,
+        reminders_paused=flags.reminders_paused,
+    )

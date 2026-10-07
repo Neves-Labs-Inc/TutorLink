@@ -55,6 +55,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=email,
+        display_name="Test User",
         hashed_password=hash_password(password),
         role=role,
         tutor_id=tutor_id,

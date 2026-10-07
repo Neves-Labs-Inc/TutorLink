@@ -78,12 +78,22 @@ owns the transaction boundary.
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.booking import Booking
 from app.models.enums import UserRole
-from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
+from app.models.system_setting import (
+    SETTING_VALUE_TYPE_INTEGER,
+    SETTING_VALUE_TYPE_STRING,
+    SystemSetting,
+)
+
+BUSINESS_TIMEZONE_SETTING = "business_timezone"
+REMINDER_TEMPLATE_SID_EN_SETTING = "reminder_template_sid_en"
+REMINDER_TEMPLATE_SID_ES_SETTING = "reminder_template_sid_es"
 
 _INTEGER_VALUE_PATTERN = re.compile(r"[+-]?[0-9]{1,18}")
 
@@ -92,6 +102,18 @@ _INTEGER_VALUE_PATTERN = re.compile(r"[+-]?[0-9]{1,18}")
 class SettingUpdate:
     key: str
     value: str
+
+
+@dataclass(frozen=True)
+class SettingsFlags:
+    """Derived, read-only facts the settings screen shows beside the rows.
+
+    Computed for every role from rows the role may not see: an admin gets `reminders_paused`
+    without being shown the developer-only template ids it is derived from.
+    """
+
+    business_timezone_locked: bool
+    reminders_paused: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +157,10 @@ _VALUE_BOUNDS = {
     # An hour of the UTC day. Anything outside 0-23 never equals the tick's `now.hour`, so the
     # scheduler would log nothing and silently never purge again.
     "retention_purge_hour_utc": _Bounds(minimum=0, maximum=23),
+    # ISO weekday (1 = Monday) and business-zone hour the weekly reminder pass fires on. A value
+    # outside either range never matches the tick, so reminders would silently stop.
+    "reminder_weekday": _Bounds(minimum=1, maximum=7),
+    "reminder_hour": _Bounds(minimum=0, maximum=23),
 }
 
 
@@ -158,8 +184,22 @@ class SettingNotAnInteger(SettingsError):
     """
 
 
+class SettingNotAString(SettingsError):
+    """The row exists but its `value_type` is not `string`."""
+
+
 class SettingNotEditable(SettingsError):
     """The row exists but the actor's role may not write it."""
+
+
+class SettingLocked(SettingNotEditable):
+    """The row is one the role may normally write, but a state lock now forbids it.
+
+    Today only `business_timezone`: every booking's naive wall-clock columns were typed in the
+    zone that was current at the time, and changing the zone afterwards does not move them, so
+    once a booking exists only a developer (who can also fix the data) may change it. A
+    subclass of `SettingNotEditable` so it is still a refusal of the write, not of the value.
+    """
 
 
 class SettingValueInvalid(SettingsError):
@@ -168,6 +208,14 @@ class SettingValueInvalid(SettingsError):
     One class for both because the router maps both the same way — a 400 naming the value, not
     the reason (`routers/settings.py:63`). A caller who submits `-30` for `session_gap_minutes`
     and a caller who submits `soon` have each sent a value this row cannot hold.
+    """
+
+
+class BusinessTimezoneUnknown(SettingValueInvalid):
+    """`business_timezone` was given a name `ZoneInfo` cannot resolve.
+
+    A subclass so callers that only care "the value was refused" still catch it, while the
+    router can tell the admin what a valid value looks like instead of the generic type error.
     """
 
 
@@ -200,6 +248,32 @@ def get_int_setting(db: Session, *, key: str) -> int:
         raise SettingNotAnInteger(f"system setting {key!r} holds {row.value!r}") from exc
 
     return value
+
+
+def get_str_setting(db: Session, *, key: str) -> str:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
+
+    if row is None:
+        raise SettingNotFound(f"no system setting {key!r}")
+
+    if row.value_type != SETTING_VALUE_TYPE_STRING:
+        raise SettingNotAString(f"system setting {key!r} is {row.value_type!r}, not a string")
+
+    return row.value
+
+
+def read_settings_flags(db: Session) -> SettingsFlags:
+    # Both reminder ids blank is the documented "paused" state: no template is approved yet, so
+    # the weekly run would skip every Guardian.
+    reminder_sids = [
+        get_str_setting(db, key=REMINDER_TEMPLATE_SID_EN_SETTING),
+        get_str_setting(db, key=REMINDER_TEMPLATE_SID_ES_SETTING),
+    ]
+
+    return SettingsFlags(
+        business_timezone_locked=has_any_booking(db),
+        reminders_paused=all(sid.strip() == "" for sid in reminder_sids),
+    )
 
 
 def list_settings(db: Session, *, actor_role: UserRole) -> list[SystemSetting]:
@@ -254,22 +328,24 @@ def apply_setting_updates(
         if row.is_developer_only and not _may_see_developer_only(actor_role):
             raise SettingNotEditable(f"system setting {update.key!r} is developer-only")
 
-        if row.value_type != SETTING_VALUE_TYPE_INTEGER:
+        if (
+            update.key == BUSINESS_TIMEZONE_SETTING
+            and not _may_see_developer_only(actor_role)
+            and has_any_booking(db)
+        ):
+            raise SettingLocked(f"system setting {update.key!r} is locked once a booking exists")
+
+        if row.value_type == SETTING_VALUE_TYPE_INTEGER:
+            _check_integer_value(update)
+            value = update.value
+        elif row.value_type == SETTING_VALUE_TYPE_STRING:
+            value = _checked_string_value(update)
+        else:
             raise SettingValueTypeUnsupported(
                 f"system setting {update.key!r} is {row.value_type!r}, which has no validator"
             )
 
-        if _INTEGER_VALUE_PATTERN.fullmatch(update.value.strip()) is None:
-            raise SettingValueInvalid(f"system setting {update.key!r} rejects {update.value!r}")
-
-        bounds = _VALUE_BOUNDS.get(update.key)
-
-        if bounds is not None and not bounds.permits(int(update.value)):
-            raise SettingValueInvalid(
-                f"system setting {update.key!r} rejects {update.value!r}: accepts {bounds}"
-            )
-
-        pending.append((row, update.value))
+        pending.append((row, value))
 
     for row, value in pending:
         row.value = value
@@ -277,6 +353,52 @@ def apply_setting_updates(
     db.flush()
 
     return list_settings(db, actor_role=actor_role)
+
+
+def has_any_booking(db: Session) -> bool:
+    """Whether any booking row exists, in any status; what locks `business_timezone`."""
+    return db.scalar(select(Booking.id).limit(1)) is not None
+
+
+def _check_integer_value(update: SettingUpdate) -> None:
+    if _INTEGER_VALUE_PATTERN.fullmatch(update.value.strip()) is None:
+        raise SettingValueInvalid(f"system setting {update.key!r} rejects {update.value!r}")
+
+    bounds = _VALUE_BOUNDS.get(update.key)
+
+    if bounds is not None and not bounds.permits(int(update.value)):
+        raise SettingValueInvalid(
+            f"system setting {update.key!r} rejects {update.value!r}: accepts {bounds}"
+        )
+
+
+def _checked_string_value(update: SettingUpdate) -> str:
+    """The value to store for a string row, stripped, or raise if this key refuses it.
+
+    Stripped because every string row is pasted in by hand (a zone name, a Twilio template id),
+    and a trailing space would make a template id that looks set fail at send time.
+    Only `business_timezone` has a validator; the template-id rows accept anything, and blank
+    is their documented "not approved" value.
+    """
+    value = update.value.strip()
+
+    if update.key == BUSINESS_TIMEZONE_SETTING and not _is_known_zone(value):
+        raise BusinessTimezoneUnknown(f"system setting {update.key!r} rejects {update.value!r}")
+
+    return value
+
+
+def _is_known_zone(name: str) -> bool:
+    # `ZoneInfo` signals a bad name three ways: not found, a malformed key ("", "../x"), and an
+    # OS error when the name is a directory of the tz database ("America").
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        is_known = False
+    else:
+        is_known = True
+
+    return is_known
 
 
 def _may_see_developer_only(role: UserRole) -> bool:

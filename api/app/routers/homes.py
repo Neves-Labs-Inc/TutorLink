@@ -2,7 +2,7 @@
 
 A thin HTTP shell over `home_service`: the service raises domain exceptions, this maps them to
 status codes and owns the commit. There is no `DELETE`: bookings point at a home, so it is
-deactivated, never erased. `AdminPrincipal` and never `TutorScope` — the deactivation guard
+deactivated, never erased. `StaffPrincipal` and never `TutorScope` — the deactivation guard
 reads `bookings`, a tutor-owned table, and an unread scope would turn that read into a 500.
 
 `BLANK_HOME_DETAILS_ERROR` is the same literal `client_homes.py` declares; a test asserts it.
@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.schemas.client import HomeRead
 from app.schemas.home import HomeUpdate
 from app.services.home_service import (
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/homes", tags=["homes"])
 
 @router.patch("/{home_id}", response_model=HomeRead)
 def update(
-    home_id: uuid.UUID, payload: HomeUpdate, user: AdminPrincipal, db: DbSession
+    home_id: uuid.UUID, payload: HomeUpdate, user: StaffPrincipal, db: DbSession
 ) -> HomeRead:
     try:
         home = update_home(

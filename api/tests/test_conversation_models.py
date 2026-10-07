@@ -425,6 +425,7 @@ def _make_guardian(db: Session) -> Guardian:
 def _make_admin(db: Session) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("conversation-password"),
         role=UserRole.ADMIN,
     )

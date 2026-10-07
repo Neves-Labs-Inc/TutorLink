@@ -5,6 +5,7 @@ import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
 export type Subject = {
   id: string
   name: string
+  name_es: string | null
   description: string | null
   is_active: boolean
   tutor_count: number
@@ -18,11 +19,13 @@ export type SubjectListParams = {
 
 export type SubjectCreate = {
   name: string
+  name_es?: string | null
   description?: string | null
 }
 
 export type SubjectUpdate = {
   name?: string
+  name_es?: string | null
   description?: string | null
   is_active?: boolean
 }

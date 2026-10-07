@@ -173,7 +173,20 @@ describe('ConversationStreamClient', () => {
 
     socket.emit('message', { data: JSON.stringify({ type: 'error', detail: 'boom' }) })
 
-    expect(listener.onError).toHaveBeenCalledWith('boom')
+    expect(listener.onError).toHaveBeenCalledWith('boom', undefined)
+  })
+
+  it('passes an error frame code along', () => {
+    const { client } = createClient()
+    const listener = noopListener()
+    client.subscribe(listener)
+    const socket = FakeWebSocket.instances[0]
+
+    socket.emit('message', {
+      data: JSON.stringify({ type: 'error', detail: 'closed', code: 'window_closed' }),
+    })
+
+    expect(listener.onError).toHaveBeenCalledWith('closed', 'window_closed')
   })
 
   it('hands a message.updated frame to onMessageUpdated and to no other listener method', () => {

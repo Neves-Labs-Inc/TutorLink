@@ -16,11 +16,13 @@ from app.routers import (
     booking_status,
     booking_writes,
     bookings,
+    child_evaluation,
     child_guardians,
     children,
     children_read,
     client_bookings,
     client_homes,
+    client_reminders,
     clients,
     conversation_stream,
     conversations,
@@ -28,6 +30,8 @@ from app.routers import (
     health,
     homes,
     households,
+    me,
+    reminders,
     settings,
     slots,
     stats,
@@ -37,6 +41,7 @@ from app.routers import (
     users,
     webhook,
 )
+from app.services.reminder_scheduler import run_forever as run_reminders_forever
 from app.services.retention_scheduler import run_forever
 
 app_logger = logging.getLogger("app")
@@ -49,21 +54,26 @@ if not app_logger.handlers:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the retention scheduler for exactly as long as the application is being served.
+    """Run the retention and reminder schedulers for exactly as long as the app is served.
 
-    Here rather than in `retention_scheduler`, which is service code and knows nothing about
-    FastAPI. The task touches no database until its first top-of-hour tick, so entering this is
-    free. On shutdown it is cancelled and awaited, so it never outlives the process's event
-    loop; a purge already running on its worker thread finishes or fails on its own, inside its
-    one transaction.
+    Here rather than in the scheduler modules, which are service code and know nothing about
+    FastAPI. Neither task touches the database until its first top-of-hour tick, so entering
+    this is free. On shutdown both are cancelled and awaited, so neither outlives the process's
+    event loop; a purge or reminder run already on its worker thread finishes or fails on its
+    own.
     """
-    scheduler = asyncio.create_task(run_forever(SessionLocal))
+    schedulers = [
+        asyncio.create_task(run_forever(SessionLocal)),
+        asyncio.create_task(run_reminders_forever(SessionLocal)),
+    ]
     try:
         yield
     finally:
-        scheduler.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await scheduler
+        for scheduler in schedulers:
+            scheduler.cancel()
+        for scheduler in schedulers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await scheduler
 
 
 def create_app() -> FastAPI:
@@ -114,15 +124,18 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(users.router)
+    app.include_router(me.router)
     app.include_router(exceptions.router)
     app.include_router(settings.router)
     app.include_router(subjects.router)
     app.include_router(clients.router)
     app.include_router(client_bookings.router)
+    app.include_router(client_reminders.router)
     app.include_router(client_homes.router)
     app.include_router(children.router)
     app.include_router(children_read.router)
     app.include_router(child_guardians.router)
+    app.include_router(child_evaluation.router)
     app.include_router(households.router)
     app.include_router(homes.router)
     app.include_router(tutors.router)
@@ -133,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
     app.include_router(stats.router)
+    app.include_router(reminders.router)
     app.include_router(webhook.router)
     app.include_router(conversations.router)
     app.include_router(conversation_stream.router)

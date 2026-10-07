@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import ExceptionStatus
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -79,7 +80,8 @@ def find_available_slots(
     db: Session,
     *,
     subject_id: uuid.UUID,
-    grade_level: int | None,
+    child_id: uuid.UUID | None = None,
+    grade_level: int | None = None,
     date: datetime.date,
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
@@ -91,7 +93,7 @@ def find_available_slots(
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
 
     names = _qualified_tutor_names(
-        db, subject_id=subject_id, grade_level=grade_level, tutor_id=tutor_id
+        db, subject_id=subject_id, child_id=child_id, grade_level=grade_level, tutor_id=tutor_id
     )
     tutor_ids = list(names)
     # `date.weekday()` is 0 = Monday … 6 = Sunday, which is the encoding `tutor_availability`
@@ -143,13 +145,22 @@ def find_available_slots(
 
 
 def _qualified_tutor_names(
-    db: Session, *, subject_id: uuid.UUID, grade_level: int | None, tutor_id: uuid.UUID | None
+    db: Session,
+    *,
+    subject_id: uuid.UUID,
+    child_id: uuid.UUID | None = None,
+    grade_level: int | None = None,
+    tutor_id: uuid.UUID | None,
 ) -> dict[uuid.UUID, str]:
-    """Active tutors whose ceiling for `subject_id` is at or above `grade_level`.
+    """Active tutors who teach `subject_id`, at a ceiling that reaches the Child or the grade.
 
-    A `None` grade is a child nobody has graded yet: every active tutor who teaches the subject
-    qualifies, whatever their ceiling. The inner join still drops a tutor with no
-    `tutor_subjects` row, so "no grade" never widens the set past the subject's own tutors.
+    The ceiling is matched one of three ways:
+
+    - `child_id`: the Child's Subject level for `subject_id` (`child_subject_levels`). The join
+      is inner, so a Child with no level for the subject has no qualified tutor at all; the bot
+      hands that case to the office before it ever asks.
+    - `grade_level`: the dashboard's plain `?grade_level=` filter.
+    - neither: no ceiling filter, every tutor who teaches the subject qualifies.
 
     `max_grade_level` is a ceiling, so the comparison is `>=` and never a membership test
     (#36). The join to `TutorSubject` is inner on purpose: a tutor with no `tutor_subjects`
@@ -174,6 +185,11 @@ def _qualified_tutor_names(
             Subject.is_active.is_(True),
         )
     )
+    if child_id is not None:
+        statement = statement.join(
+            ChildSubjectLevel,
+            (ChildSubjectLevel.subject_id == Subject.id) & (ChildSubjectLevel.child_id == child_id),
+        ).where(TutorSubject.max_grade_level >= ChildSubjectLevel.level)
     if grade_level is not None:
         statement = statement.where(TutorSubject.max_grade_level >= grade_level)
     if tutor_id is not None:

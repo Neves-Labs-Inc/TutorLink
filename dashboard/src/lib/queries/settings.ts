@@ -2,27 +2,35 @@ import { queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { Setting, SettingUpdate } from '@/lib/settings/settings'
 
-type Page<T> = {
-  items: T[]
+export type SettingsPage = {
+  items: Setting[]
   total: number
   page: number
   page_size: number
+  business_timezone_locked: boolean
+  reminders_paused: boolean
 }
+
+const settingsPageQuery = () =>
+  queryOptions({
+    queryKey: ['settings', 'list'],
+    queryFn: async () => {
+      const response = await api.get<SettingsPage>('/api/settings')
+
+      return response.data
+    },
+  })
 
 export const settingQueries = {
-  list: () =>
-    queryOptions({
-      queryKey: ['settings', 'list'],
-      queryFn: async () => {
-        const response = await api.get<Page<Setting>>('/api/settings')
+  // The rows only, for callers that ignore the flags.
+  list: () => queryOptions({ ...settingsPageQuery(), select: (page) => page.items }),
 
-        return response.data.items
-      },
-    }),
+  // The rows plus `business_timezone_locked` and `reminders_paused`; shares the cache with `list`.
+  page: settingsPageQuery,
 }
 
-export const updateSettings = async (updates: SettingUpdate[]): Promise<Setting[]> => {
-  const response = await api.patch<Page<Setting>>('/api/settings', { updates })
+export const updateSettings = async (updates: SettingUpdate[]): Promise<SettingsPage> => {
+  const response = await api.patch<SettingsPage>('/api/settings', { updates })
 
-  return response.data.items
+  return response.data
 }

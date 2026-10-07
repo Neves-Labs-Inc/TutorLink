@@ -18,6 +18,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.tutor import Tutor, TutorSubject
 from app.services.phone_service import normalize_phone_number
 
@@ -54,6 +55,7 @@ def matching_tutors(
     subject_id: uuid.UUID | None,
     grade_level: int | None,
     q: str | None = None,
+    child_id: uuid.UUID | None = None,
 ) -> Select[tuple[Tutor]]:
     """The filtered tutor query, as `EXISTS` rather than a join.
 
@@ -61,6 +63,10 @@ def matching_tutors(
     who covers grade 12 qualifies for grade 8. Correlated `EXISTS` and not a `JOIN` because a
     tutor with three qualifying assignments must appear once and `total` must stay a count of
     tutors under every combination of these filters.
+
+    `child_id` is the same ceiling comparison against that Child's Subject level for the
+    assignment's subject (an inner match, so a subject with no level qualifies no one), the
+    rule `slot_service` matches the bot's tutors by.
 
     `q` is a case-insensitive substring of `name`; blank means no filter.
 
@@ -75,7 +81,7 @@ def matching_tutors(
     if pattern is not None:
         statement = statement.where(Tutor.name.ilike(pattern, escape=_LIKE_ESCAPE))
 
-    if subject_id is not None or grade_level is not None:
+    if subject_id is not None or grade_level is not None or child_id is not None:
         assignment = select(1).select_from(TutorSubject).where(TutorSubject.tutor_id == Tutor.id)
 
         if subject_id is not None:
@@ -83,6 +89,13 @@ def matching_tutors(
 
         if grade_level is not None:
             assignment = assignment.where(TutorSubject.max_grade_level >= grade_level)
+
+        if child_id is not None:
+            assignment = assignment.join(
+                ChildSubjectLevel,
+                (ChildSubjectLevel.subject_id == TutorSubject.subject_id)
+                & (ChildSubjectLevel.child_id == child_id),
+            ).where(TutorSubject.max_grade_level >= ChildSubjectLevel.level)
 
         statement = statement.where(assignment.exists())
 
@@ -128,6 +141,7 @@ def list_tutors(
     limit: int,
     offset: int,
     q: str | None = None,
+    child_id: uuid.UUID | None = None,
 ) -> tuple[list[Tutor], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -141,6 +155,7 @@ def list_tutors(
         subject_id=subject_id,
         grade_level=grade_level,
         q=q,
+        child_id=child_id,
     )
     total = db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
     tutors = list(

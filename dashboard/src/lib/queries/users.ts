@@ -7,6 +7,7 @@ import type { UserCreatePayload, UserUpdatePayload } from '@/lib/users/users'
 export type User = {
   id: string
   email: string
+  display_name: string
   role: Role
   tutor_id: string | null
   is_active: boolean

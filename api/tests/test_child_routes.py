@@ -93,6 +93,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,
@@ -474,8 +475,8 @@ def test_patch_may_change_grade_level(api: TestClient, db: Session) -> None:
     assert db.scalar(select(Child.grade_level).where(Child.id == child_id)) == 8
 
 
-@pytest.mark.parametrize("grade_level", [0, -1])
-def test_post_refuses_a_grade_level_below_one(
+@pytest.mark.parametrize("grade_level", [-1, 13])
+def test_post_refuses_a_grade_level_outside_k_to_12(
     api: TestClient, db: Session, grade_level: int
 ) -> None:
     admin = _make_user(db)
@@ -490,15 +491,29 @@ def test_post_refuses_a_grade_level_below_one(
     assert db.scalar(select(func.count()).select_from(Child)) == before
 
 
-def test_post_accepts_a_grade_level_of_one(api: TestClient, db: Session) -> None:
+@pytest.mark.parametrize("grade_level", [0, 12])
+def test_post_accepts_kindergarten_through_grade_12(
+    api: TestClient, db: Session, grade_level: int
+) -> None:
+    """0 is Kindergarten."""
     admin = _make_user(db)
     payload = _payload(guardians=[_make_guardian(db)], homes=[_make_home(db)])
-    payload["grade_level"] = 1
+    payload["grade_level"] = grade_level
 
     response = api.post("/api/children", headers=_auth(admin), json=payload)
 
     assert response.status_code == 201
-    assert response.json()["grade_level"] == 1
+    assert response.json()["grade_level"] == grade_level
+
+
+def test_patch_accepts_kindergarten(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = api.patch(f"/api/children/{child_id}", headers=_auth(admin), json={"grade_level": 0})
+
+    assert response.status_code == 200
+    assert response.json()["grade_level"] == 0
 
 
 def test_post_without_a_grade_level_creates_a_child_whose_grade_reads_as_null(
@@ -524,8 +539,8 @@ def test_post_without_a_grade_level_creates_a_child_whose_grade_reads_as_null(
     assert [row["grade_level"] for row in rows] == [None]
 
 
-@pytest.mark.parametrize("grade_level", [0, -1])
-def test_patch_refuses_a_grade_level_below_one_and_writes_nothing(
+@pytest.mark.parametrize("grade_level", [-1, 13])
+def test_patch_refuses_a_grade_level_outside_k_to_12_and_writes_nothing(
     api: TestClient, db: Session, grade_level: int
 ) -> None:
     admin = _make_user(db)

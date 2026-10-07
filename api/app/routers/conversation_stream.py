@@ -13,8 +13,8 @@ browser cannot set an `Authorization` header on a WebSocket upgrade — the clie
 `new WebSocket(url)` call and nothing else, which is the whole reason `api-design.md:1608-1632`
 specifies a first-frame handshake instead. §13's intent, that there is no unauthenticated
 `/api/*` surface, is met by that handshake: the socket is accepted but carries nothing until an
-`auth` frame has been validated through `app/security.py` and the same admin role gate
-`require_admin` applies, no other frame is accepted before then, a socket that has not
+`auth` frame has been validated through `app/security.py` and the same Staff role gate
+`require_staff` applies, no other frame is accepted before then, a socket that has not
 authenticated within ten seconds is closed `1008`, and the socket closes `1008` again when the
 access token behind it expires. **The token is never read from the query string**
 (`api-design.md:1624`): a credential there is written into every proxy log, access log and
@@ -74,7 +74,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.db import SessionLocal, get_db
-from app.dependencies import ADMIN_REQUIRED_ERROR, ADMIN_ROLES, CREDENTIALS_ERROR
+from app.dependencies import CREDENTIALS_ERROR, STAFF_REQUIRED_ERROR, STAFF_ROLES
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus
 from app.models.user import User
@@ -85,6 +85,7 @@ from app.schemas.stream import (
     AuthFrame,
     ErrorFrame,
     ReadyFrame,
+    WINDOW_CLOSED_CODE,
     SendFrame,
     client_frame_adapter,
 )
@@ -112,7 +113,11 @@ from app.services.message_service import (
     mark_failed,
     record_admin_message,
 )
-from app.services.twilio_service import TwilioServiceError, send_whatsapp_message
+from app.services.twilio_service import (
+    TwilioSendFailed,
+    TwilioServiceError,
+    send_whatsapp_message,
+)
 
 AUTH_REQUIRED_ERROR = "The first frame must be an auth frame"
 AUTH_TIMEOUT_ERROR = "No auth frame arrived in time"
@@ -122,6 +127,9 @@ UNEXPECTED_FRAME_ERROR = "Expected a send frame"
 CONVERSATION_NOT_FOUND_ERROR = "No such conversation"
 NOT_TAKEN_OVER_ERROR = "Take over the conversation before sending a message"
 SEND_FAILED_ERROR = "WhatsApp did not accept the message"
+WINDOW_CLOSED_ERROR = (
+    "The Guardian last wrote over 24 hours ago, so WhatsApp only allows a template message"
+)
 PUMP_STOPPED_ERROR = "The live-update subscription stopped"
 
 # Ten seconds, from the contract (`api-design.md:1630`) rather than from `system_settings`: it
@@ -156,7 +164,9 @@ class _Admin:
     """
 
     user_id: uuid.UUID
-    email: str
+    # Read at the handshake. A rename shows on this socket's echoes from the next connection,
+    # which the token's expiry forces within minutes; REST always reads the current name.
+    display_name: str
     expires_at: datetime.datetime
 
 
@@ -213,8 +223,8 @@ async def _auth_frame(websocket: WebSocket) -> AuthFrame | None:
 def _resolve_admin(db: Session, token: str) -> _Admin | str:
     """The `Authorization` header's own validation, applied to the handshake frame.
 
-    One credential, one validator, one role gate: `decode_token` and `ADMIN_ROLES` are the ones
-    `get_current_user` and `require_admin` use, and the failure messages are theirs too, so a
+    One credential, one validator, one role gate: `decode_token` and `STAFF_ROLES` are the ones
+    `get_current_user` and `require_staff` use, and the failure messages are theirs too, so a
     bad token is refused here for exactly the reason and in exactly the words REST refuses it.
     The `users` row is read rather than trusted from the claims for the reason
     `dependencies.py` gives: a deactivated account must lose access at its next use of the
@@ -234,10 +244,12 @@ def _resolve_admin(db: Session, token: str) -> _Admin | str:
 
     if claims is None or user is None or not user.is_active:
         resolved: _Admin | str = CREDENTIALS_ERROR
-    elif user.role not in ADMIN_ROLES:
-        resolved = ADMIN_REQUIRED_ERROR
+    elif user.role not in STAFF_ROLES:
+        resolved = STAFF_REQUIRED_ERROR
     else:
-        resolved = _Admin(user_id=user.id, email=user.email, expires_at=claims.expires_at)
+        resolved = _Admin(
+            user_id=user.id, display_name=user.display_name, expires_at=claims.expires_at
+        )
 
     db.commit()
 
@@ -301,21 +313,25 @@ async def _read_frames(websocket: WebSocket, db: Session, admin: _Admin) -> None
         if isinstance(frame, SendFrame):
             failure = await run_in_threadpool(_send, db, admin=admin, frame=frame)
         elif isinstance(frame, AuthFrame):
-            failure = UNEXPECTED_FRAME_ERROR
+            failure = ErrorFrame(detail=UNEXPECTED_FRAME_ERROR)
         else:
-            failure = frame
+            failure = ErrorFrame(detail=frame)
 
         if failure is not None:
-            await websocket.send_json(ErrorFrame(detail=failure).model_dump())
+            await websocket.send_json(failure.frame())
 
 
-def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> str | None:
-    """Handle one `send`. Returns the `error` frame's detail, or `None` when it went out.
+def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> ErrorFrame | None:
+    """Handle one `send`. Returns the `error` frame, or `None` when it went out.
 
     A conversation the bot is still answering is refused and **nothing is recorded**: an admin
     must claim the thread before speaking into it, so the client never receives an admin line
     interleaved with a bot line answering the same message. The pause is what makes the admin
     the only outbound voice.
+
+    So is a send after the Guardian's 24-hour window has closed (#109): Twilio would refuse it
+    with 63016, and a line that could never be delivered is not one to record. The frame
+    carries `window_closed` so the composer can disable itself.
 
     The trailing commit ends the transaction the refusals opened by reading, for the reason
     `_resolve_admin` gives: on the write path there is nothing left to commit, and on a refusal
@@ -327,9 +343,11 @@ def _send(db: Session, *, admin: _Admin, frame: SendFrame) -> str | None:
         conversation = None
 
     if conversation is None:
-        failure = CONVERSATION_NOT_FOUND_ERROR
+        failure: ErrorFrame | None = ErrorFrame(detail=CONVERSATION_NOT_FOUND_ERROR)
     elif conversation.status is not ConversationStatus.HUMAN:
-        failure = NOT_TAKEN_OVER_ERROR
+        failure = ErrorFrame(detail=NOT_TAKEN_OVER_ERROR)
+    elif not conversation_service.window_is_open(db, conversation_id=conversation.id):
+        failure = ErrorFrame(detail=WINDOW_CLOSED_ERROR, code=WINDOW_CLOSED_CODE)
     else:
         failure = _record_and_send(db, admin=admin, frame=frame, conversation=conversation)
 
@@ -344,7 +362,7 @@ def _record_and_send(
     admin: _Admin,
     frame: SendFrame,
     conversation: Conversation,
-) -> str | None:
+) -> ErrorFrame | None:
     """Record, commit, send, attach, broadcast — in that order, which is the only safe one.
 
     Recording before sending is what keeps the thread honest across a crash: the other order
@@ -384,10 +402,18 @@ def _record_and_send(
 
     try:
         twilio_sid = send_whatsapp_message(to=phone_number, body=frame.body)
-    except TwilioServiceError:
-        logger.exception("an admin message was recorded but Twilio did not accept it")
-        mark_failed(db, message=message, error_code=None)
-        failure = SEND_FAILED_ERROR
+    except TwilioServiceError as exc:
+        # A missing configuration carries no Twilio code; a refusal does, and staff need it.
+        error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        # No traceback: the chained Twilio error quotes the Guardian's number.
+        logger.error(
+            "admin message %s was recorded but Twilio did not accept it: %s (code %s)",
+            message.id,
+            exc,
+            error_code,
+        )
+        mark_failed(db, message=message, error_code=error_code)
+        failure = ErrorFrame(detail=SEND_FAILED_ERROR)
     else:
         attach_twilio_sid(db, message=message, twilio_sid=twilio_sid)
         failure = None
@@ -395,10 +421,13 @@ def _record_and_send(
     read = MessageRead(
         id=message.id,
         author_kind=message.author_kind,
-        author=UserRef(id=admin.user_id, email=admin.email),
+        author=UserRef(id=admin.user_id, display_name=admin.display_name),
         body=message.body,
         status=message.status,
         created_at=message.created_at,
+        system_kind=message.system_kind,
+        error_code=message.error_code,
+        reminder_child_names=None,
     )
     db.commit()
 

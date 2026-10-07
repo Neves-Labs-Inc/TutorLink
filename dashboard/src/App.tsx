@@ -2,7 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from '@/components/auth/AuthProvider'
 import { RouteGuard } from '@/components/layout/RouteGuard'
 import { AppShell } from '@/components/layout/AppShell'
-import { ADMIN_ROLES } from '@/lib/auth/auth'
+import { ADMIN_ROLES, STAFF_ROLES } from '@/lib/auth/auth'
 import { Login } from '@/pages/Login'
 import { Dashboard } from '@/pages/admin/Dashboard'
 import { Tutors } from '@/pages/admin/Tutors'
@@ -14,6 +14,7 @@ import { GuardianDetail } from '@/pages/admin/GuardianDetail'
 import { ChatsLayout } from '@/components/chat/ChatsLayout'
 import { ChatThread } from '@/pages/admin/ChatThread'
 import { Bookings } from '@/pages/admin/Bookings'
+import { Reminders } from '@/pages/admin/Reminders'
 import { Users } from '@/pages/admin/Users'
 import { Settings } from '@/pages/admin/Settings'
 import { Schedule } from '@/pages/tutor/Schedule'
@@ -29,7 +30,7 @@ export const App = () => (
         <Route
           path="/dashboard"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <Dashboard />
               </AppShell>
@@ -39,7 +40,7 @@ export const App = () => (
         <Route
           path="/tutors"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <Tutors />
               </AppShell>
@@ -49,7 +50,7 @@ export const App = () => (
         <Route
           path="/tutors/:id"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <TutorDetail />
               </AppShell>
@@ -59,7 +60,7 @@ export const App = () => (
         <Route
           path="/children"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <Children />
               </AppShell>
@@ -69,7 +70,7 @@ export const App = () => (
         <Route
           path="/children/:id"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <ChildDetail />
               </AppShell>
@@ -79,7 +80,7 @@ export const App = () => (
         <Route
           path="/guardians"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <Guardians />
               </AppShell>
@@ -89,7 +90,7 @@ export const App = () => (
         <Route
           path="/guardians/:id"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <GuardianDetail />
               </AppShell>
@@ -99,7 +100,7 @@ export const App = () => (
         <Route
           path="/chats"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <ChatsLayout />
               </AppShell>
@@ -111,9 +112,19 @@ export const App = () => (
         <Route
           path="/bookings"
           element={
-            <RouteGuard allow={ADMIN_ROLES}>
+            <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <Bookings />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/reminders"
+          element={
+            <RouteGuard allow={STAFF_ROLES}>
+              <AppShell>
+                <Reminders />
               </AppShell>
             </RouteGuard>
           }

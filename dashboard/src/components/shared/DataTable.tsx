@@ -138,7 +138,7 @@ const TableLayout = <T,>({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={rowKey(row)} className="border-b border-border last:border-b-0 hover:bg-muted hover:cursor-pointer" onClick={() => onRowSelect?.(row)}>
+            <tr key={rowKey(row)} className={cn('border-b border-border last:border-b-0', onRowSelect && 'hover:bg-muted hover:cursor-pointer')} onClick={() => onRowSelect?.(row)}>
               {columns.map((column) => (
                 <td
                   key={column.id}

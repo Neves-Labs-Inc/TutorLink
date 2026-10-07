@@ -9,9 +9,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
+import { HIGHEST_GRADE, LOWEST_GRADE, gradeName } from '@/lib/grades/grades'
 import { subjectQueries } from '@/lib/queries/subjects'
 import { assignSubject, removeSubject } from '@/lib/queries/tutorSubjects'
 import { tutorQueries, type Tutor, type TutorSubject } from '@/lib/queries/tutors'
+import { ceilingError } from '@/lib/tutors/tutors'
 
 type SubjectsSectionProps = { tutorId: string }
 
@@ -32,6 +34,7 @@ const SubjectsCard = ({ tutor }: SubjectsCardProps) => {
   const [addOpen, setAddOpen] = useState(false)
   const [subjectId, setSubjectId] = useState('')
   const [maxGradeLevel, setMaxGradeLevel] = useState('')
+  const [isGradeChecked, setIsGradeChecked] = useState(false)
   const [pendingRemoval, setPendingRemoval] = useState<TutorSubject | null>(null)
 
   const subjects = useQuery({
@@ -68,6 +71,7 @@ const SubjectsCard = ({ tutor }: SubjectsCardProps) => {
     if (open) {
       setSubjectId('')
       setMaxGradeLevel('')
+      setIsGradeChecked(false)
       assign.reset()
     }
     setAddOpen(open)
@@ -91,9 +95,15 @@ const SubjectsCard = ({ tutor }: SubjectsCardProps) => {
     }
   }
 
+  const gradeError = isGradeChecked ? ceilingError(maxGradeLevel) : null
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    assign.mutate()
+    setIsGradeChecked(true)
+
+    if (ceilingError(maxGradeLevel) === null) {
+      assign.mutate()
+    }
   }
 
   return (
@@ -121,7 +131,7 @@ const SubjectsCard = ({ tutor }: SubjectsCardProps) => {
                 <div className="space-y-0.5">
                   <p className="text-sm font-medium text-foreground">{assignment.name}</p>
                   <p className="text-sm text-muted-foreground">
-                    Teaches up to grade {assignment.max_grade_level}
+                    Teaches up to {gradeName(assignment.max_grade_level)}
                   </p>
                 </div>
                 <Button
@@ -199,11 +209,13 @@ const SubjectsCard = ({ tutor }: SubjectsCardProps) => {
               id={`${formId}-grade`}
               name="max_grade_level"
               type="number"
-              min={1}
+              min={LOWEST_GRADE}
+              max={HIGHEST_GRADE}
               step={1}
               required
               inputMode="numeric"
               autoComplete="off"
+              aria-invalid={gradeError !== null || undefined}
               aria-describedby={`${formId}-grade-hint`}
               value={maxGradeLevel}
               disabled={assign.isPending}
@@ -211,8 +223,13 @@ const SubjectsCard = ({ tutor }: SubjectsCardProps) => {
             />
             <p id={`${formId}-grade-hint`} className="text-sm text-muted-foreground">
               A ceiling, not a single grade: entering 8 means this tutor covers grade 8 and every
-              grade below it in this subject.
+              grade below it in this subject. Enter 0 for Kindergarten.
             </p>
+            {gradeError !== null && (
+              <p role="alert" className="text-sm font-medium text-destructive">
+                {gradeError}
+              </p>
+            )}
           </div>
           {assign.isError && (
             <p role="alert" className="text-sm font-medium text-destructive">

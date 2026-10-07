@@ -54,8 +54,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.booking_reminder import BookingReminder
+from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import MessageAuthor, MessageStatus
+from app.models.enums import MessageAuthor, MessageStatus, SystemMessageKind
 from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service
@@ -72,6 +74,8 @@ class ThreadMessage:
 
     message: Message
     author: User | None
+    # The Children a `booking_reminder` line named, matched on its SID; `None` for other lines.
+    reminder_child_names: list[str] | None = None
 
 
 def record_inbound(
@@ -167,6 +171,48 @@ def record_admin_message(
     )
 
 
+def record_system_notice(
+    db: Session,
+    *,
+    conversation: Conversation,
+    body: str,
+    system_kind: SystemMessageKind,
+    author_user_id: uuid.UUID | None,
+) -> Message:
+    """Record a notice to the Guardian, `queued` like an admin message: it goes out through
+    the REST API after the record is committed.
+
+    `author_user_id` is the Staff member who caused it, which is what lets the Staff-facing
+    line name them even when the Guardian was sent the nameless notice. `None` when the
+    Guardian caused it, as with a reminder consent confirmed under Takeover.
+    """
+    return _insert(
+        db,
+        conversation=conversation,
+        author_kind=MessageAuthor.SYSTEM,
+        body=body,
+        status=MessageStatus.QUEUED,
+        twilio_sid=None,
+        author_user_id=author_user_id,
+        system_kind=system_kind,
+    )
+
+
+def requeue(db: Session, *, message: Message, body: str) -> Message:
+    """Put a failed notice back to `queued` for a retry, with the copy the retry will send.
+
+    The SID and error code are cleared: the retry earns its own SID, and a stale code would
+    describe an attempt that is no longer the latest.
+    """
+    message.body = body
+    message.status = MessageStatus.QUEUED
+    message.error_code = None
+    message.twilio_sid = None
+    db.flush()
+
+    return message
+
+
 def attach_twilio_sid(db: Session, *, message: Message, twilio_sid: str) -> Message:
     """Store the SID Twilio returned for a message that was recorded before it was sent.
 
@@ -193,9 +239,9 @@ def mark_failed(db: Session, *, message: Message, error_code: str | None) -> Mes
     when set, so a retry that fails differently cannot leave a stale code behind — the same
     reason `advance_status` writes it on every status.
 
-    Nothing can move the row afterwards, which is what makes this terminal rather than merely
-    final-for-now: the SID is attached only on the success path, so a row this marks carries
-    none and no delivery callback can ever name it.
+    No delivery callback can move the row afterwards: the SID is attached only on the success
+    path, so a row this marks carries none. Only a retry of a takeover or transfer notice
+    (`requeue`) moves it again.
     """
     message.status = MessageStatus.FAILED
     message.error_code = error_code
@@ -267,7 +313,13 @@ def list_thread(
         .limit(limit)
         .offset(offset)
     ).all()
-    items = [ThreadMessage(message=message, author=author) for message, author in rows]
+    reminder_names = _reminder_child_names(db, [message for message, _author in rows])
+    items = [
+        ThreadMessage(
+            message=message, author=author, reminder_child_names=reminder_names.get(message.id)
+        )
+        for message, author in rows
+    ]
 
     return items, total
 
@@ -291,9 +343,44 @@ def get_thread_message(db: Session, *, message_id: uuid.UUID) -> ThreadMessage |
     if row is None:
         found = None
     else:
-        found = ThreadMessage(message=row[0], author=row[1])
+        names = _reminder_child_names(db, [row[0]])
+        found = ThreadMessage(
+            message=row[0], author=row[1], reminder_child_names=names.get(row[0].id)
+        )
 
     return found
+
+
+def _reminder_child_names(db: Session, messages: list[Message]) -> dict[uuid.UUID, list[str]]:
+    """The reminded Children's names per `booking_reminder` line, in the reminder's order.
+
+    Two queries for the whole page rather than two per line: the reminder rows by SID, then
+    every Child they name.
+    """
+    message_ids_by_sid = {
+        message.twilio_sid: message.id
+        for message in messages
+        if message.system_kind is SystemMessageKind.BOOKING_REMINDER and message.twilio_sid
+    }
+    names: dict[uuid.UUID, list[str]] = {}
+
+    if message_ids_by_sid:
+        reminders = db.scalars(
+            select(BookingReminder).where(BookingReminder.twilio_sid.in_(message_ids_by_sid))
+        ).all()
+        child_ids = {child_id for reminder in reminders for child_id in reminder.child_ids}
+        child_names = dict(
+            db.execute(select(Child.id, Child.name).where(Child.id.in_(child_ids))).all()
+        )
+        names = {
+            message_ids_by_sid[reminder.twilio_sid]: [
+                child_names[child_id] for child_id in reminder.child_ids if child_id in child_names
+            ]
+            for reminder in reminders
+            if reminder.twilio_sid is not None
+        }
+
+    return names
 
 
 def _insert(
@@ -305,6 +392,7 @@ def _insert(
     status: MessageStatus,
     twilio_sid: str | None,
     author_user_id: uuid.UUID | None,
+    system_kind: SystemMessageKind | None = None,
 ) -> Message:
     recorded_at = datetime.datetime.now(tz=datetime.UTC)
     message = Message(
@@ -315,6 +403,7 @@ def _insert(
         twilio_sid=twilio_sid,
         status=status,
         created_at=recorded_at,
+        system_kind=system_kind,
     )
     db.add(message)
     db.flush()

@@ -11,7 +11,9 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+# Statement parameters (phone numbers, Children's names, message bodies) never reach error text,
+# and so never reach the logs.
+engine = create_engine(get_settings().database_url, pool_pre_ping=True, hide_parameters=True)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 

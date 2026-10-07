@@ -5,6 +5,11 @@ import { ChevronLeft } from 'lucide-react'
 
 import { GuardianBookingsSection } from '@/components/guardians/GuardianBookingsSection'
 import { GuardianChildrenSection } from '@/components/guardians/GuardianChildrenSection'
+import { GuardianLanguageSelect } from '@/components/guardians/GuardianLanguageSelect'
+import {
+  GuardianRemindersSection,
+  GuardianRemindersSkeleton,
+} from '@/components/guardians/GuardianRemindersSection'
 import { HomesSection } from '@/components/guardians/HomesSection'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -19,7 +24,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
+import { NO_CHAT_NOTE, isLanguageEditable, languageNote } from '@/lib/guardians/language'
+import { updateConversationLanguage } from '@/lib/queries/conversations'
 import { guardianQueries, updateGuardian, type GuardianUpdate } from '@/lib/queries/guardians'
+import type { Language } from '@/lib/reminders/reminders'
+import { cn } from '@/lib/utils'
 
 type GuardianDraft = Required<GuardianUpdate>
 
@@ -30,7 +39,10 @@ type DetailFieldProps = {
 
 const EMPTY_DRAFT: GuardianDraft = { name: '', phone_number: '', is_active: true }
 const FALLBACK_ERROR = 'Something went wrong. Please try again.'
-const LOADING_ROWS = [0, 1, 2]
+const LOADING_PAIRS = [0, 1, 2]
+const LANGUAGE_ERROR_FALLBACK = 'Could not change the language.'
+const LANGUAGE_SELECT_ID = 'guardian-language'
+const bar = 'animate-pulse rounded-lg bg-muted motion-reduce:animate-none'
 const GUARDIAN_FORM_ID = 'guardian-form'
 
 export const GuardianDetail = () => {
@@ -39,6 +51,12 @@ export const GuardianDetail = () => {
   const { data, isPending, isError, error, refetch } = useQuery(guardianQueries.detail(id))
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<GuardianDraft>(EMPTY_DRAFT)
+
+  const changeLanguage = useMutation({
+    mutationFn: (language: Language | null) =>
+      updateConversationLanguage(data?.language_conversation_id ?? '', language),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: guardianQueries.detail(id).queryKey }),
+  })
 
   const save = useMutation({
     mutationFn: (values: GuardianDraft) => updateGuardian(id, values),
@@ -71,14 +89,34 @@ export const GuardianDetail = () => {
 
   if (isPending) {
     content = (
-      <Card>
-        <CardContent aria-busy="true" className="space-y-3">
-          <p className="text-sm text-muted-foreground">Loading guardian…</p>
-          {LOADING_ROWS.map((row) => (
-            <div key={row} className="h-8 animate-pulse rounded-lg bg-muted" />
-          ))}
-        </CardContent>
-      </Card>
+      <>
+        <Card aria-busy="true">
+          <span className="sr-only">Loading guardian…</span>
+          <CardHeader>
+            <div className={cn(bar, 'h-5 w-24')} />
+            <CardAction>
+              <div className={cn(bar, 'h-7 w-12')} />
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {LOADING_PAIRS.map((pair) => (
+                <div key={pair} className="space-y-1">
+                  <div className={cn(bar, 'h-3 w-20')} />
+                  <div
+                    className={cn(
+                      bar,
+                      pair === 2 ? 'h-11 w-full max-w-64 md:h-8' : 'h-4 w-40',
+                    )}
+                  />
+                  {pair === 2 && <div className={cn(bar, 'h-3 w-56 max-w-full')} />}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+        <GuardianRemindersSkeleton />
+      </>
     )
   } else if (isError) {
     content = (
@@ -119,9 +157,38 @@ export const GuardianDetail = () => {
             <dl className="grid gap-4 sm:grid-cols-2">
               <DetailField label="Name">{data.name}</DetailField>
               <DetailField label="Phone number">{data.phone_number}</DetailField>
+              {isLanguageEditable(data.language_conversation_id) ? (
+                <div className="space-y-1">
+                  <dt className="sr-only">Guardian language</dt>
+                  <dd className="space-y-1">
+                    <GuardianLanguageSelect
+                      id={LANGUAGE_SELECT_ID}
+                      variant="stacked"
+                      value={changeLanguage.isPending ? changeLanguage.variables : data.language}
+                      disabled={changeLanguage.isPending}
+                      onChange={(language) => changeLanguage.mutate(language)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {changeLanguage.isPending ? 'Saving…' : languageNote(data.language)}
+                    </p>
+                    {changeLanguage.isError && (
+                      <p
+                        role="alert"
+                        className="animate-in text-sm font-medium text-destructive duration-150 ease-out fade-in-0 motion-reduce:animate-none"
+                      >
+                        {errorDetail(changeLanguage.error) ?? LANGUAGE_ERROR_FALLBACK}
+                      </p>
+                    )}
+                  </dd>
+                </div>
+              ) : (
+                <DetailField label="Language">{NO_CHAT_NOTE}</DetailField>
+              )}
             </dl>
           </CardContent>
         </Card>
+
+        <GuardianRemindersSection guardianId={id} guardianName={data.name} />
 
         <HomesSection guardianId={id} guardian={data} />
 

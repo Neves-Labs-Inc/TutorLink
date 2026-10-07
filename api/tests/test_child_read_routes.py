@@ -205,6 +205,8 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
         "guardians",
         "homes",
         "next_session",
+        "evaluated",
+        "created_at",
     }
 
 
@@ -468,6 +470,8 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
         "upcoming_session_count",
         "guardians",
         "homes",
+        "levels",
+        "evaluated",
     }
 
 
@@ -479,6 +483,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,

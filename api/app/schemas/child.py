@@ -4,8 +4,9 @@
 observable without a second request — the frozen contract offers no `GET /api/children/{id}` to
 check the result against. The shape itself is `docs/api-design.md`'s (amendment P7-10).
 
-`grade_level` is an integer everywhere. The label ("Grade 7") is derived for display and is
-never stored, so a string is refused rather than coerced. It is optional on create and nullable
+`grade_level` is the Overall grade, an integer 0..12 everywhere (0 = Kindergarten). The label
+("Grade 7") is derived for display and is never stored, so a string is refused rather than
+coerced. It is optional on create and nullable
 on read from migration 0019 on: the admin sets it by hand after the child's first session.
 `ChildUpdate` cannot clear it, because there None already means "leave alone".
 
@@ -21,6 +22,10 @@ carries no flag": a child can be deactivated without being deleted. `ChildSummar
 `ChildDetail` serve `GET /api/children` and `GET /api/children/{id}` (CR). The
 `GuardianLinkCreate` exactly-one-of `guardian_id`/`guardian` rule belongs to the service, not a
 validator, because resolving it may mean creating a guardian row (07B P7B-A).
+
+`levels` and `evaluated` carry the Subject levels and the Evaluated mark, each with the Staff
+member behind it as a `StaffRef` (Display name). `created_at` on `ChildSummary` is the
+"Since" of the Awaiting evaluation tab.
 """
 
 import datetime
@@ -28,7 +33,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
-from app.models.child import NOTES_MAX_LENGTH
+from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH
 from app.schemas.booking import NamedRef
 
 
@@ -49,7 +54,7 @@ class ChildCreate(BaseModel):
     home_ids: list[uuid.UUID]
     name: str
     date_of_birth: datetime.date
-    grade_level: int | None = Field(default=None, ge=1)
+    grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)
     school_name: str
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
 
@@ -62,11 +67,35 @@ class ChildUpdate(BaseModel):
     home_ids: list[uuid.UUID] | None = None
     name: str | None = None
     date_of_birth: datetime.date | None = None
-    grade_level: int | None = Field(default=None, ge=1)
+    grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)
     school_name: str | None = None
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
     is_active: bool | None = None
     expected_cancellations: int | None = Field(default=None, ge=0)
+
+
+class StaffRef(BaseModel):
+    id: uuid.UUID
+    display_name: str
+
+
+class EvaluatedRead(BaseModel):
+    at: datetime.datetime
+    by: StaffRef
+
+
+class LevelSet(BaseModel):
+    level: int = Field(ge=LOWEST_GRADE, le=HIGHEST_GRADE)
+
+
+class ChildLevelRead(BaseModel):
+    subject_id: uuid.UUID
+    name: str
+    # The subject's flag: a level outlives its subject's deactivation and is shown muted.
+    is_active: bool
+    level: int
+    set_by: StaffRef
+    updated_at: datetime.datetime
 
 
 class ChildHomeRef(BaseModel):
@@ -98,6 +127,8 @@ class ChildSummary(BaseModel):
     guardians: list[NamedRef]
     homes: list[ChildHomeRef]
     next_session: NextSession | None
+    evaluated: EvaluatedRead | None
+    created_at: datetime.datetime
 
 
 class ChildGuardianRead(BaseModel):
@@ -118,6 +149,8 @@ class ChildDetail(BaseModel):
     upcoming_session_count: int
     guardians: list[ChildGuardianRead]
     homes: list[ChildHomeRead]
+    levels: list[ChildLevelRead]
+    evaluated: EvaluatedRead | None
 
 
 class NewGuardian(BaseModel):

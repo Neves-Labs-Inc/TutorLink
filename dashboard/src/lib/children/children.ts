@@ -1,4 +1,5 @@
 import { formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
+import { gradeName, isGradeText } from '@/lib/grades/grades'
 import type { ChildDetail, ChildInput, ChildUpdate } from '@/lib/queries/children'
 import type { GuardianDetail, Home } from '@/lib/queries/guardians'
 
@@ -18,12 +19,10 @@ export const EMPTY_CHILD_DRAFT: ChildDraft = {
   notes: '',
 }
 
-export const GRADE_LEVEL_ERROR = 'Grade level must be a whole number of at least 1.'
+export const GRADE_LEVEL_ERROR = 'Overall grade must be K to 12.'
 
 const MIN_DATE_OF_BIRTH = '1900-01-01'
 const MAX_NOTES_LENGTH = 2000
-// Text input, so unparseable text such as "e" reaches validation instead of reading as empty.
-const WHOLE_NUMBER_PATTERN = /^\d+$/
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 const isRealIsoDate = (value: string): boolean => {
@@ -66,9 +65,8 @@ export const childDraftErrors = (
   }
 
   const gradeText = draft.gradeLevel.trim()
-  const gradeLevel = Number(gradeText)
   const isGradeCleared = gradeText === '' && original?.grade_level != null
-  const isGradeInvalid = gradeText !== '' && (!WHOLE_NUMBER_PATTERN.test(gradeText) || gradeLevel < 1)
+  const isGradeInvalid = gradeText !== '' && !isGradeText(gradeText)
 
   if (isGradeCleared || isGradeInvalid) {
     errors.push(GRADE_LEVEL_ERROR)
@@ -139,7 +137,7 @@ export const childUpdate = (draft: ChildDraft, original: ChildDetail): ChildUpda
 }
 
 export const gradeLabel = (gradeLevel: number | null): string =>
-  gradeLevel === null ? 'Grade not set' : `Grade ${gradeLevel}`
+  gradeLevel === null ? 'Grade not set' : gradeName(gradeLevel)
 
 export const homesToOffer = (guardians: GuardianDetail[]): Home[] => {
   const seen = new Set<string>()

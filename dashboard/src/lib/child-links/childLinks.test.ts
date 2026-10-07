@@ -33,6 +33,8 @@ const baseChild: ChildDetail = {
   upcoming_session_count: 0,
   guardians: [],
   homes: [],
+  levels: [],
+  evaluated: null,
 }
 
 describe('phoneCheckOutcome', () => {
@@ -158,6 +160,8 @@ describe('candidateHomes', () => {
     is_active: true,
     homes: [linkedHome, dadsHome, inactiveHome],
     children: [],
+    language: null,
+    language_conversation_id: null,
   }
   const guardianB: GuardianDetail = {
     id: 'g2',
@@ -166,6 +170,8 @@ describe('candidateHomes', () => {
     is_active: true,
     homes: [dadsHome],
     children: [],
+    language: null,
+    language_conversation_id: null,
   }
 
   it('excludes inactive homes, homes already on the child, and duplicates shared by two guardians', () => {

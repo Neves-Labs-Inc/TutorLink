@@ -21,10 +21,15 @@ EXPECTED_TABLES = {
     "messages",
     "login_attempts",
     "bot_flow_state",
+    "child_subject_levels",
+    "reminder_consents",
+    "booking_reminders",
 }
 
 NON_ERD_TABLES = {
     "refresh_tokens",
+    # Ticket 11: which weeks' reminder runs finished, for the Staff Reminders page.
+    "booking_reminder_runs",
 }
 
 

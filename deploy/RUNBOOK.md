@@ -194,9 +194,10 @@ In order:
    command overridden to `["alembic", "upgrade", "head"]`, and confirm `exitCode == 0` before
    continuing.
 5. **Seed the first admin**, as a one-off `run-task` on the same task definition, container command
-   overridden, with `TUTORLINK_ADMIN_EMAIL` and `TUTORLINK_ADMIN_PASSWORD` set as environment
-   overrides on the container (`app/cli.py`'s `seed-admin` reads them; it prompts if either is
-   absent, which a non-interactive task cannot answer):
+   overridden, with `TUTORLINK_ADMIN_EMAIL`, `TUTORLINK_ADMIN_DISPLAY_NAME` and
+   `TUTORLINK_ADMIN_PASSWORD` set as environment overrides on the container (`app/cli.py`'s
+   `seed-admin` reads them; it prompts if any is absent, which a non-interactive task cannot
+   answer):
    ```
    python -m app.cli seed-admin
    ```

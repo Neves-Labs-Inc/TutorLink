@@ -31,10 +31,11 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingStatus, ExceptionStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
@@ -52,7 +53,7 @@ from app.services.scheduling_service import (
 
 type SetIntSetting = Callable[[str, int], None]
 
-ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
 NINE = datetime.time(9, 0)
 NINE_THIRTY = datetime.time(9, 30)
@@ -356,6 +357,66 @@ def test_the_grade_ceiling_is_a_comparison_and_not_a_membership_test(
     response = api.get(_url(world, grade_level=grade_level), headers=_bearer(admin))
 
     assert _windows(response) == expected
+
+
+@pytest.mark.parametrize(("ceiling", "expected"), [(0, DEFAULT_GRID), (1, DEFAULT_GRID)])
+def test_kindergarten_is_grade_zero_and_matches_a_kindergarten_ceiling(
+    api: TestClient, db: Session, admin: User, ceiling: int, expected: list[tuple[str, str]]
+) -> None:
+    """Grade 0 is Kindergarten, a real grade: it is compared like any other, not refused."""
+    world = _make_world(db, date=DATE, max_grade_level=ceiling)
+
+    response = api.get(_url(world, grade_level=0), headers=_bearer(admin))
+
+    assert response.status_code == 200
+    assert _windows(response) == expected
+
+
+def test_a_kindergarten_grade_does_not_reach_a_tutor_who_does_not_teach_the_subject(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """Phase 3's hole was `?grade_level=0` returning the whole roster; it still cannot."""
+    world = _make_world(db, date=DATE, max_grade_level=0)
+    unassigned = _make_subject(db)
+
+    response = api.get(_url(world, subject_id=unassigned.id, grade_level=0), headers=_bearer(admin))
+
+    assert response.status_code == 200
+    assert _windows(response) == []
+
+
+@pytest.mark.parametrize(("ceiling", "expected"), [(4, []), (5, DEFAULT_GRID), (8, DEFAULT_GRID)])
+def test_child_id_matches_on_the_childs_subject_level(
+    api: TestClient,
+    db: Session,
+    admin: User,
+    ceiling: int,
+    expected: list[tuple[str, str]],
+) -> None:
+    """Level 5 in the subject decides; the Child's Overall grade of 7 is never compared."""
+    world = _make_world(db, date=DATE, max_grade_level=ceiling)
+    _set_level(db, admin, world, level=5)
+
+    response = api.get(
+        _url(world, grade_level=None, child_id=world.child_id), headers=_bearer(admin)
+    )
+
+    assert response.status_code == 200
+    assert _windows(response) == expected
+
+
+def test_child_id_with_no_level_for_the_subject_offers_no_tutor(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """The same inner join the bot matches by: no level, no qualified tutor."""
+    world = _make_world(db, date=DATE, max_grade_level=12)
+
+    response = api.get(
+        _url(world, grade_level=None, child_id=world.child_id), headers=_bearer(admin)
+    )
+
+    assert response.status_code == 200
+    assert _windows(response) == []
 
 
 def test_omitting_grade_level_offers_a_tutor_whatever_their_ceiling(
@@ -669,7 +730,7 @@ def test_the_day_before_the_business_date_is_out_of_the_window(
 # --- RBAC and the request envelope ------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_an_admin_and_a_developer_may_both_query_slots(
     api: TestClient, db: Session, world: SlotWorld, role: UserRole
 ) -> None:
@@ -689,7 +750,7 @@ def test_a_tutor_token_is_403_and_never_500(api: TestClient, db: Session, world:
 
     response = api.get(_url(world), headers=_bearer(tutor_user))
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
 
 
 def test_an_unauthenticated_request_is_401(api: TestClient, world: SlotWorld) -> None:
@@ -715,11 +776,10 @@ def test_a_missing_required_parameter_is_400_never_422(
     assert omitted in response.json()["detail"]
 
 
-@pytest.mark.parametrize("grade_level", ["0", "-1", "not-a-grade"])
-def test_a_grade_level_below_one_is_400_never_the_whole_roster(
+@pytest.mark.parametrize("grade_level", ["-1", "not-a-grade"])
+def test_a_grade_level_below_kindergarten_is_400(
     api: TestClient, world: SlotWorld, admin: User, grade_level: str
 ) -> None:
-    """Phase 3's review found `?grade_level=0` matching every ceiling and returning everyone."""
     response = api.get(_url(world, grade_level=grade_level), headers=_bearer(admin))
 
     _assert_detail_shape(response, 400)
@@ -759,6 +819,7 @@ def _url(
     grade_level: int | str | None = 7,
     date: datetime.date | str | None = None,
     tutor_id: uuid.UUID | None = None,
+    child_id: uuid.UUID | None = None,
 ) -> str:
     query = {
         "subject_id": str(subject_id if subject_id is not None else world.subject_id),
@@ -768,6 +829,8 @@ def _url(
         query["grade_level"] = str(grade_level)
     if tutor_id is not None:
         query["tutor_id"] = str(tutor_id)
+    if child_id is not None:
+        query["child_id"] = str(child_id)
 
     return f"/api/slots/available?{urlencode(query)}"
 
@@ -808,6 +871,18 @@ def _make_world(
         home_id=home.id,
         date=date,
     )
+
+
+def _set_level(db: Session, setter: User, world: SlotWorld, *, level: int) -> None:
+    db.add(
+        ChildSubjectLevel(
+            child_id=world.child_id,
+            subject_id=world.subject_id,
+            level=level,
+            set_by_user_id=setter.id,
+        )
+    )
+    db.flush()
 
 
 def _make_tutor(db: Session) -> Tutor:
@@ -910,6 +985,7 @@ def _make_exception(
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("slot-password"),
         role=role,
         tutor_id=tutor_id,

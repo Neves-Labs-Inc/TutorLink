@@ -25,12 +25,26 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import Page
+
 
 class SettingRead(BaseModel):
     key: str
     value: str
     value_type: str
     is_developer_only: bool
+
+
+class SettingsPage(Page[SettingRead]):
+    """The page envelope plus two derived, read-only flags beside `items`.
+
+    Top-level rather than synthetic rows: they are not `system_settings` rows, cannot be
+    written, and an admin gets `reminders_paused` without seeing the developer-only template
+    ids behind it.
+    """
+
+    business_timezone_locked: bool
+    reminders_paused: bool
 
 
 class SettingWrite(BaseModel):

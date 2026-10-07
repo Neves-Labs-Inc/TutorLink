@@ -52,7 +52,7 @@ const ERROR_MEANINGS: Record<string, string> = {
   '63016': 'outside the allowed window.',
 }
 const DELIVERY_UNKNOWN_TEXT = 'Delivery unknown: it may have been delivered.'
-const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+export const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const MONDAY_INDEX = 1
 const DAYS_PER_WEEK = 7
@@ -73,7 +73,7 @@ export const sentDetail = (row: ReminderRow): { text: string | null; tone: Detai
     const meaning = ERROR_MEANINGS[row.error_code]
 
     return {
-      text: meaning === undefined ? `Error ${row.error_code}` : `Error ${row.error_code}: ${meaning}`,
+      text: meaning === undefined ? `Error ${row.error_code}.` : `Error ${row.error_code}: ${meaning}`,
       tone: 'error',
     }
   }
@@ -115,7 +115,7 @@ export const stepWeek = (
   return next === defaultWeek ? null : next
 }
 
-const hourLabel = (hour: number): string =>
+export const hourLabel = (hour: number): string =>
   `${hour % NOON === 0 ? NOON : hour % NOON} ${hour < NOON ? 'AM' : 'PM'}`
 
 type SettingPair = { key: string; value: string }

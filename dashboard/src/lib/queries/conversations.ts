@@ -1,6 +1,7 @@
 import { keepPreviousData, queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
+import type { Language } from '@/lib/reminders/reminders'
 
 export type ConversationStatus = 'bot' | 'human'
 export type FlagReason =
@@ -49,6 +50,7 @@ export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'un
   flagged_at: string | null
   is_window_open: boolean
   last_client_message_at: string | null
+  language: Language | null
 }
 
 export type Message = {
@@ -98,6 +100,17 @@ export const transferConversation = async (conversationId: string): Promise<Conv
   const response = await api.post<ConversationDetail>(
     `/api/conversations/${conversationId}/transfer`,
   )
+
+  return response.data
+}
+
+export const updateConversationLanguage = async (
+  conversationId: string,
+  language: Language | null,
+): Promise<ConversationDetail> => {
+  const response = await api.patch<ConversationDetail>(`/api/conversations/${conversationId}`, {
+    language,
+  })
 
   return response.data
 }

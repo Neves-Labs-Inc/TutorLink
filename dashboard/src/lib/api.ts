@@ -60,6 +60,11 @@ export const errorDetail = (error: unknown): string | null => {
   return detail
 }
 
+// The HTTP status of a failed request, so callers can tell a refusal (403) from a conflict (409)
+// without importing axios.
+export const errorStatus = (error: unknown): number | null =>
+  axios.isAxiosError(error) ? (error.response?.status ?? null) : null
+
 // Single-flight, and module-level on purpose. Refresh tokens rotate on every use (D-017)
 // and the server treats a replayed one as a breach: it revokes the entire family, which
 // logs the user out instantly. Two API calls both 401-ing on the same expired access token

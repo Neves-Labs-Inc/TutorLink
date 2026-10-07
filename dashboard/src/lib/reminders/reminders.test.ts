@@ -67,7 +67,7 @@ describe('sentDetail', () => {
 
   it('shows an unknown error code on its own', () => {
     expect(sentDetail(row({ status: 'failed', error_code: '99999' }))).toEqual({
-      text: 'Error 99999',
+      text: 'Error 99999.',
       tone: 'error',
     })
   })

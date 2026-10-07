@@ -36,6 +36,7 @@ const level = (overrides: Partial<ChildLevel> = {}): ChildLevel => ({
 const subject = (id: string, overrides: Partial<Subject> = {}): Subject => ({
   id,
   name: id,
+  name_es: null,
   description: null,
   is_active: true,
   tutor_count: 0,

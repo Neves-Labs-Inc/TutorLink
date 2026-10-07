@@ -208,6 +208,8 @@ const guardianFixture = (id: string, homes: Home[]): GuardianDetail => ({
   is_active: true,
   homes,
   children: [],
+  language: null,
+  language_conversation_id: null,
 })
 
 describe('homesToOffer', () => {

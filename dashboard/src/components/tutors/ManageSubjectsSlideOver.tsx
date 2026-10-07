@@ -21,10 +21,12 @@ import {
   type Subject,
   type SubjectUpdate,
 } from '@/lib/queries/subjects'
+import { spanishNameDisplay, spanishNameValue, subjectErrorMessage } from '@/lib/subjects/subjects'
 import { cn } from '@/lib/utils'
 
 type SubjectDraft = {
   name: string
+  nameEs: string
   description: string
   is_active: boolean
 }
@@ -39,7 +41,7 @@ export type ManageSubjectsSlideOverProps = {
   onSubjectDeactivated?: (subjectId: string) => void
 }
 
-const EMPTY_DRAFT: SubjectDraft = { name: '', description: '', is_active: true }
+const EMPTY_DRAFT: SubjectDraft = { name: '', nameEs: '', description: '', is_active: true }
 const LIST_VIEW: View = { kind: 'list' }
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SUBJECT_FORM_ID = 'subject-form'
@@ -52,12 +54,17 @@ const columns: Column<Subject>[] = [
     id: 'name',
     header: 'Name',
     primary: true,
-    cell: (row) => <span className="wrap-anywhere">{row.name}</span>,
+    cell: (row) => <span className="wrap-break-word">{row.name}</span>,
   },
   {
-    id: 'description',
-    header: 'Description',
-    cell: (row) => <span className="wrap-anywhere">{row.description ?? '—'}</span>,
+    id: 'name_es',
+    header: 'Spanish name',
+    cell: (row) =>
+      row.name_es === null ? (
+        <span className="text-muted-foreground">{spanishNameDisplay(row.name_es)}</span>
+      ) : (
+        <span className="wrap-break-word">{row.name_es}</span>
+      ),
   },
   { id: 'tutor_count', header: 'Tutors', align: 'end', cell: (row) => row.tutor_count },
   {
@@ -171,6 +178,8 @@ export const ManageSubjectsSlideOver = ({
   const editingSubject = view.kind === 'form' ? view.subject : null
   const activeMutation = editingSubject ? updateMutation : createMutation
   const subjects = data?.items ?? []
+  // The API's detail starts with the field name, so a name_es problem can mark that field.
+  const nameEsError = activeMutation.isError && (errorDetail(activeMutation.error) ?? '').startsWith('name_es')
   const { title, description } = viewCopy(view)
 
   const openCreate = () => {
@@ -183,6 +192,7 @@ export const ManageSubjectsSlideOver = ({
   const openEdit = (subject: Subject) => {
     setDraft({
       name: subject.name,
+      nameEs: subject.name_es ?? '',
       description: subject.description ?? '',
       is_active: subject.is_active,
     })
@@ -203,11 +213,19 @@ export const ManageSubjectsSlideOver = ({
     if (editingSubject) {
       updateMutation.mutate({
         id: editingSubject.id,
-        data: { name: draft.name, description: nextDescription, is_active: draft.is_active },
+        data: {
+          name: draft.name,
+          name_es: spanishNameValue(draft.nameEs),
+          description: nextDescription,
+          is_active: draft.is_active },
         wasActive: editingSubject.is_active,
       })
     } else {
-      createMutation.mutate({ name: draft.name, description: nextDescription })
+      createMutation.mutate({
+        name: draft.name,
+        name_es: spanishNameValue(draft.nameEs),
+        description: nextDescription,
+      })
     }
   }
 
@@ -327,6 +345,21 @@ export const ManageSubjectsSlideOver = ({
           />
         </div>
         <div className="space-y-1.5">
+          <Label htmlFor="subject-name-es">Spanish name (optional)</Label>
+          <Input
+            id="subject-name-es"
+            className="h-11 md:h-8"
+            value={draft.nameEs}
+            disabled={activeMutation.isPending}
+            aria-describedby="subject-name-es-help"
+            aria-invalid={nameEsError || undefined}
+            onChange={(event) => setDraft({ ...draft, nameEs: event.target.value })}
+          />
+          <p id="subject-name-es-help" className="text-xs text-muted-foreground">
+            Used in messages to Spanish-speaking Guardians. Blank = the English name is used.
+          </p>
+        </div>
+        <div className="space-y-1.5">
           <Label htmlFor="subject-description">Description (optional)</Label>
           <Textarea
             id="subject-description"
@@ -349,7 +382,7 @@ export const ManageSubjectsSlideOver = ({
         )}
         {activeMutation.isError && (
           <p role="alert" className="text-sm font-medium text-destructive">
-            {errorDetail(activeMutation.error) ?? SAVE_FALLBACK_ERROR}
+            {subjectErrorMessage(errorDetail(activeMutation.error)) ?? SAVE_FALLBACK_ERROR}
           </p>
         )}
       </form>

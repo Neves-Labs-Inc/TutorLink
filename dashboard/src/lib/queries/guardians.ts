@@ -2,6 +2,7 @@ import { keepPreviousData, queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { bookingSearchParams, type Booking, type BookingListParams } from '@/lib/queries/bookings'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
+import type { Language } from '@/lib/reminders/reminders'
 
 export type Guardian = {
   id: string
@@ -37,6 +38,9 @@ export type GuardianDetail = {
   is_active: boolean
   homes: Home[]
   children: GuardianChild[]
+  language: Language | null
+  // The chat whose language this is, so Staff edit it there; null when the Guardian has no chat.
+  language_conversation_id: string | null
 }
 
 export type GuardianListParams = {

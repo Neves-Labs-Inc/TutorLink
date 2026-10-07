@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 
+import { GuardianLanguageSelect } from '@/components/guardians/GuardianLanguageSelect'
 import { MarkHandledButton } from '@/components/chat/MarkHandledButton'
 import { MessageComposer } from '@/components/chat/MessageComposer'
 import { MessageThread } from '@/components/chat/MessageThread'
@@ -39,10 +40,12 @@ import {
   conversationQueries,
   retryNotice,
   transferConversation,
+  updateConversationLanguage,
   type Message,
 } from '@/lib/queries/conversations'
 import { meQueries } from '@/lib/queries/me'
 import type { Page } from '@/lib/queries/page'
+import type { Language } from '@/lib/reminders/reminders'
 import { useAuthStore } from '@/stores/authStore'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -50,6 +53,7 @@ const TAKEOVER_FALLBACK_ERROR = 'Could not take over this conversation.'
 const RELEASE_FALLBACK_ERROR = 'Could not hand back this conversation.'
 const TRANSFER_FALLBACK_ERROR = 'Could not transfer this conversation.'
 const RETRY_FALLBACK_ERROR = 'Could not retry this notice.'
+const LANGUAGE_FALLBACK_ERROR = 'Could not change the language.'
 // Where focus goes after a change unmounts or disables what had it, tried in order.
 const COMPOSER_FOCUS_TARGETS = ['textarea:not([disabled])', '[data-hand-back]']
 const RETRY_FOCUS_TARGETS = ['[data-retry]:not([disabled])', ...COMPOSER_FOCUS_TARGETS]
@@ -204,6 +208,11 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
   const takeover = useMutation({
     mutationFn: () => takeoverConversation(id),
+    onSuccess: (updated) => queryClient.setQueryData(conversationQueries.detail(id).queryKey, updated),
+  })
+
+  const changeLanguage = useMutation({
+    mutationFn: (language: Language | null) => updateConversationLanguage(id, language),
     onSuccess: (updated) => queryClient.setQueryData(conversationQueries.detail(id).queryKey, updated),
   })
 
@@ -405,7 +414,24 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
           </h1>
           {conversation.data?.flag_reason && <StatusBadge status={conversation.data.flag_reason} />}
           {conversation.data && <MarkHandledButton conversation={conversation.data} />}
+          {conversation.data && (
+            <GuardianLanguageSelect
+              id="chat-language"
+              variant="inline"
+              value={changeLanguage.isPending ? changeLanguage.variables : conversation.data.language}
+              disabled={changeLanguage.isPending}
+              onChange={(language) => changeLanguage.mutate(language)}
+            />
+          )}
         </div>
+        {changeLanguage.isError && (
+          <p
+            role="alert"
+            className="animate-in text-sm font-medium text-destructive duration-150 ease-out fade-in-0 motion-reduce:animate-none"
+          >
+            {errorDetail(changeLanguage.error) ?? LANGUAGE_FALLBACK_ERROR}
+          </p>
+        )}
         {conversation.data && (
           <p className="text-sm text-muted-foreground">
             {conversation.data.phone_number} · {total} message{total === 1 ? '' : 's'}

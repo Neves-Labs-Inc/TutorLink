@@ -67,8 +67,8 @@ condition it needs. The role's trust policy must condition on both claims:
     "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
     "StringLike": {
       "token.actions.githubusercontent.com:sub": [
-        "repo:Siraneves/TutorLink:ref:refs/tags/v*",
-        "repo:Siraneves/TutorLink:ref:refs/heads/*"
+        "repo:Neves-Labs-Inc/TutorLink:ref:refs/tags/v*",
+        "repo:Neves-Labs-Inc/TutorLink:ref:refs/heads/*"
       ]
     }
   }
@@ -82,7 +82,7 @@ this account's ECR — this is exactly what issue #29 exists to prevent.**
 
 **VERIFY at provisioning time:** if this repository is renamed or recreated after 2026-07-15,
 GitHub issues an immutable subject embedding owner and repository IDs
-(`repo:Siraneves@<owner-id>/TutorLink@<repo-id>:ref:refs/tags/v1`) instead of the plain form above
+(`repo:Neves-Labs-Inc@<owner-id>/TutorLink@<repo-id>:ref:refs/tags/v1`) instead of the plain form above
 — read the token's own claims rather than assuming the form has not changed.
 
 **The deploy role's permissions**, as `deploy.yml`'s header states them (wider than an earlier

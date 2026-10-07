@@ -1,0 +1,148 @@
+# Keeps the GitHub Project "TutorLink" (Neves-Labs-Inc, project 4) in sync:
+# - a new or reopened issue/PR is added to the project, in the iteration that covers today;
+# - an issue starts in Backlog; a PR (and the issues it closes) goes to In review;
+# - a merged PR (and the issues it closes) and a closed issue go to Done.
+# "In progress" (work started) isn't a GitHub event; agents set it by hand (see .claude/pipeline.md).
+#
+# Needs a repository or organisation secret PROJECT_TOKEN: a classic PAT with the `project` and
+# `repo` scopes, or a fine-grained token with organisation Projects: read & write and this
+# repository's Issues and Pull requests: read. The default GITHUB_TOKEN can't edit org projects.
+name: Project sync
+
+on:
+  issues:
+    types: [opened, reopened, closed]
+  pull_request:
+    types: [opened, reopened, ready_for_review, closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-sync-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Fork PRs don't get secrets; skip them rather than fail.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          PROJECT_OWNER: Neves-Labs-Inc
+          PROJECT_NUMBER: '4'
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const owner = process.env.PROJECT_OWNER;
+            const number = Number(process.env.PROJECT_NUMBER);
+
+            const { organization: { projectV2: project } } = await github.graphql(`
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    status: field(name: "Status") {
+                      ... on ProjectV2SingleSelectField { id options { id name } }
+                    }
+                    iteration: field(name: "Iteration") {
+                      ... on ProjectV2IterationField { id configuration { iterations { id startDate duration } } }
+                    }
+                  }
+                }
+              }`, { owner, number });
+
+            const statusOption = (name) => {
+              const option = project.status.options.find((o) => o.name === name);
+              if (!option) throw new Error(`No Status option named "${name}"`);
+              return option.id;
+            };
+
+            const currentIterationId = () => {
+              const now = Date.now();
+              const current = project.iteration.configuration.iterations.find((it) => {
+                const start = Date.parse(`${it.startDate}T00:00:00Z`);
+                return start <= now && now < start + it.duration * 86_400_000;
+              });
+              return current ? current.id : null;
+            };
+
+            const addItem = async (contentId) => {
+              const { addProjectV2ItemById } = await github.graphql(`
+                mutation($project: ID!, $content: ID!) {
+                  addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } }
+                }`, { project: project.id, content: contentId });
+              return addProjectV2ItemById.item.id;
+            };
+
+            const setStatus = (itemId, name) => github.graphql(`
+              mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $project, itemId: $item, fieldId: $field,
+                  value: { singleSelectOptionId: $option }
+                }) { projectV2Item { id } }
+              }`, { project: project.id, item: itemId, field: project.status.id, option: statusOption(name) });
+
+            const setCurrentIteration = async (itemId) => {
+              const iterationId = currentIterationId();
+              if (!iterationId) {
+                core.warning('No iteration covers today; Iteration left unchanged.');
+                return;
+              }
+              await github.graphql(`
+                mutation($project: ID!, $item: ID!, $field: ID!, $iteration: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $project, itemId: $item, fieldId: $field,
+                    value: { iterationId: $iteration }
+                  }) { projectV2Item { id } }
+                }`, { project: project.id, item: itemId, field: project.iteration.id, iteration: iterationId });
+            };
+
+            // Issues a PR will close ("Closes #n" in its body, or linked in the sidebar).
+            const closingIssueIds = async (prNumber) => {
+              const { repository } = await github.graphql(`
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) { closingIssuesReferences(first: 20) { nodes { id } } }
+                  }
+                }`, { owner: context.repo.owner, repo: context.repo.repo, number: prNumber });
+              return repository.pullRequest.closingIssuesReferences.nodes.map((n) => n.id);
+            };
+
+            const { eventName, payload } = context;
+            const action = payload.action;
+
+            if (eventName === 'issues') {
+              const itemId = await addItem(payload.issue.node_id);
+              if (action === 'closed') {
+                await setStatus(itemId, 'Done');
+              } else {
+                await setCurrentIteration(itemId);
+                await setStatus(itemId, 'Backlog');
+              }
+              core.info(`Issue #${payload.issue.number}: ${action}`);
+              return;
+            }
+
+            const pr = payload.pull_request;
+            const prItemId = await addItem(pr.node_id);
+            const linked = await closingIssueIds(pr.number);
+
+            if (action === 'closed') {
+              if (!pr.merged) {
+                core.info(`PR #${pr.number} closed without merging; status left as is.`);
+                return;
+              }
+              await setStatus(prItemId, 'Done');
+              for (const issueId of linked) await setStatus(await addItem(issueId), 'Done');
+            } else {
+              await setCurrentIteration(prItemId);
+              await setStatus(prItemId, 'In review');
+              for (const issueId of linked) {
+                const issueItemId = await addItem(issueId);
+                await setCurrentIteration(issueItemId);
+                await setStatus(issueItemId, 'In review');
+              }
+            }
+            core.info(`PR #${pr.number}: ${action}; linked issues: ${linked.length}`);

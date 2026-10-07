@@ -4,6 +4,10 @@ import {
   applyMessageUpdate,
   canMarkHandled,
   canTransfer,
+  isTakeoverOffered,
+  isTransferOffered,
+  takeoverClosedNotice,
+  TAKEOVER_CLOSED_NOTICE,
   composerClosedNotice,
   handBackConfirmBody,
   joinNames,
@@ -14,7 +18,8 @@ import {
   markMessagesFailed,
   socketSaysClosed,
   focusRequest,
-  retryFocusTargets,
+  refusalFocusTarget,
+  isFocusAdrift,
   isFocusRequestLive,
   isHeldByOtherAdmin,
   markConversationHandled,
@@ -244,15 +249,39 @@ const systemMessage = (overrides: Partial<Message>): Message =>
 const marta = { id: 'u1', display_name: 'Marta' }
 
 describe('systemLineLabel', () => {
+  it('drops Retry on a failed takeover or transfer notice while the window is closed', () => {
+    const failed = (system_kind: Message['system_kind']) =>
+      systemLineLabel(
+        systemMessage({ system_kind, status: 'failed', error_code: 'template_not_approved' }),
+        false,
+      )
+
+    expect(failed('takeover_notice')).toEqual({
+      text: 'Takeover notice not delivered (template not approved)',
+      isFailed: true,
+      canRetry: false,
+    })
+    expect(failed('transfer_notice').canRetry).toBe(false)
+  })
+
+  it('keeps the window_closed failure label without Retry', () => {
+    expect(
+      systemLineLabel(
+        systemMessage({ system_kind: 'transfer_notice', status: 'failed', error_code: 'window_closed' }),
+        false,
+      ),
+    ).toEqual({ text: 'Transfer notice not delivered (window closed)', isFailed: true, canRetry: false })
+  })
+
   it('reads a sent takeover notice with the staff name', () => {
     expect(
-      systemLineLabel(systemMessage({ system_kind: 'takeover_notice', author: marta })),
+      systemLineLabel(systemMessage({ system_kind: 'takeover_notice', author: marta }), true),
     ).toEqual({ text: 'Marta joined the chat · notice sent', isFailed: false, canRetry: false })
   })
 
   it('moves a takeover notice through sending, delivered and read', () => {
     const textFor = (status: Message['status']) =>
-      systemLineLabel(systemMessage({ system_kind: 'transfer_notice', author: marta, status })).text
+      systemLineLabel(systemMessage({ system_kind: 'transfer_notice', author: marta, status }), true).text
 
     expect(textFor('queued')).toBe('Marta joined the chat · sending notice')
     expect(textFor('delivered')).toBe('Marta joined the chat · delivered')
@@ -260,15 +289,16 @@ describe('systemLineLabel', () => {
   })
 
   it('falls back to Staff when the notice has no author', () => {
-    expect(systemLineLabel(systemMessage({ system_kind: 'takeover_notice' })).text).toBe(
+    expect(systemLineLabel(systemMessage({ system_kind: 'takeover_notice' }), true).text).toBe(
       'Staff joined the chat · notice sent',
     )
   })
 
-  it('fails a takeover notice with a readable reason and offers Retry', () => {
+  it('fails a takeover notice with a readable reason and offers Retry while the window is open', () => {
     const failed = (error_code: string | null) =>
       systemLineLabel(
         systemMessage({ system_kind: 'takeover_notice', status: 'failed', error_code }),
+        true,
       )
 
     expect(failed('template_not_approved')).toEqual({
@@ -280,11 +310,10 @@ describe('systemLineLabel', () => {
     expect(failed(null).text).toBe('Takeover notice not delivered')
   })
 
-  it('labels a failed transfer notice and offers Retry', () => {
+  it('labels a failed transfer notice and offers Retry while the window is open', () => {
     expect(
       systemLineLabel(
-        systemMessage({ system_kind: 'transfer_notice', status: 'failed', error_code: 'window_closed' }),
-      ),
+        systemMessage({ system_kind: 'transfer_notice', status: 'failed', error_code: 'window_closed' }), true),
     ).toEqual({
       text: 'Transfer notice not delivered (window closed)',
       isFailed: true,
@@ -293,21 +322,19 @@ describe('systemLineLabel', () => {
   })
 
   it('reads hand-back notices, including the closed-window failure', () => {
-    expect(systemLineLabel(systemMessage({ system_kind: 'handback_notice' })).text).toBe(
+    expect(systemLineLabel(systemMessage({ system_kind: 'handback_notice' }), true).text).toBe(
       'Hand-back notice sent',
     )
     expect(
-      systemLineLabel(systemMessage({ system_kind: 'handback_notice', status: 'queued' })).text,
+      systemLineLabel(systemMessage({ system_kind: 'handback_notice', status: 'queued' }), true).text,
     ).toBe('Hand-back notice sending')
     expect(
       systemLineLabel(
-        systemMessage({ system_kind: 'handback_notice', status: 'failed', error_code: 'window_closed' }),
-      ),
+        systemMessage({ system_kind: 'handback_notice', status: 'failed', error_code: 'window_closed' }), true),
     ).toEqual({ text: 'Hand-back notice not sent (window closed)', isFailed: true, canRetry: false })
     expect(
       systemLineLabel(
-        systemMessage({ system_kind: 'handback_notice', status: 'failed', error_code: '63016' }),
-      ).text,
+        systemMessage({ system_kind: 'handback_notice', status: 'failed', error_code: '63016' }), true).text,
     ).toBe('Hand-back notice not delivered (error 63016)')
   })
 
@@ -318,10 +345,9 @@ describe('systemLineLabel', () => {
           system_kind: 'booking_reminder',
           status: 'delivered',
           reminder_child_names: ['Ana', 'Luis'],
-        }),
-      ).text,
+        }), true).text,
     ).toBe('Weekly reminder sent: Ana and Luis · delivered')
-    expect(systemLineLabel(systemMessage({ system_kind: 'booking_reminder' })).text).toBe(
+    expect(systemLineLabel(systemMessage({ system_kind: 'booking_reminder' }), true).text).toBe(
       'Weekly reminder sent · sent',
     )
     expect(
@@ -331,8 +357,7 @@ describe('systemLineLabel', () => {
           status: 'failed',
           error_code: '63016',
           reminder_child_names: ['Ana'],
-        }),
-      ),
+        }), true),
     ).toEqual({
       text: 'Weekly reminder not delivered: Ana (error 63016)',
       isFailed: true,
@@ -342,12 +367,11 @@ describe('systemLineLabel', () => {
 
   it('reads consent notices and their failure without Retry', () => {
     expect(
-      systemLineLabel(systemMessage({ system_kind: 'consent_notice', status: 'queued' })).text,
+      systemLineLabel(systemMessage({ system_kind: 'consent_notice', status: 'queued' }), true).text,
     ).toBe('Reminder setting confirmed to Guardian · sending')
     expect(
       systemLineLabel(
-        systemMessage({ system_kind: 'consent_notice', status: 'failed', error_code: 'window_closed' }),
-      ),
+        systemMessage({ system_kind: 'consent_notice', status: 'failed', error_code: 'window_closed' }), true),
     ).toEqual({
       text: 'Reminder setting confirmation not delivered (window closed)',
       isFailed: true,
@@ -512,8 +536,99 @@ describe('focus requests', () => {
   })
 })
 
-describe('retryFocusTargets', () => {
-  it('points back at the Retry of the notice that failed to retry', () => {
-    expect(retryFocusTargets('notice-1')).toEqual(['[data-retry="notice-1"]:not([disabled])'])
+describe('isFocusAdrift', () => {
+  it('counts focus on <body> as lost', () => {
+    expect(isFocusAdrift({ kind: 'body' })).toBe(true)
+  })
+
+  it('counts focus left in a closing dialog as about to be lost', () => {
+    expect(isFocusAdrift({ kind: 'dialog', state: 'closed' })).toBe(true)
+  })
+
+  it('leaves focus in an open dialog alone', () => {
+    expect(isFocusAdrift({ kind: 'dialog', state: 'open' })).toBe(false)
+  })
+
+  it('leaves focus in a sheet with no open or closed state alone, like the mobile nav', () => {
+    expect(isFocusAdrift({ kind: 'dialog', state: null })).toBe(false)
+  })
+
+  it('leaves focus on a control in the page alone', () => {
+    expect(isFocusAdrift({ kind: 'page' })).toBe(false)
+  })
+})
+
+describe('refusalFocusTarget', () => {
+  // Stands in for querySelector over the chat panel: returns the selector when it is mounted.
+  const mountedOnly =
+    (...mounted: string[]) =>
+    (selector: string): string | null =>
+      mounted.includes(selector) ? selector : null
+
+  it('moves to the closed-window line once it replaces a refused Take over', () => {
+    expect(refusalFocusTarget({ kind: 'takeover' }, mountedOnly('[data-takeover-closed]'))).toBe(
+      '[data-takeover-closed]',
+    )
+  })
+
+  it('moves to Transfer to me when the refused Take over turned out to be held by another', () => {
+    expect(refusalFocusTarget({ kind: 'takeover' }, mountedOnly('[data-transfer]'))).toBe('[data-transfer]')
+  })
+
+  it('returns to the re-enabled Take over while the refetch has not replaced it', () => {
+    expect(
+      refusalFocusTarget({ kind: 'takeover' }, mountedOnly('[data-takeover]:not([disabled])')),
+    ).toBe('[data-takeover]:not([disabled])')
+  })
+
+  it('moves to the header line when a refused Transfer is closed after the refetch', () => {
+    expect(
+      refusalFocusTarget({ kind: 'transfer' }, mountedOnly('[data-takeover-closed]', '[data-hand-back]')),
+    ).toBe('[data-takeover-closed]')
+  })
+
+  it('returns to the refused Retry while it is still offered', () => {
+    expect(
+      refusalFocusTarget(
+        { kind: 'retry', messageId: 'notice-1' },
+        mountedOnly('[data-hand-back]', '[data-retry="notice-1"]:not([disabled])'),
+      ),
+    ).toBe('[data-retry="notice-1"]:not([disabled])')
+  })
+
+  it('moves to Hand back once the refetch removes a refused Retry from my chat', () => {
+    expect(
+      refusalFocusTarget(
+        { kind: 'retry', messageId: 'notice-1' },
+        mountedOnly('[data-retry="notice-2"]:not([disabled])', '[data-hand-back]'),
+      ),
+    ).toBe('[data-hand-back]')
+  })
+
+  it('finds nothing when no control is mounted', () => {
+    expect(refusalFocusTarget({ kind: 'transfer' }, mountedOnly())).toBeNull()
+  })
+})
+
+describe('window-dependent takeover decisions', () => {
+  const open = { is_window_open: true }
+  const closed = { is_window_open: false }
+
+  it('offers Take over only while the window is open', () => {
+    expect(isTakeoverOffered(open)).toBe(true)
+    expect(isTakeoverOffered(closed)).toBe(false)
+  })
+
+  it('offers Transfer to me only while the window is open', () => {
+    expect(isTransferOffered(open)).toBe(true)
+    expect(isTransferOffered(closed)).toBe(false)
+  })
+
+  it('explains a closed window and says nothing while it is open', () => {
+    expect(takeoverClosedNotice(closed)).toBe(
+      "Window closed: take over is only possible within 24 hours of the Guardian's last message.",
+    )
+    expect(takeoverClosedNotice(closed)).toBe(TAKEOVER_CLOSED_NOTICE)
+    expect(takeoverClosedNotice(open)).toBeNull()
   })
 })

@@ -55,10 +55,6 @@ KEY = "a_test_only_setting"
 TEMPLATE_SID_KEYS = {
     "reminder_template_sid_en",
     "reminder_template_sid_es",
-    "takeover_template_sid_en",
-    "takeover_template_sid_es",
-    "takeover_generic_template_sid_en",
-    "takeover_generic_template_sid_es",
 }
 
 

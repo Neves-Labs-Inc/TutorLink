@@ -69,12 +69,16 @@ NEW_SETTINGS = {
     "business_timezone": ("America/New_York", "string", False),
     "reminder_template_sid_en": ("", "string", True),
     "reminder_template_sid_es": ("", "string", True),
-    "takeover_template_sid_en": ("", "string", True),
-    "takeover_template_sid_es": ("", "string", True),
 }
 GENERIC_TAKEOVER_SETTINGS = {
     "takeover_generic_template_sid_en": ("", "string", True),
     "takeover_generic_template_sid_es": ("", "string", True),
+}
+# Seeded by 0021 and 0025, deleted by 0027 once Takeover was confined to the window.
+TAKEOVER_TEMPLATE_SETTINGS = {
+    "takeover_template_sid_en": ("", "string", True),
+    "takeover_template_sid_es": ("", "string", True),
+    **GENERIC_TAKEOVER_SETTINGS,
 }
 
 
@@ -508,6 +512,50 @@ def test_migration_0026_adds_the_reminder_run_marker_and_round_trips(
     with _migration_engine.connect() as connection:
         table = connection.execute(text("SELECT to_regclass('booking_reminder_runs')")).scalar()
     assert table is None
+
+    command.upgrade(config, "head")
+
+
+def test_migration_0027_deletes_the_takeover_template_settings_and_restores_them_blank(
+    _migration_engine: Engine,
+) -> None:
+    """Production holds Marketing template ids here; the downgrade does not bring them back."""
+    config = _alembic_config()
+    command.upgrade(config, "0026")
+
+    with _migration_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE system_settings SET value = 'HXmarketing' WHERE key = ANY(:keys)"),
+            {"keys": list(TAKEOVER_TEMPLATE_SETTINGS)},
+        )
+
+    command.upgrade(config, "0027")
+
+    with _migration_engine.connect() as connection:
+        remaining = connection.execute(
+            text("SELECT count(*) FROM system_settings WHERE key = ANY(:keys)"),
+            {"keys": list(TAKEOVER_TEMPLATE_SETTINGS)},
+        ).scalar_one()
+        reminder_keys = connection.execute(
+            text("SELECT count(*) FROM system_settings WHERE key LIKE 'reminder_template_sid_%'")
+        ).scalar_one()
+    assert remaining == 0
+    assert reminder_keys == 2
+
+    command.downgrade(config, "0026")
+
+    with _migration_engine.connect() as connection:
+        settings = {
+            row.key: (row.value, row.value_type, row.is_developer_only)
+            for row in connection.execute(
+                text(
+                    "SELECT key, value, value_type, is_developer_only FROM system_settings"
+                    " WHERE key = ANY(:keys)"
+                ),
+                {"keys": list(TAKEOVER_TEMPLATE_SETTINGS)},
+            )
+        }
+    assert settings == TAKEOVER_TEMPLATE_SETTINGS
 
     command.upgrade(config, "head")
 

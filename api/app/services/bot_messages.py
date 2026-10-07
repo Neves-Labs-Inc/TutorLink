@@ -16,8 +16,8 @@ DEFAULT_LANGUAGE = "en"
 SPANISH = "es"
 NOON_HOUR = 12
 
-# `TAKEOVER_NOTICE_GENERIC` and `TEMPLATE_takeover_notice_generic` are not in the doc (Maye
-# approved them separately). They are the nameless notices for Staff without a real Display name.
+# `TAKEOVER_NOTICE_GENERIC` is not in the doc (Maye approved it separately). It is the nameless
+# notice for Staff without a real Display name.
 # `RESCHEDULE_NEEDS_OFFICE` is not in the doc either; its Spanish is a draft pending Maye's review.
 MESSAGES: dict[str, dict[str, str]] = {
     "GREETING_NEW": {
@@ -103,10 +103,6 @@ MESSAGES: dict[str, dict[str, str]] = {
     "TAKEOVER_NOTICE": {
         "en": "{staff} from Ms Helping Hands has joined this chat and will reply to you here.",
         "es": "{staff}, de Ms Helping Hands, se ha unido a este chat y le responderá aquí.",
-    },
-    "TEMPLATE_takeover_notice": {
-        "en": "Hello, this is Ms Helping Hands. {staff} from our team has joined your chat and would like to help. Please reply to this message to continue the conversation.",
-        "es": "Hola, le escribe Ms Helping Hands. {staff}, de nuestro equipo, se ha unido a su chat y desea ayudarle. Por favor, responda a este mensaje para continuar la conversación.",
     },
     "HANDBACK_NOTICE": {
         "en": "You're back with the Ms Helping Hands booking assistant. I can book, cancel or move a session for you.",
@@ -430,11 +426,6 @@ MESSAGES: dict[str, dict[str, str]] = {
     "TAKEOVER_NOTICE_GENERIC": {
         "en": "A member of the Ms Helping Hands team has joined this chat and will reply to you here.",
         "es": "Una persona del equipo de Ms Helping Hands se ha unido a este chat y le responderá aquí.",
-    },
-    # Draft, pending Maye's review.
-    "TEMPLATE_takeover_notice_generic": {
-        "en": "Hello, this is Ms Helping Hands. A member of our team has joined your chat and would like to help. Please reply to this message to continue the conversation.",
-        "es": "Hola, le escribe Ms Helping Hands. Una persona de nuestro equipo se ha unido a su chat y desea ayudarle. Por favor, responda a este mensaje para continuar la conversación.",
     },
 }
 

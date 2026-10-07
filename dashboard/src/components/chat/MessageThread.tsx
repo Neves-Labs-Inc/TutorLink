@@ -19,6 +19,7 @@ export type MessageThreadProps = {
   loadingMore: boolean
   onLoadMore: () => void
   lastSentId: string | null
+  isWindowOpen: boolean
   retry: NoticeRetry
 }
 
@@ -80,6 +81,7 @@ export const MessageThread = ({
   loadingMore,
   onLoadMore,
   lastSentId,
+  isWindowOpen,
   retry,
 }: MessageThreadProps) => {
   const [previousMessages, setPreviousMessages] = useState(messages)
@@ -171,7 +173,7 @@ export const MessageThread = ({
           isBubbleMessage(message) ? (
             <MessageBubble key={message.id} message={message} />
           ) : (
-            <SystemLine key={message.id} message={message} retry={retry} />
+            <SystemLine key={message.id} message={message} isWindowOpen={isWindowOpen} retry={retry} />
           ),
         )
       )}
@@ -222,8 +224,10 @@ const MessageBubble = ({ message }: { message: BubbleMessage }) => {
 const RETRY_HIT_AREA =
   "relative before:absolute before:-inset-y-2.5 before:-inset-x-1 before:content-[''] md:before:hidden"
 
-const SystemLine = ({ message, retry }: { message: Message; retry: NoticeRetry }) => {
-  const { text, isFailed, canRetry } = systemLineLabel(message)
+type SystemLineProps = { message: Message; isWindowOpen: boolean; retry: NoticeRetry }
+
+const SystemLine = ({ message, isWindowOpen, retry }: SystemLineProps) => {
+  const { text, isFailed, canRetry } = systemLineLabel(message, isWindowOpen)
   const isRetrying = retry.pendingId === message.id
   const errorText = retry.error?.messageId === message.id ? retry.error.text : null
 

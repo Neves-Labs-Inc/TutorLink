@@ -27,6 +27,7 @@ class UserRead(BaseModel):
 
     id: uuid.UUID
     email: str
+    display_name: str
     role: UserRole
     tutor_id: uuid.UUID | None
     is_active: bool
@@ -36,6 +37,11 @@ class MeRead(BaseModel):
     id: uuid.UUID
     email: str
     role: UserRole
+    display_name: str
+
+
+class MeUpdate(BaseModel):
+    # Nothing else: the row is the token's user, so there is no id to send.
     display_name: str
 
 
@@ -55,6 +61,8 @@ class UserCreate(BaseModel):
     # the role/profile rule it completes, so one place decides what shape a tutor account has
     # and the refusal carries this router's own message.
     email: Email
+    # Required for every role, tutors included. Blank or too long is the service's 422.
+    display_name: str
     password: str
     role: UserRole
     tutor_id: uuid.UUID | None = None
@@ -66,6 +74,7 @@ class UserUpdate(BaseModel):
     # its profile is not something PATCH offers, because a tutor row with a NULL tutor_id is
     # the data error `TutorScope` refuses on.
     email: Email | None = None
+    display_name: str | None = None
     password: str | None = None
     role: UserRole | None = None
     is_active: bool | None = None

@@ -34,7 +34,12 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import (
+    ADMIN_REQUIRED_ERROR,
+    CREDENTIALS_ERROR,
+    STAFF_REQUIRED_ERROR,
+    TUTOR_SCOPE_ERROR,
+)
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -411,29 +416,29 @@ def test_a_tutor_deleting_another_tutors_pending_request_is_403(
             "PATCH",
             "/api/exceptions/{pending_id}",
             {"status": "approved"},
-            ADMIN_REQUIRED_ERROR,
+            STAFF_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/exceptions/{other_pending_id}",
             {"status": "rejected"},
-            ADMIN_REQUIRED_ERROR,
+            STAFF_REQUIRED_ERROR,
         ),
         ("DELETE", "/api/exceptions/{approved_id}", None, EXCEPTION_NOT_DELETABLE_ERROR),
         (
             "POST",
             "/api/tutors/{tutor_id}/availability",
             {"day_of_week": 3, "start_time": "09:00:00", "end_time": "12:00:00"},
-            ADMIN_REQUIRED_ERROR,
+            STAFF_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/availability/{slot_id}",
             {"start_time": "10:00:00", "end_time": "11:00:00"},
-            ADMIN_REQUIRED_ERROR,
+            STAFF_REQUIRED_ERROR,
         ),
-        ("DELETE", "/api/availability/{slot_id}", None, ADMIN_REQUIRED_ERROR),
-        ("PATCH", "/api/bookings/{booking_id}", {"status": "cancelled"}, ADMIN_REQUIRED_ERROR),
+        ("DELETE", "/api/availability/{slot_id}", None, STAFF_REQUIRED_ERROR),
+        ("PATCH", "/api/bookings/{booking_id}", {"status": "cancelled"}, STAFF_REQUIRED_ERROR),
     ],
     ids=[
         "decide-own-pending",
@@ -489,7 +494,7 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
         headers=world.tutor_headers,
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _booking_count(db) == 2
 
 
@@ -497,25 +502,28 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
 
 
 @pytest.mark.parametrize(
-    "template",
+    ("template", "detail"),
     [
-        "/api/clients",
-        "/api/users",
-        "/api/settings",
-        "/api/stats/overview?date=2026-09-07",
-        "/api/slots/available?subject_id={subject_id}&date=2026-09-07&grade_level=7",
+        ("/api/clients", STAFF_REQUIRED_ERROR),
+        ("/api/users", ADMIN_REQUIRED_ERROR),
+        ("/api/settings", ADMIN_REQUIRED_ERROR),
+        ("/api/stats/overview?date=2026-09-07", STAFF_REQUIRED_ERROR),
+        (
+            "/api/slots/available?subject_id={subject_id}&date=2026-09-07&grade_level=7",
+            STAFF_REQUIRED_ERROR,
+        ),
     ],
     ids=["clients", "users", "settings", "stats", "slots"],
 )
-def test_an_admin_only_surface_is_403_for_a_tutor(
-    api: TestClient, world: World, template: str
+def test_a_staff_only_surface_is_403_for_a_tutor(
+    api: TestClient, world: World, template: str, detail: str
 ) -> None:
     """403 and nothing else — `/api/slots/available` in particular reads five tutor-owned
     mappers, so a `TutorScope` mistakenly hung on it would answer 500 instead, which a bare
     "not 200" assertion would accept."""
     response = api.get(template.format(**_targets(world)), headers=world.tutor_headers)
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, detail)
 
 
 def test_a_tutor_may_read_every_subject_including_the_other_tutors(

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -34,7 +34,7 @@ from app.routers.availability import (
 from app.security import create_access_token, hash_password
 from app.services import availability_service
 
-ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
 
 # --- list: every slot, active and deactivated -----------------------------------------------
@@ -136,7 +136,7 @@ def test_tutor_with_null_tutor_id_cannot_list(api: TestClient, db: Session) -> N
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_admin_lists_any_tutors_availability(api: TestClient, db: Session, role: UserRole) -> None:
     tutor = _make_tutor(db)
     other = _make_tutor(db)
@@ -188,7 +188,7 @@ def test_tutor_cannot_create_a_slot(api: TestClient, db: Session) -> None:
         f"/api/tutors/{tutor.id}/availability", json=_payload(), headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
 
 
 def test_admin_creating_for_an_unknown_tutor_is_404(api: TestClient, db: Session) -> None:
@@ -389,7 +389,7 @@ def test_tutor_cannot_update_a_slot(api: TestClient, db: Session) -> None:
         f"/api/availability/{row.id}", json={"end_time": "11:00:00"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
 
 
 def test_updating_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
@@ -459,7 +459,7 @@ def test_tutor_cannot_delete_a_slot(api: TestClient, db: Session) -> None:
 
     response = api.delete(f"/api/availability/{row.id}", headers=_bearer(user))
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
 
 
 def test_deleting_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
@@ -479,7 +479,7 @@ def test_unauthenticated_delete_is_401(api: TestClient, db: Session) -> None:
     _assert_detail(response, 401, CREDENTIALS_ERROR)
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_developer_reaches_every_admin_only_route(
     api: TestClient, db: Session, role: UserRole
 ) -> None:

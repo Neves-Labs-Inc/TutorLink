@@ -42,6 +42,22 @@ def test_setting_a_level_records_it_and_who_set_it(api: TestClient, db: Session)
     assert row["updated_at"] is not None
 
 
+def test_a_manager_sets_a_level_and_marks_evaluated_under_their_display_name(
+    api: TestClient, db: Session
+) -> None:
+    manager = _make_user(db, display_name="Rosa", role=UserRole.MANAGER)
+    child = _make_child(db)
+    math = _make_subject(db)
+
+    level = api.put(_level_url(child, math), headers=_auth(manager), json={"level": 3})
+    evaluated = api.post(f"/api/children/{child.id}/evaluated", headers=_auth(manager))
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(manager)).json()
+
+    assert (level.status_code, evaluated.status_code) == (200, 200)
+    assert detail["levels"][0]["set_by"] == {"id": str(manager.id), "display_name": "Rosa"}
+    assert evaluated.json()["by"] == {"id": str(manager.id), "display_name": "Rosa"}
+
+
 def test_editing_a_level_replaces_it_and_the_setter(api: TestClient, db: Session) -> None:
     first = _make_user(db, display_name="Marta")
     second = _make_user(db, display_name="Luis")

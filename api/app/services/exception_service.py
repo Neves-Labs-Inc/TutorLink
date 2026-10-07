@@ -21,7 +21,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_ROLES
+from app.dependencies import STAFF_ROLES
 from app.models.availability import TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.tutor import Tutor
@@ -196,16 +196,16 @@ def delete_exception(
 ) -> None:
     """Delete a loaded exception, if the actor's role permits it at that row's status.
 
-    An admin or developer deletes any row whatever its status. That is deliberate and it is the
-    only way back from a mistaken approval: `decide_exception` refuses to re-decide, so nothing
-    else reverses one. A tutor deletes only a still-`pending` row — withdrawing a request nobody
-    has acted on — because undoing a decision unilaterally, in either direction, is precisely
-    what the admin gate exists to prevent.
+    Staff (admin, manager, developer) delete any row whatever its status. That is deliberate and
+    it is the only way back from a mistaken approval: `decide_exception` refuses to re-decide, so
+    nothing else reverses one. A tutor deletes only a still-`pending` row — withdrawing a request
+    nobody has acted on — because undoing a decision unilaterally, in either direction, is
+    precisely what the staff gate exists to prevent.
 
     The row is really gone afterwards. `tutor_availability_exceptions` carries no `is_active`
     and nothing references it by foreign key, so there is no orphan and nothing to soft-delete.
     """
-    if actor_role not in ADMIN_ROLES and exception.status is not ExceptionStatus.PENDING:
+    if actor_role not in STAFF_ROLES and exception.status is not ExceptionStatus.PENDING:
         raise ExceptionNotDeletable(f"exception {exception.id} is already {exception.status.value}")
 
     db.delete(exception)
@@ -222,7 +222,7 @@ def _initial_status(creator_role: UserRole) -> ExceptionStatus:
     availability, and there is no second person to add when the admin is already the one
     typing.
     """
-    if creator_role in ADMIN_ROLES:
+    if creator_role in STAFF_ROLES:
         status = ExceptionStatus.APPROVED
     else:
         status = ExceptionStatus.PENDING

@@ -4,7 +4,7 @@ A thin HTTP shell over `guardian_link_service`, matching `children.py`: the serv
 domain exceptions, this maps them to status codes and owns the commit. Mounted on the same
 `/api/children` prefix as `children.py` and `children_read.py`; no path here overlaps theirs.
 
-`AdminPrincipal` and never `TutorScope` (`docs/api-design.md` RBAC table): a tutor has no access
+`StaffPrincipal` and never `TutorScope` (`docs/api-design.md` RBAC table): a tutor has no access
 to any client or child write, and nothing here queries a tutor-owned table.
 
 The two phone literals are `clients.py`'s and `CHILD_NOT_FOUND_ERROR` is `children.py`'s, repeated
@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.child import Child
 from app.schemas.child import ChildRead, GuardianLinkCreate
 from app.services.child_service import ChildNotFound
@@ -49,7 +49,7 @@ router = APIRouter(prefix="/api/children", tags=["children"])
 
 @router.post("/{child_id}/guardians", response_model=ChildRead, status_code=status.HTTP_201_CREATED)
 def create(
-    child_id: uuid.UUID, payload: GuardianLinkCreate, user: AdminPrincipal, db: DbSession
+    child_id: uuid.UUID, payload: GuardianLinkCreate, user: StaffPrincipal, db: DbSession
 ) -> ChildRead:
     new_guardian = (
         None

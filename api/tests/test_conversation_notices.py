@@ -251,7 +251,7 @@ def test_the_thread_shows_the_notice_with_its_kind_reason_and_the_staff_member(
     ][0]
 
     assert item["author_kind"] == "system"
-    assert item["author"] == {"id": str(staff.id), "email": staff.email}
+    assert item["author"] == {"id": str(staff.id), "display_name": staff.display_name}
     assert (item["system_kind"], item["status"], item["error_code"]) == (
         "takeover_notice",
         "failed",
@@ -336,7 +336,10 @@ def test_a_transfer_moves_the_chat_to_the_caller_with_one_notice_and_a_broadcast
 
     notice = _only(db, conversation.id, MessageAuthor.SYSTEM)
     assert response.status_code == 200
-    assert response.json()["taken_over_by"] == {"id": str(staff.id), "email": staff.email}
+    assert response.json()["taken_over_by"] == {
+        "id": str(staff.id),
+        "display_name": staff.display_name,
+    }
     assert (notice.system_kind, notice.author_user_id) == (
         SystemMessageKind.TRANSFER_NOTICE,
         staff.id,
@@ -708,6 +711,33 @@ def test_a_reminder_line_lists_the_children_it_named(api: TestClient, db: Sessio
         "booking_reminder",
         ["Ana", "Luis"],
     )
+
+
+# --- naming a nameless holder ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("setter", ["me", "users"])
+def test_once_a_nameless_holder_is_named_the_next_takeover_notice_uses_the_name(
+    api: TestClient, db: Session, fake_twilio: FakeTwilio, setter: str
+) -> None:
+    """`PATCH /api/me` and the Users update both clear `display_name_is_default` (#109)."""
+    staff = _make_user(db, role=UserRole.MANAGER, is_nameless=True)
+    if setter == "me":
+        renamed = api.patch("/api/me", headers=_auth(staff), json={"display_name": "Maria"})
+    else:
+        admin = _make_user(db)
+        renamed = api.patch(
+            f"/api/users/{staff.id}", headers=_auth(admin), json={"display_name": "Maria"}
+        )
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+
+    taken = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
+
+    assert (renamed.status_code, taken.status_code) == (200, 200)
+    assert taken.json()["taken_over_by"] == {"id": str(staff.id), "display_name": "Maria"}
+    assert [sent.body for sent in fake_twilio.sent] == [
+        MESSAGES["TAKEOVER_NOTICE"]["en"].format(staff="Maria")
+    ]
 
 
 # --- GET /api/me ---------------------------------------------------------------------------

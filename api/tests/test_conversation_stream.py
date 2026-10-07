@@ -60,7 +60,7 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus, MessageAuthor, MessageStatus, UserRole
 from app.models.message import Message
@@ -183,9 +183,9 @@ def test_a_socket_that_never_authenticates_is_closed_with_1008(
     assert (refusal.code, refusal.reason) == (POLICY_VIOLATION, AUTH_TIMEOUT_ERROR)
 
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.DEVELOPER])
-def test_a_valid_admin_token_gets_ready(sockets: TestClient, db: Session, role: UserRole) -> None:
-    """`developer` is a superset of `admin` and reaches everything an admin reaches."""
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER])
+def test_a_valid_staff_token_gets_ready(sockets: TestClient, db: Session, role: UserRole) -> None:
+    """Every Staff role has the chat (#108): a Manager as much as an Admin or a Developer."""
     user = _make_user(db, role=role)
 
     with sockets.websocket_connect(STREAM_PATH) as socket:
@@ -197,7 +197,7 @@ def test_a_valid_admin_token_gets_ready(sockets: TestClient, db: Session, role: 
 @pytest.mark.parametrize(
     ("principal", "expected_reason"),
     [
-        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), ADMIN_REQUIRED_ERROR),
+        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), STAFF_REQUIRED_ERROR),
         (lambda db: _token(_make_user(db, is_active=False)), CREDENTIALS_ERROR),
         (lambda db: _token(_make_user(db), lifetime=-_minutes(30)), CREDENTIALS_ERROR),
         (lambda db: "not.a.token", CREDENTIALS_ERROR),
@@ -283,11 +283,29 @@ def test_a_send_on_a_human_conversation_is_recorded_sent_and_echoed(
     assert frame["conversation_id"] == str(conversation.id)
     assert frame["client_message_id"] == "composer-1"
     assert frame["message"]["id"] == str(message.id)
-    assert frame["message"]["author"] == {"id": str(user.id), "email": user.email}
+    assert frame["message"]["author"] == {"id": str(user.id), "display_name": user.display_name}
     assert frame["message"]["status"] == MessageStatus.QUEUED.value
     assert twilio == [{"to": conversation.phone_number, "body": "on my way"}]
     assert (message.author_kind, message.status) == (MessageAuthor.ADMIN, MessageStatus.QUEUED)
     assert (message.twilio_sid, message.author_user_id) == (TWILIO_SID, user.id)
+
+
+def test_a_manager_sends_on_a_chat_they_hold(
+    sockets: TestClient, db: Session, twilio: list[dict[str, str]]
+) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=manager)
+    _make_inbound(db, conversation, body="Hola")
+
+    with _authenticated(sockets, manager) as socket:
+        socket.send_json(_send_frame(conversation.id, body="Hi, Maria here"))
+
+        frame = _receive(socket)
+
+    assert frame["type"] == "message.created"
+    assert frame["message"]["author"] == {"id": str(manager.id), "display_name": "Test User"}
+    assert twilio == [{"to": conversation.phone_number, "body": "Hi, Maria here"}]
+    assert _only_message(db, conversation.id).author_user_id == manager.id
 
 
 def test_a_send_twilio_refuses_keeps_the_row_and_tells_the_sender(

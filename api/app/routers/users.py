@@ -1,4 +1,5 @@
-"""`/api/users` — admin only, and the one router that guards the developer boundary.
+"""`/api/users` — admin only (a Manager is 403), and the one router that guards the developer
+boundary.
 
 A thin HTTP shell over `user_service`, matching `auth.py`: the service raises domain
 exceptions, this maps them to status codes and owns the commit.
@@ -27,6 +28,7 @@ from app.services.tutor_service import (
 )
 from app.services.user_service import (
     EmailTaken,
+    InvalidDisplayName,
     InvalidUserShape,
     RoleNotPermitted,
     TutorProfileInput,
@@ -42,8 +44,8 @@ EMAIL_TAKEN_ERROR = "A user with that email already exists"
 USER_NOT_FOUND_ERROR = "User not found"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
 INVALID_SHAPE_ERROR = (
-    "A tutor account requires exactly one of tutor_id and tutor, an admin or developer must "
-    "have neither, and a password must be at least 8 characters"
+    "A tutor account requires exactly one of tutor_id and tutor, any other role must have "
+    "neither, and a password must be at least 8 characters"
 )
 TUTOR_EMAIL_TAKEN_ERROR = (
     "A tutor profile already holds that email — link it with tutor_id instead of sending tutor"
@@ -98,6 +100,7 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
             role=payload.role,
             tutor_id=payload.tutor_id,
             tutor=_tutor_profile_input(payload.tutor),
+            display_name=payload.display_name,
         )
     except RoleNotPermitted as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
@@ -105,6 +108,9 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN_ERROR) from exc
     except InvalidUserShape as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_SHAPE_ERROR) from exc
+    except InvalidDisplayName as exc:
+        # The service's message says which rule the name broke.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except InvalidPhoneNumber as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
     except TutorEmailTaken as exc:
@@ -132,6 +138,7 @@ def update(
             password=payload.password,
             role=payload.role,
             is_active=payload.is_active,
+            display_name=payload.display_name,
         )
     except UserNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
@@ -141,6 +148,9 @@ def update(
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN_ERROR) from exc
     except InvalidUserShape as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_SHAPE_ERROR) from exc
+    except InvalidDisplayName as exc:
+        # The service's message says which rule the name broke.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     db.commit()
 

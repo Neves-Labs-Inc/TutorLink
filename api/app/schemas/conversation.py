@@ -55,7 +55,7 @@ class GuardianRef(BaseModel):
 
 class UserRef(BaseModel):
     id: uuid.UUID
-    email: str
+    display_name: str
 
 
 class ReactivationChildRef(BaseModel):

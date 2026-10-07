@@ -31,7 +31,7 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -58,7 +58,7 @@ from app.security import create_access_token, hash_password
 from app.services import booking_write_service, clock
 from app.services.scheduling_service import MIN_BOOKING_LEAD_SETTING
 
-ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
 CHILD_GRADE = 7
 TUTOR_CEILING = 8
@@ -125,7 +125,7 @@ def family(db: Session) -> Family:
 # --- the happy path and RBAC ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_an_admin_creates_a_confirmed_booking(
     api: TestClient, db: Session, family: Family, role: UserRole
 ) -> None:
@@ -163,7 +163,7 @@ def test_a_tutor_token_is_403_and_writes_nothing(
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _count(db) == 0
 
 

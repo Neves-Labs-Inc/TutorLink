@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -129,7 +129,7 @@ def test_a_tutor_token_is_403(api: TestClient, db: Session, stage: Stage) -> Non
 
     response = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(tutor_user))
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
 
 
 def test_a_developer_token_is_200(api: TestClient, db: Session) -> None:

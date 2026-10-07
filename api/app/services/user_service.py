@@ -10,6 +10,12 @@ the boundary open, because `PATCH /api/users/{id}` can set a password: an admin 
 one. Deactivating them is the same hole in the other direction.
 
 So an admin may not write to a developer account at all. A developer may do all of it.
+Managers are ordinary accounts on this boundary: an admin or developer creates, edits, promotes,
+demotes and deactivates them (#108). A Manager never reaches this module, since `/api/users` is
+admin-only.
+
+**Every account has a Display name**, tutors included, given on create and never derived. A
+tutor account's name is independent of `tutors.name`: renaming the profile leaves it alone.
 
 **A tutor account names its profile one of two ways.** `tutor_id` links a profile the Tutors
 page already created — tutors exist there before their login does — and `tutor` creates one
@@ -23,6 +29,7 @@ at all, and a failure between the two writes is one rollback rather than a profi
 points at or an account whose profile never landed.
 """
 
+import unicodedata
 import uuid
 from dataclasses import dataclass
 
@@ -36,6 +43,17 @@ from app.security import hash_password, password_is_encodable
 from app.services.tutor_service import create_tutor
 
 MIN_PASSWORD_LENGTH = 8
+# The `users.display_name` column width.
+MAX_DISPLAY_NAME_LENGTH = 255
+# Unicode control (Cc: NUL, newline, tab...) and format (Cf: zero-width, bidi overrides and
+# isolates) categories. NUL cannot be stored, a newline or tab makes WhatsApp refuse the
+# takeover template, and the invisible ones let a name look blank or read backwards.
+HIDDEN_CHARACTER_CATEGORIES = frozenset({"Cc", "Cf"})
+DISPLAY_NAME_LENGTH_ERROR = "display_name must be 1 to 255 characters and not blank"
+DISPLAY_NAME_CHARACTERS_ERROR = (
+    "display_name must not contain control or invisible characters "
+    "(line breaks, tabs, zero-width or text-direction characters)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +64,6 @@ class TutorProfileInput:
     name: str
     phone_number: str
     bio: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class DisplayName:
-    """A new account's Display name, and whether it is the email's local part."""
-
-    value: str
-    is_default: bool
 
 
 class UserServiceError(Exception):
@@ -70,6 +80,11 @@ class EmailTaken(UserServiceError):
 
 class RoleNotPermitted(UserServiceError):
     """The actor may not create, become, or modify this role."""
+
+
+class InvalidDisplayName(UserServiceError):
+    """A Display name that is blank, too long, or carries a hidden character. The message is
+    safe to show the caller and says which."""
 
 
 class InvalidUserShape(UserServiceError):
@@ -114,7 +129,7 @@ def create_user(
     role: UserRole,
     tutor_id: uuid.UUID | None,
     tutor: TutorProfileInput | None,
-    display_name: str | None = None,
+    display_name: str,
 ) -> User:
     """The account, and the tutor profile too when `tutor` is given rather than `tutor_id`.
 
@@ -133,6 +148,7 @@ def create_user(
     if role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
         raise RoleNotPermitted
 
+    name = normalize_display_name(display_name)
     _assert_password_usable(password)
     _assert_tutor_input_matches_role(role=role, tutor_id=tutor_id, tutor=tutor)
 
@@ -151,17 +167,11 @@ def create_user(
         ).id
 
     _assert_profile_matches_role(db, role=role, tutor_id=profile_id)
-    profile = db.get(Tutor, profile_id) if profile_id is not None else None
 
-    name = resolve_display_name(
-        display_name=display_name,
-        email=normalized_email,
-        tutor_name=profile.name if profile else None,
-    )
     user = User(
         email=normalized_email,
-        display_name=name.value,
-        display_name_is_default=name.is_default,
+        display_name=name,
+        display_name_is_default=False,
         hashed_password=hash_password(password),
         role=role,
         tutor_id=profile_id,
@@ -173,30 +183,36 @@ def create_user(
     return user
 
 
-def default_display_name(*, email: str, tutor_name: str | None) -> str:
-    """The Display name for an account created without one: the tutor's name, else the email's
-    local part. A stopgap until every creation path requires a Display name."""
-    name = email.split("@", 1)[0]
-    if tutor_name:
-        name = tutor_name
+def normalize_display_name(display_name: str) -> str:
+    """The Display name as stored: trimmed, non-blank, within the column, and free of control
+    and invisible characters.
+
+    Every write goes through here — Users create and update, `PATCH /api/me` and the CLI seeds —
+    so one rule decides what a usable name is. Hidden characters are checked before trimming, so
+    a trailing newline is refused rather than silently dropped.
+    """
+    name = display_name.strip()
+
+    if any(unicodedata.category(char) in HIDDEN_CHARACTER_CATEGORIES for char in display_name):
+        raise InvalidDisplayName(DISPLAY_NAME_CHARACTERS_ERROR)
+
+    if not name or len(name) > MAX_DISPLAY_NAME_LENGTH:
+        raise InvalidDisplayName(DISPLAY_NAME_LENGTH_ERROR)
 
     return name
 
 
-def resolve_display_name(
-    *, display_name: str | None, email: str, tutor_name: str | None
-) -> DisplayName:
-    """The given name, else `default_display_name`'s, flagged when it came from the email.
+def rename_user(db: Session, *, user_id: uuid.UUID, display_name: str) -> User:
+    """Set a chosen Display name. Clears `display_name_is_default`, so the next Takeover or
+    Transfer notice names this user (#109)."""
+    name = normalize_display_name(display_name)
+    user = get_user(db, user_id=user_id)
 
-    The flag is what keeps an email-derived name from ever reaching a Guardian (#109): a
-    takeover by such a holder sends the nameless notice instead.
-    """
-    is_from_email = not display_name and not tutor_name
+    user.display_name = name
+    user.display_name_is_default = False
+    db.flush()
 
-    return DisplayName(
-        value=display_name or default_display_name(email=email, tutor_name=tutor_name),
-        is_default=is_from_email,
-    )
+    return user
 
 
 def update_user(
@@ -208,6 +224,7 @@ def update_user(
     password: str | None,
     role: UserRole | None,
     is_active: bool | None,
+    display_name: str | None,
 ) -> User:
     user = get_user(db, user_id=user_id)
 
@@ -217,6 +234,9 @@ def update_user(
         role is UserRole.DEVELOPER or user.role is UserRole.DEVELOPER
     ):
         raise RoleNotPermitted
+
+    # Validated before anything is written, so a refused name leaves the row untouched.
+    name = normalize_display_name(display_name) if display_name is not None else None
 
     if email is not None:
         normalized_email = email.strip().lower()
@@ -230,6 +250,10 @@ def update_user(
     if password is not None:
         _assert_password_usable(password)
         user.hashed_password = hash_password(password)
+
+    if name is not None:
+        user.display_name = name
+        user.display_name_is_default = False
 
     if role is not None:
         _assert_profile_matches_role(db, role=role, tutor_id=user.tutor_id)
@@ -272,7 +296,7 @@ def _assert_tutor_input_matches_role(
     describes, and both would have this pick one of them, linking the account to a profile the
     caller did not choose while silently dropping — or, worse, creating — the other.
 
-    An admin or developer sends no `tutor`; `_assert_profile_matches_role` refuses them a
+    Any other role sends no `tutor`; `_assert_profile_matches_role` refuses them a
     `tutor_id` below, on the id this resolves to.
     """
     if role is UserRole.TUTOR:
@@ -285,7 +309,8 @@ def _assert_tutor_input_matches_role(
 def _assert_profile_matches_role(
     db: Session, *, role: UserRole, tutor_id: uuid.UUID | None
 ) -> None:
-    """A tutor account needs a profile; an admin or developer must not have one.
+    """A tutor account needs a profile; every other role (admin, manager, developer) must not
+    have one.
 
     `TutorScope` refuses a tutor whose `tutor_id` is NULL — the dependency calls that a data
     error that must fail loudly. Creating one through the API would be manufacturing exactly

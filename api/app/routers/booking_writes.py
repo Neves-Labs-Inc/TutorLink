@@ -5,7 +5,7 @@ by design, so the three can be built and reviewed separately; the four paths do 
 another.
 
 `POST /api/bookings` is **admin-or-above** (`docs/api-design.md:278`) and so takes
-`AdminPrincipal`. It deliberately does **not** take `TutorScope` (`CONSTITUTION.md` §15): the
+`StaffPrincipal`. It deliberately does **not** take `TutorScope` (`CONSTITUTION.md` §15): the
 validation touches five tutor-owned mappers with no tutor filter to apply, and an unread scope
 would arm `_guard_unapplied_scope` and turn every one of those queries into a 500.
 
@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.booking import Booking
 from app.schemas.booking_write import BookingCreate, BookingCreated
 from app.services import clock
@@ -64,7 +64,7 @@ router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 
 
 @router.post("", response_model=BookingCreated, status_code=status.HTTP_201_CREATED)
-def create(payload: BookingCreate, user: AdminPrincipal, db: DbSession) -> BookingCreated:
+def create(payload: BookingCreate, user: StaffPrincipal, db: DbSession) -> BookingCreated:
     try:
         booking = create_booking(db, request=_request(payload), now=clock.business_now())
     except BookingReferenceNotFound as exc:

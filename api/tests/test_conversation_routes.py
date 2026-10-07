@@ -119,7 +119,7 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
         "flag_reason",
     }
     assert item["guardian"] == {"id": str(guardian.id), "name": guardian.name}
-    assert item["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
+    assert item["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert item["last_message_preview"] == "Could we move Tommy?"
     assert item["status"] == "human"
     assert item["flag_reason"] == "stuck"
@@ -389,7 +389,7 @@ def test_only_an_admins_message_carries_an_author(api: TestClient, db: Session) 
         "error_code",
         "reminder_child_names",
     }
-    assert items[0]["author"] == {"id": str(admin.id), "email": admin.email}
+    assert items[0]["author"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert items[1]["author"] is None
     assert items[1]["author_kind"] == "client"
 
@@ -422,7 +422,7 @@ def test_a_takeover_claims_the_conversation_and_broadcasts_once(
 
     assert response.status_code == 200
     assert body["status"] == "human"
-    assert body["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
+    assert body["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert body["taken_over_at"] is not None
     assert _row(db, conversation.id).taken_over_by_user_id == admin.id
     # The conversation, then the Takeover notice line (#109).
@@ -460,8 +460,8 @@ def test_a_takeover_of_a_conversation_another_admin_holds_is_409_naming_them(
 
     response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(contender))
 
-    _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(email=holder.email))
-    assert holder.email in response.json()["detail"]
+    _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(display_name=holder.display_name))
+    assert holder.display_name in response.json()["detail"]
     assert _row(db, conversation.id).taken_over_by_user_id == holder.id
     assert broadcasts == []
 
@@ -555,7 +555,7 @@ def test_two_concurrent_takeovers_produce_one_200_and_one_409(
         loser = [row for row in responses if row.status_code == 409]
 
         assert sorted(row.status_code for row in responses) == [200, 409]
-        assert winner[0].json()["taken_over_by"]["email"] in loser[0].json()["detail"]
+        assert winner[0].json()["taken_over_by"]["display_name"] in loser[0].json()["detail"]
     finally:
         _delete_committed_conversation(committed_sessions, committed)
 
@@ -601,7 +601,9 @@ def test_a_takeover_waits_behind_a_held_row_lock_and_is_409(
         holder.join(timeout=5)
 
         assert elapsed >= hold_seconds * 0.8
-        _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(email=committed.holder_email))
+        _assert_detail(
+            response, 409, HELD_BY_ANOTHER_ERROR.format(display_name=committed.holder_display_name)
+        )
         with committed_sessions() as session:
             assert (
                 session.get_one(Conversation, committed.conversation_id).taken_over_by_user_id
@@ -722,7 +724,7 @@ def session_per_request_api(
 class _CommittedConversation:
     conversation_id: uuid.UUID
     holder_id: uuid.UUID
-    holder_email: str
+    holder_display_name: str
     contender_id: uuid.UUID
 
 
@@ -738,7 +740,7 @@ def _make_committed_conversation(
         return _CommittedConversation(
             conversation_id=conversation.id,
             holder_id=holder.id,
-            holder_email=holder.email,
+            holder_display_name=holder.display_name,
             contender_id=contender.id,
         )
 

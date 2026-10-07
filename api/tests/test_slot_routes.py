@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -53,7 +53,7 @@ from app.services.scheduling_service import (
 
 type SetIntSetting = Callable[[str, int], None]
 
-ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
 NINE = datetime.time(9, 0)
 NINE_THIRTY = datetime.time(9, 30)
@@ -730,7 +730,7 @@ def test_the_day_before_the_business_date_is_out_of_the_window(
 # --- RBAC and the request envelope ------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_an_admin_and_a_developer_may_both_query_slots(
     api: TestClient, db: Session, world: SlotWorld, role: UserRole
 ) -> None:
@@ -750,7 +750,7 @@ def test_a_tutor_token_is_403_and_never_500(api: TestClient, db: Session, world:
 
     response = api.get(_url(world), headers=_bearer(tutor_user))
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
 
 
 def test_an_unauthenticated_request_is_401(api: TestClient, world: SlotWorld) -> None:

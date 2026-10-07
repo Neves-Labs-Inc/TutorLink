@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.schemas.child import ChildLevelRead, EvaluatedRead, LevelSet, StaffRef
@@ -55,7 +55,7 @@ def put_level(
     child_id: uuid.UUID,
     subject_id: uuid.UUID,
     payload: LevelSet,
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
 ) -> ChildLevelRead:
     try:
@@ -80,7 +80,7 @@ def put_level(
 
 @router.delete("/{child_id}/levels/{subject_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_level(
-    child_id: uuid.UUID, subject_id: uuid.UUID, user: AdminPrincipal, db: DbSession
+    child_id: uuid.UUID, subject_id: uuid.UUID, user: StaffPrincipal, db: DbSession
 ) -> Response:
     try:
         remove_level(db, child_id=child_id, subject_id=subject_id)
@@ -97,7 +97,7 @@ def delete_level(
 
 
 @router.post("/{child_id}/evaluated", response_model=EvaluatedRead)
-def post_evaluated(child_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> EvaluatedRead:
+def post_evaluated(child_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> EvaluatedRead:
     try:
         child = mark_evaluated(db, child_id=child_id, by_user_id=user.id, now=datetime.now(UTC))
     except ChildNotFound as exc:
@@ -111,7 +111,7 @@ def post_evaluated(child_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> 
 
 
 @router.delete("/{child_id}/evaluated", status_code=status.HTTP_204_NO_CONTENT)
-def delete_evaluated(child_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> Response:
+def delete_evaluated(child_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> Response:
     try:
         clear_evaluated(db, child_id=child_id)
     except ChildNotFound as exc:

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR
 from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
 from app.models.enums import ConsentAction, Language, ReminderStatus, UserRole
@@ -363,4 +363,4 @@ def test_a_tutor_is_refused(api: TestClient, db: Session, at: Callable[..., None
     response = api.get(PATH, headers=_staff(db, UserRole.TUTOR))
 
     assert response.status_code == 403
-    assert response.json() == {"detail": ADMIN_REQUIRED_ERROR}
+    assert response.json() == {"detail": STAFF_REQUIRED_ERROR}

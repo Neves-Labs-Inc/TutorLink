@@ -12,9 +12,9 @@ suggests:
 - `POST` looks like it should take `TutorScope` too, because its path also carries
   `{tutor_id}`, and it must not: the route is admin-only per the RBAC table
   (`docs/api-design.md:271-278`), so there is nobody for the scope to narrow, and
-  `CONSTITUTION.md` §15 forbids an `AdminPrincipal` route also taking `TutorScope`. It takes a
+  `CONSTITUTION.md` §15 forbids a `StaffPrincipal` route also taking `TutorScope`. It takes a
   plain `tutor_id: uuid.UUID` path parameter instead.
-- `PATCH`/`DELETE` load one row by id and are admin-only too, so both take `AdminPrincipal` and
+- `PATCH`/`DELETE` load one row by id and are staff-only too, so both take `StaffPrincipal` and
   neither takes `TutorScope`.
 """
 
@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal, TutorScope
+from app.dependencies import StaffPrincipal, TutorScope
 from app.models.availability import TutorAvailability
 from app.schemas.availability import AvailabilityCreate, AvailabilityRead, AvailabilityUpdate
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
@@ -81,7 +81,7 @@ def list_tutor_availability(
 def create_tutor_availability(
     tutor_id: uuid.UUID,
     payload: AvailabilityCreate,
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
 ) -> AvailabilityRead:
     try:
@@ -112,7 +112,7 @@ def create_tutor_availability(
 def update_tutor_availability(
     availability_id: uuid.UUID,
     payload: AvailabilityUpdate,
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
 ) -> AvailabilityRead:
     try:
@@ -141,7 +141,7 @@ def update_tutor_availability(
 
 @router.delete("/availability/{availability_id}", response_model=AvailabilityRead)
 def delete_tutor_availability(
-    availability_id: uuid.UUID, user: AdminPrincipal, db: DbSession
+    availability_id: uuid.UUID, user: StaffPrincipal, db: DbSession
 ) -> AvailabilityRead:
     try:
         row = deactivate_availability(db, availability_id=availability_id)

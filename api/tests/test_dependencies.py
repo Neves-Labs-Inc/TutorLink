@@ -31,9 +31,11 @@ from app.db import get_db
 from app.dependencies import (
     ADMIN_REQUIRED_ERROR,
     CREDENTIALS_ERROR,
+    STAFF_REQUIRED_ERROR,
     TUTOR_SCOPE_ERROR,
     AdminPrincipal,
     Principal,
+    StaffPrincipal,
     TutorScope,
     TutorScopeNotApplied,
     assert_can_access_tutor,
@@ -66,6 +68,11 @@ def probe_any(user: Principal) -> dict[str, str | None]:
 
 @probe_app.get("/probe/admin")
 def probe_admin(user: AdminPrincipal) -> dict[str, str]:
+    return {"id": str(user.id)}
+
+
+@probe_app.get("/probe/staff")
+def probe_staff(user: StaffPrincipal) -> dict[str, str]:
     return {"id": str(user.id)}
 
 
@@ -690,3 +697,60 @@ def test_widening_the_gates_granted_a_tutor_nothing(probe: TestClient, db: Sessi
     _assert_detail(
         probe.get(f"/probe/rows?owner_tutor_id={other.id}", headers=headers), 403, TUTOR_SCOPE_ERROR
     )
+
+
+# --- the manager role: Staff, but not Admin (#108) -------------------------------------------
+
+
+def test_manager_passes_the_staff_gate_and_is_refused_the_admin_gate(
+    probe: TestClient, db: Session
+) -> None:
+    headers = _bearer(_make_user(db, role=UserRole.MANAGER))
+
+    assert probe.get("/probe/staff", headers=headers).status_code == 200
+    _assert_detail(probe.get("/probe/admin", headers=headers), 403, ADMIN_REQUIRED_ERROR)
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.DEVELOPER])
+def test_admin_roles_pass_the_staff_gate(probe: TestClient, db: Session, role: UserRole) -> None:
+    headers = _bearer(_make_user(db, role=role))
+
+    assert probe.get("/probe/staff", headers=headers).status_code == 200
+
+
+def test_tutor_on_the_staff_gate_is_403(probe: TestClient, db: Session) -> None:
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+
+    _assert_detail(probe.get("/probe/staff", headers=_bearer(user)), 403, STAFF_REQUIRED_ERROR)
+
+
+def test_staff_probe_without_a_token_is_401_not_403(probe: TestClient) -> None:
+    _assert_detail(probe.get("/probe/staff"), 401, CREDENTIALS_ERROR)
+
+
+def test_manager_requesting_nothing_gets_no_filter(probe: TestClient, db: Session) -> None:
+    """A Manager has no tutor profile and is unscoped, like an Admin."""
+    user = _make_user(db, role=UserRole.MANAGER)
+
+    response = probe.get("/probe/tutors", headers=_bearer(user))
+
+    assert response.json() == {"scope": None}
+
+
+def test_manager_requesting_a_tutor_passes_through_unchanged(
+    probe: TestClient, db: Session
+) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.MANAGER)
+
+    response = probe.get(f"/probe/tutors/{tutor.id}", headers=_bearer(user))
+
+    assert response.json() == {"scope": str(tutor.id)}
+
+
+def test_manager_may_access_any_row(probe: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    headers = _bearer(_make_user(db, role=UserRole.MANAGER))
+
+    assert probe.get(f"/probe/rows?owner_tutor_id={tutor.id}", headers=headers).status_code == 200
+    assert probe.get("/probe/rows", headers=headers).status_code == 200

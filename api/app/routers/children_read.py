@@ -4,7 +4,7 @@ A thin HTTP shell over `child_read_service`. The writes on this same prefix live
 `children.py`, which is mounted first; the two never collide because Starlette matches on method
 as well as path, so `GET` reaches these routes and `POST`/`PATCH` reach those (P7C-D).
 
-Both routes take `AdminPrincipal` and neither takes the tutor scope (P7C-G, CONSTITUTION §15):
+Both routes take `StaffPrincipal` and neither takes the tutor scope (P7C-G, CONSTITUTION §15):
 tutors cannot call either route, and an unread scope would arm the guard that 500s the
 `bookings` read behind `next_session`.
 
@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
@@ -53,7 +53,7 @@ router = APIRouter(prefix="/api/children", tags=["children"])
 
 @router.get("", response_model=Page[ChildSummary])
 def list_all(
-    user: AdminPrincipal,
+    user: StaffPrincipal,
     db: DbSession,
     is_active: bool = True,
     q: str | None = None,
@@ -79,7 +79,7 @@ def list_all(
 
 
 @router.get("/{child_id}", response_model=ChildDetail)
-def read_one(child_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> ChildDetail:
+def read_one(child_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ChildDetail:
     try:
         found = get_child(db, child_id=child_id)
     except ChildNotFound as exc:

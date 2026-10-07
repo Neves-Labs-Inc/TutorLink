@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal, Principal
+from app.dependencies import StaffPrincipal, Principal
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.subject import SubjectCreate, SubjectRead, SubjectUpdate
 from app.services.subject_service import (
@@ -59,7 +59,7 @@ def list_all(
 
 
 @router.post("", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
-def create(payload: SubjectCreate, user: AdminPrincipal, db: DbSession) -> SubjectRead:
+def create(payload: SubjectCreate, user: StaffPrincipal, db: DbSession) -> SubjectRead:
     try:
         created = create_subject(db, name=payload.name, description=payload.description)
     except SubjectNameTaken as exc:
@@ -72,7 +72,7 @@ def create(payload: SubjectCreate, user: AdminPrincipal, db: DbSession) -> Subje
 
 @router.patch("/{subject_id}", response_model=SubjectRead)
 def update(
-    subject_id: uuid.UUID, payload: SubjectUpdate, user: AdminPrincipal, db: DbSession
+    subject_id: uuid.UUID, payload: SubjectUpdate, user: StaffPrincipal, db: DbSession
 ) -> SubjectRead:
     try:
         updated = update_subject(
@@ -93,7 +93,7 @@ def update(
 
 
 @router.delete("/{subject_id}", response_model=SubjectRead)
-def soft_delete(subject_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> SubjectRead:
+def soft_delete(subject_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> SubjectRead:
     try:
         deactivated = deactivate_subject(db, subject_id=subject_id)
     except SubjectNotFound as exc:

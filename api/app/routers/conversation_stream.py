@@ -13,8 +13,8 @@ browser cannot set an `Authorization` header on a WebSocket upgrade — the clie
 `new WebSocket(url)` call and nothing else, which is the whole reason `api-design.md:1608-1632`
 specifies a first-frame handshake instead. §13's intent, that there is no unauthenticated
 `/api/*` surface, is met by that handshake: the socket is accepted but carries nothing until an
-`auth` frame has been validated through `app/security.py` and the same admin role gate
-`require_admin` applies, no other frame is accepted before then, a socket that has not
+`auth` frame has been validated through `app/security.py` and the same Staff role gate
+`require_staff` applies, no other frame is accepted before then, a socket that has not
 authenticated within ten seconds is closed `1008`, and the socket closes `1008` again when the
 access token behind it expires. **The token is never read from the query string**
 (`api-design.md:1624`): a credential there is written into every proxy log, access log and
@@ -74,7 +74,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.db import SessionLocal, get_db
-from app.dependencies import ADMIN_REQUIRED_ERROR, ADMIN_ROLES, CREDENTIALS_ERROR
+from app.dependencies import CREDENTIALS_ERROR, STAFF_REQUIRED_ERROR, STAFF_ROLES
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus
 from app.models.user import User
@@ -164,7 +164,9 @@ class _Admin:
     """
 
     user_id: uuid.UUID
-    email: str
+    # Read at the handshake. A rename shows on this socket's echoes from the next connection,
+    # which the token's expiry forces within minutes; REST always reads the current name.
+    display_name: str
     expires_at: datetime.datetime
 
 
@@ -221,8 +223,8 @@ async def _auth_frame(websocket: WebSocket) -> AuthFrame | None:
 def _resolve_admin(db: Session, token: str) -> _Admin | str:
     """The `Authorization` header's own validation, applied to the handshake frame.
 
-    One credential, one validator, one role gate: `decode_token` and `ADMIN_ROLES` are the ones
-    `get_current_user` and `require_admin` use, and the failure messages are theirs too, so a
+    One credential, one validator, one role gate: `decode_token` and `STAFF_ROLES` are the ones
+    `get_current_user` and `require_staff` use, and the failure messages are theirs too, so a
     bad token is refused here for exactly the reason and in exactly the words REST refuses it.
     The `users` row is read rather than trusted from the claims for the reason
     `dependencies.py` gives: a deactivated account must lose access at its next use of the
@@ -242,10 +244,12 @@ def _resolve_admin(db: Session, token: str) -> _Admin | str:
 
     if claims is None or user is None or not user.is_active:
         resolved: _Admin | str = CREDENTIALS_ERROR
-    elif user.role not in ADMIN_ROLES:
-        resolved = ADMIN_REQUIRED_ERROR
+    elif user.role not in STAFF_ROLES:
+        resolved = STAFF_REQUIRED_ERROR
     else:
-        resolved = _Admin(user_id=user.id, email=user.email, expires_at=claims.expires_at)
+        resolved = _Admin(
+            user_id=user.id, display_name=user.display_name, expires_at=claims.expires_at
+        )
 
     db.commit()
 
@@ -417,7 +421,7 @@ def _record_and_send(
     read = MessageRead(
         id=message.id,
         author_kind=message.author_kind,
-        author=UserRef(id=admin.user_id, email=admin.email),
+        author=UserRef(id=admin.user_id, display_name=admin.display_name),
         body=message.body,
         status=message.status,
         created_at=message.created_at,

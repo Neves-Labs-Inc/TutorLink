@@ -19,7 +19,7 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -462,7 +462,7 @@ def test_a_tutor_is_refused_with_403(api: TestClient, db: Session, route: str) -
     else:
         response = _patch(api, tutor_user, home.id, {"label": "X"})
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _home_count(db) == homes_before
     assert _reloaded(db, home).label == "Mum's"
 

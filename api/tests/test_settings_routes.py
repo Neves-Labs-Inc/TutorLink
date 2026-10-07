@@ -30,6 +30,7 @@ server exceptions, so such a test would measure the test client rather than the 
 service suite covers it.
 """
 
+import datetime
 import uuid
 from typing import Any
 
@@ -38,11 +39,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
-from app.models.enums import UserRole
+from app.models.availability import TutorAvailability
+from app.models.booking import Booking
+from app.models.child import Child
+from app.models.enums import BookingStatus, UserRole
+from app.models.home import Home
+from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.settings import (
+    BUSINESS_TIMEZONE_INVALID_ERROR,
+    BUSINESS_TIMEZONE_LOCKED_ERROR,
     DUPLICATE_KEY_ERROR,
     SETTING_NOT_EDITABLE_ERROR,
     SETTING_NOT_FOUND_ERROR,
@@ -51,8 +59,20 @@ from app.routers.settings import (
 from app.security import create_access_token, hash_password
 from app.services.rate_limit_service import IP_MAX_ATTEMPTS_SETTING
 
+BOOKING_DATE = datetime.date(2026, 9, 7)
+BUSINESS_TIMEZONE = "business_timezone"
 PASSWORD = "correct horse battery staple"
 SETTINGS_URL = "/api/settings"
+
+# Seeded developer-only by 0021, so a developer always sees these beyond what an admin sees.
+TEMPLATE_SID_KEYS = {
+    "reminder_template_sid_en",
+    "reminder_template_sid_es",
+    "takeover_template_sid_en",
+    "takeover_template_sid_es",
+    "takeover_generic_template_sid_en",
+    "takeover_generic_template_sid_es",
+}
 
 
 # --- the envelope and the item shape ---------------------------------------------------------
@@ -64,7 +84,14 @@ def test_get_returns_the_page_envelope_never_a_bare_array(api: TestClient, db: S
 
     body = api.get(SETTINGS_URL, headers=_auth(admin)).json()
 
-    assert set(body) == {"items", "total", "page", "page_size"}
+    assert set(body) == {
+        "items",
+        "total",
+        "page",
+        "page_size",
+        "business_timezone_locked",
+        "reminders_paused",
+    }
     assert body["page"] == 1
     assert body["page_size"] == body["total"] == len(body["items"])
 
@@ -142,7 +169,7 @@ def test_a_developer_only_row_is_invisible_to_an_admin_and_visible_to_a_develope
     admin_keys = set(_keys(api.get(SETTINGS_URL, headers=_auth(admin)).json()))
     developer_keys = set(_keys(api.get(SETTINGS_URL, headers=_auth(developer)).json()))
 
-    assert developer_keys - admin_keys == {key}
+    assert developer_keys - admin_keys == {key, *TEMPLATE_SID_KEYS}
 
 
 def test_an_admin_patching_a_developer_only_key_is_refused_and_the_row_is_untouched(
@@ -311,6 +338,203 @@ def test_one_refused_update_leaves_the_rest_of_the_batch_unwritten(
     assert _stored_value(db, good) == "1"
 
 
+# --- reminder schedule bounds ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("reminder_weekday", "0"),
+        ("reminder_weekday", "8"),
+        ("reminder_hour", "-1"),
+        ("reminder_hour", "24"),
+    ],
+)
+def test_a_reminder_schedule_value_outside_its_range_is_refused(
+    api: TestClient, db: Session, key: str, value: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, value))
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": SETTING_VALUE_INVALID_ERROR}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("reminder_weekday", "1"),
+        ("reminder_weekday", "7"),
+        ("reminder_hour", "0"),
+        ("reminder_hour", "23"),
+    ],
+)
+def test_a_reminder_schedule_value_at_either_end_of_its_range_is_accepted(
+    api: TestClient, db: Session, key: str, value: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, value))
+
+    assert response.status_code == 200
+    assert _item(response.json(), key)["value"] == value
+
+
+# --- business timezone -----------------------------------------------------------------------
+
+
+def test_an_admin_may_set_the_business_timezone_while_no_booking_exists(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(BUSINESS_TIMEZONE, "America/Chicago")
+    )
+
+    assert response.status_code == 200
+    assert _item(response.json(), BUSINESS_TIMEZONE)["value"] == "America/Chicago"
+
+
+@pytest.mark.parametrize("value", ["Mars/Olympus", "", " ", "America", "../etc/passwd"])
+def test_a_business_timezone_that_is_not_an_iana_zone_is_refused_with_its_reason(
+    api: TestClient, db: Session, value: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(BUSINESS_TIMEZONE, value)
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": BUSINESS_TIMEZONE_INVALID_ERROR}
+
+
+@pytest.mark.parametrize("status", [BookingStatus.CONFIRMED, BookingStatus.CANCELLED])
+def test_once_any_booking_exists_an_admin_is_refused_the_business_timezone(
+    api: TestClient, db: Session, status: BookingStatus
+) -> None:
+    _make_booking(db, status=status)
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(BUSINESS_TIMEZONE, "America/Chicago")
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": BUSINESS_TIMEZONE_LOCKED_ERROR}
+    assert (
+        _item(api.get(SETTINGS_URL, headers=_auth(admin)).json(), BUSINESS_TIMEZONE)["value"]
+        == "America/New_York"
+    )
+
+
+def test_once_a_booking_exists_a_developer_may_still_set_the_business_timezone(
+    api: TestClient, db: Session
+) -> None:
+    _make_booking(db, status=BookingStatus.CONFIRMED)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(developer), json=_updates(BUSINESS_TIMEZONE, "America/Chicago")
+    )
+
+    assert response.status_code == 200
+    assert _item(response.json(), BUSINESS_TIMEZONE)["value"] == "America/Chicago"
+
+
+# --- read-only flags -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.DEVELOPER])
+def test_the_business_timezone_is_reported_unlocked_until_a_booking_exists(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    headers = _auth(_make_user(db, role=role))
+
+    before = api.get(SETTINGS_URL, headers=headers).json()
+    _make_booking(db, status=BookingStatus.PENDING)
+    after = api.get(SETTINGS_URL, headers=headers).json()
+
+    assert before["business_timezone_locked"] is False
+    assert after["business_timezone_locked"] is True
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.DEVELOPER])
+def test_reminders_are_reported_paused_while_both_reminder_template_ids_are_blank(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    headers = _auth(_make_user(db, role=role))
+
+    assert api.get(SETTINGS_URL, headers=headers).json()["reminders_paused"] is True
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.DEVELOPER])
+@pytest.mark.parametrize("key", ["reminder_template_sid_en", "reminder_template_sid_es"])
+def test_reminders_are_not_paused_once_either_reminder_template_id_is_set(
+    api: TestClient, db: Session, role: UserRole, key: str
+) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    api.patch(SETTINGS_URL, headers=_auth(developer), json=_updates(key, "HX0123456789abcdef"))
+    headers = _auth(_make_user(db, role=role))
+
+    assert api.get(SETTINGS_URL, headers=headers).json()["reminders_paused"] is False
+
+
+def test_patch_carries_the_read_only_flags_too(api: TestClient, db: Session) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+
+    body = api.patch(
+        SETTINGS_URL,
+        headers=_auth(developer),
+        json=_updates("reminder_template_sid_en", "HX0123456789abcdef"),
+    ).json()
+
+    assert body["reminders_paused"] is False
+    assert body["business_timezone_locked"] is False
+
+
+# --- template-id rows ------------------------------------------------------------------------
+
+
+def test_an_admin_can_neither_read_nor_write_a_reminder_template_id(
+    api: TestClient, db: Session
+) -> None:
+    headers = _auth(_make_user(db))
+
+    read = api.get(SETTINGS_URL, headers=headers).json()
+    write = api.patch(
+        SETTINGS_URL, headers=headers, json=_updates("reminder_template_sid_en", "HX1")
+    )
+
+    assert "reminder_template_sid_en" not in _keys(read)
+    assert write.status_code == 403
+    assert write.json() == {"detail": SETTING_NOT_EDITABLE_ERROR}
+
+
+def test_a_developer_can_set_a_reminder_template_id_and_blank_it_again(
+    api: TestClient, db: Session
+) -> None:
+    headers = _auth(_make_user(db, role=UserRole.DEVELOPER))
+    key = "reminder_template_sid_en"
+
+    set_response = api.patch(
+        SETTINGS_URL, headers=headers, json=_updates(key, "HX0123456789abcdef")
+    )
+    blank_response = api.patch(SETTINGS_URL, headers=headers, json=_updates(key, ""))
+
+    assert set_response.status_code == 200
+    assert _item(set_response.json(), key) == {
+        "key": key,
+        "value": "HX0123456789abcdef",
+        "value_type": "string",
+        "is_developer_only": True,
+    }
+    assert blank_response.status_code == 200
+    assert _item(blank_response.json(), key)["value"] == ""
+
+
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
@@ -324,11 +548,45 @@ def _make_tutor(db: Session) -> Tutor:
     return tutor
 
 
+def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
+    suffix = uuid.uuid4().hex[:12]
+    child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
+    subject = Subject(name=f"Subject {suffix}")
+    home = Home(address="1 Test Street", access_code="0000")
+    tutor = _make_tutor(db)
+    db.add_all([child, subject, home])
+    db.flush()
+    availability = TutorAvailability(
+        tutor_id=tutor.id,
+        day_of_week=BOOKING_DATE.weekday(),
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(12, 0),
+    )
+    db.add(availability)
+    db.flush()
+    booking = Booking(
+        child_id=child.id,
+        tutor_id=tutor.id,
+        subject_id=subject.id,
+        availability_id=availability.id,
+        home_id=home.id,
+        scheduled_date=BOOKING_DATE,
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+
+    return booking
+
+
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,

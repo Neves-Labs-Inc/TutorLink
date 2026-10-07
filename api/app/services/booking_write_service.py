@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingStatus, ExceptionStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
@@ -240,27 +241,33 @@ def _rule_4_not_blocked_by_exception(db: Session, context: _Context) -> None:
 def _rule_5_grade_ceiling_respected(db: Session, context: _Context) -> None:
     """Rule 5 — 422 (#36). A **missing** `tutor_subjects` row is a refusal, not a pass.
 
-    Written as a join, `... JOIN tutor_subjects ... WHERE max_grade_level >= grade` drops the
+    Written as a join, `... JOIN tutor_subjects ... WHERE max_grade_level >= level` drops the
     row when the tutor holds no assignment for the subject, and "no row" then reads as "nothing
     to refuse" — turning the strongest possible violation, a tutor who does not teach the
     subject at all, into a success. Fetch, check for `None`, then compare; the ceiling is per
     subject and the boundary is inclusive.
 
-    A child with no grade yet skips the comparison but never the `None` check: the tutor must
-    still teach the subject.
+    The ceiling is compared against the Child's Subject level for this subject, never the
+    Overall grade. With no level the comparison is skipped, so Staff can book the Evaluation
+    session, but never the `None` check: the tutor must still teach the subject.
     """
     request = context.request
-    grade_level = context.child.grade_level
     assignment = db.scalars(
         select(TutorSubject).where(
             TutorSubject.tutor_id == request.tutor_id,
             TutorSubject.subject_id == request.subject_id,
         )
     ).first()
+    level = db.scalars(
+        select(ChildSubjectLevel.level).where(
+            ChildSubjectLevel.child_id == request.child_id,
+            ChildSubjectLevel.subject_id == request.subject_id,
+        )
+    ).first()
 
     if assignment is None:
         raise TutorGradeCeilingExceeded
-    if grade_level is not None and assignment.max_grade_level < grade_level:
+    if level is not None and assignment.max_grade_level < level:
         raise TutorGradeCeilingExceeded
 
 

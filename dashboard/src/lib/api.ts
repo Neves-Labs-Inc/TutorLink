@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
 
 // Same-origin only (D-012): the Vite dev proxy forwards /api and /auth to the API, so the
@@ -59,6 +60,11 @@ export const errorDetail = (error: unknown): string | null => {
   return detail
 }
 
+// The HTTP status of a failed request, so callers can tell a refusal (403) from a conflict (409)
+// without importing axios.
+export const errorStatus = (error: unknown): number | null =>
+  axios.isAxiosError(error) ? (error.response?.status ?? null) : null
+
 // Single-flight, and module-level on purpose. Refresh tokens rotate on every use (D-017)
 // and the server treats a replayed one as a breach: it revokes the entire family, which
 // logs the user out instantly. Two API calls both 401-ing on the same expired access token
@@ -77,6 +83,8 @@ export const refreshSession = (): Promise<string> => {
       })
       .catch((error: unknown) => {
         useAuthStore.getState().clearSession()
+        // As on Logout: the next sign-in on this tab must not see the expired user's cached rows.
+        queryClient.clear()
         throw error
       })
       .finally(() => {

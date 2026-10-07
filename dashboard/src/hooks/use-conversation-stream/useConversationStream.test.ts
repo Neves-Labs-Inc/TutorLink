@@ -41,6 +41,7 @@ const noopListener = (): ConversationStreamListener => ({
   onError: vi.fn(),
   onMessageCreated: vi.fn(),
   onConversationUpdated: vi.fn(),
+  onMessageUpdated: vi.fn(),
 })
 
 const createClient = () => {
@@ -172,6 +173,68 @@ describe('ConversationStreamClient', () => {
 
     socket.emit('message', { data: JSON.stringify({ type: 'error', detail: 'boom' }) })
 
-    expect(listener.onError).toHaveBeenCalledWith('boom')
+    expect(listener.onError).toHaveBeenCalledWith('boom', undefined)
+  })
+
+  it('passes an error frame code along', () => {
+    const { client } = createClient()
+    const listener = noopListener()
+    client.subscribe(listener)
+    const socket = FakeWebSocket.instances[0]
+
+    socket.emit('message', {
+      data: JSON.stringify({ type: 'error', detail: 'closed', code: 'window_closed' }),
+    })
+
+    expect(listener.onError).toHaveBeenCalledWith('closed', 'window_closed')
+  })
+
+  it('hands a message.updated frame to onMessageUpdated and to no other listener method', () => {
+    const { client } = createClient()
+    const listener = noopListener()
+    client.subscribe(listener)
+    const socket = FakeWebSocket.instances[0]
+    const frame = {
+      type: 'message.updated',
+      conversation_id: 'conversation-1',
+      message: {
+        id: 'message-1',
+        author_kind: 'admin',
+        author: { id: 'admin-1', email: 'admin@example.com' },
+        body: 'See you at 4pm.',
+        status: 'delivered',
+        created_at: '2026-10-01T14:02:00Z',
+      },
+    }
+
+    socket.emit('message', { data: JSON.stringify(frame) })
+
+    expect(listener.onMessageUpdated).toHaveBeenCalledWith(frame)
+    expect(listener.onMessageCreated).not.toHaveBeenCalled()
+    expect(listener.onError).not.toHaveBeenCalled()
+  })
+
+  it('still hands a message.created frame to onMessageCreated only', () => {
+    const { client } = createClient()
+    const listener = noopListener()
+    client.subscribe(listener)
+    const socket = FakeWebSocket.instances[0]
+    const frame = {
+      type: 'message.created',
+      conversation_id: 'conversation-1',
+      message: {
+        id: 'message-1',
+        author_kind: 'client',
+        author: null,
+        body: 'hello',
+        status: 'received',
+        created_at: '2026-10-01T14:02:00Z',
+      },
+    }
+
+    socket.emit('message', { data: JSON.stringify(frame) })
+
+    expect(listener.onMessageCreated).toHaveBeenCalledWith(frame)
+    expect(listener.onMessageUpdated).not.toHaveBeenCalled()
   })
 })

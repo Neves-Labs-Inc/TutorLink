@@ -19,25 +19,37 @@ from sqlalchemy.orm import Session
 from app.models.guardian import Guardian
 from app.models.enums import FlagReason
 from app.schemas.bot import AnswerKind, BotIntent
-from app.services import bot_service, parser_service
+from app.services import bot_messages, bot_service, parser_service
+from app.services.bot_messages import render
 from app.services.bot_state import FlowState, load_state
 from tests.test_bot_service import (
+    _nudge,
     DATE,
     INBOUND_NUMBER,
     NOW,
+    CHILD_LEVEL,
+    _evaluate,
     _make_client,
     _make_world,
 )
 
 FRANKLIN_WIRE = (
     '{"intent":"unknown","answer":"Franklin Neves",'
-    '"fields":[{"name":"parent_name","value":"Franklin Neves"}],"confidence_is_low":false}'
+    '"fields":[{"name":"parent_name","value":"Franklin Neves"}],"confidence_is_low":false,'
+    '"language":"en","reminders":null}'
 )
 
 
-def _wire(answer: str | None, *, intent: str = "unknown") -> str:
+def _wire(answer: str | None, *, intent: str = "unknown", language: str | None = None) -> str:
     return json.dumps(
-        {"intent": intent, "answer": answer, "fields": [], "confidence_is_low": False}
+        {
+            "intent": intent,
+            "answer": answer,
+            "fields": [],
+            "confidence_is_low": False,
+            "language": language,
+            "reminders": None,
+        }
     )
 
 
@@ -79,9 +91,9 @@ class WireChat:
     wire: _WireMessages
 
     def say(self, body: str, wire: str | None = None) -> str:
-        """Send `body`; `wire` is what the model returns for it, if the turn parses at all."""
-        if wire is not None:
-            self.wire.queued.append(wire)
+        """Send `body`; `wire` is what the model returns for it. Every turn parses, the opener
+        included (for its language), so a turn with no `wire` gets a neutral parse."""
+        self.wire.queued.append(_wire(None) if wire is None else wire)
 
         turn = bot_service.reply_for(
             self.db, phone_number=INBOUND_NUMBER, body=body, guardian_id=None
@@ -135,7 +147,7 @@ def test_a_full_name_given_in_a_sentence_moves_intake_on_to_the_address(
 
     reply = chat.say("My name is Franklin Neves", FRANKLIN_WIRE)
 
-    assert bot_service.ASK_ADDRESS in reply
+    assert render("ASK_ADDRESS", "en") in reply
     assert chat.step == bot_service.STEP_INTAKE_ADDRESS
     assert chat.state.collected_data["guardian_name"] == "Franklin Neves"
 
@@ -146,10 +158,11 @@ def test_the_prompt_shows_the_question_once_and_not_as_collected_context(
     chat.say("hello?")
     chat.say("My name is Franklin Neves", FRANKLIN_WIRE)
 
-    prompt = chat.wire.prompts[0]
+    # The opener's parse is prompts[0]; the name question's is the next one.
+    prompt = chat.wire.prompts[1]
     collected = prompt.split("Collected so far:", 1)[1].split("The parent just sent:", 1)[0]
 
-    assert prompt.count(bot_service.ASK_GUARDIAN_NAME) == 1
+    assert prompt.count(render("ASK_GUARDIAN_NAME", "en")) == 1
     assert "- prompt:" not in collected
 
 
@@ -164,7 +177,7 @@ def test_a_no_at_the_already_registered_question_moves_on_to_the_childs_name(
 
     reply = chat.say("nope", _wire("no"))
 
-    assert bot_service.ASK_CHILD_NAME in reply
+    assert render("ASK_CHILD_NAME", "en") in reply
     assert chat.step == bot_service.STEP_CHILD_NAME
 
 
@@ -174,6 +187,7 @@ def test_a_no_to_another_child_finishes_intake_and_writes_the_guardian(
     _through_the_child_name(chat)
     chat.say("23 April 2016", _wire("2016-04-23"))
     chat.say("Test School", _wire("Test School"))
+    chat.say("fifth grade", _wire("5"))
     chat.say("none", _wire("none"))
 
     chat.say("no that's all", _wire("no"))
@@ -183,14 +197,15 @@ def test_a_no_to_another_child_finishes_intake_and_writes_the_guardian(
 
 
 def test_a_subject_picked_by_its_number_moves_on_to_the_tutor(chat: WireChat, db: Session) -> None:
-    _make_client(db)
-    _make_world(db)
+    client = _make_client(db)
+    world = _make_world(db)
+    _evaluate(db, client.child_id, levels={world.subject_id: CHILD_LEVEL})
     chat.say("hi")
     chat.say("I'd like to book", _wire(None, intent="book"))
 
     reply = chat.say("1", _wire("1"))
 
-    assert bot_service.ASK_TUTOR in reply
+    assert render("ASK_TUTOR", "en") in reply
     assert chat.step == bot_service.STEP_BOOK_TUTOR
 
 
@@ -199,12 +214,13 @@ def test_an_answer_only_under_the_step_name_is_a_re_prompt(chat: WireChat) -> No
     chat.say("hello?")
     wire = (
         '{"intent":"unknown","answer":null,'
-        '"fields":[{"name":"intake_name","value":"Franklin Neves"}],"confidence_is_low":false}'
+        '"fields":[{"name":"intake_name","value":"Franklin Neves"}],"confidence_is_low":false,'
+        '"language":null,"reminders":null}'
     )
 
     reply = chat.say("My name is Franklin Neves", wire)
 
-    assert reply == bot_service.NUDGES[bot_service.STEP_INTAKE_NAME]
+    assert reply == _nudge(bot_service.STEP_INTAKE_NAME)
     assert chat.step == bot_service.STEP_INTAKE_NAME
     assert chat.state.misses == 1
 
@@ -215,7 +231,7 @@ def test_the_prompt_names_the_expected_answer_kind_and_todays_date(chat: WireCha
     _through_the_child_name(chat)
     chat.say("23rd April 2016", _wire("2016-04-23"))
 
-    registered_prompt = chat.wire.prompts[4]
+    registered_prompt = chat.wire.prompts[5]
     birth_date_prompt = chat.wire.prompts[-1]
 
     assert "Expected answer: yes_no" in registered_prompt
@@ -242,7 +258,7 @@ def test_small_talk_from_the_wire_gets_the_menu_back_without_a_re_prompt(
 
     reply = chat.say("thanks!", _wire(None, intent="chit_chat"))
 
-    assert reply.endswith(bot_service.ASK_MENU)
+    assert reply.endswith(render("ASK_MENU", "en"))
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.misses == 0
 
@@ -256,10 +272,22 @@ def test_a_question_from_the_wire_is_flagged_for_the_office(chat: WireChat, db: 
         db, phone_number=INBOUND_NUMBER, body="how much is a session?", guardian_id=None
     )
 
-    assert turn.reply == f"{bot_service.QUESTION_PASSED_ON} {bot_service.ASK_MENU}"
+    assert turn.reply == f"{render('QUESTION_PASSED_ON', 'en')} {render('ASK_MENU', 'en')}"
     assert turn.flag_reason is FlagReason.QUESTION
     assert chat.step == bot_service.STEP_MENU
     assert chat.state.misses == 0
+
+
+def test_a_spanish_opener_from_the_wire_is_greeted_in_spanish_and_reported_for_storing(
+    chat: WireChat, db: Session
+) -> None:
+    chat.wire.queued.append(_wire(None, language="es"))
+
+    turn = bot_service.reply_for(db, phone_number=INBOUND_NUMBER, body="Hola", guardian_id=None)
+
+    assert turn.reply == f"{render('GREETING_NEW', 'es')} {render('ASK_GUARDIAN_NAME', 'es')}"
+    assert turn.language == "es"
+    assert "Current step: opening" in chat.wire.prompts[0]
 
 
 def test_the_system_prompt_defines_every_intent() -> None:
@@ -276,7 +304,7 @@ def test_the_prompt_tells_the_parser_a_hedge_is_no_yes_or_no(chat: WireChat) -> 
     """At the already-registered question a hedge coerced to `no` registers a duplicate."""
     _through_the_child_name(chat)
 
-    registered_prompt = chat.wire.prompts[4]
+    registered_prompt = chat.wire.prompts[5]
 
     assert "not sure" in registered_prompt
 
@@ -285,19 +313,21 @@ def test_a_yes_to_another_child_starts_the_next_child(chat: WireChat) -> None:
     _through_the_child_name(chat)
     chat.say("23 April 2016", _wire("2016-04-23"))
     chat.say("Test School", _wire("Test School"))
+    chat.say("fifth grade", _wire("5"))
     chat.say("none", _wire("none"))
 
     reply = chat.say("yes please", _wire("yes"))
 
-    assert reply == bot_service.ASK_CHILD_REGISTERED
+    assert reply == render("ASK_CHILD_REGISTERED", "en")
     assert chat.step == bot_service.STEP_CHILD_REGISTERED
 
 
 def test_a_booking_day_and_a_slot_number_lead_to_the_confirmation(
     chat: WireChat, db: Session
 ) -> None:
-    _make_client(db)
+    client = _make_client(db)
     world = _make_world(db)
+    _evaluate(db, client.child_id, levels={world.subject_id: CHILD_LEVEL})
     chat.say("hi")
     chat.say("I'd like to book", _wire(None, intent="book"))
     chat.say("maths", _wire("1"))
@@ -308,6 +338,6 @@ def test_a_booking_day_and_a_slot_number_lead_to_the_confirmation(
     confirm = chat.say("the first one", _wire("1"))
 
     assert "Expected answer: choice" in chat.wire.prompts[tutor_prompt_index]
-    assert bot_service.format_date(DATE) in offer
+    assert bot_messages.format_date(DATE, "en") in offer
     assert chat.step == bot_service.STEP_BOOK_CONFIRM
     assert world.first_tutor_name in confirm or world.second_tutor_name in confirm

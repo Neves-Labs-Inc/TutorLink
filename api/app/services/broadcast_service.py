@@ -1,8 +1,9 @@
-"""Fan-out of the two live-update events to every admin socket in the deployment (REQ-P7.4).
+"""Fan-out of the live-update events to every admin socket in the deployment (REQ-P7.4).
 
 Three call sites want one way to say "a message was recorded" or "a conversation changed": the
 webhook (on every inbound message and on the bot's reply), the takeover path, and the socket's
-own `send` handler. This module is that one way.
+own `send` handler; and the status callback wants "a message's delivery status moved". This
+module is that one way.
 
 **It is PostgreSQL `LISTEN`/`NOTIFY` and not an in-process `set[WebSocket]`, and the difference
 is invisible until it matters (P7-K).** More than one API process exists on every topology this
@@ -28,7 +29,8 @@ buy no filtering and would add a subscription lifecycle to get wrong.
 **A notice carries ids, never the payload.** PostgreSQL refuses a `NOTIFY` payload of 8000
 bytes or more, and a WhatsApp body alone can exceed that once it is UTF-8 encoded, so a
 `MessageCreated` that carried its message would be refused for exactly the long messages an
-admin most needs to see. `publish` sends `{type, message_id, client_message_id}` or `{type, conversation_id}` instead, and the one
+admin most needs to see. `publish` sends `{type, message_id, client_message_id}`, `{type, message_id}` or
+`{type, conversation_id}` instead, and the one
 subscriber in each process — the socket route's pump — reads the row back and rebuilds the
 event with the same functions `GET /api/conversations/...` serialises with. That makes the
 socket frame identical to what the REST refetch returns, by construction rather than by two
@@ -140,7 +142,19 @@ class ConversationUpdated(_Event):
     conversation: dict[str, object]
 
 
-type BroadcastEvent = MessageCreated | ConversationUpdated
+class MessageUpdated(_Event):
+    """A message's delivery status moved: Twilio's status callback advanced the row.
+
+    `message` is an already-serialised `MessageRead`, as on `MessageCreated`. There is no echo:
+    nothing about a status change originates in a composer.
+    """
+
+    type: Literal["message.updated"] = "message.updated"
+    conversation_id: uuid.UUID
+    message: dict[str, object]
+
+
+type BroadcastEvent = MessageCreated | ConversationUpdated | MessageUpdated
 
 
 class _Notice(BaseModel):
@@ -162,7 +176,14 @@ class ConversationNotice(_Notice):
     conversation_id: uuid.UUID
 
 
-type Notice = MessageNotice | ConversationNotice
+class MessageUpdatedNotice(_Notice):
+    """What crosses the channel for a `MessageUpdated`: the row to read back."""
+
+    type: Literal["message.updated"] = "message.updated"
+    message_id: uuid.UUID
+
+
+type Notice = MessageNotice | ConversationNotice | MessageUpdatedNotice
 
 _notice_adapter: TypeAdapter[Notice] = TypeAdapter(Annotated[Notice, Field(discriminator="type")])
 
@@ -263,6 +284,8 @@ async def deliver(event: BroadcastEvent) -> None:
 def _notice_for(event: BroadcastEvent) -> Notice:
     if isinstance(event, ConversationUpdated):
         notice: Notice = ConversationNotice(conversation_id=event.conversation["id"])
+    elif isinstance(event, MessageUpdated):
+        notice = MessageUpdatedNotice(message_id=event.message["id"])
     else:
         notice = MessageNotice(
             message_id=event.message["id"], client_message_id=event.client_message_id

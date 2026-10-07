@@ -44,6 +44,7 @@ from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
     FlagReason,
+    Language,
     MessageAuthor,
     MessageStatus,
     UserRole,
@@ -55,7 +56,7 @@ from app.models.user import User
 from app.routers import conversations as conversations_router
 from app.routers.conversations import CONVERSATION_NOT_FOUND_ERROR, HELD_BY_ANOTHER_ERROR
 from app.security import create_access_token, hash_password
-from app.services.broadcast_service import ConversationUpdated
+from app.services.broadcast_service import BroadcastEvent, ConversationUpdated
 from app.services.conversation_service import claim
 
 PASSWORD = "correct horse battery staple"
@@ -119,7 +120,7 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
         "flag_reason",
     }
     assert item["guardian"] == {"id": str(guardian.id), "name": guardian.name}
-    assert item["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
+    assert item["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert item["last_message_preview"] == "Could we move Tommy?"
     assert item["status"] == "human"
     assert item["flag_reason"] == "stuck"
@@ -280,6 +281,9 @@ def test_the_detail_carries_the_counts_the_thread_header_shows(
         "unread_count",
         "created_at",
         "reactivation_request",
+        "is_window_open",
+        "last_client_message_at",
+        "language",
     }
     assert body["message_count"] == 2
     assert body["unread_count"] == 1
@@ -376,8 +380,18 @@ def test_only_an_admins_message_carries_an_author(api: TestClient, db: Session) 
         "items"
     ]
 
-    assert set(items[0]) == {"id", "author_kind", "author", "body", "status", "created_at"}
-    assert items[0]["author"] == {"id": str(admin.id), "email": admin.email}
+    assert set(items[0]) == {
+        "id",
+        "author_kind",
+        "author",
+        "body",
+        "status",
+        "created_at",
+        "system_kind",
+        "error_code",
+        "reminder_child_names",
+    }
+    assert items[0]["author"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert items[1]["author"] is None
     assert items[1]["author_kind"] == "client"
 
@@ -396,6 +410,83 @@ def test_a_malformed_before_marker_is_400_not_422(api: TestClient, db: Session) 
     assert set(response.json()) == {"detail"}
 
 
+# --- PATCH /api/conversations/{id}: the Guardian language ---------------------------------------
+
+
+@pytest.mark.parametrize("language", ["es", "en", None], ids=["spanish", "english", "not detected"])
+def test_staff_set_the_language_and_the_read_returns_it(
+    api: TestClient, db: Session, broadcasts: list[BroadcastEvent], language: str | None
+) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, marker=_marker())
+    conversation.language = Language.ES if language is None else None
+    db.flush()
+
+    response = api.patch(
+        f"/api/conversations/{conversation.id}",
+        headers=_auth(admin),
+        json={"language": language},
+    )
+    read = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert (response.status_code, response.json()["language"]) == (200, language)
+    assert read["language"] == language
+    assert [event.frame()["type"] for event in broadcasts] == ["conversation.updated"]
+    assert broadcasts[0].conversation["language"] == language
+
+
+def test_a_manager_may_set_the_language(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    conversation = _make_conversation(db, marker=_marker())
+
+    response = api.patch(
+        f"/api/conversations/{conversation.id}", headers=_auth(manager), json={"language": "es"}
+    )
+
+    assert (response.status_code, response.json()["language"]) == (200, "es")
+
+
+def test_a_tutor_may_not_set_the_language(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor_user(db)
+    conversation = _make_conversation(db, marker=_marker())
+
+    response = api.patch(
+        f"/api/conversations/{conversation.id}", headers=_auth(tutor), json={"language": "es"}
+    )
+
+    assert response.status_code == 403
+    assert _row(db, conversation.id).language is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"language": "fr"}, {"language": "ES"}, {"language": ""}, {}],
+    ids=["unsupported", "upper case", "empty", "missing"],
+)
+def test_a_language_that_is_not_en_es_or_null_is_400(
+    api: TestClient, db: Session, body: dict[str, str]
+) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, marker=_marker())
+
+    response = api.patch(f"/api/conversations/{conversation.id}", headers=_auth(admin), json=body)
+
+    assert response.status_code == 400
+    assert _row(db, conversation.id).language is None
+
+
+def test_setting_the_language_of_an_unknown_conversation_is_404(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(
+        f"/api/conversations/{uuid.uuid4()}", headers=_auth(admin), json={"language": "es"}
+    )
+
+    _assert_detail(response, 404, CONVERSATION_NOT_FOUND_ERROR)
+
+
 # --- takeover, release, read -------------------------------------------------------------------
 
 
@@ -410,11 +501,15 @@ def test_a_takeover_claims_the_conversation_and_broadcasts_once(
 
     assert response.status_code == 200
     assert body["status"] == "human"
-    assert body["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
+    assert body["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert body["taken_over_at"] is not None
     assert _row(db, conversation.id).taken_over_by_user_id == admin.id
-    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
-    assert broadcasts[0].frame()["type"] == "conversation.updated"
+    # The conversation, then the Takeover notice line (#109).
+    assert [event.frame()["type"] for event in broadcasts] == [
+        "conversation.updated",
+        "message.created",
+    ]
+    assert broadcasts[0].conversation["id"] == str(conversation.id)
 
 
 def test_a_reclaim_by_the_holder_is_a_no_op_200(api: TestClient, db: Session) -> None:
@@ -444,8 +539,8 @@ def test_a_takeover_of_a_conversation_another_admin_holds_is_409_naming_them(
 
     response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(contender))
 
-    _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(email=holder.email))
-    assert holder.email in response.json()["detail"]
+    _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(display_name=holder.display_name))
+    assert holder.display_name in response.json()["detail"]
     assert _row(db, conversation.id).taken_over_by_user_id == holder.id
     assert broadcasts == []
 
@@ -469,7 +564,12 @@ def test_any_admin_may_release_not_only_the_holder(
     assert body["taken_over_by"] is None
     assert body["taken_over_at"] is None
     assert _row(db, conversation.id).taken_over_by_user_id is None
-    assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
+    # The conversation, then the Hand-back notice line (#109).
+    assert [event.frame()["type"] for event in broadcasts] == [
+        "conversation.updated",
+        "message.created",
+    ]
+    assert broadcasts[0].conversation["id"] == str(conversation.id)
 
 
 def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_200(
@@ -534,7 +634,7 @@ def test_two_concurrent_takeovers_produce_one_200_and_one_409(
         loser = [row for row in responses if row.status_code == 409]
 
         assert sorted(row.status_code for row in responses) == [200, 409]
-        assert winner[0].json()["taken_over_by"]["email"] in loser[0].json()["detail"]
+        assert winner[0].json()["taken_over_by"]["display_name"] in loser[0].json()["detail"]
     finally:
         _delete_committed_conversation(committed_sessions, committed)
 
@@ -580,7 +680,9 @@ def test_a_takeover_waits_behind_a_held_row_lock_and_is_409(
         holder.join(timeout=5)
 
         assert elapsed >= hold_seconds * 0.8
-        _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(email=committed.holder_email))
+        _assert_detail(
+            response, 409, HELD_BY_ANOTHER_ERROR.format(display_name=committed.holder_display_name)
+        )
         with committed_sessions() as session:
             assert (
                 session.get_one(Conversation, committed.conversation_id).taken_over_by_user_id
@@ -647,15 +749,16 @@ def test_no_route_in_the_module_takes_a_tutor_scope() -> None:
 
 
 @pytest.fixture(autouse=True)
-def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[ConversationUpdated]:
-    """Every `conversation.updated` the routes publish.
+def broadcasts(monkeypatch: pytest.MonkeyPatch) -> list[BroadcastEvent]:
+    """Every event the routes publish: `conversation.updated`, and since #109 the notice line's
+    `message.created`.
 
     Autouse rather than opt-in: these tests exercise the routes, not the transport, so none of
     them may reach the real `publish` and its NOTIFY — that is `test_broadcast_service.py`'s
     subject. Recording the calls is also what makes "exactly one event" and "no event at all"
     assertable — "it did not raise" would not be.
     """
-    recorded: list[ConversationUpdated] = []
+    recorded: list[BroadcastEvent] = []
     monkeypatch.setattr(
         conversations_router,
         "publish",
@@ -700,7 +803,7 @@ def session_per_request_api(
 class _CommittedConversation:
     conversation_id: uuid.UUID
     holder_id: uuid.UUID
-    holder_email: str
+    holder_display_name: str
     contender_id: uuid.UUID
 
 
@@ -716,7 +819,7 @@ def _make_committed_conversation(
         return _CommittedConversation(
             conversation_id=conversation.id,
             holder_id=holder.id,
-            holder_email=holder.email,
+            holder_display_name=holder.display_name,
             contender_id=contender.id,
         )
 
@@ -855,6 +958,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,

@@ -7,6 +7,7 @@ export type NewTutorDraft = {
 }
 
 export type UserDraft = {
+  displayName: string
   email: string
   password: string
   role: string
@@ -23,6 +24,7 @@ export type TutorCreatePayload = {
 
 export type UserCreatePayload = {
   email: string
+  display_name: string
   password: string
   role: string
   tutor_id?: string
@@ -31,6 +33,7 @@ export type UserCreatePayload = {
 
 export type UserUpdatePayload = {
   email: string
+  display_name: string
   role: string
   is_active: boolean
   password?: string
@@ -38,6 +41,7 @@ export type UserUpdatePayload = {
 
 const BASE_ROLE_OPTIONS: RoleOption[] = [
   { value: 'admin', label: 'Admin' },
+  { value: 'manager', label: 'Manager' },
   { value: 'tutor', label: 'Tutor' },
 ]
 
@@ -46,6 +50,27 @@ const DEVELOPER_ROLE_OPTION: RoleOption = { value: 'developer', label: 'Develope
 const ALL_ROLE_OPTIONS: RoleOption[] = [...BASE_ROLE_OPTIONS, DEVELOPER_ROLE_OPTION]
 
 const MIN_PASSWORD_LENGTH = 8
+
+// The `users.display_name` column is varchar(255); the server counts code points after a trim.
+const DISPLAY_NAME_MAX_LENGTH = 255
+
+// Mirrors the server's blank and length checks so the form can say so before a round trip. The
+// server's hidden-character refusal stays server-side and comes back as the save error.
+export const displayNameError = (draft: string): string | null => {
+  const trimmed = draft.trim()
+  let error: string | null = null
+
+  if (trimmed === '') {
+    error = 'Display name is required.'
+  } else if ([...trimmed].length > DISPLAY_NAME_MAX_LENGTH) {
+    error = `Display name must be ${DISPLAY_NAME_MAX_LENGTH} characters or fewer.`
+  }
+
+  return error
+}
+
+export const roleLabel = (role: string): string =>
+  ALL_ROLE_OPTIONS.find((option) => option.value === role)?.label ?? role
 
 // Presentation only, never enforcement: the server refuses the write regardless of what this
 // returns (`api/app/services/user_service.py:87-88,123-126,158-159`, 403 "Only a developer may
@@ -72,6 +97,11 @@ export const requiresTutorLink = (role: string): boolean => role === 'tutor'
 
 export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): string[] => {
   const errors: string[] = []
+  const nameError = displayNameError(draft.displayName)
+
+  if (nameError !== null) {
+    errors.push(nameError)
+  }
 
   if (draft.email.trim() === '') {
     errors.push('Email is required.')
@@ -103,6 +133,7 @@ export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): strin
 export const createUserPayload = (draft: UserDraft): UserCreatePayload => {
   const payload: UserCreatePayload = {
     email: draft.email.trim(),
+    display_name: draft.displayName.trim(),
     password: draft.password,
     role: draft.role,
   }
@@ -130,6 +161,7 @@ export const updateUserPayload = (
 ): UserUpdatePayload => {
   const payload: UserUpdatePayload = {
     email: draft.email.trim(),
+    display_name: draft.displayName.trim(),
     role: draft.role,
     is_active: draft.isActive,
   }

@@ -53,6 +53,13 @@ also returned under `child_name` (SA-28, Phase 7D), whatever the step; the bot r
 against the guardian's own children. `bot_service` resolves every value against the database;
 nothing here validates one.
 
+**English and Spanish, one prompt, one call** (#104). The prompt's bilingual paragraph is the
+one the Spanish parser trial measured; answers stay in the English forms above whatever language
+the parent writes in, and two more nullable slots come back: `language` (null for anything too
+neutral to tell, so a name or "ok" never flips a Guardian's language) and `reminders` (a stop or
+start request for the weekly reminders). `scripts/parser_eval.py` is the hand-run check of the
+whole prompt against the live model; run it after changing either.
+
 **Every vendor failure becomes `ParseFailed`.** CONSTITUTION §6 keeps HTTP out of anything below
 `app/routers/`, and #27 assigns all of them one behaviour anyway: flag `parse_error` at once and
 do **not** burn one of the parent's two re-prompts, because a parser outage is not the parent
@@ -66,7 +73,13 @@ import anthropic
 from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
-from app.schemas.bot import AnswerKind, BotIntent, ParsedIntent
+from app.schemas.bot import (
+    AnswerKind,
+    BotIntent,
+    GuardianLanguage,
+    ParsedIntent,
+    RemindersRequest,
+)
 
 MODEL = "claude-haiku-4-5"
 
@@ -101,8 +114,9 @@ good" is `yes`; a refusal such as "no thanks" or "not now" is `no`. A hedge such
 sure", "maybe" or "I'll check" is neither: give null.
   - `number`: digits only, for example `3`.
   - `date`: ISO `YYYY-MM-DD`, resolving words such as "tomorrow", "next Tuesday" or "14th Oct" \
-against today's date, which the prompt gives. A day and month with no year is the next such \
-date from today, except a date of birth, which is in the past.
+against today's date, which the prompt gives. "next <weekday>" is the soonest such day after \
+today. A day and month with no year is the next such date from today, except a date of birth, \
+which is in the past.
   - `choice`: the number of the chosen option in the numbered options listed in the collected \
 context, as digits. "The second one" is `2`; "the 4pm one" is the number of the option at 4pm. \
 When the parent names something that is not among the options, give what they named as written. \
@@ -114,7 +128,24 @@ never invent one and never repeat a value already listed in the collected contex
 - `confidence_is_low`: true when the message is ambiguous, contradicts the context, or could \
 reasonably mean more than one thing. Set it rather than guessing — a wrong guess books the \
 wrong child into the wrong slot, and a true here only costs the parent one clarifying \
-question. Set it to false only when one reading is clearly right."""
+question. Set it to false only when one reading is clearly right.
+
+The parent may write in English, Spanish, or a mix of both. Whatever language they use, \
+`answer` and every field value follow the forms above exactly: a yes/no answer is always the \
+English word `yes` or `no` ("sí", "claro", "dale", "de acuerdo" are `yes`; "no gracias", \
+"ahora no" are `no`); dates are ISO, resolving Spanish words such as "mañana", "el martes que \
+viene" or "el 14 de octubre"; numbers are digits ("quinto" is `5`, "kínder" or "kinder" is `0`); \
+names stay exactly as written.
+
+Also return:
+- `language`: `es` when the message is clearly written in Spanish, `en` when clearly in \
+English, and null when it is too short or neutral to tell: a name, an address, a school name, \
+a number, a date, a single neutral word such as "ok" or "STOP", or an emoji. For a mix, the \
+language most of the words are in.
+- `reminders`: `stop` when the parent asks to stop receiving the weekly reminders or messages \
+from us in any words or language ("STOP", "para", "ya no me escriban", "no more reminders"), \
+`start` when they ask to receive them again ("START", "quiero recibirlos otra vez"), \
+otherwise null. Asking to cancel a session is not `stop`."""
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +174,9 @@ class _ModelOutput(BaseModel):
     answer: str | None
     fields: list[_ExtractedField]
     confidence_is_low: bool
+    # Required but nullable, like `answer`: null is "too neutral to tell" and "no request".
+    language: GuardianLanguage | None
+    reminders: RemindersRequest | None
 
 
 # One client for the process, built here rather than per call: it holds a connection pool, and a
@@ -285,4 +319,6 @@ def parse_intent(
         answer=output.answer,
         fields=_fold_fields(output.fields),
         confidence_is_low=output.confidence_is_low,
+        language=output.language,
+        reminders=output.reminders,
     )

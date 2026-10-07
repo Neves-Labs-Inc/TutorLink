@@ -26,6 +26,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from app.models.enums import Language
+
 
 class HomeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -65,6 +67,11 @@ class ClientRead(BaseModel):
     is_active: bool
     homes: list[HomeRead]
     children: list[ChildRead]
+    # The Guardian language: that of the most recently active conversation, `null` when it is
+    # not detected. Staff change it through `PATCH /api/conversations/{language_conversation_id}`;
+    # with no conversation the id is `null` and English is used.
+    language: Language | None
+    language_conversation_id: uuid.UUID | None
 
 
 class HomeCreate(BaseModel):

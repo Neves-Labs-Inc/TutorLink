@@ -1,5 +1,6 @@
 """Subject CRUD, with the active-tutor count every route in `routers/subjects.py` attaches."""
 
+import enum
 import uuid
 from dataclasses import dataclass
 
@@ -9,6 +10,15 @@ from sqlalchemy.orm import Session
 
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
+
+
+class Keep(enum.Enum):
+    """An update argument the caller left out, as opposed to `None`, which clears it."""
+
+    KEEP = "keep"
+
+
+KEEP = Keep.KEEP
 
 
 class SubjectServiceError(Exception):
@@ -80,11 +90,13 @@ def _get_with_count(db: Session, *, subject_id: uuid.UUID) -> SubjectWithCount:
     return SubjectWithCount(subject=subject, tutor_count=count)
 
 
-def create_subject(db: Session, *, name: str, description: str | None) -> SubjectWithCount:
+def create_subject(
+    db: Session, *, name: str, description: str | None, name_es: str | None = None
+) -> SubjectWithCount:
     if _name_taken(db, name=name, exclude_id=None):
         raise SubjectNameTaken
 
-    subject = Subject(name=name, description=description, is_active=True)
+    subject = Subject(name=name, name_es=name_es, description=description, is_active=True)
 
     try:
         with db.begin_nested():
@@ -103,6 +115,7 @@ def update_subject(
     name: str | None,
     description: str | None,
     is_active: bool | None,
+    name_es: str | None | Keep = KEEP,
 ) -> SubjectWithCount:
     found = _get_with_count(db, subject_id=subject_id)
     subject = found.subject
@@ -114,13 +127,16 @@ def update_subject(
     # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`): assigned
     # above the block, the UPDATE would run outside the savepoint and a `UNIQUE (subjects.name)`
     # violation would deactivate the whole request's transaction, leaving the `Session` unusable
-    # even though this raises the right error. Nothing in the block but three in-memory
+    # even though this raises the right error. Nothing in the block but in-memory
     # assignments and the flush, so no other failure can be mislabelled a duplicate name. The
     # constraint is matched by the exception, never by its name.
     try:
         with db.begin_nested():
             if name is not None:
                 subject.name = name
+
+            if not isinstance(name_es, Keep):
+                subject.name_es = name_es
 
             if description is not None:
                 subject.description = description

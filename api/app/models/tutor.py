@@ -1,11 +1,12 @@
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.child import grade_range_predicate
 from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
@@ -35,6 +36,10 @@ class TutorSubject(HasID, Base):
     __table_args__ = (
         UniqueConstraint("tutor_id", "subject_id", name="uq_tutor_subjects_tutor_subject"),
         Index("ix_tutor_subjects_tutor_id_subject_id", "tutor_id", "subject_id"),
+        CheckConstraint(
+            grade_range_predicate("max_grade_level"),
+            name="ck_tutor_subjects_max_grade_level_range",
+        ),
     )
 
     tutor_id: Mapped[uuid.UUID] = mapped_column(

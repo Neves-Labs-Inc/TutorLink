@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { isAdminRole } from '@/lib/auth/auth'
+import { chromeFor } from '@/lib/auth/auth'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { AdminSidebar } from './AdminSidebar'
@@ -13,9 +13,7 @@ type AppShellProps = {
 export const AppShell = ({ children }: AppShellProps) => {
   const role = useAuthStore((state) => state.role)
   // The chrome follows the authenticated role; a guard has already established a non-null one.
-  // Asked as "not admin-or-above" rather than "is tutor" so this stays in step with
-  // `landingPath`: a role added to ROLES lands in the same branch both places.
-  const isTutor = role !== null && !isAdminRole(role)
+  const isTutor = role !== null && chromeFor(role) === 'tutor'
 
   return (
     <div className="flex min-h-dvh w-full flex-col bg-background text-foreground md:flex-row">

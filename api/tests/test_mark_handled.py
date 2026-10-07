@@ -220,7 +220,7 @@ def test_marking_handled_clears_the_flag_and_takes_the_thread_off_the_flagged_li
     assert body["flag_reason"] is None
     assert body["flagged_at"] is None
     assert body["status"] == "human"
-    assert body["taken_over_by"] == {"id": str(admin.id), "email": admin.email}
+    assert body["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
     assert body["message_count"] == 1
     row = _row(db, conversation.id)
     assert row.flag_reason is None
@@ -865,6 +865,7 @@ def _make_user(
 ) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         tutor_id=tutor_id,

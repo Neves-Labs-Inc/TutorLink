@@ -50,6 +50,8 @@ const childDetail = (overrides: Partial<ChildDetail> = {}): ChildDetail => ({
   upcoming_session_count: 0,
   guardians: [],
   homes: [home()],
+  levels: [],
+  evaluated: null,
   ...overrides,
 })
 
@@ -62,6 +64,8 @@ const childSummary = (overrides: Partial<ChildSummary> = {}): ChildSummary => ({
   guardians: [],
   homes: [],
   next_session: null,
+  evaluated: null,
+  created_at: '2026-09-28T12:00:00Z',
   ...overrides,
 })
 

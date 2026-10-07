@@ -19,7 +19,7 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.tutor import Tutor
@@ -32,7 +32,7 @@ from app.routers.exceptions import (
 )
 from app.security import create_access_token, hash_password
 
-ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
 
 # --- create: a tutor asks for time off ------------------------------------------------------
@@ -72,7 +72,7 @@ def test_tutor_creating_for_another_tutor_is_403_and_writes_nothing(
     assert _count_for(db, own.id) == 0
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_admin_creating_for_any_tutor_is_approved_immediately(
     api: TestClient, db: Session, role: UserRole
 ) -> None:
@@ -198,7 +198,7 @@ def test_admin_creating_for_an_unknown_tutor_is_404(api: TestClient, db: Session
 # --- decide: only an admin, and only once ---------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 @pytest.mark.parametrize("decision", ["approved", "rejected"])
 def test_admin_decides_a_pending_exception(
     api: TestClient, db: Session, role: UserRole, decision: str
@@ -227,7 +227,7 @@ def test_tutor_cannot_decide_their_own_pending_request(api: TestClient, db: Sess
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -241,7 +241,7 @@ def test_tutor_cannot_decide_another_tutors_exception(api: TestClient, db: Sessi
         f"/api/exceptions/{row.id}", json={"status": "rejected"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -319,7 +319,7 @@ def test_tutor_listing_another_tutors_exceptions_is_403(api: TestClient, db: Ses
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_admin_lists_any_tutors_exceptions(api: TestClient, db: Session, role: UserRole) -> None:
     tutor = _make_tutor(db)
     other = _make_tutor(db)
@@ -708,7 +708,7 @@ def test_the_ownership_403_fires_before_the_status_403(api: TestClient, db: Sess
     assert _count_for(db, other.id) == 1
 
 
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 @pytest.mark.parametrize("existing", list(ExceptionStatus))
 def test_admin_deletes_an_exception_at_any_status(
     api: TestClient, db: Session, role: UserRole, existing: ExceptionStatus
@@ -725,7 +725,7 @@ def test_admin_deletes_an_exception_at_any_status(
     assert _count_for(db, tutor.id) == 0
 
 
-@pytest.mark.parametrize("role", [UserRole.TUTOR, *ADMIN_ROLE_CASES])
+@pytest.mark.parametrize("role", [UserRole.TUTOR, *STAFF_ROLE_CASES])
 def test_deleting_an_unknown_exception_is_404(api: TestClient, db: Session, role: UserRole) -> None:
     """404 for everyone, whatever their role: an id that resolves to no row cannot be anybody's
     to be refused for."""
@@ -824,7 +824,7 @@ def test_tutor_with_null_tutor_id_cannot_decide(api: TestClient, db: Session) ->
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -873,6 +873,7 @@ def _make_tutor(db: Session) -> Tutor:
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("exception-password"),
         role=role,
         tutor_id=tutor_id,

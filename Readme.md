@@ -144,7 +144,7 @@ docker compose run --rm api python -m app.cli seed-admin
 docker compose run --rm api python -m app.cli create-developer
 ```
 
-Both prompt for an email and password. There is no public setup endpoint and there never will be — the first accounts are created here, never over HTTP.
+Both prompt for an email, a Display name and a password (or take `--display-name`). There is no public setup endpoint and there never will be — the first accounts are created here, never over HTTP.
 
 `create-developer` is the only way to get a `developer`: an admin may not create one, nor promote anyone to it, so the system cannot bootstrap its own super-user through the API. Run it again with a fresh email to recover from a lockout.
 

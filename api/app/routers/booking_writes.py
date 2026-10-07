@@ -5,7 +5,7 @@ by design, so the three can be built and reviewed separately; the four paths do 
 another.
 
 `POST /api/bookings` is **admin-or-above** (`docs/api-design.md:278`) and so takes
-`AdminPrincipal`. It deliberately does **not** take `TutorScope` (`CONSTITUTION.md` §15): the
+`StaffPrincipal`. It deliberately does **not** take `TutorScope` (`CONSTITUTION.md` §15): the
 validation touches five tutor-owned mappers with no tutor filter to apply, and an unread scope
 would arm `_guard_unapplied_scope` and turn every one of those queries into a 500.
 
@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.models.booking import Booking
 from app.schemas.booking_write import BookingCreate, BookingCreated
 from app.services import clock
@@ -52,7 +52,7 @@ OUTSIDE_AVAILABILITY_ERROR = "That time is not inside the availability range tha
 BOOKING_OVERLAPS_ERROR = "That tutor already has a booking overlapping this time"
 GAP_NOT_RESPECTED_ERROR = "That time is too close to another booking for the same tutor"
 BLOCKED_BY_EXCEPTION_ERROR = "That tutor has approved time off covering this time"
-GRADE_CEILING_ERROR = "That tutor does not teach this subject at the child's grade level"
+GRADE_CEILING_ERROR = "That tutor does not teach this subject at the child's level"
 HOME_NOT_LINKED_ERROR = "That home is not one of the child's homes"
 GUARDIAN_NOT_LINKED_ERROR = "That guardian is not linked to the child"
 DATE_OUT_OF_WINDOW_ERROR = "That date is in the past or beyond the booking window"
@@ -64,7 +64,7 @@ router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 
 
 @router.post("", response_model=BookingCreated, status_code=status.HTTP_201_CREATED)
-def create(payload: BookingCreate, user: AdminPrincipal, db: DbSession) -> BookingCreated:
+def create(payload: BookingCreate, user: StaffPrincipal, db: DbSession) -> BookingCreated:
     try:
         booking = create_booking(db, request=_request(payload), now=clock.business_now())
     except BookingReferenceNotFound as exc:

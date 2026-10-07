@@ -369,6 +369,7 @@ def _make_world(session: Session) -> World:
     subject = Subject(name=f"Subject {suffix}")
     admin = User(
         email=f"admin-{suffix}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("race-password"),
         role=UserRole.ADMIN,
         is_active=True,

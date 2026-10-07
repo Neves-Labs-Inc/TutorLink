@@ -1,39 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import {
-  BookOpen,
-  CalendarDays,
-  GraduationCap,
-  LayoutDashboard,
-  LogOut,
-  Menu,
-  MessageSquare,
-  Settings,
-  UserCog,
-  Users,
-  Baby,
-  X,
-} from 'lucide-react'
+import { LogOut, Menu, UserRound, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
+import { adminNavItemsFor } from '@/lib/admin-nav/adminNav'
+import { useAuthStore } from '@/stores/authStore'
 import { useUiStore } from '@/stores/uiStore'
+import { MyProfileDialog } from './MyProfileDialog'
 
 type NavBodyProps = {
   onNavigate?: () => void
+  onOpenProfile: () => void
 }
-
-const NAV_ITEMS = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/tutors', label: 'Tutors', icon: GraduationCap },
-  { to: '/children', label: 'Children', icon: Baby },
-  { to: '/guardians', label: 'Guardians', icon: Users },
-  { to: '/chats', label: 'Chats', icon: MessageSquare },
-  { to: '/bookings', label: 'Bookings', icon: CalendarDays },
-  { to: '/subjects', label: 'Subjects', icon: BookOpen },
-  { to: '/users', label: 'Users', icon: UserCog },
-  { to: '/settings', label: 'Settings', icon: Settings },
-] as const
 
 const linkClasses = ({ isActive }: { isActive: boolean }) =>
   cn(
@@ -44,9 +23,9 @@ const linkClasses = ({ isActive }: { isActive: boolean }) =>
       : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
   )
 
-const logoutButtonClasses = cn(
-  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-  'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+const footerButtonClasses = cn(
+  'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors md:min-h-0',
+  'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent/80',
   'outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar',
 )
 
@@ -57,6 +36,9 @@ export const AdminSidebar = () => {
   const mobileNavOpen = useUiStore((state) => state.mobileNavOpen)
   const toggleMobileNav = useUiStore((state) => state.toggleMobileNav)
   const closeMobileNav = useUiStore((state) => state.closeMobileNav)
+  const [isProfileOpen, setIsProfileOpen] = useState(false)
+
+  const openProfile = () => setIsProfileOpen(true)
 
   const panelRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -129,7 +111,7 @@ export const AdminSidebar = () => {
         <div className="flex h-14 items-center border-b border-sidebar-border px-6">
           <Brand />
         </div>
-        <NavBody />
+        <NavBody onOpenProfile={openProfile} />
       </aside>
 
       <div
@@ -168,9 +150,15 @@ export const AdminSidebar = () => {
               <X aria-hidden="true" className="size-5" />
             </button>
           </div>
-          <NavBody onNavigate={closeMobileNav} />
+          <NavBody onNavigate={closeMobileNav} onOpenProfile={openProfile} />
         </div>
       </div>
+
+      <MyProfileDialog
+        open={isProfileOpen}
+        onOpenChange={setIsProfileOpen}
+        fallbackFocusRef={triggerRef}
+      />
     </>
   )
 }
@@ -181,9 +169,16 @@ const Brand = () => (
   </span>
 )
 
-const NavBody = ({ onNavigate }: NavBodyProps) => {
+const NavBody = ({ onNavigate, onOpenProfile }: NavBodyProps) => {
   const { logout } = useAuth()
+  const role = useAuthStore((state) => state.role)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const navItems = role === null ? [] : adminNavItemsFor(role)
+
+  const handleOpenProfile = () => {
+    onNavigate?.()
+    onOpenProfile()
+  }
 
   const handleLogout = () => {
     setIsLoggingOut(true)
@@ -194,19 +189,28 @@ const NavBody = ({ onNavigate }: NavBodyProps) => {
   return (
     <>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Admin">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink key={to} to={to} className={linkClasses} onClick={onNavigate}>
             <Icon aria-hidden="true" className="size-4 shrink-0" />
             <span className="truncate">{label}</span>
           </NavLink>
         ))}
       </nav>
-      <div className="border-t border-sidebar-border px-3 py-3">
+      <div className="space-y-1 border-t border-sidebar-border px-3 py-3">
+        <button
+          type="button"
+          onClick={handleOpenProfile}
+          aria-haspopup="dialog"
+          className={footerButtonClasses}
+        >
+          <UserRound aria-hidden="true" className="size-4 shrink-0" />
+          <span>My profile</span>
+        </button>
         <button
           type="button"
           onClick={handleLogout}
           disabled={isLoggingOut}
-          className={logoutButtonClasses}
+          className={footerButtonClasses}
         >
           <LogOut aria-hidden="true" className="size-4 shrink-0" />
           <span>Logout</span>

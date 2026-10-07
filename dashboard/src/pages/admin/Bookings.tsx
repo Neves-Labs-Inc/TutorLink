@@ -1,29 +1,28 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { SlidersHorizontal } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { BookingDetailPanel } from '@/components/bookings/BookingDetailPanel'
+import { BookingFilterFields } from '@/components/bookings/BookingFilterFields'
 import { BookingForm } from '@/components/bookings/BookingForm'
-import { SearchPicker, type SearchPickerOption } from '@/components/pickers/SearchPicker'
+import type { SearchPickerOption } from '@/components/pickers/SearchPicker'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
+import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
 import { childPickerOption } from '@/lib/booking-form/bookingForm'
 import {
+  activeFilterCount,
   bookingCountLabel,
   bookingFilterSearchParams,
   bookingFiltersFromSearchParams,
   bookingListParams,
   bookingTimeLabel,
-  statusLabel,
-  STATUS_OPTIONS,
-  toggleStatus,
+  EMPTY_FILTERS,
   type BookingFilterState,
 } from '@/lib/bookings/bookings'
 import { formatIsoDate } from '@/lib/dates/dates'
@@ -32,16 +31,9 @@ import { childQueries } from '@/lib/queries/children'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import { subjectQueries } from '@/lib/queries/subjects'
 import { tutorQueries } from '@/lib/queries/tutors'
-import { cn } from '@/lib/utils'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const REFERENCE_PAGE_SIZE = 100
-const STATUS_GROUP_LABEL_ID = 'booking-status-filter'
-
-const chipClasses =
-  'inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
-const chipIdleClasses = 'border-border text-muted-foreground hover:text-foreground'
-const chipSelectedClasses = 'border-primary bg-primary text-primary-foreground'
 
 export const Bookings = () => {
   const queryClient = useQueryClient()
@@ -50,6 +42,8 @@ export const Bookings = () => {
   const [page, setPage] = useState(1)
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const showBookingsRef = useRef<HTMLButtonElement>(null)
   const [childOption, setChildOption] = useState<SearchPickerOption | null>(null)
 
   const filters = bookingFiltersFromSearchParams(searchParams)
@@ -86,6 +80,30 @@ export const Bookings = () => {
     return results.items.map((child) => childPickerOption(child, false))
   }
 
+  // Clear all disables itself at 0 filters, so move focus on to keep it inside the panel.
+  const handleClearAll = () => {
+    applyFilters(EMPTY_FILTERS)
+    setChildOption(null)
+    showBookingsRef.current?.focus()
+  }
+
+  const filterCount = activeFilterCount(filters)
+  const filtersButtonLabel = filterCount === 0 ? 'Filters' : `Filters, ${filterCount} active`
+  const showBookingsLabel =
+    bookings.data === undefined || bookings.isPlaceholderData
+      ? 'Show bookings'
+      : `Show ${bookingCountLabel(bookings.data.total)}`
+
+  const filterFieldProps = {
+    filters,
+    onChange: applyFilters,
+    childOption,
+    onChildChange: handleChildChange,
+    searchChildren,
+    tutors: tutors.data?.items ?? [],
+    subjects: subjects.data?.items ?? [],
+  }
+
   const columns: Column<Booking>[] = [
     {
       id: 'date',
@@ -113,103 +131,31 @@ export const Bookings = () => {
         </Button>
       </div>
 
-      <Card>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <div className="space-y-1.5">
-              <Label htmlFor="booking-from">From</Label>
-              <Input
-                id="booking-from"
-                type="date"
-                value={filters.from}
-                onChange={(event) => applyFilters({ ...filters, from: event.target.value })}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="booking-to">To</Label>
-              <Input
-                id="booking-to"
-                type="date"
-                value={filters.to}
-                onChange={(event) => applyFilters({ ...filters, to: event.target.value })}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="booking-tutor-filter">Tutor</Label>
-              <Select
-                id="booking-tutor-filter"
-                value={filters.tutorId}
-                onChange={(event) => applyFilters({ ...filters, tutorId: event.target.value })}
-              >
-                <option value="">All tutors</option>
-                {(tutors.data?.items ?? []).map((tutor) => (
-                  <option key={tutor.id} value={tutor.id}>
-                    {tutor.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="booking-subject-filter">Subject</Label>
-              <Select
-                id="booking-subject-filter"
-                value={filters.subjectId}
-                onChange={(event) => applyFilters({ ...filters, subjectId: event.target.value })}
-              >
-                <option value="">All subjects</option>
-                {(subjects.data?.items ?? []).map((subject) => (
-                  <option key={subject.id} value={subject.id}>
-                    {subject.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="booking-child-filter">Child</Label>
-              <SearchPicker
-                id="booking-child-filter"
-                queryKeyPrefix={['children', 'filter']}
-                search={searchChildren}
-                value={childOption}
-                onChange={handleChildChange}
-                placeholder="All children"
-                emptyMessage="No matching children."
-              />
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <span id={STATUS_GROUP_LABEL_ID} className="block text-sm font-medium text-foreground">
-              Status
-            </span>
-            <div
-              role="group"
-              aria-labelledby={STATUS_GROUP_LABEL_ID}
-              className="flex flex-wrap gap-2"
+      <div className="md:hidden">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-11 w-full"
+          aria-label={filtersButtonLabel}
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen(true)}
+        >
+          <SlidersHorizontal data-icon="inline-start" aria-hidden="true" />
+          Filters
+          {filterCount > 0 && (
+            <span
+              aria-hidden="true"
+              className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground tabular-nums animate-in fade-in-0 zoom-in-75 duration-150 ease-out motion-reduce:animate-none"
             >
-              {STATUS_OPTIONS.map((status) => {
-                const selected = filters.statuses.includes(status)
+              {filterCount}
+            </span>
+          )}
+        </Button>
+      </div>
 
-                return (
-                  <button
-                    key={status}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() =>
-                      applyFilters({ ...filters, statuses: toggleStatus(filters.statuses, status) })
-                    }
-                    className={cn(chipClasses, selected ? chipSelectedClasses : chipIdleClasses)}
-                  >
-                    {statusLabel(status)}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+      <Card className="hidden md:block">
+        <CardContent>
+          <BookingFilterFields {...filterFieldProps} idPrefix="booking" layout="grid" />
         </CardContent>
       </Card>
 
@@ -236,6 +182,36 @@ export const Bookings = () => {
         onPageChange={setPage}
         disabled={bookings.isPending}
       />
+
+      <SlideOver
+        open={filtersOpen}
+        onOpenChange={setFiltersOpen}
+        title="Filters"
+        description="Changes apply right away."
+        footer={
+          <div className="grid grid-cols-2 gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 md:h-8"
+              disabled={filterCount === 0}
+              onClick={handleClearAll}
+            >
+              Clear all
+            </Button>
+            <Button
+              ref={showBookingsRef}
+              type="button"
+              className="h-11 md:h-8"
+              onClick={() => setFiltersOpen(false)}
+            >
+              <span aria-live="polite">{showBookingsLabel}</span>
+            </Button>
+          </div>
+        }
+      >
+        <BookingFilterFields {...filterFieldProps} idPrefix="booking-sheet" layout="stacked" />
+      </SlideOver>
 
       <BookingDetailPanel
         bookingId={selectedBookingId}

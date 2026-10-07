@@ -16,6 +16,11 @@ export type MessageCreatedFrame = {
   client_message_id?: string
 }
 
+export type MessageUpdatedFrame = {
+  message: Message
+  conversation_id: string
+}
+
 type ClientFrame =
   | { type: 'auth'; access_token: string }
   | { type: 'send'; conversation_id: string; body: string; client_message_id: string }
@@ -23,14 +28,16 @@ type ClientFrame =
 type ServerFrame =
   | { type: 'ready' }
   | ({ type: 'message.created' } & MessageCreatedFrame)
+  | ({ type: 'message.updated' } & MessageUpdatedFrame)
   | { type: 'conversation.updated'; conversation: Conversation }
-  | { type: 'error'; detail: string }
+  | { type: 'error'; detail: string; code?: string }
 
 export type ConversationStreamListener = {
   onStatusChange: (status: ConversationStreamStatus) => void
-  onError: (detail: string) => void
+  onError: (detail: string, code?: string) => void
   onMessageCreated: (frame: MessageCreatedFrame) => void
   onConversationUpdated: (conversation: Conversation) => void
+  onMessageUpdated: (frame: MessageUpdatedFrame) => void
 }
 
 export type ConversationStreamDeps = {
@@ -44,6 +51,8 @@ export type ConversationStreamDeps = {
 export type UseConversationStreamHandlers = {
   onMessageCreated?: (frame: MessageCreatedFrame) => void
   onConversationUpdated?: (conversation: Conversation) => void
+  onMessageUpdated?: (frame: MessageUpdatedFrame) => void
+  onError?: (detail: string, code?: string) => void
 }
 
 // The socket is shared by every mounted view (`api-design.md:1608-1611`): one connection per
@@ -139,10 +148,12 @@ export class ConversationStreamClient {
       this.deps.invalidateConversations()
     } else if (frame.type === 'message.created') {
       for (const listener of this.listeners) listener.onMessageCreated(frame)
+    } else if (frame.type === 'message.updated') {
+      for (const listener of this.listeners) listener.onMessageUpdated(frame)
     } else if (frame.type === 'conversation.updated') {
       for (const listener of this.listeners) listener.onConversationUpdated(frame.conversation)
     } else {
-      for (const listener of this.listeners) listener.onError(frame.detail)
+      for (const listener of this.listeners) listener.onError(frame.detail, frame.code)
     }
   }
 
@@ -201,6 +212,7 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<ConversationStreamStatus>('connecting')
   const [error, setError] = useState<string | null>(null)
+  const [errorCode, setErrorCode] = useState<string | null>(null)
   const handlersRef = useRef(handlers)
 
   useEffect(() => {
@@ -211,10 +223,15 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
     const client = getSharedClient(queryClient)
     const unsubscribe = client.subscribe({
       onStatusChange: setStatus,
-      onError: setError,
+      onError: (detail, code) => {
+        setError(detail)
+        setErrorCode(code ?? null)
+        handlersRef.current.onError?.(detail, code)
+      },
       onMessageCreated: (frame) => handlersRef.current.onMessageCreated?.(frame),
       onConversationUpdated: (conversation) =>
         handlersRef.current.onConversationUpdated?.(conversation),
+      onMessageUpdated: (frame) => handlersRef.current.onMessageUpdated?.(frame),
     })
 
     return unsubscribe
@@ -224,5 +241,5 @@ export const useConversationStream = (handlers: UseConversationStreamHandlers = 
     sharedClient?.send(conversationId, body, clientMessageId)
   }, [])
 
-  return { status, error, send }
+  return { status, error, errorCode, send }
 }

@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { BookOpen } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { ManageSubjectsSlideOver } from '@/components/tutors/ManageSubjectsSlideOver'
 import { errorDetail } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import { subjectQueries } from '@/lib/queries/subjects'
@@ -45,6 +48,7 @@ export const Tutors = () => {
   const [subjectId, setSubjectId] = useState(ALL_SUBJECTS)
   const [showInactive, setShowInactive] = useState(false)
   const [page, setPage] = useState(1)
+  const [manageSubjectsOpen, setManageSubjectsOpen] = useState(false)
 
   useEffect(() => {
     const timer = setTimeout(() => setAppliedSearch(search), SEARCH_DEBOUNCE_MS)
@@ -90,6 +94,13 @@ export const Tutors = () => {
     setPage(1)
   }
 
+  const handleSubjectDeactivated = (deactivatedSubjectId: string) => {
+    if (deactivatedSubjectId === subjectId) {
+      setSubjectId(ALL_SUBJECTS)
+      setPage(1)
+    }
+  }
+
   const handleShowInactiveChange = (nextShowInactive: boolean) => {
     setShowInactive(nextShowInactive)
     setPage(1)
@@ -116,6 +127,16 @@ export const Tutors = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-heading text-2xl font-semibold tracking-tight">Tutors</h1>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-11 md:h-8"
+          aria-expanded={manageSubjectsOpen}
+          onClick={() => setManageSubjectsOpen(true)}
+        >
+          <BookOpen data-icon="inline-start" aria-hidden="true" />
+          Manage subjects
+        </Button>
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
@@ -175,6 +196,12 @@ export const Tutors = () => {
         total={tutorsQuery.data?.total ?? 0}
         onPageChange={setPage}
         disabled={tutorsQuery.isPending}
+      />
+
+      <ManageSubjectsSlideOver
+        open={manageSubjectsOpen}
+        onOpenChange={setManageSubjectsOpen}
+        onSubjectDeactivated={handleSubjectDeactivated}
       />
 
       {/* <SlideOver

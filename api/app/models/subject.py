@@ -16,6 +16,8 @@ class Subject(HasID, HasActiveFlag, Base):
     __tablename__ = "subjects"
 
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    # Shown to Spanish-speaking Guardians; NULL falls back to `name`.
+    name_es: Mapped[str | None] = mapped_column(String(128), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

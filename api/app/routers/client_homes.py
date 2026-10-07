@@ -2,7 +2,7 @@
 
 A thin HTTP shell over `home_service`: the service raises domain exceptions, this maps them to
 status codes and owns the commit. Mounted on the clients prefix beside `clients.py`, the
-`client_bookings.py` precedent. `AdminPrincipal` and never `TutorScope`: clients are admin-only
+`client_bookings.py` precedent. `StaffPrincipal` and never `TutorScope`: clients are admin-only
 (`docs/api-design.md:285`), so there is no tutor filter to apply.
 """
 
@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal
+from app.dependencies import StaffPrincipal
 from app.schemas.client import HomeRead
 from app.schemas.home import ClientHomeCreate
 from app.services.home_service import BlankHomeDetails, ChildNotLinked, ClientNotFound, add_home
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 @router.post("/{client_id}/homes", response_model=HomeRead, status_code=status.HTTP_201_CREATED)
 def create(
-    client_id: uuid.UUID, payload: ClientHomeCreate, user: AdminPrincipal, db: DbSession
+    client_id: uuid.UUID, payload: ClientHomeCreate, user: StaffPrincipal, db: DbSession
 ) -> HomeRead:
     try:
         home = add_home(

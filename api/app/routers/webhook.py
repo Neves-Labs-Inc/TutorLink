@@ -29,7 +29,7 @@ from app.db import get_db
 from app.models.message import Message
 from app.schemas.message import MessageRead
 from app.services import webhook_service
-from app.services.broadcast_service import MessageCreated, publish
+from app.services.broadcast_service import MessageCreated, MessageUpdated, publish
 
 INVALID_SIGNATURE_ERROR = "Invalid Twilio signature"
 MISSING_FIELD_ERROR = "{field} is required"
@@ -72,12 +72,20 @@ def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Respo
         twilio_from=_required(form, "From"),
         body=form.get("Body", ""),
         twilio_sid=_required(form, "MessageSid"),
+        button_payload=form.get("ButtonPayload") or None,
     )
 
     db.commit()
 
-    for message in turn.recorded:
-        publish(_message_created(message))
+    # Record, commit, send, attach: the notice is a line in the thread before it is sent.
+    notice = None
+    if turn.notice is not None:
+        notice = webhook_service.send_notice(db, notice=turn.notice)
+        db.commit()
+
+    for message in (*turn.recorded, notice):
+        if message is not None:
+            publish(_message_created(message))
 
     return Response(content=turn.twiml, media_type=TWIML_MEDIA_TYPE)
 
@@ -86,14 +94,18 @@ def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Respo
 def receive_status(request: Request, form: TwilioForm, db: DbSession) -> Response:
     _require_twilio_signature(request, form)
 
-    webhook_service.handle_status(
+    advanced = webhook_service.handle_status(
         db,
         twilio_sid=_required(form, "MessageSid"),
         twilio_status=form.get("MessageStatus", ""),
         error_code=form.get("ErrorCode") or None,
+        twilio_to=form.get("To") or None,
     )
 
     db.commit()
+
+    if advanced is not None:
+        publish(_message_updated(advanced))
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -140,14 +152,23 @@ def _required(form: Mapping[str, str], field: str) -> str:
 
 
 def _message_created(message: Message) -> MessageCreated:
-    return MessageCreated(
-        conversation_id=message.conversation_id,
-        message=MessageRead(
-            id=message.id,
-            author_kind=message.author_kind,
-            author=None,
-            body=message.body,
-            status=message.status,
-            created_at=message.created_at,
-        ).model_dump(mode="json"),
-    )
+    return MessageCreated(conversation_id=message.conversation_id, message=_serialised(message))
+
+
+def _message_updated(message: Message) -> MessageUpdated:
+    return MessageUpdated(conversation_id=message.conversation_id, message=_serialised(message))
+
+
+def _serialised(message: Message) -> dict[str, object]:
+    # `author` stays empty: only the id crosses the channel, and the pump reads the author back.
+    return MessageRead(
+        id=message.id,
+        author_kind=message.author_kind,
+        author=None,
+        body=message.body,
+        status=message.status,
+        created_at=message.created_at,
+        system_kind=message.system_kind,
+        error_code=message.error_code,
+        reminder_child_names=None,
+    ).model_dump(mode="json")

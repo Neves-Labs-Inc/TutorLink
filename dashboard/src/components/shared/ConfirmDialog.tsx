@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, type ReactNode } from 'react'
 import { Dialog } from 'radix-ui'
 
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { dialogContentClasses, dialogOverlayClasses } from '@/lib/dialog/dialogClasses'
 
 export type ConfirmDialogProps = {
   open: boolean
@@ -15,22 +15,6 @@ export type ConfirmDialogProps = {
   pending?: boolean
   errorMessage?: string | null
 }
-
-const overlayClasses = cn(
-  'fixed inset-0 z-40 bg-black/60',
-  'data-[state=open]:animate-in data-[state=closed]:animate-out',
-  'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
-  'motion-reduce:animate-none',
-)
-
-const contentClasses = cn(
-  'fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2',
-  'space-y-4 rounded-lg border border-border bg-card p-5 outline-none',
-  'data-[state=open]:animate-in data-[state=closed]:animate-out',
-  'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
-  'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
-  'motion-reduce:animate-none',
-)
 
 const focusCancel = (event: Event) => {
   event.preventDefault()
@@ -67,9 +51,9 @@ export const ConfirmDialog = ({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className={overlayClasses} />
+        <Dialog.Overlay className={dialogOverlayClasses} />
         <Dialog.Content
-          className={contentClasses}
+          className={dialogContentClasses}
           onOpenAutoFocus={focusCancel}
           onCloseAutoFocus={restoreTriggerFocus}
         >

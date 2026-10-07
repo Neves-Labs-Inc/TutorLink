@@ -19,7 +19,7 @@ from sqlalchemy import delete
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -32,7 +32,7 @@ from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR, ILLEGAL_TRANSITI
 from app.security import create_access_token, hash_password
 from app.services.booking_status_service import IllegalTransition, change_status
 
-ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
 DATE = datetime.date(2026, 9, 7)
 NINE = datetime.time(9, 0)
@@ -65,7 +65,7 @@ ILLEGAL_TRANSITIONS = [
 
 
 @pytest.mark.parametrize(("current", "target"), LEGAL_TRANSITIONS)
-@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_a_legal_transition_succeeds(
     api: TestClient,
     db: Session,
@@ -269,7 +269,7 @@ def test_tutor_token_is_403(api: TestClient, db: Session) -> None:
         f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
     assert _row(db, booking.id).status is BookingStatus.PENDING
 
 
@@ -347,6 +347,7 @@ def _make_tutor(db: Session) -> Tutor:
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("booking-status-password"),
         role=role,
         tutor_id=tutor_id,

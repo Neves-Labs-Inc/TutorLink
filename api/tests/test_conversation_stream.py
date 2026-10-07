@@ -60,7 +60,7 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus, MessageAuthor, MessageStatus, UserRole
 from app.models.message import Message
@@ -76,6 +76,7 @@ from app.routers.conversation_stream import (
     TOKEN_EXPIRED_ERROR,
     UNEXPECTED_FRAME_ERROR,
     UNREADABLE_FRAME_ERROR,
+    WINDOW_CLOSED_ERROR,
 )
 from app.security import ACCESS_TOKEN_TYPE, create_access_token, hash_password
 from app.services import broadcast_service
@@ -83,10 +84,12 @@ from app.services.broadcast_service import (
     LIVENESS_SECONDS,
     ConversationUpdated,
     MessageCreated,
+    MessageUpdated,
     registered,
     unregister,
 )
 from app.services.twilio_service import TwilioSendFailed
+from tests.fake_twilio import CODE_OUTSIDE_WINDOW, FakeTwilio
 
 STREAM_PATH = "/api/conversations/stream"
 RECEIVE_TIMEOUT_SECONDS = 5.0
@@ -180,9 +183,9 @@ def test_a_socket_that_never_authenticates_is_closed_with_1008(
     assert (refusal.code, refusal.reason) == (POLICY_VIOLATION, AUTH_TIMEOUT_ERROR)
 
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.DEVELOPER])
-def test_a_valid_admin_token_gets_ready(sockets: TestClient, db: Session, role: UserRole) -> None:
-    """`developer` is a superset of `admin` and reaches everything an admin reaches."""
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER])
+def test_a_valid_staff_token_gets_ready(sockets: TestClient, db: Session, role: UserRole) -> None:
+    """Every Staff role has the chat (#108): a Manager as much as an Admin or a Developer."""
     user = _make_user(db, role=role)
 
     with sockets.websocket_connect(STREAM_PATH) as socket:
@@ -194,7 +197,7 @@ def test_a_valid_admin_token_gets_ready(sockets: TestClient, db: Session, role: 
 @pytest.mark.parametrize(
     ("principal", "expected_reason"),
     [
-        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), ADMIN_REQUIRED_ERROR),
+        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), STAFF_REQUIRED_ERROR),
         (lambda db: _token(_make_user(db, is_active=False)), CREDENTIALS_ERROR),
         (lambda db: _token(_make_user(db), lifetime=-_minutes(30)), CREDENTIALS_ERROR),
         (lambda db: "not.a.token", CREDENTIALS_ERROR),
@@ -267,6 +270,7 @@ def test_a_send_on_a_human_conversation_is_recorded_sent_and_echoed(
     """
     user = _make_user(db)
     conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    _make_inbound(db, conversation, body="Can we move Tommy?")
 
     with _authenticated(sockets, user) as socket:
         socket.send_json(_send_frame(conversation.id, body="on my way", client_id="composer-1"))
@@ -279,11 +283,29 @@ def test_a_send_on_a_human_conversation_is_recorded_sent_and_echoed(
     assert frame["conversation_id"] == str(conversation.id)
     assert frame["client_message_id"] == "composer-1"
     assert frame["message"]["id"] == str(message.id)
-    assert frame["message"]["author"] == {"id": str(user.id), "email": user.email}
+    assert frame["message"]["author"] == {"id": str(user.id), "display_name": user.display_name}
     assert frame["message"]["status"] == MessageStatus.QUEUED.value
     assert twilio == [{"to": conversation.phone_number, "body": "on my way"}]
     assert (message.author_kind, message.status) == (MessageAuthor.ADMIN, MessageStatus.QUEUED)
     assert (message.twilio_sid, message.author_user_id) == (TWILIO_SID, user.id)
+
+
+def test_a_manager_sends_on_a_chat_they_hold(
+    sockets: TestClient, db: Session, twilio: list[dict[str, str]]
+) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=manager)
+    _make_inbound(db, conversation, body="Hola")
+
+    with _authenticated(sockets, manager) as socket:
+        socket.send_json(_send_frame(conversation.id, body="Hi, Maria here"))
+
+        frame = _receive(socket)
+
+    assert frame["type"] == "message.created"
+    assert frame["message"]["author"] == {"id": str(manager.id), "display_name": "Test User"}
+    assert twilio == [{"to": conversation.phone_number, "body": "Hi, Maria here"}]
+    assert _only_message(db, conversation.id).author_user_id == manager.id
 
 
 def test_a_send_twilio_refuses_keeps_the_row_and_tells_the_sender(
@@ -303,6 +325,7 @@ def test_a_send_twilio_refuses_keeps_the_row_and_tells_the_sender(
     """
     user = _make_user(db)
     conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    _make_inbound(db, conversation, body="Can we move Tommy?")
     monkeypatch.setattr(conversation_stream, "send_whatsapp_message", _refuses)
 
     with _authenticated(sockets, user) as socket:
@@ -317,6 +340,71 @@ def test_a_send_twilio_refuses_keeps_the_row_and_tells_the_sender(
     assert frames["message.created"]["message"]["status"] == MessageStatus.FAILED.value
     assert (message.status, message.twilio_sid) == (MessageStatus.FAILED, None)
     assert message.error_code is None
+
+
+def test_a_send_twilio_refuses_with_a_code_stores_the_code_on_the_failed_row(
+    sockets: TestClient, db: Session, fake_twilio: FakeTwilio
+) -> None:
+    """63016 (outside the 24-hour window) is the refusal staff need explained, so the code
+    Twilio gave is kept on the row rather than reduced to a bare `failed`."""
+    user = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    _make_inbound(db, conversation, body="Can we move Tommy?")
+    fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW)
+
+    with _authenticated(sockets, user) as socket:
+        socket.send_json(_send_frame(conversation.id))
+
+        frames = _receive_two(socket)
+
+    message = _only_message(db, conversation.id)
+
+    assert frames["error"] == {"type": "error", "detail": SEND_FAILED_ERROR}
+    assert (message.status, message.twilio_sid) == (MessageStatus.FAILED, None)
+    assert message.error_code == "63016"
+
+
+def test_a_send_after_the_window_closed_is_refused_and_records_nothing(
+    sockets: TestClient, db: Session, fake_twilio: FakeTwilio
+) -> None:
+    """Twilio would refuse it with 63016, so it is refused before anything is written, and the
+    frame carries `window_closed` for the composer to disable itself (#109). The Guardian's
+    last message is a day old; the admin's own line after it does not reopen the window."""
+    user = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    inbound = _make_inbound(db, conversation, body="Can we move Tommy?")
+    inbound.created_at = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=24)
+    _make_admin_message(db, conversation, author=user, status=MessageStatus.DELIVERED)
+    db.flush()
+
+    with _authenticated(sockets, user) as socket:
+        socket.send_json(_send_frame(conversation.id))
+
+        frame = _receive(socket)
+
+    assert frame == {"type": "error", "detail": WINDOW_CLOSED_ERROR, "code": "window_closed"}
+    assert len(_messages(db, conversation.id)) == 1
+    assert fake_twilio.sent == []
+
+
+def test_a_transfer_reaches_the_previous_holders_socket(
+    sockets: TestClient, db: Session, fake_twilio: FakeTwilio
+) -> None:
+    """The previous holder's open thread locks because their socket hears who holds it now."""
+    previous = _make_user(db)
+    staff = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=previous)
+    _make_inbound(db, conversation, body="Can we move Tommy?")
+
+    with _authenticated(sockets, previous) as socket:
+        response = sockets.post(
+            f"/api/conversations/{conversation.id}/transfer", headers=_bearer(staff)
+        )
+        frames = _receive_two(socket)
+
+    assert response.status_code == 200
+    assert frames["conversation.updated"]["conversation"]["taken_over_by"]["id"] == str(staff.id)
+    assert frames["message.created"]["message"]["system_kind"] == "transfer_notice"
 
 
 def test_a_send_on_a_bot_conversation_is_refused_and_records_nothing(
@@ -494,6 +582,49 @@ def test_a_notice_for_a_message_that_is_gone_is_skipped_and_the_socket_stays_ope
     assert frame["type"] == "conversation.updated"
     assert frame["conversation"]["id"] == str(conversation.id)
     assert len(still_registered) == 1
+
+
+def test_a_message_updated_notice_is_rebuilt_into_the_status_frame(
+    sockets: TestClient, db: Session
+) -> None:
+    """#72: the frame carries the row as the thread's refetch returns it, status included, so
+    the dashboard swaps the bubble in place rather than waiting for a reload."""
+    user = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    message = _make_admin_message(db, conversation, author=user, status=MessageStatus.DELIVERED)
+
+    with _authenticated(sockets, user) as socket:
+        broadcast_service.publish(
+            MessageUpdated(conversation_id=conversation.id, message={"id": str(message.id)})
+        )
+
+        frame = _receive(socket)
+
+    assert frame == {
+        "type": "message.updated",
+        "conversation_id": str(conversation.id),
+        "message": _thread_item(sockets, user, conversation.id),
+    }
+    assert frame["message"]["status"] == "delivered"
+
+
+def test_a_message_updated_notice_for_a_message_that_is_gone_is_skipped(
+    sockets: TestClient, db: Session
+) -> None:
+    """Retention can delete the row between the callback's commit and the pump's read; that
+    costs one frame and never the pump."""
+    user = _make_user(db)
+    conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+
+    with _authenticated(sockets, user) as socket:
+        broadcast_service.publish(
+            MessageUpdated(conversation_id=conversation.id, message={"id": str(uuid.uuid4())})
+        )
+        broadcast_service.publish(ConversationUpdated(conversation={"id": str(conversation.id)}))
+
+        frame = _receive(socket)
+
+    assert frame["type"] == "conversation.updated"
 
 
 def test_one_socket_disconnecting_leaves_the_other_serving(
@@ -762,7 +893,9 @@ def _bearer(user: User) -> dict[str, str]:
 
 
 def _refuses(*, to: str, body: str) -> str:
-    raise TwilioSendFailed(f"failed to send WhatsApp message to {to!r}")
+    raise TwilioSendFailed(
+        f"failed to send WhatsApp message to {to!r}", code=None, is_retryable=False
+    )
 
 
 def _send_frame(
@@ -803,6 +936,7 @@ def _token(user: User, lifetime: datetime.timedelta | None = None) -> str:
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("conversation-stream-password"),
         role=role,
         is_active=is_active,
@@ -845,13 +979,36 @@ def _make_inbound(db: Session, conversation: Conversation, *, body: str) -> Mess
     return message
 
 
+def _make_admin_message(
+    db: Session, conversation: Conversation, *, author: User, status: MessageStatus
+) -> Message:
+    message = Message(
+        conversation_id=conversation.id,
+        author_kind=MessageAuthor.ADMIN,
+        author_user_id=author.id,
+        body="I'll take it from here.",
+        status=status,
+        twilio_sid=f"SM{uuid.uuid4().hex}",
+        created_at=datetime.datetime.now(tz=datetime.UTC),
+    )
+    db.add(message)
+    db.flush()
+
+    return message
+
+
 def _messages(db: Session, conversation_id: uuid.UUID) -> list[Message]:
+    """The thread's outbound lines: what a `send` could have written. The Guardian's own
+    messages are left out, because a send needs one inside the 24-hour window."""
     db.expire_all()
 
     return list(
         db.scalars(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.author_kind != MessageAuthor.CLIENT,
+            )
             .order_by(Message.created_at)
         ).all()
     )

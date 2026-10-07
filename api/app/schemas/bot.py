@@ -10,10 +10,27 @@ that import does not resolve; it is harmless because nothing imports this module
 
 import enum
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel
 
-from app.models.enums import FlagReason
+from app.models.enums import ConsentAction, ConsentSource, FlagReason
+
+
+# The Guardian language as the bot and parser speak it: `conversations.language` without the
+# enum wrapper. NULL where it is stored means not detected, and English is used.
+GuardianLanguage = Literal["en", "es"]
+
+# A Guardian asking to stop or restart the weekly Booking reminders, in any words.
+RemindersRequest = Literal["stop", "start"]
+
+
+class ReminderButton(str, enum.Enum):
+    """The weekly reminder template's quick-reply buttons, by the id Twilio sends as
+    `ButtonPayload`. Fixed: the templates were submitted with exactly these ids."""
+
+    BOOK_SESSION = "book_session"
+    STOP_REMINDERS = "stop_reminders"
 
 
 class BotIntent(str, enum.Enum):
@@ -44,12 +61,27 @@ class ParsedIntent(BaseModel):
     child's name) as raw strings; `bot_service` is responsible for resolving them against the
     database.
     `confidence_is_low` signals a re-prompt rather than acting on a guess.
+    `language` is the language the message is clearly written in, `None` when it is too short
+    or neutral to tell; `reminders` is a request to stop or restart the weekly reminders.
     """
 
     intent: BotIntent
     answer: str | None = None
     fields: dict[str, str]
     confidence_is_low: bool
+    language: GuardianLanguage | None = None
+    reminders: RemindersRequest | None = None
+
+
+class ConsentInstruction(BaseModel):
+    """A weekly-reminder consent for the webhook to record (P7-C).
+
+    The row's evidence is the inbound message's id, which only the webhook has, so the bot
+    says what to record and the webhook writes it.
+    """
+
+    action: ConsentAction
+    source: ConsentSource
 
 
 class BotTurn(BaseModel):
@@ -59,10 +91,14 @@ class BotTurn(BaseModel):
     `conversations` or `messages` itself — the webhook applies `link_guardian_id`,
     `flag_reason` and `reactivation_child_id` after this returns. `reactivation_child_id` is the
     inactive child the guardian confirmed they want reactivated (REQ-132.3); the webhook records
-    it through `conversation_service.request_reactivation`.
+    it through `conversation_service.request_reactivation`. `language` is set only when this
+    turn adopted a Guardian language different from the stored one; the webhook stores it.
+    `consent` is a reminder consent the webhook records against the inbound message.
     """
 
     reply: str
     link_guardian_id: uuid.UUID | None = None
     flag_reason: FlagReason | None = None
     reactivation_child_id: uuid.UUID | None = None
+    language: GuardianLanguage | None = None
+    consent: ConsentInstruction | None = None

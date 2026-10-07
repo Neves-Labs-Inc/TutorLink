@@ -1,8 +1,11 @@
 from app.db import Base
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
+from app.models.booking_reminder import BookingReminder
+from app.models.booking_reminder_run import BookingReminderRun
 from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
     BOOKING_STATUS_ENUM_NAME,
@@ -20,11 +23,17 @@ from app.models.enums import (
     USER_ROLE_ENUM_NAME,
     USER_ROLE_VALUES,
     BookingStatus,
+    ConsentAction,
+    ConsentSource,
     ConversationStatus,
     ExceptionStatus,
     FlagReason,
+    Language,
     MessageAuthor,
     MessageStatus,
+    ReminderSkipReason,
+    ReminderStatus,
+    SystemMessageKind,
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
@@ -32,8 +41,13 @@ from app.models.home import ChildHome, GuardianHome, Home
 from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.models.refresh_token import RefreshToken
+from app.models.reminder_consent import ReminderConsent
 from app.models.subject import Subject
-from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
+from app.models.system_setting import (
+    SETTING_VALUE_TYPE_INTEGER,
+    SETTING_VALUE_TYPE_STRING,
+    SystemSetting,
+)
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 
@@ -53,6 +67,7 @@ __all__ = [
     "MESSAGE_STATUS_ENUM_NAME",
     "MESSAGE_STATUS_VALUES",
     "SETTING_VALUE_TYPE_INTEGER",
+    "SETTING_VALUE_TYPE_STRING",
     "USER_ROLE_ENUM_NAME",
     "USER_ROLE_VALUES",
     "Booking",
@@ -81,5 +96,15 @@ __all__ = [
     "TutorSubject",
     "User",
     "UserRole",
+    "BookingReminder",
+    "BookingReminderRun",
+    "ChildSubjectLevel",
+    "ConsentAction",
+    "ConsentSource",
+    "Language",
+    "ReminderConsent",
+    "ReminderSkipReason",
+    "ReminderStatus",
+    "SystemMessageKind",
     "metadata",
 ]

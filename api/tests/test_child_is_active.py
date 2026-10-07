@@ -45,6 +45,7 @@ def _make_home(db: Session) -> Home:
 def _make_admin(db: Session) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=UserRole.ADMIN,
         is_active=True,

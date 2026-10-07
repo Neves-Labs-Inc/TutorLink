@@ -17,9 +17,17 @@ const BASE_ROW: ChildSummary = {
   guardians: [],
   homes: [],
   next_session: null,
+  evaluated: null,
+  created_at: '2026-09-28T12:00:00Z',
 }
 
 describe('childListParams', () => {
+  it('asks for the awaiting list without is_active when awaitingEvaluation is set', () => {
+    expect(
+      childListParams({ q: 'ana', showInactive: true, page: 2, pageSize: 20, awaitingEvaluation: true }),
+    ).toEqual({ awaiting_evaluation: true, q: 'ana', page: 2, page_size: 20 })
+  })
+
   it('sends is_active: false when showInactive is true', () => {
     expect(childListParams({ q: '', showInactive: true, page: 1, pageSize: 20 })).toEqual({
       is_active: false,

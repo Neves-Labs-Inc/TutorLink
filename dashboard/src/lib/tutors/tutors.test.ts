@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   ALL_SUBJECTS,
+  ceilingError,
   subjectSummary,
   tutorBioPayload,
   tutorCreatePayload,
@@ -84,6 +85,10 @@ describe('subjectSummary', () => {
       'Math (to 8), Science (to 6)',
     )
   })
+
+  it('reads a Kindergarten ceiling as K', () => {
+    expect(subjectSummary([subject('Reading', 0)])).toBe('Reading (to K)')
+  })
 })
 
 describe('tutorFormErrors', () => {
@@ -163,5 +168,17 @@ describe('tutorCreatePayload', () => {
     expect(
       tutorCreatePayload({ name: 'Ada', email: 'a@b.c', phone: '1', bio: ' Teaches ' }),
     ).toEqual({ name: 'Ada', email: 'a@b.c', phone_number: '1', bio: 'Teaches' })
+  })
+})
+
+describe('ceilingError', () => {
+  it.each(['0', '12', ' 8 '])('accepts %s (0 is Kindergarten)', (text) => {
+    expect(ceilingError(text)).toBeNull()
+  })
+
+  it.each(['-1', '13', '2.5', '', 'e'])('refuses %j', (text) => {
+    expect(ceilingError(text)).toBe(
+      'Highest grade taught must be a whole number from 0 (Kindergarten) to 12.',
+    )
   })
 })

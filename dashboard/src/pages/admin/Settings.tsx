@@ -10,11 +10,15 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { WeeklyRemindersCard, WeeklyRemindersSkeleton } from '@/components/settings/WeeklyRemindersCard'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
 import { settingQueries, updateSettings } from '@/lib/queries/settings'
+import { generalSettings } from '@/lib/settings/reminders'
 import { pendingUpdates, settingControl, settingLabel, type Setting } from '@/lib/settings/settings'
+import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/authStore'
 
 type SettingRowProps = {
   setting: Setting
@@ -25,25 +29,30 @@ type SettingRowProps = {
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
-const LOADING_ROWS = [0, 1, 2, 3]
+// One per setting that loads in the general card, so the Weekly reminders card does not jump.
+const LOADING_ROWS = [0, 1, 2, 3, 4, 5]
+const bar = 'animate-pulse rounded-lg bg-muted motion-reduce:animate-none'
 
 const pillClasses =
   'inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground'
 
 export const Settings = () => {
   const queryClient = useQueryClient()
-  const { data, isPending, isError, error, refetch } = useQuery(settingQueries.list())
+  const { data, isPending, isError, error, refetch } = useQuery(settingQueries.page())
+  const role = useAuthStore((state) => state.role)
   const [draft, setDraft] = useState<Record<string, string>>({})
 
   const save = useMutation({
     mutationFn: updateSettings,
-    onSuccess: (items) => {
-      queryClient.setQueryData(settingQueries.list().queryKey, items)
+    onSuccess: (updated) => {
+      queryClient.setQueryData(settingQueries.page().queryKey, updated)
       setDraft({})
     },
   })
 
-  const settings = data ?? []
+  const allSettings = data?.items ?? []
+  // The reminder keys have their own card and form, so one save never submits the other.
+  const settings = generalSettings(allSettings)
   const updates = pendingUpdates(settings, draft)
   let content: ReactNode
 
@@ -59,14 +68,25 @@ export const Settings = () => {
 
   if (isPending) {
     content = (
-      <Card>
-        <CardContent aria-busy="true" className="space-y-3">
-          <p className="text-sm text-muted-foreground">Loading settings…</p>
-          {LOADING_ROWS.map((row) => (
-            <div key={row} className="h-8 animate-pulse rounded-lg bg-muted" />
-          ))}
-        </CardContent>
-      </Card>
+      <div aria-busy="true" className="space-y-6">
+        <span className="sr-only">Loading settings…</span>
+        <Card>
+          <CardHeader>
+            <div className={cn(bar, 'h-5 w-24')} />
+            <div className={cn(bar, 'h-4 w-72 max-w-full')} />
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {LOADING_ROWS.map((row) => (
+              <div key={row} className="space-y-1.5">
+                <div className={cn(bar, 'h-4 w-32')} />
+                <div className={cn(bar, 'h-10 w-full')} />
+                <div className={cn(bar, 'h-3 w-40')} />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+        <WeeklyRemindersSkeleton />
+      </div>
     )
   } else if (isError) {
     content = (
@@ -81,7 +101,7 @@ export const Settings = () => {
         </CardContent>
       </Card>
     )
-  } else if (settings.length === 0) {
+  } else if (allSettings.length === 0) {
     content = (
       <Card>
         <CardContent>
@@ -91,55 +111,60 @@ export const Settings = () => {
     )
   } else {
     content = (
-      <form onSubmit={handleSubmit}>
-        <Card>
-          <CardHeader>
-            <CardTitle>Settings</CardTitle>
-            <CardDescription>
-              These values apply system-wide and take effect immediately.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {settings.map((setting) => (
-              <SettingRow
-                key={setting.key}
-                setting={setting}
-                value={draft[setting.key] ?? setting.value}
-                onChange={(next) => setDraft((current) => ({ ...current, [setting.key]: next }))}
-                disabled={save.isPending}
-              />
-            ))}
-          </CardContent>
-          <CardFooter className="flex-col items-stretch gap-3">
-            {save.isError && (
-              <p role="alert" className="text-sm font-medium text-destructive">
-                {errorDetail(save.error) ?? SAVE_FALLBACK_ERROR}
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-3">
-              <Button type="submit" disabled={updates.length === 0 || save.isPending}>
-                {save.isPending ? 'Saving…' : 'Save changes'}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={updates.length === 0 || save.isPending}
-                onClick={handleDiscard}
-              >
-                Discard changes
-              </Button>
-              {updates.length > 0 && (
-                <span className="text-sm text-muted-foreground">
-                  {updates.length === 1 ? '1 change' : `${updates.length} changes`}
-                </span>
+      <>
+        {settings.length > 0 && (
+        <form onSubmit={handleSubmit}>
+          <Card>
+            <CardHeader>
+              <CardTitle>Settings</CardTitle>
+              <CardDescription>
+                These values apply system-wide and take effect immediately.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {settings.map((setting) => (
+                <SettingRow
+                  key={setting.key}
+                  setting={setting}
+                  value={draft[setting.key] ?? setting.value}
+                  onChange={(next) => setDraft((current) => ({ ...current, [setting.key]: next }))}
+                  disabled={save.isPending}
+                />
+              ))}
+            </CardContent>
+            <CardFooter className="flex-col items-stretch gap-3">
+              {save.isError && (
+                <p role="alert" className="text-sm font-medium text-destructive">
+                  {errorDetail(save.error) ?? SAVE_FALLBACK_ERROR}
+                </p>
               )}
-              {save.isSuccess && updates.length === 0 && (
-                <span className="text-sm text-muted-foreground">Saved.</span>
-              )}
-            </div>
-          </CardFooter>
-        </Card>
-      </form>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="submit" disabled={updates.length === 0 || save.isPending}>
+                  {save.isPending ? 'Saving…' : 'Save changes'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={updates.length === 0 || save.isPending}
+                  onClick={handleDiscard}
+                >
+                  Discard changes
+                </Button>
+                {updates.length > 0 && (
+                  <span className="text-sm text-muted-foreground">
+                    {updates.length === 1 ? '1 change' : `${updates.length} changes`}
+                  </span>
+                )}
+                {save.isSuccess && updates.length === 0 && (
+                  <span className="text-sm text-muted-foreground">Saved.</span>
+                )}
+              </div>
+            </CardFooter>
+          </Card>
+        </form>
+        )}
+        <WeeklyRemindersCard page={data} role={role} />
+      </>
     )
   }
 

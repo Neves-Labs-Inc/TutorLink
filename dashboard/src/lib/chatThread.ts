@@ -7,6 +7,7 @@ import type {
   FlagReason,
   Message,
   MessageAuthorKind,
+  MessageStatus,
 } from '@/lib/queries/conversations'
 
 export type ThreadAlignment = 'start' | 'end'
@@ -69,6 +70,13 @@ export const isFlagChangedError = (error: unknown): boolean =>
 export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment =>
   authorKind === 'client' ? 'start' : 'end'
 
+const ADMIN_STATUS_LABELS: Partial<Record<Message['status'], string>> = {
+  queued: 'Sending…',
+  sent: 'Sent',
+  delivered: 'Delivered',
+  failed: 'Failed to send',
+}
+
 // Delivery progress only means something on an admin's own outbound message. A bot reply is
 // recorded `sent` forever by design (amendment P7-3, `api-design.md:527-534`) and must never
 // read as pending or failed, and a client message carries no admin-side delivery state at all —
@@ -76,14 +84,18 @@ export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment
 export const messageStatusLabel = (
   message: Pick<Message, 'author_kind' | 'status'>,
 ): string | null => {
-  let label: string | null = null
+  if (message.author_kind !== 'admin') return null
 
-  if (message.author_kind === 'admin') {
-    if (message.status === 'queued' || message.status === 'sent') label = 'Sending…'
-    else if (message.status === 'failed') label = 'Failed to send'
-  }
+  return ADMIN_STATUS_LABELS[message.status] ?? null
+}
 
-  return label
+// A `message.updated` frame only ever changes a message already on screen; an id that isn't
+// there belongs to a page not loaded yet, and the refetch will carry it. Returning the same
+// array when nothing matched lets React Query skip the re-render.
+export const applyMessageUpdate = (thread: Message[], updated: Message): Message[] => {
+  if (!thread.some((message) => message.id === updated.id)) return thread
+
+  return thread.map((message) => (message.id === updated.id ? updated : message))
 }
 
 // Each fetched page is newest-first (`api-design.md:1531`) and `pages` runs from the newest
@@ -134,18 +146,55 @@ export const reconcileLiveMessage = (
   return next
 }
 
+// The send the socket refused stays on screen as "Failed to send", so the unsent text can still
+// be read and copied.
+export const markMessagesFailed = (thread: Message[], messageIds: ReadonlySet<string>): Message[] =>
+  thread.map((message) => (messageIds.has(message.id) ? { ...message, status: 'failed' } : message))
+
+// The socket refusing a send as window_closed only holds while the Guardian's last message is the
+// one it was refused against: a newer message reopens the window by itself.
+export type SocketClosedFlag = { lastClientMessageAt: string | null }
+
+export const socketSaysClosed = (
+  flag: SocketClosedFlag | null,
+  detail: Pick<ConversationDetail, 'last_client_message_at'>,
+): boolean => flag !== null && flag.lastClientMessageAt === detail.last_client_message_at
+
+// Long enough for a target that mounts a render or two later; short enough that a target which
+// never appears can't pull focus away from whatever the user moved on to.
+const FOCUS_REQUEST_TTL_MS = 1_000
+
+// Selectors tried in order once a change unmounts or disables the focused element.
+export type FocusRequest = { targets: string[]; expiresAt: number }
+
+export const focusRequest = (targets: string[], now: number): FocusRequest => ({
+  targets,
+  expiresAt: now + FOCUS_REQUEST_TTL_MS,
+})
+
+// The Retry of one notice line, so a failed retry hands focus back to the button that lost it.
+export const retryFocusTargets = (messageId: string): string[] => [
+  `[data-retry="${messageId}"]:not([disabled])`,
+]
+
+export const isFocusRequestLive = (request: FocusRequest | null, now: number): boolean =>
+  request !== null && now < request.expiresAt
+
 export const optimisticMessage = (
   clientMessageId: string,
   body: string,
   authorId: string,
-  authorEmail: string,
+  authorDisplayName: string,
 ): Message => ({
   id: clientMessageId,
   author_kind: 'admin',
-  author: { id: authorId, email: authorEmail },
+  author: { id: authorId, display_name: authorDisplayName },
   body,
   status: 'queued',
   created_at: new Date().toISOString(),
+  system_kind: null,
+  error_code: null,
+  reminder_child_names: null,
 })
 
 export const isHeldByAdmin = (
@@ -173,3 +222,132 @@ export const formatMessageTimestamp = (iso: string): string =>
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(iso))
+
+export const canTransfer = isHeldByOtherAdmin
+
+export const joinNames = (names: string[]): string => {
+  let joined: string
+
+  if (names.length <= 1) {
+    joined = names.join('')
+  } else {
+    joined = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  }
+  return joined
+}
+
+const MS_PER_HOUR = 3_600_000
+const HOURS_PER_DAY = 24
+const DAYS_SWITCH_HOURS = 48
+
+export const lastWroteAgo = (iso: string, now: Date): string => {
+  const hours = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / MS_PER_HOUR))
+
+  if (hours < DAYS_SWITCH_HOURS) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`
+
+  return `${Math.floor(hours / HOURS_PER_DAY)} days ago`
+}
+
+const WINDOW_RULE = 'WhatsApp only allows replies within 24 hours of their last message.'
+
+export const composerClosedNotice = (
+  detail: Pick<
+    ConversationDetail,
+    'is_window_open' | 'last_client_message_at' | 'guardian' | 'phone_number'
+  >,
+  now: Date,
+  socketSaidClosed: boolean,
+): string | null => {
+  if (detail.is_window_open && !socketSaidClosed) return null
+
+  const guardian = detail.guardian?.name ?? detail.phone_number
+  const lastWrote =
+    detail.last_client_message_at === null
+      ? `${guardian} hasn't written yet.`
+      : `${guardian} last wrote ${lastWroteAgo(detail.last_client_message_at, now)}.`
+
+  return `${lastWrote} ${WINDOW_RULE}`
+}
+
+export const OTHER_HOLDER_FALLBACK = 'another Staff member'
+const OTHER_HOLDER_FALLBACK_OPENING = 'Another Staff member'
+
+// A null holder is one whose name we don't have. Names stay exactly as written; only the
+// fallback gets a capital to open the sentence.
+export const transferConfirmBody = (holder: string | null, me: string | null): string => {
+  const opening = holder ?? OTHER_HOLDER_FALLBACK_OPENING
+  const mention = holder ?? OTHER_HOLDER_FALLBACK
+
+  return `${opening} is holding this chat. Take it over${me === null ? '' : ` as ${me}`}? ${mention} can no longer reply here.`
+}
+
+export const handBackConfirmBody = (guardian: string): string =>
+  `The bot starts a fresh flow, not from where this conversation left off. ${guardian} is told the booking assistant is back if they wrote in the last 24 hours.`
+
+export type SystemLineLabel = { text: string; isFailed: boolean; canRetry: boolean }
+
+const PROGRESS_WORDS: Partial<Record<MessageStatus, string>> = {
+  queued: 'sending',
+  sent: 'sent',
+  delivered: 'delivered',
+  read: 'read',
+}
+
+const FAILURE_REASONS: Record<string, string> = {
+  template_not_approved: 'template not approved',
+  window_closed: 'window closed',
+}
+
+const failureReason = (errorCode: string | null): string =>
+  errorCode === null ? '' : ` (${FAILURE_REASONS[errorCode] ?? `error ${errorCode}`})`
+
+const NOTICE_NAME_FALLBACK = 'Staff'
+
+const NOTICE_PROGRESS: Partial<Record<MessageStatus, string>> = {
+  queued: 'sending notice',
+  sent: 'notice sent',
+  delivered: 'delivered',
+  read: 'read',
+}
+
+const noticeProgress = (status: MessageStatus): string => NOTICE_PROGRESS[status] ?? 'notice sent'
+
+export const systemLineLabel = (
+  message: Pick<Message, 'system_kind' | 'status' | 'error_code' | 'reminder_child_names' | 'author' | 'body'>,
+): SystemLineLabel => {
+  const isFailed = message.status === 'failed'
+  const reason = failureReason(message.error_code)
+  const progress = PROGRESS_WORDS[message.status] ?? 'sent'
+  const names = joinNames(message.reminder_child_names ?? [])
+  const name = message.author === null ? NOTICE_NAME_FALLBACK : message.author.display_name
+  let text = message.body
+  let canRetry = false
+
+  if (message.system_kind === 'takeover_notice' || message.system_kind === 'transfer_notice') {
+    const failedLabel =
+      message.system_kind === 'takeover_notice' ? 'Takeover notice' : 'Transfer notice'
+
+    text = isFailed
+      ? `${failedLabel} not delivered${reason}`
+      : `${name} joined the chat · ${noticeProgress(message.status)}`
+    canRetry = isFailed
+  } else if (message.system_kind === 'handback_notice') {
+    if (!isFailed) {
+      text = `Hand-back notice ${progress}`
+    } else if (message.error_code === 'window_closed') {
+      text = 'Hand-back notice not sent (window closed)'
+    } else {
+      text = `Hand-back notice not delivered${reason}`
+    }
+  } else if (message.system_kind === 'booking_reminder') {
+    text = isFailed
+      ? `Weekly reminder not delivered${names === '' ? '' : `: ${names}`}${reason}`
+      : `Weekly reminder sent${names === '' ? '' : `: ${names}`} · ${progress}`
+  } else if (message.system_kind === 'consent_notice') {
+    text = isFailed
+      ? `Reminder setting confirmation not delivered${reason}`
+      : `Reminder setting confirmed to Guardian · ${progress}`
+  }
+
+  return { text, isFailed, canRetry }
+}

@@ -316,7 +316,7 @@ def test_a_claim_pauses_the_bot_and_names_the_holder(db: Session) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db)
 
-    detail = claim(db, conversation_id=conversation.id, user_id=admin.id)
+    detail = claim(db, conversation_id=conversation.id, user_id=admin.id).detail
 
     assert detail.conversation.status is ConversationStatus.HUMAN
     assert detail.conversation.taken_over_by_user_id == admin.id
@@ -330,13 +330,14 @@ def test_a_reclaim_by_the_holder_is_a_no_op_success(db: Session) -> None:
     is already in (`api-design.md:1568-1571`)."""
     admin = _make_user(db)
     conversation = _make_conversation(db)
-    first = claim(db, conversation_id=conversation.id, user_id=admin.id)
+    first = claim(db, conversation_id=conversation.id, user_id=admin.id).detail
     claimed_at = first.conversation.taken_over_at
 
     second = claim(db, conversation_id=conversation.id, user_id=admin.id)
 
-    assert second.conversation.taken_over_by_user_id == admin.id
-    assert second.conversation.taken_over_at == claimed_at
+    assert second.is_changed is False
+    assert second.detail.conversation.taken_over_by_user_id == admin.id
+    assert second.detail.conversation.taken_over_at == claimed_at
 
 
 def test_a_claim_on_a_conversation_another_admin_holds_names_them(db: Session) -> None:
@@ -360,7 +361,7 @@ def test_any_admin_may_release_not_only_the_holder(db: Session) -> None:
     conversation = _make_conversation(db)
     claim(db, conversation_id=conversation.id, user_id=holder.id)
 
-    detail = release(db, conversation_id=conversation.id)
+    detail = release(db, conversation_id=conversation.id).detail
 
     assert detail.conversation.status is ConversationStatus.BOT
     assert detail.conversation.taken_over_by_user_id is None
@@ -371,10 +372,11 @@ def test_any_admin_may_release_not_only_the_holder(db: Session) -> None:
 def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_success(db: Session) -> None:
     conversation = _make_conversation(db)
 
-    detail = release(db, conversation_id=conversation.id)
+    change = release(db, conversation_id=conversation.id)
 
-    assert detail.conversation.status is ConversationStatus.BOT
-    assert detail.conversation.taken_over_by_user_id is None
+    assert change.is_changed is False
+    assert change.detail.conversation.status is ConversationStatus.BOT
+    assert change.detail.conversation.taken_over_by_user_id is None
 
 
 def test_a_concurrent_claim_is_serialized_by_the_row_lock(
@@ -497,7 +499,7 @@ def test_a_flag_is_independent_of_who_is_answering(db: Session) -> None:
     conversation = _make_conversation(db)
     flag(db, conversation=conversation, reason=FlagReason.GUARDIAN_LINK_REQUEST)
 
-    detail = claim(db, conversation_id=conversation.id, user_id=admin.id)
+    detail = claim(db, conversation_id=conversation.id, user_id=admin.id).detail
 
     assert detail.conversation.status is ConversationStatus.HUMAN
     assert detail.conversation.flag_reason is FlagReason.GUARDIAN_LINK_REQUEST
@@ -954,6 +956,7 @@ def _make_child(db: Session) -> Child:
 def _make_user(db: Session) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("conversation-service-password"),
         role=UserRole.ADMIN,
     )

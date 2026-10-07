@@ -1,4 +1,4 @@
-import type { HouseholdListParams } from '@/lib/queries/households'
+import type { Household, HouseholdListParams } from '@/lib/queries/households'
 
 export const householdListParams = (
   q: string,
@@ -17,3 +17,7 @@ export const householdListParams = (
 
 export const householdCountLabel = (total: number): string =>
   total === 1 ? '1 household' : `${total} households`
+
+// The API sorts guardians by (name, id), so the first one is the card's target; do not re-sort.
+export const householdCardTargetId = (household: Household): string | null =>
+  household.guardians[0]?.id ?? null

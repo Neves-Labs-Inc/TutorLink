@@ -11,6 +11,7 @@ reports `create_type=True`.
 
 import enum
 
+from sqlalchemy import Enum
 from sqlalchemy.dialects import postgresql
 
 USER_ROLE_ENUM_NAME = "user_role"
@@ -26,6 +27,7 @@ class UserRole(str, enum.Enum):
     ADMIN = "admin"
     TUTOR = "tutor"
     DEVELOPER = "developer"
+    MANAGER = "manager"
 
 
 class BookingStatus(str, enum.Enum):
@@ -64,12 +66,16 @@ class ConversationStatus(str, enum.Enum):
 
 class MessageAuthor(str, enum.Enum):
     """Who wrote a message. Inbound and outbound are derived from this rather than stored:
-    `CLIENT` is inbound, `BOT` and `ADMIN` are outbound, and a second column recording the
-    same fact could disagree with this one."""
+    `CLIENT` is inbound, `BOT`, `ADMIN` and `SYSTEM` are outbound, and a second column
+    recording the same fact could disagree with this one.
+
+    `SYSTEM` is a notice the system sent or recorded on a Staff member's behalf (a takeover
+    notice, a weekly reminder); `messages.system_kind` says which."""
 
     CLIENT = "client"
     BOT = "bot"
     ADMIN = "admin"
+    SYSTEM = "system"
 
 
 class MessageStatus(str, enum.Enum):
@@ -108,8 +114,9 @@ class FlagReason(str, enum.Enum):
     `conversations.reactivation_child_id`, which a later flag does not overwrite.
 
     `BOOKING_REQUEST` and `QUESTION` are not failures either: the bot worked and handed the chat
-    to the office. A booking request is a first-session request for a child with no grade, which
-    only an admin can place; a question is one the bot cannot answer.
+    to the office. A booking request is an Office handoff (a Child not Evaluated, or with no
+    Subject level for the subject), which only Staff can place; a question is one the bot cannot
+    answer.
 
     No value exists for a policy refusal. A reschedule or cancellation refused inside
     `cancellation_cutoff_hours` is the bot working as intended rather than failing, and flagging
@@ -124,8 +131,82 @@ class FlagReason(str, enum.Enum):
     QUESTION = "question"
 
 
+# The enums below are stored as VARCHAR with a CHECK rather than as native PostgreSQL enums:
+# a native enum cannot drop a value and cannot use a new one in the transaction that added it,
+# and none of these is shared across enough tables to earn that cost.
+
+
+class Language(str, enum.Enum):
+    """A Guardian-facing language. NULL where it is stored means not detected: English is used."""
+
+    EN = "en"
+    ES = "es"
+
+
+LANGUAGE_CODE_LENGTH = 2
+
+
+class ConsentAction(str, enum.Enum):
+    OPT_IN = "opt_in"
+    OPT_OUT = "opt_out"
+
+
+class ConsentSource(str, enum.Enum):
+    """Where a reminder consent came from. `SYSTEM` is Twilio reporting the number blocked."""
+
+    INTAKE = "intake"
+    MESSAGE = "message"
+    STAFF = "staff"
+    SYSTEM = "system"
+
+
+class ReminderStatus(str, enum.Enum):
+    SENT = "sent"
+    DELIVERED = "delivered"
+    READ = "read"
+    FAILED = "failed"
+    UNDELIVERABLE = "undeliverable"
+    SKIPPED = "skipped"
+
+
+class ReminderSkipReason(str, enum.Enum):
+    TAKEOVER = "takeover"
+    TEMPLATE_NOT_APPROVED = "template_not_approved"
+
+
+class SystemMessageKind(str, enum.Enum):
+    TAKEOVER_NOTICE = "takeover_notice"
+    TRANSFER_NOTICE = "transfer_notice"
+    HANDBACK_NOTICE = "handback_notice"
+    BOOKING_REMINDER = "booking_reminder"
+    CONSENT_NOTICE = "consent_notice"
+
+
 def _values(enum_class: type[enum.Enum]) -> list[str]:
     return [member.value for member in enum_class]
+
+
+def varchar_enum(enum_class: type[enum.Enum], *, length: int) -> Enum:
+    """A VARCHAR column type that reads and writes `enum_class` members.
+
+    No constraint is emitted here: each table declares its own named CHECK through
+    `in_values_predicate`, so the migration and the model name it the same way.
+    """
+    return Enum(
+        enum_class,
+        native_enum=False,
+        create_constraint=False,
+        length=length,
+        values_callable=_values,
+        validate_strings=True,
+    )
+
+
+def in_values_predicate(column: str, enum_class: type[enum.Enum]) -> str:
+    """The CHECK predicate `column IN (...)` over every value of `enum_class`."""
+    values = ", ".join(f"'{value}'" for value in _values(enum_class))
+
+    return f"{column} IN ({values})"
 
 
 user_role_enum = postgresql.ENUM(

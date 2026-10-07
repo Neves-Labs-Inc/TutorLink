@@ -50,6 +50,7 @@ from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
     FlagReason,
+    Language,
     MessageAuthor,
     MessageStatus,
     UserRole,
@@ -64,10 +65,11 @@ from app.routers.webhook import (
     get_twilio_form,
     signed_request_url,
 )
-from app.schemas.bot import BotTurn
+from app.schemas.bot import BotTurn, GuardianLanguage, ReminderButton
 from app.security import hash_password
 from app.services import bot_service, conversation_service, message_service
-from app.services.broadcast_service import BroadcastEvent, MessageCreated
+from app.services.bot_messages import render
+from app.services.broadcast_service import BroadcastEvent, MessageCreated, MessageUpdated
 
 AUTH_TOKEN = "an-auth-token-only-twilio-and-this-process-know"
 AUTH_TOKEN_ENV = "TWILIO_AUTH_TOKEN"
@@ -105,6 +107,8 @@ def test_a_bot_conversation_gets_the_reply_back_as_twiml(
             "body": INBOUND_BODY,
             "guardian_id": None,
             "reactivation_pending": False,
+            "language": None,
+            "button": None,
         }
     ]
 
@@ -543,7 +547,7 @@ def test_a_refused_second_request_leaves_the_pending_one_untouched(
     conversation_service.request_reactivation(db, conversation=conversation, child_id=child_id)
     db.refresh(conversation)
     flagged_at = conversation.flagged_at
-    bot.turn = BotTurn(reply=f"{bot_service.REACTIVATION_PENDING} {bot_service.ASK_MENU}")
+    bot.turn = BotTurn(reply=f"{render('REACTIVATION_PENDING', 'en')} {render('ASK_MENU', 'en')}")
 
     _post_inbound(webhook_client)
     db.refresh(conversation)
@@ -552,6 +556,43 @@ def test_a_refused_second_request_leaves_the_pending_one_untouched(
     assert conversation.reactivation_child_id == child_id
     assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
     assert conversation.flagged_at == flagged_at
+
+
+def test_the_stored_language_is_passed_to_the_bot(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.language = Language.ES
+    db.flush()
+
+    _post_inbound(webhook_client)
+
+    assert bot.calls[0]["language"] == "es"
+
+
+def test_a_language_the_turn_adopted_is_stored_on_the_conversation(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.language = Language.ES
+    db.flush()
+    bot.turn = BotTurn(reply=BOT_REPLY, language="en")
+
+    _post_inbound(webhook_client)
+
+    assert _conversation(db, phone_number=PHONE_NUMBER).language is Language.EN
+
+
+def test_a_turn_that_adopted_no_language_leaves_the_stored_one(
+    webhook_client: TestClient, db: Session, bot: "BotDouble"
+) -> None:
+    conversation = _bot_conversation(db)
+    conversation.language = Language.ES
+    db.flush()
+
+    _post_inbound(webhook_client)
+
+    assert _conversation(db, phone_number=PHONE_NUMBER).language is Language.ES
 
 
 @pytest.mark.parametrize("field", ["From", "MessageSid"])
@@ -604,13 +645,41 @@ def test_the_status_callback_records_the_error_code_on_failure(
     ],
 )
 def test_a_status_callback_that_matches_nothing_is_acknowledged_with_204(
-    webhook_client: TestClient, db: Session, case: str, message_status: str
+    webhook_client: TestClient,
+    db: Session,
+    published: list[BroadcastEvent],
+    case: str,
+    message_status: str,
 ) -> None:
-    """Never a 404: a 404 only teaches Twilio to retry a row that no longer exists."""
+    """Never a 404: a 404 only teaches Twilio to retry a row that no longer exists.
+
+    And nothing is announced: no row moved, so there is nothing for an open thread to redraw.
+    """
+    if case == "a status this schema does not model":
+        _admin_message(db)
+
     response = _post_status(webhook_client, message_status=message_status)
 
     assert response.status_code == 204
     assert response.content == b""
+    assert published == []
+
+
+def test_a_status_callback_that_advances_a_row_publishes_one_message_updated(
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
+) -> None:
+    """#72: an open thread hears about the delivery, or the bubble says "Sending…" for good."""
+    message = _admin_message(db)
+
+    response = _post_status(webhook_client, message_status="delivered")
+
+    assert response.status_code == 204
+    assert [
+        (event.type, event.conversation_id, event.message["id"], event.message["status"])
+        for event in published
+        if isinstance(event, MessageUpdated)
+    ] == [("message.updated", message.conversation_id, str(message.id), "delivered")]
+    assert len(published) == 1
 
 
 def test_a_bad_signature_on_the_status_callback_is_403_and_changes_nothing(
@@ -681,6 +750,8 @@ class BotDouble:
         body: str,
         guardian_id: uuid.UUID | None,
         reactivation_pending: bool = False,
+        language: GuardianLanguage | None = None,
+        button: ReminderButton | None = None,
     ) -> BotTurn:
         self.calls.append(
             {
@@ -688,6 +759,8 @@ class BotDouble:
                 "body": body,
                 "guardian_id": guardian_id,
                 "reactivation_pending": reactivation_pending,
+                "language": language,
+                "button": button,
             }
         )
 
@@ -850,6 +923,23 @@ def _post(
     return client.post(path, data=form, headers=sent)
 
 
+@pytest.mark.parametrize(
+    ("payload", "button"),
+    [
+        ("book_session", ReminderButton.BOOK_SESSION),
+        ("stop_reminders", ReminderButton.STOP_REMINDERS),
+        ("some_other_button", None),
+    ],
+)
+def test_a_reminder_button_payload_reaches_the_bot_and_any_other_is_dropped(
+    webhook_client: TestClient, bot: "BotDouble", payload: str, button: ReminderButton | None
+) -> None:
+    response = _post_inbound(webhook_client, form={**_form(), "ButtonPayload": payload})
+
+    assert response.status_code == 200
+    assert bot.calls[0]["button"] is button
+
+
 def _post_inbound(client: TestClient, *, form: dict[str, str] | None = None) -> Response:
     return _post(client, INBOUND_PATH, form if form is not None else _form())
 
@@ -885,6 +975,7 @@ def _published(events: list[BroadcastEvent]) -> list[tuple[str, str, str]]:
 def _taken_over_conversation(db: Session) -> Conversation:
     holder = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("webhook-password"),
         role=UserRole.ADMIN,
     )
@@ -913,6 +1004,7 @@ def _admin_message(db: Session) -> Message:
     db.flush()
     holder = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        display_name="Test User",
         hashed_password=hash_password("webhook-password"),
         role=UserRole.ADMIN,
     )

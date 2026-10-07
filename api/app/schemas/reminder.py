@@ -62,9 +62,11 @@ class ReminderWeekRead(BaseModel):
 class ConsentRead(BaseModel):
     """The current consent: the latest row's action, or `never` when there is none.
 
-    `blocked_by_whatsapp` is true while WhatsApp's `system` opt-out is newer than every row the
-    Guardian wrote, Staff rows since included: Record opt-in is then refused (409), and only the
-    Guardian's own START lifts it. It can be true while `source` is `staff`."""
+    `blocked_by_whatsapp` is true while WhatsApp's `system` opt-out on the Guardian's current
+    number is newer than every row the Guardian wrote from that number, Staff rows since
+    included: Record opt-in is then refused (409), and only the Guardian's own START from that
+    number lifts it. It can be true while `source` is `staff`, and while `state` is `opt_in`
+    (a START from another number)."""
 
     state: Literal["opt_in", "opt_out", "never"]
     source: ConsentSource | None

@@ -3,8 +3,9 @@ opt-in or opt-out for them.
 
 `StaffPrincipal`, so a tutor is 403, and no `TutorScope`: the route reads no tutor-owned table.
 Recording sends the Guardian nothing; it only appends a `staff` consent row naming the caller.
-An opt-in while WhatsApp's `system` opt-out stands (no Guardian row since; Staff rows don't
-count) is a 409: only the Guardian's own START undoes it. The screen reads that case from
+An opt-in while the Guardian is blocked by WhatsApp on their current number (WhatsApp's
+`system` opt-out on it, and no Guardian row from it since; Staff rows don't count) is a 409:
+only the Guardian's own START from that number undoes it. The screen reads that case from
 `consent.blocked_by_whatsapp`, not from `consent.source`.
 """
 
@@ -36,7 +37,7 @@ from app.services.reminder_consent_service import (
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 BLOCKED_BY_SYSTEM_ERROR = (
     "WhatsApp reported this Guardian blocked our number; only the Guardian can turn reminders "
-    "back on by messaging START."
+    "back on by messaging START from this number."
 )
 NEVER_ASKED = "never"
 # Who a non-staff consent row is attributed to. A `staff` row names its Staff member instead.

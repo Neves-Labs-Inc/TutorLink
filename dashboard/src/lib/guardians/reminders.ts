@@ -32,12 +32,16 @@ export const CONSENT_SOURCE_LABELS: Record<ConsentSource, string> = {
 
 const NEVER_OPTED_IN = 'Never opted in'
 export const NO_REMINDER_YET = 'No reminder sent yet'
-const START_REASON = 'Only the Guardian can turn reminders back on, by messaging START.'
+const START_REASON = 'Only the Guardian can turn reminders back on, by messaging START from this number.'
 const BLOCKED_REASON = `WhatsApp reported the number blocked us. ${START_REASON}`
 
 // The sentence already says WhatsApp blocked us when the latest row is the system's own.
 export const blockedReason = (consent: GuardianConsent): string =>
   consent.source === 'system' ? START_REASON : BLOCKED_REASON
+
+// Shown whenever the number is blocked, even when the newest row is an opt-in.
+export const shouldShowBlockedReason = (consent: GuardianConsent): boolean => consent.blocked_by_whatsapp
+
 const SOURCE_PHRASES: Record<ConsentSource, string> = {
   intake: 'from Intake',
   message: 'from a message',

@@ -1,6 +1,6 @@
 # TutorLink
 
-TutorLink connects Guardians with tutors for in-home sessions. Guardians book through a WhatsApp bot; staff run everything else from the admin dashboard.
+TutorLink connects Guardians with tutors for in-home sessions. Guardians book through a WhatsApp bot; Admins and Managers run everything else from the admin dashboard.
 
 ## Language
 
@@ -25,7 +25,7 @@ The grade a Guardian gives for a Child at Intake. An estimate for staff to see; 
 _Avoid_: Grade level
 
 **Subject level**:
-The grade a Child works at in one subject, set by staff. This is what tutors are matched against.
+The grade a Child works at in one subject, set by an Admin or Manager. This is what tutors are matched against.
 _Avoid_: Grade level, subject grade
 
 **Evaluation session**:
@@ -33,7 +33,7 @@ A Child's first session, arranged by the office, used to assess their Subject le
 _Avoid_: Trial, first lesson, assessment
 
 **Evaluated**:
-A Child marked by staff, once, after their Evaluation session. Only an Evaluated Child can be booked through the bot.
+A Child marked by an Admin or Manager, once, after their Evaluation session. Only an Evaluated Child can be booked through the bot.
 _Avoid_: Graded, assessed
 
 **Guardian language**:
@@ -49,8 +49,16 @@ A Guardian's choice to stop receiving Booking reminders.
 _Avoid_: Unsubscribe, mute
 
 **Staff**:
-The people who run TutorLink from the dashboard: Admins and Managers.
+The people a Booking can be with: Tutors, Admins, and Managers.
 _Avoid_: Employee, operator
+
+**Tutor**:
+A Staff member who teaches sessions. Sees only their own Bookings.
+_Avoid_: Teacher, instructor
+
+**Location**:
+Where a Booking happens: one of the Guardian's homes, or In office. In office needs no address.
+_Avoid_: Venue, place, home (for the general case)
 
 **Admin**:
 A Staff member with full dashboard access, including Users and Settings.
@@ -61,17 +69,17 @@ A Staff member with the same dashboard access as an Admin except Users and Setti
 _Avoid_: Supervisor, moderator
 
 **Display name**:
-The name a Staff member goes by with Guardians, shown in the takeover message.
+The name an Admin or Manager goes by with Guardians, shown in the takeover message.
 _Avoid_: Username, handle
 
 **Takeover**:
-A Staff member taking a Guardian's chat from the bot so they can reply themselves. The Guardian is told who has joined. Only possible within 24 hours of the Guardian's last message; after that, Staff reach the Guardian outside the bot.
+An Admin or Manager taking a Guardian's chat from the bot so they can reply themselves. The Guardian is told who has joined. Only possible within 24 hours of the Guardian's last message; after that, they reach the Guardian outside the bot.
 _Avoid_: Escalation, handoff
 
 **Hand-back**:
-A Staff member returning a chat to the bot after a Takeover. The Guardian is told the assistant is helping again.
+An Admin or Manager returning a chat to the bot after a Takeover. The Guardian is told the assistant is helping again.
 _Avoid_: Release, resume
 
 **Office handoff**:
-The bot passing a request to Staff to arrange, as it does for a first session or a subject with no Subject level. Distinct from a Takeover, where Staff join the chat.
+The bot passing a request to the office (Admins and Managers) to arrange, as it does for a first session or a subject with no Subject level. Distinct from a Takeover, where an Admin or Manager joins the chat.
 _Avoid_: Escalation

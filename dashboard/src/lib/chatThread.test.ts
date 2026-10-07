@@ -1,8 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
+import { QueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import {
+  applyMessageToPages,
   applyMessageUpdate,
+  assembleThread,
   canMarkHandled,
+  failedAnnouncement,
   canTransfer,
   isTakeoverOffered,
   isTransferOffered,
@@ -31,6 +35,7 @@ import {
   reconcileLiveMessage,
 } from './chatThread'
 import type { Conversation, ConversationDetail, FlagReason, Message } from './queries/conversations'
+import type { Page } from './queries/page'
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id'>): Message => ({
   author_kind: 'client',
@@ -153,6 +158,90 @@ describe('applyMessageUpdate', () => {
     const thread = [message({ id: '1' })]
 
     expect(applyMessageUpdate(thread, message({ id: 'elsewhere', status: 'delivered' }))).toBe(thread)
+  })
+})
+
+describe('assembleThread', () => {
+  it('prefers the refetched server copy over a pending echo with the same id', () => {
+    const pendingEcho = message({ id: 'real-1', author_kind: 'admin', status: 'sent' })
+    const refetched = message({ id: 'real-1', author_kind: 'admin', status: 'delivered' })
+
+    const thread = assembleThread([message({ id: '0' }), refetched], [pendingEcho])
+
+    expect(thread.map((m) => [m.id, m.status])).toEqual([
+      ['0', 'received'],
+      ['real-1', 'delivered'],
+    ])
+  })
+
+  it('appends pending messages the pages do not carry yet', () => {
+    const optimistic = optimisticMessage('temp-1', 'hi', 'admin-1', 'Maria Lopez')
+
+    const thread = assembleThread([message({ id: '0' })], [optimistic])
+
+    expect(thread.map((m) => m.id)).toEqual(['0', 'temp-1'])
+  })
+})
+
+describe('applyMessageToPages', () => {
+  const QUERY_PREFIX = ['conversations', 'detail', 'c-1', 'messages']
+  const PAGE_KEY = [...QUERY_PREFIX, {}]
+  const pageOf = (items: Message[]): Page<Message> => ({ items, total: items.length, page: 1, page_size: 50 })
+
+  it('patches the status in every cached page', async () => {
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(PAGE_KEY, pageOf([message({ id: 'm-1', author_kind: 'admin', status: 'sent' })]))
+
+    await applyMessageToPages(
+      queryClient,
+      QUERY_PREFIX,
+      message({ id: 'm-1', author_kind: 'admin', status: 'delivered' }),
+    )
+
+    expect(queryClient.getQueryData<Page<Message>>(PAGE_KEY)?.items[0].status).toBe('delivered')
+  })
+
+  it('keeps the new status when a fetch already in flight lands with an older snapshot', async () => {
+    const queryClient = new QueryClient()
+    const sent = message({ id: 'm-1', author_kind: 'admin', status: 'sent' })
+    queryClient.setQueryData(PAGE_KEY, pageOf([sent]))
+    let landStaleFetch: (page: Page<Message>) => void = () => {}
+    const staleFetch = queryClient
+      .fetchQuery({
+        queryKey: PAGE_KEY,
+        queryFn: () => new Promise<Page<Message>>((resolve) => (landStaleFetch = resolve)),
+        staleTime: 0,
+      })
+      .catch(() => undefined)
+
+    await applyMessageToPages(
+      queryClient,
+      QUERY_PREFIX,
+      message({ id: 'm-1', author_kind: 'admin', status: 'delivered' }),
+    )
+    landStaleFetch(pageOf([sent]))
+    await staleFetch
+
+    expect(queryClient.getQueryData<Page<Message>>(PAGE_KEY)?.items[0].status).toBe('delivered')
+  })
+})
+
+describe('failedAnnouncement', () => {
+  it('announces nothing before any failure', () => {
+    expect(failedAnnouncement(0)).toBe('')
+  })
+
+  it('changes the live-region text on a second failure while saying the same words', () => {
+    const first = failedAnnouncement(1)
+    const second = failedAnnouncement(2)
+
+    expect(second).not.toBe(first)
+    expect(first.trim()).toBe('A message failed to send.')
+    expect(second.trim()).toBe('A message failed to send.')
+  })
+
+  it('changes the text again on a third failure', () => {
+    expect(failedAnnouncement(3)).not.toBe(failedAnnouncement(2))
   })
 })
 

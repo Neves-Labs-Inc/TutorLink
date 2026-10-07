@@ -173,10 +173,6 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         ("business_timezone", "America/New_York", SETTING_VALUE_TYPE_STRING, False),
         ("reminder_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
         ("reminder_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
-        ("takeover_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
-        ("takeover_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
-        ("takeover_generic_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
-        ("takeover_generic_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
     ]
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"

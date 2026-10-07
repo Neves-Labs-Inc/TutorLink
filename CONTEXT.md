@@ -65,7 +65,7 @@ The name a Staff member goes by with Guardians, shown in the takeover message.
 _Avoid_: Username, handle
 
 **Takeover**:
-A Staff member taking a Guardian's chat from the bot so they can reply themselves. The Guardian is told who has joined.
+A Staff member taking a Guardian's chat from the bot so they can reply themselves. The Guardian is told who has joined. Only possible within 24 hours of the Guardian's last message; after that, Staff reach the Guardian outside the bot.
 _Avoid_: Escalation, handoff
 
 **Hand-back**:

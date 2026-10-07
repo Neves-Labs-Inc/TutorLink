@@ -36,7 +36,6 @@ from app.models.enums import (
 )
 from app.models.guardian import Guardian
 from app.models.message import Message
-from app.models.system_setting import SystemSetting
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers import conversations as conversations_router
@@ -47,6 +46,8 @@ from app.routers.conversations import (
     NOT_HELD_ERROR,
     NOT_RETRYABLE_ERROR,
     NOTICE_OUTDATED_ERROR,
+    RETRY_WINDOW_CLOSED_ERROR,
+    TAKEOVER_WINDOW_CLOSED_ERROR,
 )
 from app.security import create_access_token, hash_password
 from app.services import conversation_service
@@ -57,15 +58,9 @@ from app.services.broadcast_service import (
     MessageCreated,
     MessageUpdated,
 )
-from tests.fake_twilio import CODE_OUTSIDE_WINDOW, FakeTwilio
+from tests.fake_twilio import CODE_OUTSIDE_WINDOW, CODE_UNDELIVERABLE, FakeTwilio
 
 STAFF_NAME = "Ana Souza"
-TAKEOVER_SID_EN = "HXtakeover0000000000000000000000en"
-TAKEOVER_SID_ES = "HXtakeover0000000000000000000000es"
-GENERIC_SID_EN = "HXgeneric00000000000000000000000en"
-GENERIC_SID_ES = "HXgeneric00000000000000000000000es"
-TAKEOVER_SIDS = {"en": TAKEOVER_SID_EN, "es": TAKEOVER_SID_ES}
-GENERIC_SIDS = {"en": GENERIC_SID_EN, "es": GENERIC_SID_ES}
 
 INSIDE_WINDOW = datetime.timedelta(hours=23, minutes=59)
 AT_WINDOW_END = datetime.timedelta(hours=24)
@@ -73,6 +68,9 @@ OUTSIDE_WINDOW = datetime.timedelta(hours=25)
 
 LANGUAGES = [(None, "en"), (Language.ES, "es")]
 LANGUAGE_IDS = ["unset is English", "Spanish"]
+# A Guardian who last wrote exactly 24 hours ago, and one who never wrote.
+CLOSED_WINDOWS = [AT_WINDOW_END, None]
+CLOSED_WINDOW_IDS = ["24h00 ago", "never wrote"]
 NAMING_ACTIONS = ["takeover", "transfer"]
 
 
@@ -166,42 +164,58 @@ def test_a_takeover_inside_the_window_sends_the_free_form_notice_naming_the_staf
     assert broadcasts[1].message["id"] == str(notice.id)
 
 
-@pytest.mark.parametrize(("language", "code"), LANGUAGES, ids=LANGUAGE_IDS)
-def test_a_takeover_outside_the_window_sends_the_template_with_the_display_name(
+@pytest.mark.parametrize("client_wrote_ago", CLOSED_WINDOWS, ids=CLOSED_WINDOW_IDS)
+def test_a_takeover_with_the_window_closed_is_refused_and_changes_nothing(
     api: TestClient,
     db: Session,
     fake_twilio: FakeTwilio,
-    language: Language | None,
-    code: str,
+    broadcasts: list[BroadcastEvent],
+    client_wrote_ago: datetime.timedelta | None,
 ) -> None:
     staff = _make_user(db)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW, language=language)
-    _approve_templates(db, TAKEOVER_SIDS)
-
-    api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
-
-    notice = _only(db, conversation.id, MessageAuthor.SYSTEM)
-    assert [(sent.content_sid, sent.content_variables) for sent in fake_twilio.sent] == [
-        (TAKEOVER_SIDS[code], {"1": STAFF_NAME})
-    ]
-    assert notice.body == MESSAGES["TEMPLATE_takeover_notice"][code].format(staff=STAFF_NAME)
-    assert notice.status is MessageStatus.QUEUED
-
-
-def test_a_takeover_outside_the_window_with_no_approved_template_is_a_failed_line(
-    api: TestClient, db: Session, fake_twilio: FakeTwilio
-) -> None:
-    staff = _make_user(db)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
+    conversation = _make_conversation(db, client_wrote_ago=client_wrote_ago)
 
     response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
 
-    notice = _only(db, conversation.id, MessageAuthor.SYSTEM)
+    assert (response.status_code, response.json()) == (
+        409,
+        {"detail": TAKEOVER_WINDOW_CLOSED_ERROR},
+    )
+    assert _row(db, conversation.id).status is ConversationStatus.BOT
+    assert _lines(db, conversation.id, MessageAuthor.SYSTEM) == []
+    assert fake_twilio.sent == []
+    assert broadcasts == []
+
+
+def test_a_takeover_of_a_chat_another_holds_with_the_window_closed_gets_the_window_refusal(
+    api: TestClient, db: Session, fake_twilio: FakeTwilio
+) -> None:
+    holder = _make_user(db)
+    staff = _make_user(db)
+    conversation = _make_conversation(db, client_wrote_ago=AT_WINDOW_END, holder=holder)
+
+    response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
+
+    assert (response.status_code, response.json()) == (
+        409,
+        {"detail": TAKEOVER_WINDOW_CLOSED_ERROR},
+    )
+    assert _row(db, conversation.id).taken_over_by_user_id == holder.id
+    assert fake_twilio.sent == []
+
+
+def test_a_repeat_claim_by_the_holder_with_the_window_closed_is_a_silent_success(
+    api: TestClient, db: Session, fake_twilio: FakeTwilio
+) -> None:
+    staff = _make_user(db)
+    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW, holder=staff)
+
+    response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
+
     assert response.status_code == 200
     assert response.json()["taken_over_by"]["id"] == str(staff.id)
+    assert _lines(db, conversation.id, MessageAuthor.SYSTEM) == []
     assert fake_twilio.sent == []
-    assert (notice.status, notice.error_code) == (MessageStatus.FAILED, "template_not_approved")
-    assert _row(db, conversation.id).status is ConversationStatus.HUMAN
 
 
 def test_a_repeat_claim_by_the_holder_sends_no_notice(
@@ -239,11 +253,12 @@ def test_a_failed_send_leaves_the_takeover_in_place_and_stores_the_code(
 
 
 def test_the_thread_shows_the_notice_with_its_kind_reason_and_the_staff_member(
-    api: TestClient, db: Session
+    api: TestClient, db: Session, fake_twilio: FakeTwilio
 ) -> None:
     """The Guardian may be sent the nameless notice; Staff still see who took over."""
     staff = _make_user(db, is_nameless=True)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW)
     api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
 
     item = api.get(f"/api/conversations/{conversation.id}/messages", headers=_auth(staff)).json()[
@@ -255,7 +270,7 @@ def test_the_thread_shows_the_notice_with_its_kind_reason_and_the_staff_member(
     assert (item["system_kind"], item["status"], item["error_code"]) == (
         "takeover_notice",
         "failed",
-        "template_not_approved",
+        CODE_OUTSIDE_WINDOW,
     )
     assert item["reminder_child_names"] is None
 
@@ -283,43 +298,28 @@ def test_a_nameless_holder_inside_the_window_sends_the_generic_notice(
     assert _only(db, conversation.id, MessageAuthor.SYSTEM).body == expected
 
 
+# --- the window closing as the notice is planned ---------------------------------------------
+
+
 @pytest.mark.parametrize("action", NAMING_ACTIONS)
-@pytest.mark.parametrize(("language", "code"), LANGUAGES, ids=LANGUAGE_IDS)
-def test_a_nameless_holder_outside_the_window_sends_the_generic_template_with_no_variables(
+def test_a_notice_planned_after_the_window_closed_is_a_failed_line_and_the_change_stands(
     api: TestClient,
     db: Session,
     fake_twilio: FakeTwilio,
+    monkeypatch: pytest.MonkeyPatch,
     action: str,
-    language: Language | None,
-    code: str,
 ) -> None:
-    staff = _make_user(db, is_nameless=True)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW, language=language)
-    _approve_templates(db, TAKEOVER_SIDS)
-    _approve_templates(db, GENERIC_SIDS, setting="takeover_generic_template_sid_{code}")
-    _act(api, db, action=action, conversation=conversation, staff=staff)
+    """The claim judged the window open; by the time the notice is planned it has closed."""
+    staff = _make_user(db)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    monkeypatch.setattr(conversation_service, "window_is_open", lambda *_args, **_kwargs: False)
 
-    assert [(sent.content_sid, sent.content_variables) for sent in fake_twilio.sent] == [
-        (GENERIC_SIDS[code], {})
-    ]
-    assert (
-        _only(db, conversation.id, MessageAuthor.SYSTEM).body
-        == MESSAGES["TEMPLATE_takeover_notice_generic"][code]
-    )
-
-
-@pytest.mark.parametrize("action", NAMING_ACTIONS)
-def test_a_nameless_holder_with_no_generic_template_gets_a_failed_line_never_the_named_one(
-    api: TestClient, db: Session, fake_twilio: FakeTwilio, action: str
-) -> None:
-    staff = _make_user(db, is_nameless=True)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
-    _approve_templates(db, TAKEOVER_SIDS)
     _act(api, db, action=action, conversation=conversation, staff=staff)
 
     notice = _only(db, conversation.id, MessageAuthor.SYSTEM)
+    assert _row(db, conversation.id).taken_over_by_user_id == staff.id
     assert fake_twilio.sent == []
-    assert (notice.status, notice.error_code) == (MessageStatus.FAILED, "template_not_approved")
+    assert (notice.status, notice.error_code) == (MessageStatus.FAILED, "window_closed")
 
 
 # --- Transfer ------------------------------------------------------------------------------
@@ -365,6 +365,30 @@ def test_a_transfer_in_spanish_names_the_staff_member_in_spanish(
     expected = MESSAGES["TAKEOVER_NOTICE"]["es"].format(staff=STAFF_NAME)
     assert [sent.body for sent in fake_twilio.sent] == [expected]
     assert _only(db, conversation.id, MessageAuthor.SYSTEM).body == expected
+
+
+@pytest.mark.parametrize("client_wrote_ago", CLOSED_WINDOWS, ids=CLOSED_WINDOW_IDS)
+def test_a_transfer_with_the_window_closed_is_refused_and_changes_nothing(
+    api: TestClient,
+    db: Session,
+    fake_twilio: FakeTwilio,
+    broadcasts: list[BroadcastEvent],
+    client_wrote_ago: datetime.timedelta | None,
+) -> None:
+    previous = _make_user(db)
+    staff = _make_user(db)
+    conversation = _make_conversation(db, client_wrote_ago=client_wrote_ago, holder=previous)
+
+    response = api.post(f"/api/conversations/{conversation.id}/transfer", headers=_auth(staff))
+
+    assert (response.status_code, response.json()) == (
+        409,
+        {"detail": TAKEOVER_WINDOW_CLOSED_ERROR},
+    )
+    assert _row(db, conversation.id).taken_over_by_user_id == previous.id
+    assert _lines(db, conversation.id, MessageAuthor.SYSTEM) == []
+    assert fake_twilio.sent == []
+    assert broadcasts == []
 
 
 def test_a_transfer_of_a_chat_the_bot_holds_is_refused(
@@ -423,7 +447,7 @@ def test_a_transfer_waits_behind_a_held_row_lock_and_judges_the_committed_holder
     with committed_sessions() as session:
         previous = _make_user(session)
         staff = _make_user(session)
-        conversation = _make_conversation(session, client_wrote_ago=None, holder=previous)
+        conversation = _make_conversation(session, client_wrote_ago=INSIDE_WINDOW, holder=previous)
         session.commit()
     hold_seconds = 0.4
     locked = threading.Event()
@@ -521,43 +545,71 @@ def test_releasing_a_chat_the_bot_already_has_sends_no_notice(
 # --- Retry ---------------------------------------------------------------------------------
 
 
-def test_a_retry_re_runs_the_rule_on_the_same_row(
+def test_a_retry_inside_the_window_resends_the_free_form_notice_on_the_same_row(
     api: TestClient, db: Session, fake_twilio: FakeTwilio, broadcasts: list[BroadcastEvent]
 ) -> None:
-    """Failed inside the window; by the retry the window has closed, so it goes as a template."""
     staff = _make_user(db)
     conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
     fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW)
     api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
     failed = _only(db, conversation.id, MessageAuthor.SYSTEM)
-    _age_client_messages(db, conversation, by=OUTSIDE_WINDOW)
-    _approve_templates(db, TAKEOVER_SIDS)
 
     response = api.post(
         f"/api/conversations/{conversation.id}/messages/{failed.id}/retry", headers=_auth(staff)
     )
 
     retried = _only(db, conversation.id, MessageAuthor.SYSTEM)
+    expected = MESSAGES["TAKEOVER_NOTICE"]["en"].format(staff=STAFF_NAME)
     assert response.status_code == 200
     assert response.json()["id"] == str(failed.id)
     assert retried.id == failed.id
-    assert (retried.status, retried.error_code) == (MessageStatus.QUEUED, None)
-    assert [(sent.content_sid, sent.content_variables) for sent in fake_twilio.sent] == [
-        (TAKEOVER_SID_EN, {"1": STAFF_NAME})
+    assert (retried.status, retried.error_code, retried.body) == (
+        MessageStatus.QUEUED,
+        None,
+        expected,
+    )
+    assert [(sent.to, sent.body) for sent in fake_twilio.sent] == [
+        (conversation.phone_number, expected)
     ]
     assert retried.twilio_sid == fake_twilio.sent[0].sid
-    assert retried.body == MESSAGES["TEMPLATE_takeover_notice"]["en"].format(staff=STAFF_NAME)
     assert isinstance(broadcasts[-1], MessageUpdated)
     assert broadcasts[-1].message["status"] == "queued"
+
+
+def test_a_retry_with_the_window_closed_is_refused_and_leaves_the_row_alone(
+    api: TestClient, db: Session, fake_twilio: FakeTwilio
+) -> None:
+    staff = _make_user(db)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW)
+    api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
+    failed = _only(db, conversation.id, MessageAuthor.SYSTEM)
+    before = (failed.status, failed.error_code, failed.body)
+    _age_client_messages(db, conversation, by=AT_WINDOW_END)
+
+    response = api.post(
+        f"/api/conversations/{conversation.id}/messages/{failed.id}/retry", headers=_auth(staff)
+    )
+
+    after = _only(db, conversation.id, MessageAuthor.SYSTEM)
+    assert (response.status_code, response.json()) == (
+        409,
+        {"detail": RETRY_WINDOW_CLOSED_ERROR},
+    )
+    assert (after.status, after.error_code, after.body) == before
+    assert before[:2] == (MessageStatus.FAILED, CODE_OUTSIDE_WINDOW)
+    assert fake_twilio.sent == []
 
 
 def test_a_retry_that_fails_again_keeps_the_new_reason(
     api: TestClient, db: Session, fake_twilio: FakeTwilio
 ) -> None:
     staff = _make_user(db)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW)
     api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
     failed = _only(db, conversation.id, MessageAuthor.SYSTEM)
+    fake_twilio.fail_next(code=CODE_UNDELIVERABLE)
 
     response = api.post(
         f"/api/conversations/{conversation.id}/messages/{failed.id}/retry", headers=_auth(staff)
@@ -566,7 +618,7 @@ def test_a_retry_that_fails_again_keeps_the_new_reason(
     assert response.status_code == 200
     assert (response.json()["status"], response.json()["error_code"]) == (
         "failed",
-        "template_not_approved",
+        CODE_UNDELIVERABLE,
     )
     assert fake_twilio.sent == []
 
@@ -607,11 +659,11 @@ def test_a_retry_after_the_chat_was_handed_back_is_refused_and_sends_nothing(
 ) -> None:
     """The bot is answering again; "Ana has joined" would tell the Guardian otherwise."""
     staff = _make_user(db)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW, times=2)
     api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
     failed = _only_notice(db, conversation.id, SystemMessageKind.TAKEOVER_NOTICE)
     api.delete(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
-    _approve_templates(db, TAKEOVER_SIDS)
 
     response = api.post(
         f"/api/conversations/{conversation.id}/messages/{failed.id}/retry", headers=_auth(staff)
@@ -629,11 +681,11 @@ def test_a_retry_after_the_chat_was_transferred_to_someone_else_is_refused(
 ) -> None:
     first = _make_user(db)
     second = _make_user(db)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    fake_twilio.fail_next(code=CODE_OUTSIDE_WINDOW, times=2)
     api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(first))
     failed = _only_notice(db, conversation.id, SystemMessageKind.TAKEOVER_NOTICE)
     api.post(f"/api/conversations/{conversation.id}/transfer", headers=_auth(second))
-    _approve_templates(db, TAKEOVER_SIDS)
 
     response = api.post(
         f"/api/conversations/{conversation.id}/messages/{failed.id}/retry", headers=_auth(first)
@@ -645,8 +697,8 @@ def test_a_retry_after_the_chat_was_transferred_to_someone_else_is_refused(
 
 def test_a_retry_of_a_message_in_another_conversation_is_404(api: TestClient, db: Session) -> None:
     staff = _make_user(db)
-    conversation = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
-    other = _make_conversation(db, client_wrote_ago=OUTSIDE_WINDOW)
+    conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
+    other = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
     api.post(f"/api/conversations/{other.id}/takeover", headers=_auth(staff))
     notice = _only(db, other.id, MessageAuthor.SYSTEM)
 
@@ -835,17 +887,6 @@ def _hold(db: Session, conversation: Conversation, *, holder: User) -> None:
     conversation.status = ConversationStatus.HUMAN
     conversation.taken_over_by_user_id = holder.id
     conversation.taken_over_at = datetime.datetime.now(tz=datetime.UTC)
-    db.flush()
-
-
-def _approve_templates(
-    db: Session, sids: dict[str, str], *, setting: str = "takeover_template_sid_{code}"
-) -> None:
-    for code, sid in sids.items():
-        row = db.scalars(
-            select(SystemSetting).where(SystemSetting.key == setting.format(code=code))
-        ).one()
-        row.value = sid
     db.flush()
 
 

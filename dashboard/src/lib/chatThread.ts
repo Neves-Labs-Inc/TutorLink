@@ -172,10 +172,35 @@ export const focusRequest = (targets: string[], now: number): FocusRequest => ({
   expiresAt: now + FOCUS_REQUEST_TTL_MS,
 })
 
-// The Retry of one notice line, so a failed retry hands focus back to the button that lost it.
-export const retryFocusTargets = (messageId: string): string[] => [
-  `[data-retry="${messageId}"]:not([disabled])`,
+// Where focus sits: on <body>, inside a dialog (`state` is Radix's data-state, null for a
+// hand-rolled one like the mobile nav), or on a control in the page.
+export type FocusPlace = { kind: 'body' } | { kind: 'dialog'; state: string | null } | { kind: 'page' }
+
+// Focus on <body> was lost; focus in a closing dialog is about to be. An open dialog or sheet keeps it.
+export const isFocusAdrift = (place: FocusPlace): boolean =>
+  place.kind === 'body' || (place.kind === 'dialog' && place.state === 'closed')
+
+// A Take over, Transfer or Retry the API refused. Its detail refetch may swap the refused control
+// for another, so focus follows whichever control the fresh page offers.
+export type RefusedAction = { kind: 'takeover' } | { kind: 'transfer' } | { kind: 'retry'; messageId: string }
+
+// The closed-window line first: it is what a stale page most often refetches into.
+const REFUSAL_FOCUS_TARGETS = [
+  '[data-takeover-closed]',
+  '[data-transfer]',
+  '[data-takeover]:not([disabled])',
+  '[data-hand-back]',
 ]
+
+// A refused Retry that is still offered keeps focus, so the user can try it again.
+export const refusalFocusTarget = <T>(
+  refused: RefusedAction,
+  find: (selector: string) => T | null,
+): T | null => {
+  const ownTargets = refused.kind === 'retry' ? [`[data-retry="${refused.messageId}"]:not([disabled])`] : []
+
+  return [...ownTargets, ...REFUSAL_FOCUS_TARGETS].map(find).find((found) => found !== null) ?? null
+}
 
 export const isFocusRequestLive = (request: FocusRequest | null, now: number): boolean =>
   request !== null && now < request.expiresAt
@@ -224,6 +249,19 @@ export const formatMessageTimestamp = (iso: string): string =>
   }).format(new Date(iso))
 
 export const canTransfer = isHeldByOtherAdmin
+
+export const TAKEOVER_CLOSED_NOTICE =
+  "Window closed: take over is only possible within 24 hours of the Guardian's last message."
+
+type WindowState = Pick<ConversationDetail, 'is_window_open'>
+
+// The API refuses a takeover or transfer outside the Guardian's 24-hour window.
+export const isTakeoverOffered = (detail: WindowState): boolean => detail.is_window_open
+
+export const isTransferOffered = (detail: WindowState): boolean => detail.is_window_open
+
+export const takeoverClosedNotice = (detail: WindowState): string | null =>
+  detail.is_window_open ? null : TAKEOVER_CLOSED_NOTICE
 
 export const joinNames = (names: string[]): string => {
   let joined: string
@@ -314,6 +352,7 @@ const noticeProgress = (status: MessageStatus): string => NOTICE_PROGRESS[status
 
 export const systemLineLabel = (
   message: Pick<Message, 'system_kind' | 'status' | 'error_code' | 'reminder_child_names' | 'author' | 'body'>,
+  isWindowOpen: boolean,
 ): SystemLineLabel => {
   const isFailed = message.status === 'failed'
   const reason = failureReason(message.error_code)
@@ -330,7 +369,8 @@ export const systemLineLabel = (
     text = isFailed
       ? `${failedLabel} not delivered${reason}`
       : `${name} joined the chat · ${noticeProgress(message.status)}`
-    canRetry = isFailed
+    // The API refuses a retry outside the window too.
+    canRetry = isFailed && isWindowOpen
   } else if (message.system_kind === 'handback_notice') {
     if (!isFailed) {
       text = `Hand-back notice ${progress}`

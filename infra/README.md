@@ -45,7 +45,7 @@ backups yet), so Terraform refuses any plan that would delete it.
 | `db_instance_class` | `db.t4g.micro` | RDS instance class. |
 | `db_allocated_storage_gb` | `20` | RDS gp3 storage in GB. Can be grown later, never shrunk. |
 | `domain` | `null` | Real hostname; when null the site uses `<ip-with-dashes>.sslip.io`. |
-| `github_repo` | `Siraneves@313945357/TutorLink@1325618027` | Repository allowed to assume the deploy role, in GitHub's immutable `owner@id/repo@id` subject format. |
+| `github_repo` | `Neves-Labs-Inc@313945357/TutorLink@1325618027` | Repository allowed to assume the deploy role, in GitHub's immutable `owner@id/repo@id` subject format. |
 | `github_deploy_ref` | `refs/heads/main` | Git ref whose workflow runs may deploy. |
 
 ## Outputs
@@ -64,14 +64,14 @@ backups yet), so Terraform refuses any plan that would delete it.
 
 ## Who can deploy
 
-The deploy role trusts only workflow runs on `main` of `Siraneves/TutorLink`, with the OIDC
-subject `repo:Siraneves@313945357/TutorLink@1325618027:ref:refs/heads/main`; a run from any other
+The deploy role trusts only workflow runs on `main` of `Neves-Labs-Inc/TutorLink`, with the OIDC
+subject `repo:Neves-Labs-Inc@313945357/TutorLink@1325618027:ref:refs/heads/main`; a run from any other
 branch can't assume it. The repository uses GitHub's immutable subject format (owner and repo
 names with their numeric IDs), so a renamed or recreated repo doesn't inherit the trust. Check
 the prefix with:
 
 ```sh
-gh api repos/Siraneves/TutorLink/actions/oidc/customization/sub
+gh api repos/Neves-Labs-Inc/TutorLink/actions/oidc/customization/sub
 ```
 
 If `sub_claim_prefix` ever changes, set `github_repo` to it without the leading `repo:`.

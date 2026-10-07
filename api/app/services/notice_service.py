@@ -2,8 +2,8 @@
 notices, and the Retry of one that failed (#109).
 
 **The ownership change always stands.** Each entry point commits the takeover, transfer or
-release first and only then records the notice, so nothing about the notice (a closed window, an
-unapproved template, Twilio refusing the send) can undo it.
+release first and only then records the notice, so nothing about the notice (a closed window,
+Twilio refusing the send) can undo it.
 
 **Record, commit, send, attach**: the order `conversation_stream._record_and_send` uses for a
 Staff message, and for its reason. A notice the process dies before sending is still a line in
@@ -11,18 +11,20 @@ the thread, and one Twilio refuses is marked `failed` with the code rather than 
 This module therefore commits, unlike the services it calls: the commit between the record
 and the send is the whole point, so it cannot be left to a caller.
 
-**The rule, applied the same way on a Retry.** Inside the Guardian's 24-hour window a notice
-is free-form text; outside it a Takeover or Transfer notice needs an approved Utility template,
-and a Hand-back notice is not sent at all. A blank template id means "not approved yet": the
-line is recorded `failed` with `template_not_approved` and nothing is sent. The copy is in the
-conversation's language (`NULL` is English).
+**The rule.** Inside the Guardian's 24-hour window a notice is free-form text. Outside it a
+Takeover or Transfer is refused upstream (`conversation_service` raises
+`ConversationWindowClosed`) and a Retry is refused here (`NoticeWindowClosed`), so the Guardian
+is reached outside the bot. A notice still planned outside the window (a Hand-back, or a
+Takeover whose window closed between the claim and the notice) is recorded `failed` with
+`window_closed` and nothing is sent. The copy is in the conversation's language (`NULL` is
+English).
 
 **A notice is only sent while it is true.** It is re-judged under the conversation row lock
 before it is recorded and before a Retry: an ownership change undone in the meantime (a
 hand-back, a later transfer) sends no notice about it.
 
 **No email-derived name reaches a Guardian.** A holder whose `display_name_is_default` is set
-gets the nameless notice and the nameless template. The Staff-facing line still names them,
+gets the nameless notice. The Staff-facing line still names them,
 through `author_user_id`.
 """
 
@@ -43,22 +45,16 @@ from app.models.enums import (
 from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service, message_service
-from app.services.bot_messages import DEFAULT_LANGUAGE, render
+from app.services.bot_messages import render
 from app.services.conversation_service import ConversationDetail
 from app.services.message_service import ThreadMessage
-from app.services.settings_service import get_str_setting
 from app.services.twilio_service import (
     TwilioSendFailed,
     TwilioServiceError,
     send_whatsapp_message,
-    send_whatsapp_template,
 )
 
 WINDOW_CLOSED = "window_closed"
-TEMPLATE_NOT_APPROVED = "template_not_approved"
-TAKEOVER_TEMPLATE_SETTING = "takeover_template_sid_{language}"
-GENERIC_TAKEOVER_TEMPLATE_SETTING = "takeover_generic_template_sid_{language}"
-TEMPLATE_STAFF_VARIABLE = "1"
 
 RETRYABLE_KINDS = frozenset({SystemMessageKind.TAKEOVER_NOTICE, SystemMessageKind.TRANSFER_NOTICE})
 
@@ -89,21 +85,23 @@ class NoticeOutdated(NoticeServiceError):
     """Retry of a notice whose Takeover has ended: handed back, or transferred since."""
 
 
+class NoticeWindowClosed(NoticeServiceError):
+    """Retry of a notice whose Guardian last wrote 24 hours ago or more."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Plan:
-    """What one notice sends: free-form `body`, or `template_sid` with `variables` (`body` is
-    then the chat copy of the template). `refusal` is the reason nothing may be sent."""
+    """What one notice sends: the free-form `body`, unless `refusal` says why nothing may be."""
 
     body: str
-    template_sid: str | None
-    variables: dict[str, str]
     refusal: str | None
 
 
 def take_over(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> NoticeOutcome:
     """Claim the thread and, unless the caller already held it, tell the Guardian who joined.
 
-    Raises `conversation_service`'s `ConversationNotFound` and `ConversationHeldByAnother`.
+    Raises `conversation_service`'s `ConversationNotFound`, `ConversationWindowClosed` and
+    `ConversationHeldByAnother`.
     """
     change = conversation_service.claim(db, conversation_id=conversation_id, user_id=user_id)
     db.commit()
@@ -126,7 +124,8 @@ def take_over(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) ->
 def transfer(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> NoticeOutcome:
     """Move a thread another Staff member holds to the caller, and tell the Guardian.
 
-    Raises `ConversationNotFound`, `ConversationNotHeld` and `ConversationAlreadyHeld`.
+    Raises `ConversationNotFound`, `ConversationNotHeld`, `ConversationAlreadyHeld` and
+    `ConversationWindowClosed`.
     """
     conversation_service.transfer(db, conversation_id=conversation_id, user_id=user_id)
     db.commit()
@@ -170,11 +169,12 @@ def hand_back(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) ->
 def retry(db: Session, *, conversation_id: uuid.UUID, message_id: uuid.UUID) -> ThreadMessage:
     """Send a failed Takeover or Transfer notice again, on the same row.
 
-    The rule is re-evaluated rather than replayed: the window may have closed since, and the
-    holder may have set a real Display name. The notice must still be true: a Takeover that was
-    handed back or transferred since is refused, or the Guardian would be told the wrong person
-    is in the chat. The conversation is locked first (so a hand-back cannot slip in before the
-    send is recorded), then the message (so two retries cannot both send).
+    The copy is re-planned rather than replayed: the holder may have set a real Display name.
+    The notice must still be true: a Takeover that was handed back or transferred since is
+    refused, or the Guardian would be told the wrong person is in the chat. A closed window is
+    refused too, leaving the row as it was. The conversation is locked first (so a hand-back
+    cannot slip in before the send is recorded), then the message (so two retries cannot both
+    send).
     """
     try:
         conversation = conversation_service.lock(db, conversation_id=conversation_id)
@@ -203,6 +203,9 @@ def retry(db: Session, *, conversation_id: uuid.UUID, message_id: uuid.UUID) -> 
         conversation, kind=message.system_kind, author_user_id=message.author_user_id
     ):
         raise NoticeOutdated(f"message {message_id} is about a takeover that has ended")
+
+    if not conversation_service.window_is_open(db, conversation_id=conversation_id):
+        raise NoticeWindowClosed(f"conversation {conversation_id} is outside the window")
 
     author = db.get_one(User, message.author_user_id)
     plan = _plan(db, conversation=conversation, kind=message.system_kind, author=author)
@@ -271,7 +274,7 @@ def _send(
         message_service.mark_failed(db, message=message, error_code=plan.refusal)
     else:
         try:
-            twilio_sid = _deliver(to=conversation.phone_number, plan=plan)
+            twilio_sid = send_whatsapp_message(to=conversation.phone_number, body=plan.body)
         except TwilioServiceError as exc:
             # A missing configuration carries no Twilio code; a refusal does, and Staff need it.
             error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
@@ -296,17 +299,6 @@ def _send(
     return row
 
 
-def _deliver(*, to: str, plan: _Plan) -> str:
-    if plan.template_sid is None:
-        twilio_sid = send_whatsapp_message(to=to, body=plan.body)
-    else:
-        twilio_sid = send_whatsapp_template(
-            to=to, content_sid=plan.template_sid, content_variables=plan.variables
-        )
-
-    return twilio_sid
-
-
 def _plan(
     db: Session, *, conversation: Conversation, kind: SystemMessageKind, author: User
 ) -> _Plan:
@@ -314,46 +306,10 @@ def _plan(
     is_open = conversation_service.window_is_open(db, conversation_id=conversation.id)
 
     if kind is SystemMessageKind.HANDBACK_NOTICE:
-        plan = _Plan(
-            body=render("HANDBACK_NOTICE", language),
-            template_sid=None,
-            variables={},
-            refusal=None if is_open else WINDOW_CLOSED,
-        )
-    elif is_open:
-        plan = _free_form_takeover(language=language, author=author)
-    else:
-        plan = _template_takeover(db, language=language, author=author)
-
-    return plan
-
-
-def _free_form_takeover(*, language: str | None, author: User) -> _Plan:
-    if author.display_name_is_default:
+        body = render("HANDBACK_NOTICE", language)
+    elif author.display_name_is_default:
         body = render("TAKEOVER_NOTICE_GENERIC", language)
     else:
         body = render("TAKEOVER_NOTICE", language, staff=author.display_name)
 
-    return _Plan(body=body, template_sid=None, variables={}, refusal=None)
-
-
-def _template_takeover(db: Session, *, language: str | None, author: User) -> _Plan:
-    setting_language = language or DEFAULT_LANGUAGE
-
-    if author.display_name_is_default:
-        setting = GENERIC_TAKEOVER_TEMPLATE_SETTING
-        body = render("TEMPLATE_takeover_notice_generic", language)
-        variables = {}
-    else:
-        setting = TAKEOVER_TEMPLATE_SETTING
-        body = render("TEMPLATE_takeover_notice", language, staff=author.display_name)
-        variables = {TEMPLATE_STAFF_VARIABLE: author.display_name}
-
-    template_sid = get_str_setting(db, key=setting.format(language=setting_language)).strip()
-
-    return _Plan(
-        body=body,
-        template_sid=template_sid or None,
-        variables=variables,
-        refusal=None if template_sid else TEMPLATE_NOT_APPROVED,
-    )
+    return _Plan(body=body, refusal=None if is_open else WINDOW_CLOSED)

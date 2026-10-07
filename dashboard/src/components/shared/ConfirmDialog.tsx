@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import { Dialog } from 'radix-ui'
 
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,8 @@ export type ConfirmDialogProps = {
   onConfirm: () => void
   destructive?: boolean
   pending?: boolean
+  // Disables only Confirm, so Cancel stays the way out.
+  confirmDisabled?: boolean
   errorMessage?: string | null
 }
 
@@ -31,9 +33,18 @@ export const ConfirmDialog = ({
   onConfirm,
   destructive = false,
   pending = false,
+  confirmDisabled = false,
   errorMessage = null,
 }: ConfirmDialogProps) => {
   const triggerRef = useRef<HTMLElement | null>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+
+  // Confirm had focus and stays disabled once pending ends, which leaves focus on <body>.
+  useEffect(() => {
+    if (open && confirmDisabled && !pending) {
+      cancelRef.current?.focus()
+    }
+  }, [open, confirmDisabled, pending])
 
   useLayoutEffect(() => {
     if (open) {
@@ -72,14 +83,20 @@ export const ConfirmDialog = ({
           )}
           <div className="flex justify-end gap-3">
             <Dialog.Close asChild>
-              <Button type="button" variant="outline" disabled={pending} data-confirm-dialog-cancel>
+              <Button
+                ref={cancelRef}
+                type="button"
+                variant="outline"
+                disabled={pending}
+                data-confirm-dialog-cancel
+              >
                 Cancel
               </Button>
             </Dialog.Close>
             <Button
               type="button"
               variant={destructive ? 'destructive' : 'default'}
-              disabled={pending}
+              disabled={pending || confirmDisabled}
               onClick={onConfirm}
             >
               {pending ? 'Working…' : confirmLabel}

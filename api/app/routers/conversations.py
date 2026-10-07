@@ -34,7 +34,10 @@ no `POST /api/conversations/{id}/messages`: sending lives on the socket and
 owns their commits: the ownership change first, then the notice line, then the send. Each
 publishes `conversation.updated` and then `message.created` for the notice line; a no-op
 takeover or release sends and publishes no notice. Retry re-sends a failed takeover or transfer
-notice on the same row and publishes `message.updated`.
+notice on the same row and publishes `message.updated`. Takeover, transfer and Retry are refused
+with a 409 once the Guardian's 24-hour window has closed (never a 403: the Staff member may act
+on the chat, the chat just cannot be acted on); past the window the Guardian is reached outside
+the bot.
 
 **Approve, deny and mark handled need no takeover** (`07D-CONTEXT.md` §4, §4b): none of them
 answers the guardian, so there is nothing for the bot to be paused for. None writes a message or
@@ -80,6 +83,7 @@ from app.services.conversation_service import (
     ConversationListItem,
     ConversationNotFound,
     ConversationNotHeld,
+    ConversationWindowClosed,
     FlagChanged,
     FlagNeedsReactivationDecision,
     NoReactivationPending,
@@ -96,6 +100,7 @@ from app.services.notice_service import (
     NoticeNotRetryable,
     NoticeOutcome,
     NoticeOutdated,
+    NoticeWindowClosed,
 )
 
 CONVERSATION_NOT_FOUND_ERROR = "Conversation not found"
@@ -108,6 +113,14 @@ ALREADY_HELD_ERROR = "You already hold this conversation"
 MESSAGE_NOT_FOUND_ERROR = "Message not found"
 NOT_RETRYABLE_ERROR = "Only a failed takeover or transfer notice can be retried"
 NOTICE_OUTDATED_ERROR = "This takeover has ended, so its notice can no longer be sent"
+TAKEOVER_WINDOW_CLOSED_ERROR = (
+    "The Guardian last wrote more than 24 hours ago, so this chat can't be taken over."
+    " Reach them outside the bot."
+)
+RETRY_WINDOW_CLOSED_ERROR = (
+    "The Guardian last wrote more than 24 hours ago, so this notice can't be sent."
+    " Reach them outside the bot."
+)
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -211,6 +224,8 @@ def take_over(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -
         outcome = notice_service.take_over(db, conversation_id=conversation_id, user_id=user.id)
     except ConversationNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+    except ConversationWindowClosed as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, TAKEOVER_WINDOW_CLOSED_ERROR) from exc
     except ConversationHeldByAnother as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -234,6 +249,8 @@ def transfer_to_me(
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_HELD_ERROR) from exc
     except ConversationAlreadyHeld as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_HELD_ERROR) from exc
+    except ConversationWindowClosed as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, TAKEOVER_WINDOW_CLOSED_ERROR) from exc
 
     return _publish_outcome(outcome)
 
@@ -266,6 +283,8 @@ def retry_notice(
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_RETRYABLE_ERROR) from exc
     except NoticeOutdated as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, NOTICE_OUTDATED_ERROR) from exc
+    except NoticeWindowClosed as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, RETRY_WINDOW_CLOSED_ERROR) from exc
 
     message = _message(row)
     publish(

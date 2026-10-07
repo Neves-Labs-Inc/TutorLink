@@ -106,9 +106,9 @@ describe('conversationHolderLabel', () => {
       conversationHolderLabel({
         ...base,
         status: 'human',
-        taken_over_by: { id: 'u1', email: 'admin@tutorlink.com' },
+        taken_over_by: { id: 'u1', display_name: 'Maria Lopez' },
       }),
-    ).toBe('admin@tutorlink.com')
+    ).toBe('Maria Lopez')
   })
 })
 

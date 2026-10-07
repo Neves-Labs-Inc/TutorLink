@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
+  displayNameError,
   editRoleOptions,
+  roleLabel,
   roleOptions,
   requiresTutorLink,
   userFormErrors,
@@ -11,9 +13,10 @@ import {
 
 describe('roleOptions', () => {
   const cases: { viewerRole: string; expected: string[] }[] = [
-    { viewerRole: 'admin', expected: ['admin', 'tutor'] },
-    { viewerRole: 'developer', expected: ['admin', 'tutor', 'developer'] },
-    { viewerRole: 'tutor', expected: ['admin', 'tutor'] },
+    { viewerRole: 'admin', expected: ['admin', 'manager', 'tutor'] },
+    { viewerRole: 'developer', expected: ['admin', 'manager', 'tutor', 'developer'] },
+    { viewerRole: 'manager', expected: ['admin', 'manager', 'tutor'] },
+    { viewerRole: 'tutor', expected: ['admin', 'manager', 'tutor'] },
   ]
 
   it.each(cases)('offers $expected for a $viewerRole viewer', ({ viewerRole, expected }) => {
@@ -25,7 +28,7 @@ describe('editRoleOptions', () => {
   it('adds the developer role back in, disabled, for an admin viewing a developer row', () => {
     const options = editRoleOptions('admin', 'developer')
 
-    expect(options.map((option) => option.value)).toEqual(['admin', 'tutor', 'developer'])
+    expect(options.map((option) => option.value)).toEqual(['admin', 'manager', 'tutor', 'developer'])
     expect(options.find((option) => option.value === 'developer')).toEqual({
       value: 'developer',
       label: 'Developer',
@@ -58,6 +61,7 @@ describe('editRoleOptions', () => {
 describe('requiresTutorLink', () => {
   const cases: { role: string; expected: boolean }[] = [
     { role: 'admin', expected: false },
+    { role: 'manager', expected: false },
     { role: 'tutor', expected: true },
     { role: 'developer', expected: false },
   ]
@@ -69,6 +73,7 @@ describe('requiresTutorLink', () => {
 
 describe('userFormErrors', () => {
   const validDraft: UserDraft = {
+    displayName: 'Maria Lopez',
     email: 'person@example.com',
     password: 'longenough',
     role: 'admin',
@@ -147,13 +152,34 @@ describe('userFormErrors', () => {
     ).toEqual([])
   })
 
+  const displayNameCases: { role: string; mode: 'create' | 'edit' }[] = [
+    { role: 'admin', mode: 'create' },
+    { role: 'manager', mode: 'edit' },
+    { role: 'developer', mode: 'create' },
+    { role: 'tutor', mode: 'create' },
+    { role: 'tutor', mode: 'edit' },
+  ]
+
+  it.each(displayNameCases)('requires a Display name for a $role on $mode', ({ role, mode }) => {
+    const draft = { ...validDraft, role, tutorId: 'tutor-1', displayName: '   ' }
+
+    expect(userFormErrors(draft, mode)).toEqual(['Display name is required.'])
+  })
+
+  it('refuses a Display name over 255 characters, tutor included', () => {
+    const draft = { ...validDraft, role: 'tutor', tutorId: 'tutor-1', displayName: 'a'.repeat(256) }
+
+    expect(userFormErrors(draft, 'create')).toEqual(['Display name must be 255 characters or fewer.'])
+  })
+
   it('collects multiple errors together', () => {
     expect(
       userFormErrors(
-        { email: '', password: 'short', role: 'tutor', tutorId: null, tutorMode: 'link', newTutor: { name: '', phoneNumber: '', bio: '' } },
+        { displayName: '', email: '', password: 'short', role: 'tutor', tutorId: null, tutorMode: 'link', newTutor: { name: '', phoneNumber: '', bio: '' } },
         'create',
       ),
     ).toEqual([
+      'Display name is required.',
       'Email is required.',
       'Password must be at least 8 characters.',
       'A tutor account requires a linked tutor.',
@@ -167,6 +193,7 @@ describe('createUserPayload', () => {
   it('trims the email and omits tutor_id and tutor for a non-tutor role', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: '  person@example.com  ',
         password: 'longenough',
         role: 'admin',
@@ -174,12 +201,13 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: emptyNewTutor,
       }),
-    ).toEqual({ email: 'person@example.com', password: 'longenough', role: 'admin' })
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'admin' })
   })
 
   it('includes tutor_id for a tutor role linking an existing tutor', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'tutor',
@@ -187,12 +215,13 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: emptyNewTutor,
       }),
-    ).toEqual({ email: 'person@example.com', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
   })
 
   it('omits tutor_id for a tutor role with no selection', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'tutor',
@@ -200,12 +229,13 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: emptyNewTutor,
       }),
-    ).toEqual({ email: 'person@example.com', password: 'longenough', role: 'tutor' })
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'tutor' })
   })
 
   it('includes a trimmed tutor object for a tutor role creating a new tutor', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'tutor',
@@ -215,6 +245,7 @@ describe('createUserPayload', () => {
       }),
     ).toEqual({
       email: 'person@example.com',
+      display_name: 'Maria Lopez',
       password: 'longenough',
       role: 'tutor',
       tutor: { name: 'Jane Doe', phone_number: '555-0100', bio: 'Loves algebra' },
@@ -224,6 +255,7 @@ describe('createUserPayload', () => {
   it('omits bio from the tutor object when blank', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'tutor',
@@ -233,6 +265,7 @@ describe('createUserPayload', () => {
       }),
     ).toEqual({
       email: 'person@example.com',
+      display_name: 'Maria Lopez',
       password: 'longenough',
       role: 'tutor',
       tutor: { name: 'Jane Doe', phone_number: '555-0100' },
@@ -245,6 +278,7 @@ describe('createUserPayload', () => {
   it('sends only tutor_id when a new tutor is also filled in and the mode is link', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'tutor',
@@ -252,12 +286,13 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: 'Loves algebra' },
       }),
-    ).toEqual({ email: 'person@example.com', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
   })
 
   it('sends only tutor when a tutor is also selected and the mode is new', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'tutor',
@@ -267,6 +302,7 @@ describe('createUserPayload', () => {
       }),
     ).toEqual({
       email: 'person@example.com',
+      display_name: 'Maria Lopez',
       password: 'longenough',
       role: 'tutor',
       tutor: { name: 'Jane Doe', phone_number: '555-0100' },
@@ -276,6 +312,7 @@ describe('createUserPayload', () => {
   it('sends neither tutor_id nor tutor for a non-tutor role, even with both filled in', () => {
     expect(
       createUserPayload({
+        displayName: '  Maria Lopez  ',
         email: 'person@example.com',
         password: 'longenough',
         role: 'admin',
@@ -283,31 +320,32 @@ describe('createUserPayload', () => {
         tutorMode: 'new',
         newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: 'Loves algebra' },
       }),
-    ).toEqual({ email: 'person@example.com', password: 'longenough', role: 'admin' })
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'admin' })
   })
 })
 
 describe('updateUserPayload', () => {
   it('omits password when blank', () => {
     expect(
-      updateUserPayload({ email: 'person@example.com', password: '', role: 'admin', isActive: true }),
-    ).toEqual({ email: 'person@example.com', role: 'admin', is_active: true })
+      updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: '', role: 'admin', isActive: true }),
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', role: 'admin', is_active: true })
   })
 
   it('omits password when only whitespace', () => {
     expect(
-      updateUserPayload({ email: 'person@example.com', password: '   ', role: 'admin', isActive: true }),
-    ).toEqual({ email: 'person@example.com', role: 'admin', is_active: true })
+      updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: '   ', role: 'admin', isActive: true }),
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', role: 'admin', is_active: true })
   })
 
   it('includes password when non-empty', () => {
     expect(
-      updateUserPayload({ email: 'person@example.com', password: 'newpassword', role: 'admin', isActive: false }),
-    ).toEqual({ email: 'person@example.com', role: 'admin', is_active: false, password: 'newpassword' })
+      updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: 'newpassword', role: 'admin', isActive: false }),
+    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', role: 'admin', is_active: false, password: 'newpassword' })
   })
 
   it('never includes a tutor_id field', () => {
     const payload = updateUserPayload({
+      displayName: 'Maria Lopez',
       email: 'person@example.com',
       password: '',
       role: 'tutor',
@@ -315,5 +353,48 @@ describe('updateUserPayload', () => {
     })
 
     expect(payload).not.toHaveProperty('tutor_id')
+  })
+})
+
+describe('displayNameError', () => {
+  it('accepts a normal name', () => {
+    expect(displayNameError('Maria Lopez')).toBeNull()
+  })
+
+  it('refuses a blank name', () => {
+    expect(displayNameError('')).toBe('Display name is required.')
+  })
+
+  it('refuses a whitespace-only name', () => {
+    expect(displayNameError('   ')).toBe('Display name is required.')
+  })
+
+  it('accepts exactly 255 characters', () => {
+    expect(displayNameError('a'.repeat(255))).toBeNull()
+  })
+
+  it('refuses 256 characters', () => {
+    expect(displayNameError('a'.repeat(256))).toBe('Display name must be 255 characters or fewer.')
+  })
+
+  it('measures the trimmed name, as the server stores it', () => {
+    expect(displayNameError(`  ${'a'.repeat(255)}  `)).toBeNull()
+  })
+
+  it('counts characters, not UTF-16 units, as the server does', () => {
+    expect(displayNameError('😀'.repeat(255))).toBeNull()
+  })
+})
+
+describe('roleLabel', () => {
+  const cases: { role: string; expected: string }[] = [
+    { role: 'admin', expected: 'Admin' },
+    { role: 'manager', expected: 'Manager' },
+    { role: 'tutor', expected: 'Tutor' },
+    { role: 'developer', expected: 'Developer' },
+  ]
+
+  it.each(cases)('labels $role as $expected', ({ role, expected }) => {
+    expect(roleLabel(role)).toBe(expected)
   })
 })

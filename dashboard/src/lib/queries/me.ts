@@ -20,3 +20,13 @@ export const meQueries = {
       },
     }),
 }
+
+export type MeUpdatePayload = {
+  display_name: string
+}
+
+export const updateMe = async (data: MeUpdatePayload): Promise<Me> => {
+  const response = await api.patch<Me>('/api/me', data)
+
+  return response.data
+}

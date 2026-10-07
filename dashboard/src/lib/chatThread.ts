@@ -5,7 +5,6 @@ import type {
   Conversation,
   ConversationDetail,
   FlagReason,
-  ConversationAdminRef,
   Message,
   MessageAuthorKind,
   MessageStatus,
@@ -185,11 +184,11 @@ export const optimisticMessage = (
   clientMessageId: string,
   body: string,
   authorId: string,
-  authorEmail: string,
+  authorDisplayName: string,
 ): Message => ({
   id: clientMessageId,
   author_kind: 'admin',
-  author: { id: authorId, email: authorEmail },
+  author: { id: authorId, display_name: authorDisplayName },
   body,
   status: 'queued',
   created_at: new Date().toISOString(),
@@ -225,10 +224,6 @@ export const formatMessageTimestamp = (iso: string): string =>
   }).format(new Date(iso))
 
 export const canTransfer = isHeldByOtherAdmin
-
-// Bridge until the Display name work lands on every `UserRef`.
-export const staffName = (ref: Pick<ConversationAdminRef, 'email' | 'display_name'>): string =>
-  ref.display_name ?? ref.email
 
 export const joinNames = (names: string[]): string => {
   let joined: string
@@ -277,7 +272,7 @@ export const composerClosedNotice = (
 export const OTHER_HOLDER_FALLBACK = 'another Staff member'
 const OTHER_HOLDER_FALLBACK_OPENING = 'Another Staff member'
 
-// A null holder is one whose name we don't have. Names and emails stay exactly as written; only the
+// A null holder is one whose name we don't have. Names stay exactly as written; only the
 // fallback gets a capital to open the sentence.
 export const transferConfirmBody = (holder: string | null, me: string | null): string => {
   const opening = holder ?? OTHER_HOLDER_FALLBACK_OPENING
@@ -324,7 +319,7 @@ export const systemLineLabel = (
   const reason = failureReason(message.error_code)
   const progress = PROGRESS_WORDS[message.status] ?? 'sent'
   const names = joinNames(message.reminder_child_names ?? [])
-  const name = message.author === null ? NOTICE_NAME_FALLBACK : staffName(message.author)
+  const name = message.author === null ? NOTICE_NAME_FALLBACK : message.author.display_name
   let text = message.body
   let canRetry = false
 

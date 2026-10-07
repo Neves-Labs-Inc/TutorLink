@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
 
 // Same-origin only (D-012): the Vite dev proxy forwards /api and /auth to the API, so the
@@ -77,6 +78,8 @@ export const refreshSession = (): Promise<string> => {
       })
       .catch((error: unknown) => {
         useAuthStore.getState().clearSession()
+        // As on Logout: the next sign-in on this tab must not see the expired user's cached rows.
+        queryClient.clear()
         throw error
       })
       .finally(() => {

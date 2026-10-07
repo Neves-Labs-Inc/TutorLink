@@ -16,19 +16,23 @@ import { tutorQueries } from '@/lib/queries/tutors'
 import { createUser, deactivateUser, updateUser, userQueries, type User } from '@/lib/queries/users'
 import {
   createUserPayload,
+  displayNameError,
   editRoleOptions,
   requiresTutorLink,
+  roleLabel,
   roleOptions,
   updateUserPayload,
   userFormErrors,
   type UserDraft,
 } from '@/lib/users/users'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 
 type FormState = UserDraft & { isActive: boolean }
 
 const EMPTY_NEW_TUTOR = { name: '', phoneNumber: '', bio: '' }
 const EMPTY_FORM: FormState = {
+  displayName: '',
   email: '',
   password: '',
   role: 'admin',
@@ -40,6 +44,9 @@ const EMPTY_FORM: FormState = {
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const DEACTIVATE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
+// Every slide-over control is a 44px touch target on phones and the compact h-8 from md up.
+const CONTROL_HEIGHT_CLASSES = 'h-11 md:h-8'
+const TAP_ROW_CLASSES = 'min-h-11 md:min-h-0'
 
 export const Users = () => {
   const queryClient = useQueryClient()
@@ -109,6 +116,7 @@ export const Users = () => {
 
   const openEditForm = (user: User) => {
     setForm({
+      displayName: user.display_name,
       email: user.email,
       password: '',
       role: user.role,
@@ -126,11 +134,20 @@ export const Users = () => {
   // tutor that survived a detour through Admin would come back already filled in when the admin
   // switches to Tutor again, and `createUserPayload` would post it — the stale name is submittable,
   // not merely visible.
+  // Once a submit has failed, the alert list follows every edit, so a fixed field drops its
+  // message at the same moment it drops `aria-invalid`. Before that, editing stays quiet.
+  const handleFormChange = (next: FormState) => {
+    setForm(next)
+    if (validationErrors.length > 0) {
+      setValidationErrors(userFormErrors(next, formMode ?? 'create'))
+    }
+  }
+
   const handleRoleChange = (role: string) => {
-    setForm((current) =>
+    handleFormChange(
       requiresTutorLink(role)
-        ? { ...current, role }
-        : { ...current, role, tutorId: null, tutorMode: 'link', newTutor: EMPTY_NEW_TUTOR },
+        ? { ...form, role }
+        : { ...form, role, tutorId: null, tutorMode: 'link', newTutor: EMPTY_NEW_TUTOR },
     )
   }
 
@@ -152,8 +169,12 @@ export const Users = () => {
   }
 
   const columns: Column<User>[] = [
-    { id: 'email', header: 'Email', primary: true, cell: (user) => user.email },
-    { id: 'role', header: 'Role', cell: (user) => user.role },
+    { id: 'displayName', header: 'Display name', primary: true, cell: (user) => user.display_name },
+    { id: 'email', header: 'Email', cell: (user) => (
+        // Cards at 375 must wrap a long email anywhere; the desktop table only when it has to.
+        <span className="break-all md:break-normal md:[overflow-wrap:anywhere]">{user.email}</span>
+      ), },
+    { id: 'role', header: 'Role', cell: (user) => roleLabel(user.role) },
     {
       id: 'tutor',
       header: 'Linked tutor',
@@ -185,7 +206,7 @@ export const Users = () => {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-heading text-2xl font-semibold tracking-tight">Users</h1>
         <Button type="button" onClick={openCreateForm}>
-          Add User
+          Add user
         </Button>
       </div>
 
@@ -209,7 +230,7 @@ export const Users = () => {
         status={usersQuery.isPending ? 'pending' : usersQuery.isError ? 'error' : 'ready'}
         errorMessage={errorDetail(usersQuery.error) ?? LOAD_FALLBACK_ERROR}
         onRetry={() => usersQuery.refetch()}
-        emptyMessage="No users found."
+        emptyMessage={showInactive ? 'No inactive users.' : 'No users yet.'}
         onRowSelect={openEditForm}
       />
 
@@ -241,7 +262,7 @@ export const Users = () => {
         <UserForm
           mode={formMode ?? 'create'}
           form={form}
-          onChange={setForm}
+          onChange={handleFormChange}
           onRoleChange={handleRoleChange}
           viewerRole={viewerRole}
           editingRole={editingUser?.role ?? null}
@@ -260,7 +281,11 @@ export const Users = () => {
           }
         }}
         title="Deactivate user"
-        body={`Deactivate ${deactivateTarget?.email ?? ''}? They will no longer be able to sign in.`}
+        body={
+          deactivateTarget === null
+            ? ''
+            : `Deactivate ${deactivateTarget.display_name} (${deactivateTarget.email})? They will no longer be able to sign in.`
+        }
         confirmLabel="Deactivate"
         destructive
         pending={deactivateMutation.isPending}
@@ -303,6 +328,8 @@ const UserForm = ({
   const showTutorFields = mode === 'create' && requiresTutorLink(form.role)
   const roleSelectOptions =
     editingRole === null ? roleOptions(viewerRole) : editRoleOptions(viewerRole, editingRole)
+  const nameError = displayNameError(form.displayName)
+  const isDisplayNameInvalid = nameError !== null && validationErrors.includes(nameError)
   let content: ReactNode = null
 
   if (validationErrors.length > 0 || saveErrorMessage !== null) {
@@ -321,9 +348,26 @@ const UserForm = ({
       {content}
 
       <div className="space-y-1.5">
+        <Label htmlFor="user-display-name">Display name</Label>
+        <Input
+          id="user-display-name"
+          autoComplete="off"
+          className={CONTROL_HEIGHT_CLASSES}
+          value={form.displayName}
+          aria-invalid={isDisplayNameInvalid}
+          aria-describedby="user-display-name-help"
+          onChange={(event) => onChange({ ...form, displayName: event.target.value })}
+        />
+        <p id="user-display-name-help" className="text-xs text-muted-foreground">
+          Shown instead of the email, e.g. "Held by Maria Lopez".
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
         <Label htmlFor="user-email">Email</Label>
         <Input
           id="user-email"
+          className={CONTROL_HEIGHT_CLASSES}
           type="email"
           value={form.email}
           onChange={(event) => onChange({ ...form, email: event.target.value })}
@@ -334,6 +378,7 @@ const UserForm = ({
         <Label htmlFor="user-password">{mode === 'edit' ? 'New password (optional)' : 'Temporary password'}</Label>
         <Input
           id="user-password"
+          className={CONTROL_HEIGHT_CLASSES}
           type="password"
           autoComplete="new-password"
           value={form.password}
@@ -345,6 +390,7 @@ const UserForm = ({
         <Label htmlFor="user-role">Role</Label>
         <Select
           id="user-role"
+          className={CONTROL_HEIGHT_CLASSES}
           value={form.role}
           onChange={(event) => onRoleChange(event.target.value)}
         >
@@ -361,7 +407,7 @@ const UserForm = ({
           <div className="space-y-1.5">
             <Label>Tutor profile</Label>
             <div className="flex gap-4 text-sm text-foreground">
-              <label className="flex items-center gap-2">
+              <label className={cn('flex items-center gap-2', TAP_ROW_CLASSES)}>
                 <input
                   type="radio"
                   name="tutor-mode"
@@ -370,7 +416,7 @@ const UserForm = ({
                 />
                 Link existing tutor
               </label>
-              <label className="flex items-center gap-2">
+              <label className={cn('flex items-center gap-2', TAP_ROW_CLASSES)}>
                 <input
                   type="radio"
                   name="tutor-mode"
@@ -387,6 +433,7 @@ const UserForm = ({
               <Label htmlFor="user-tutor">Linked tutor</Label>
               <Select
                 id="user-tutor"
+                className={CONTROL_HEIGHT_CLASSES}
                 value={form.tutorId ?? ''}
                 onChange={(event) => onChange({ ...form, tutorId: event.target.value || null })}
               >
@@ -404,6 +451,7 @@ const UserForm = ({
                 <Label htmlFor="user-tutor-name">Tutor name</Label>
                 <Input
                   id="user-tutor-name"
+                  className={CONTROL_HEIGHT_CLASSES}
                   value={form.newTutor.name}
                   onChange={(event) =>
                     onChange({ ...form, newTutor: { ...form.newTutor, name: event.target.value } })
@@ -415,6 +463,7 @@ const UserForm = ({
                 <Label htmlFor="user-tutor-phone">Phone number</Label>
                 <Input
                   id="user-tutor-phone"
+                  className={CONTROL_HEIGHT_CLASSES}
                   value={form.newTutor.phoneNumber}
                   onChange={(event) =>
                     onChange({
@@ -429,6 +478,7 @@ const UserForm = ({
                 <Label htmlFor="user-tutor-bio">Bio (optional)</Label>
                 <Input
                   id="user-tutor-bio"
+                  className={CONTROL_HEIGHT_CLASSES}
                   value={form.newTutor.bio}
                   onChange={(event) =>
                     onChange({ ...form, newTutor: { ...form.newTutor, bio: event.target.value } })
@@ -441,7 +491,7 @@ const UserForm = ({
       )}
 
       {mode === 'edit' && (
-        <label className="flex items-center gap-2 text-sm text-foreground">
+        <label className={cn('flex items-center gap-2 text-sm text-foreground', TAP_ROW_CLASSES)}>
           <input
             type="checkbox"
             checked={form.isActive}

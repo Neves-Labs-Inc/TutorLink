@@ -31,7 +31,6 @@ import {
   reconcileLiveMessage,
   releaseConversation,
   socketSaysClosed,
-  staffName,
   takeoverConversation,
   transferConfirmBody,
   type FocusRequest,
@@ -264,7 +263,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
       setPendingMessages((current) => [
         ...current,
-        optimisticMessage(clientMessageId, body, holder.id, holder.email),
+        optimisticMessage(clientMessageId, body, holder.id, holder.display_name),
       ])
       setLastSentId(clientMessageId)
       sentIdsRef.current.add(clientMessageId)
@@ -273,7 +272,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   }
 
   const holder = conversation.data?.taken_over_by
-  const holderName = holder === null || holder === undefined ? null : staffName(holder)
+  const holderName = holder?.display_name ?? null
   const guardianName = conversation.data?.guardian?.name ?? conversation.data?.phone_number ?? 'The Guardian'
 
   let content: ReactNode

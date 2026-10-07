@@ -8,7 +8,6 @@ import {
   handBackConfirmBody,
   joinNames,
   lastWroteAgo,
-  staffName,
   systemLineLabel,
   transferConfirmBody,
   isHeldByAdmin,
@@ -106,8 +105,15 @@ describe('reconcileLiveMessage', () => {
     expect(next.map((m) => m.id)).toEqual(['1', '2'])
   })
 
+  it('labels an optimistic bubble with the sender Display name', () => {
+    expect(optimisticMessage('temp-1', 'hi', 'admin-1', 'Maria Lopez').author).toEqual({
+      id: 'admin-1',
+      display_name: 'Maria Lopez',
+    })
+  })
+
   it('replaces an optimistic bubble keyed by client_message_id with the echoed message', () => {
-    const optimistic = optimisticMessage('temp-1', 'hi', 'admin-1', 'admin@tutorlink.com')
+    const optimistic = optimisticMessage('temp-1', 'hi', 'admin-1', 'Maria Lopez')
     const thread = [message({ id: '0' }), optimistic]
     const echoed = message({ id: 'real-1', author_kind: 'admin', status: 'sent' })
 
@@ -149,7 +155,7 @@ describe('isHeldByAdmin / isHeldByOtherAdmin', () => {
   it('is held by the admin holding it', () => {
     const held = conversation({
       status: 'human',
-      taken_over_by: { id: 'admin-1', email: 'a@tutorlink.com' },
+      taken_over_by: { id: 'admin-1', display_name: 'Ana' },
     })
 
     expect(isHeldByAdmin(held, 'admin-1')).toBe(true)
@@ -159,7 +165,7 @@ describe('isHeldByAdmin / isHeldByOtherAdmin', () => {
   it('is held by another admin', () => {
     const held = conversation({
       status: 'human',
-      taken_over_by: { id: 'admin-2', email: 'b@tutorlink.com' },
+      taken_over_by: { id: 'admin-2', display_name: 'Ben' },
     })
 
     expect(isHeldByAdmin(held, 'admin-1')).toBe(false)
@@ -235,7 +241,7 @@ describe('oldestCreatedAt', () => {
 const systemMessage = (overrides: Partial<Message>): Message =>
   message({ id: 's1', author_kind: 'system', status: 'sent', ...overrides })
 
-const marta = { id: 'u1', email: 'marta@example.com', display_name: 'Marta' }
+const marta = { id: 'u1', display_name: 'Marta' }
 
 describe('systemLineLabel', () => {
   it('reads a sent takeover notice with the staff name', () => {
@@ -253,12 +259,7 @@ describe('systemLineLabel', () => {
     expect(textFor('read')).toBe('Marta joined the chat · read')
   })
 
-  it('falls back to the email, then to Staff, for the notice author', () => {
-    const noName = { id: 'u2', email: 'a@b.co' }
-
-    expect(systemLineLabel(systemMessage({ system_kind: 'takeover_notice', author: noName })).text).toBe(
-      'a@b.co joined the chat · notice sent',
-    )
+  it('falls back to Staff when the notice has no author', () => {
     expect(systemLineLabel(systemMessage({ system_kind: 'takeover_notice' })).text).toBe(
       'Staff joined the chat · notice sent',
     )
@@ -355,12 +356,7 @@ describe('systemLineLabel', () => {
   })
 })
 
-describe('staffName and joinNames', () => {
-  it('prefers the display name over the email', () => {
-    expect(staffName(marta)).toBe('Marta')
-    expect(staffName({ email: 'a@b.co', display_name: null })).toBe('a@b.co')
-  })
-
+describe('joinNames', () => {
   it('joins one, two and three names', () => {
     expect(joinNames(['Ana'])).toBe('Ana')
     expect(joinNames(['Ana', 'Luis'])).toBe('Ana and Luis')
@@ -439,9 +435,9 @@ describe('confirm bodies', () => {
     )
   })
 
-  it('keeps an email holder exactly as written', () => {
-    expect(transferConfirmBody('marta@test.com', null)).toBe(
-      'marta@test.com is holding this chat. Take it over? marta@test.com can no longer reply here.',
+  it('keeps a lowercase holder name exactly as written', () => {
+    expect(transferConfirmBody('marta lópez', null)).toBe(
+      'marta lópez is holding this chat. Take it over? marta lópez can no longer reply here.',
     )
   })
 

@@ -20,8 +20,8 @@ export type SystemMessageKind =
   | 'consent_notice'
 
 export type ConversationGuardianRef = { id: string; name: string }
-// `display_name` arrives with the Staff Display name work; until then `email` is what shows.
-export type ConversationAdminRef = { id: string; email: string; display_name?: string | null }
+// The API's `UserRef`: a Staff member is named by Display name, never by email.
+export type ConversationAdminRef = { id: string; display_name: string }
 
 export type ReactivationRequest = {
   child: { id: string; name: string; is_active: boolean }

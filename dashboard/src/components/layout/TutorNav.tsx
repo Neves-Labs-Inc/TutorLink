@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { CalendarDays, CalendarOff, ClipboardList, LogOut } from 'lucide-react'
+import { CalendarDays, CalendarOff, ClipboardList, LogOut, UserRound } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
+import { MyProfileDialog } from './MyProfileDialog'
 
 const NAV_ITEMS = [
   { to: '/schedule', label: 'My Schedule', icon: CalendarDays },
@@ -29,9 +30,21 @@ const tabLinkClasses = ({ isActive }: { isActive: boolean }) =>
       : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
   )
 
+const footerButtonClasses = cn(
+  'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors md:min-h-0',
+  'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent/80',
+  'outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar',
+)
+
+const headerIconButtonClasses =
+  'inline-flex size-11 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent/80 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none'
+
 export const TutorNav = () => {
   const { logout } = useAuth()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [isProfileOpen, setIsProfileOpen] = useState(false)
+
+  const handleOpenProfile = () => setIsProfileOpen(true)
 
   const handleLogout = () => {
     setIsLoggingOut(true)
@@ -42,15 +55,26 @@ export const TutorNav = () => {
     <>
       <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-sidebar-border bg-sidebar px-4 md:hidden">
         <Brand />
-        <button
-          type="button"
-          onClick={handleLogout}
-          disabled={isLoggingOut}
-          aria-label="Log out"
-          className="-mr-2 inline-flex size-10 items-center justify-center rounded-lg text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-        >
-          <LogOut aria-hidden="true" className="size-5" />
-        </button>
+        <div className="-mr-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleOpenProfile}
+            aria-label="My profile"
+            aria-haspopup="dialog"
+            className={headerIconButtonClasses}
+          >
+            <UserRound aria-hidden="true" className="size-5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={isLoggingOut}
+            aria-label="Log out"
+            className={headerIconButtonClasses}
+          >
+            <LogOut aria-hidden="true" className="size-5" />
+          </button>
+        </div>
       </header>
 
       <aside className="hidden border-r border-sidebar-border bg-sidebar md:sticky md:top-0 md:flex md:h-dvh md:w-56 md:shrink-0 md:flex-col">
@@ -65,16 +89,21 @@ export const TutorNav = () => {
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-sidebar-border px-3 py-3">
+        <div className="space-y-1 border-t border-sidebar-border px-3 py-3">
+          <button
+            type="button"
+            onClick={handleOpenProfile}
+            aria-haspopup="dialog"
+            className={footerButtonClasses}
+          >
+            <UserRound aria-hidden="true" className="size-4 shrink-0" />
+            <span>My profile</span>
+          </button>
           <button
             type="button"
             onClick={handleLogout}
             disabled={isLoggingOut}
-            className={cn(
-              'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-              'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-              'outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar',
-            )}
+            className={footerButtonClasses}
           >
             <LogOut aria-hidden="true" className="size-4 shrink-0" />
             <span>Logout</span>
@@ -95,6 +124,8 @@ export const TutorNav = () => {
           ))}
         </div>
       </nav>
+
+      <MyProfileDialog open={isProfileOpen} onOpenChange={setIsProfileOpen} />
     </>
   )
 }

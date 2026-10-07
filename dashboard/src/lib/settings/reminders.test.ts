@@ -6,7 +6,9 @@ import {
   isLockRefusal,
   isRemindersPaused,
   isTimezoneReadOnly,
+  REMINDER_KEYS,
   reminderUpdates,
+  TEMPLATE_KEYS,
   timezoneOptions,
   withoutTimezone,
   WEEKDAY_OPTIONS,
@@ -108,5 +110,16 @@ describe('splitting the settings', () => {
     expect(
       reminderUpdates(settings, { reminder_hour: '18', reminder_template_sid_en: '  ' }),
     ).toEqual([{ key: 'reminder_template_sid_en', value: '' }])
+  })
+})
+
+describe('reminder key lists', () => {
+  it('holds no takeover keys', () => {
+    expect(REMINDER_KEYS.filter((key) => key.startsWith('takeover'))).toEqual([])
+    expect(TEMPLATE_KEYS.filter((key) => key.startsWith('takeover'))).toEqual([])
+  })
+
+  it('lists only the two reminder template ids as templates', () => {
+    expect(TEMPLATE_KEYS).toEqual(['reminder_template_sid_en', 'reminder_template_sid_es'])
   })
 })

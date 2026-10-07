@@ -8,10 +8,6 @@ export const REMINDER_KEYS: readonly string[] = [
   'business_timezone',
   'reminder_template_sid_en',
   'reminder_template_sid_es',
-  'takeover_template_sid_en',
-  'takeover_template_sid_es',
-  'takeover_generic_template_sid_en',
-  'takeover_generic_template_sid_es',
 ]
 
 export const TEMPLATE_KEYS: readonly string[] = REMINDER_KEYS.filter((key) => key.includes('_template_sid_'))

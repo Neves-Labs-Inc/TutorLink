@@ -20,10 +20,13 @@ import {
   composerClosedNotice,
   focusRequest,
   OTHER_HOLDER_FALLBACK,
-  retryFocusTargets,
+  refusalFocusTarget,
   handBackConfirmBody,
+  isFocusAdrift,
   isFocusRequestLive,
   isHeldByAdmin,
+  isTakeoverOffered,
+  isTransferOffered,
   markConversationRead,
   markMessagesFailed,
   mergeMessagePages,
@@ -32,9 +35,12 @@ import {
   reconcileLiveMessage,
   releaseConversation,
   socketSaysClosed,
+  takeoverClosedNotice,
   takeoverConversation,
   transferConfirmBody,
+  type FocusPlace,
   type FocusRequest,
+  type RefusedAction,
 } from '@/lib/chatThread'
 import {
   conversationQueries,
@@ -94,6 +100,21 @@ type ChatThreadViewProps = { conversationId: string }
 const messagesQueryPrefix = (conversationId: string) =>
   conversationQueries.messages(conversationId).queryKey.slice(0, -1)
 
+// A refused action whose focus is still being looked after, until its detail refetch has landed.
+type Refusal = { action: RefusedAction; isRefetched: boolean }
+
+const focusPlace = (active: Element | null): FocusPlace => {
+  const dialog = active?.closest('[role="dialog"]') ?? null
+  let place: FocusPlace = { kind: 'page' }
+
+  if (active === null || active === document.body) {
+    place = { kind: 'body' }
+  } else if (dialog !== null) {
+    place = { kind: 'dialog', state: dialog.getAttribute('data-state') }
+  }
+  return place
+}
+
 const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   const queryClient = useQueryClient()
   const accessToken = useAuthStore((state) => state.accessToken)
@@ -110,6 +131,8 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   // holds while that stays true: a newer Guardian message reopens the window by itself.
   const [socketClosedFor, setSocketClosedFor] = useState<{ lastClientMessageAt: string | null } | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const [refusal, setRefusal] = useState<Refusal | null>(null)
+  const settledRefusalRef = useRef<Refusal | null>(null)
 
   // Runs after every render until its target exists or the request lapses: the target may mount a
   // render later (the transfer response lands after the dialog closes), and the dialog's focus trap
@@ -127,6 +150,26 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
       if (found) {
         found.focus()
         pendingFocusRef.current = null
+      }
+    }
+  })
+
+  // A refused action's button is disabled while pending, then its refetch may unmount it (or the
+  // Transfer trigger behind a closing dialog). Whenever focus is adrift, hand it to the control the
+  // page now offers, however long the refetch takes; stop looking after it once the refetch landed.
+  useEffect(() => {
+    const isPaused = transferDialogOpen || releaseDialogOpen
+
+    if (refusal !== null && refusal !== settledRefusalRef.current && !isPaused) {
+      if (isFocusAdrift(focusPlace(document.activeElement))) {
+        const target = refusalFocusTarget(
+          refusal.action,
+          (selector) => panelRef.current?.querySelector<HTMLElement>(selector) ?? null,
+        )
+        target?.focus()
+      }
+      if (refusal.isRefetched) {
+        settledRefusalRef.current = refusal
       }
     }
   })
@@ -206,8 +249,21 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
     },
   })
 
+  const handleRefusal = (action: RefusedAction) => {
+    setRefusal({ action, isRefetched: false })
+    queryClient
+      .invalidateQueries({ queryKey: conversationQueries.detail(id).queryKey, exact: true })
+      .then(() =>
+        setRefusal((current) => (current?.action === action ? { action, isRefetched: true } : current)),
+      )
+  }
+
   const takeover = useMutation({
     mutationFn: () => takeoverConversation(id),
+    onMutate: () => setRefusal(null),
+    // A refusal usually means the window closed since the page loaded: refetch so the explanation
+    // replaces the button.
+    onError: () => handleRefusal({ kind: 'takeover' }),
     onSuccess: (updated) => queryClient.setQueryData(conversationQueries.detail(id).queryKey, updated),
   })
 
@@ -226,6 +282,9 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
   const transfer = useMutation({
     mutationFn: () => transferConversation(id),
+    onMutate: () => setRefusal(null),
+    // The dialog shows the refusal; the refetch swaps the button for the explanation behind it.
+    onError: () => handleRefusal({ kind: 'transfer' }),
     onSuccess: (updated) => {
       queryClient.setQueryData(conversationQueries.detail(id).queryKey, updated)
       pendingFocusRef.current = focusRequest(COMPOSER_FOCUS_TARGETS, Date.now())
@@ -235,10 +294,9 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
   const retry = useMutation({
     mutationFn: (messageId: string) => retryNotice(id, messageId),
-    // The button was disabled while pending, which dropped focus to <body>.
-    onError: (_error, messageId) => {
-      pendingFocusRef.current = focusRequest(retryFocusTargets(messageId), Date.now())
-    },
+    onMutate: () => setRefusal(null),
+    // A refusal means the window closed since the page loaded: refetch so Retry goes away.
+    onError: (_error, messageId) => handleRefusal({ kind: 'retry', messageId }),
     onSuccess: (updated) => {
       pendingFocusRef.current = focusRequest(RETRY_FOCUS_TARGETS, Date.now())
       setPendingMessages((current) => applyMessageUpdate(current, updated))
@@ -303,6 +361,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
     const detail = conversation.data
     const heldByMe = currentUserId !== null && isHeldByAdmin(detail, currentUserId)
     const heldByOther = currentUserId !== null && canTransfer(detail, currentUserId)
+    const takeoverNotice = takeoverClosedNotice(detail)
     const closedNotice = heldByMe
       ? composerClosedNotice(detail, new Date(), socketSaysClosed(socketClosedFor, detail))
       : null
@@ -320,9 +379,14 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
           {detail.status === 'human' && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm">
               <p className="text-muted-foreground">{heldByMe ? 'Held by you' : `Held by ${holderName ?? OTHER_HOLDER_FALLBACK}`}</p>
-              {heldByOther ? (
+              {heldByOther && !isTransferOffered(detail) ? (
+                <p tabIndex={-1} data-takeover-closed className="text-muted-foreground outline-none">
+                  {takeoverNotice}
+                </p>
+              ) : heldByOther ? (
                 <Button
                   key="transfer"
+                  data-transfer
                   type="button"
                   variant="outline"
                   size="sm"
@@ -359,6 +423,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
             lastSentId={lastSentId}
+            isWindowOpen={detail.is_window_open}
             retry={{
               isPending: retry.isPending,
               pendingId: retry.isPending ? retry.variables : null,
@@ -384,9 +449,17 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
             </>
           )}
 
-          {!heldByMe && !heldByOther && (
+          {!heldByMe && !heldByOther && !isTakeoverOffered(detail) && (
+            <div className="border-t border-border p-3">
+              <p tabIndex={-1} data-takeover-closed className="text-sm text-muted-foreground outline-none">
+                {takeoverNotice}
+              </p>
+            </div>
+          )}
+
+          {!heldByMe && !heldByOther && isTakeoverOffered(detail) && (
             <div className="flex flex-col items-start gap-2 border-t border-border p-3">
-              <Button type="button" onClick={() => takeover.mutate()} disabled={takeover.isPending}>
+              <Button data-takeover type="button" onClick={() => takeover.mutate()} disabled={takeover.isPending}>
                 {takeover.isPending ? 'Taking over…' : 'Take over'}
               </Button>
               {takeover.isError && (
@@ -460,6 +533,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
         body={transferConfirmBody(holderName, me.data?.display_name ?? null)}
         confirmLabel="Transfer to me"
         pending={transfer.isPending}
+        confirmDisabled={conversation.data ? !isTransferOffered(conversation.data) : false}
         errorMessage={transfer.isError ? (errorDetail(transfer.error) ?? TRANSFER_FALLBACK_ERROR) : null}
         onConfirm={() => transfer.mutate()}
       />

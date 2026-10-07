@@ -263,7 +263,10 @@ def test_consent_rows_append_with_their_source(db: Session) -> None:
     staff = _make_user(db)
     db.add(
         ReminderConsent(
-            guardian_id=guardian.id, action=ConsentAction.OPT_IN, source=ConsentSource.INTAKE
+            guardian_id=guardian.id,
+            action=ConsentAction.OPT_IN,
+            source=ConsentSource.INTAKE,
+            phone_number=guardian.phone_number,
         )
     )
     db.add(

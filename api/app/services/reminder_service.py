@@ -167,7 +167,9 @@ def due_guardians(db: Session, *, now: datetime.datetime) -> list[ReminderCandid
 
     Due: active, latest consent `opt_in`, and linked to at least one eligible Child (active,
     Evaluated, nothing pending or confirmed that Monday to Sunday). A Guardian who already has a
-    row for the week is still listed; `run_week` is what skips them.
+    row for the week is still listed; `run_week` is what skips them. A Guardian blocked by
+    WhatsApp on their current number is listed too, with `blocked_by_whatsapp` as the reason to
+    skip them, so Staff see why they got nothing.
     """
     week_start = week_start_after(now.date())
     rows = db.execute(
@@ -190,6 +192,7 @@ def due_guardians(db: Session, *, now: datetime.datetime) -> list[ReminderCandid
         children_by_guardian.setdefault(guardian.id, []).append(child)
 
     languages = _languages(db, guardian_ids=list(guardians))
+    blocked = reminder_consent_service.blocked_guardian_ids(db, guardian_ids=list(guardians))
     taken_over = _taken_over_phone_numbers(
         db, phone_numbers=[guardian.phone_number for guardian in guardians.values()], day=now.date()
     )
@@ -204,6 +207,7 @@ def due_guardians(db: Session, *, now: datetime.datetime) -> list[ReminderCandid
             child_ids=tuple(child.id for child in children_by_guardian[guardian.id]),
             child_names=tuple(child.name for child in children_by_guardian[guardian.id]),
             skip_reason=_skip_reason(
+                is_blocked=guardian.id in blocked,
                 is_taken_over=guardian.phone_number in taken_over,
                 template_sid=template_sids[languages.get(guardian.id, Language.EN)],
             ),
@@ -328,7 +332,12 @@ def apply_delivery_status(
     elif twilio_status in _FAILURE_STATUSES and reminder.status is ReminderStatus.SENT:
         reminder.status = _failure_status(error_code)
         reminder.error_code = error_code
-        _opt_out_on_code(db, guardian_id=reminder.guardian_id, error_code=error_code)
+        _opt_out_on_code(
+            db,
+            guardian_id=reminder.guardian_id,
+            error_code=error_code,
+            phone_number=twilio_to.removeprefix(WHATSAPP_PREFIX) if twilio_to else None,
+        )
     db.flush()
 
     return reminder
@@ -366,8 +375,14 @@ def _wait_for_sends_in_flight(db: Session, *, phone_number: str) -> None:
     ).all()
 
 
-def _opt_out_on_code(db: Session, *, guardian_id: uuid.UUID, error_code: str | None) -> None:
-    """63050/63033: WhatsApp says the Guardian stopped or blocked us, so the reminders stop."""
+def _opt_out_on_code(
+    db: Session, *, guardian_id: uuid.UUID, error_code: str | None, phone_number: str | None
+) -> None:
+    """63050/63033: WhatsApp says the Guardian stopped or blocked us, so the reminders stop.
+
+    The block is on `phone_number`, the number the reminder went to; `None` (a callback with no
+    `To`) means the Guardian's current number.
+    """
     if error_code in OPT_OUT_CODES:
         reminder_consent_service.record_consent(
             db,
@@ -375,6 +390,7 @@ def _opt_out_on_code(db: Session, *, guardian_id: uuid.UUID, error_code: str | N
             action=ConsentAction.OPT_OUT,
             source=ConsentSource.SYSTEM,
             message_id=None,
+            phone_number=phone_number or db.get_one(Guardian, guardian_id).phone_number,
         )
 
 
@@ -449,7 +465,12 @@ def _remind(
         reminder.status = _failure_status(error_code)
         reminder.error_code = error_code
         message_service.mark_failed(db, message=copy, error_code=error_code)
-        _opt_out_on_code(db, guardian_id=candidate.guardian_id, error_code=error_code)
+        _opt_out_on_code(
+            db,
+            guardian_id=candidate.guardian_id,
+            error_code=error_code,
+            phone_number=candidate.phone_number,
+        )
     else:
         reminder.status = ReminderStatus.SENT
         reminder.error_code = None
@@ -527,9 +548,15 @@ def _failure_status(error_code: str | None) -> ReminderStatus:
     return status
 
 
-def _skip_reason(*, is_taken_over: bool, template_sid: str) -> ReminderSkipReason | None:
-    if is_taken_over:
-        reason: ReminderSkipReason | None = ReminderSkipReason.TAKEOVER
+def _skip_reason(
+    *, is_blocked: bool, is_taken_over: bool, template_sid: str
+) -> ReminderSkipReason | None:
+    """The one reason a due Guardian is skipped, the most lasting first: a WhatsApp block holds
+    until the Guardian lifts it, a Takeover until Staff hand back, a template until approved."""
+    if is_blocked:
+        reason: ReminderSkipReason | None = ReminderSkipReason.BLOCKED_BY_WHATSAPP
+    elif is_taken_over:
+        reason = ReminderSkipReason.TAKEOVER
     elif not template_sid:
         reason = ReminderSkipReason.TEMPLATE_NOT_APPROVED
     else:

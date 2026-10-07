@@ -39,7 +39,7 @@ CLIENT_NOT_FOUND = {"detail": "Client not found"}
 # Written out rather than imported, so a reworded message is a deliberate test change.
 SYSTEM_OPT_OUT_ERROR = (
     "WhatsApp reported this Guardian blocked our number; only the Guardian can turn reminders "
-    "back on by messaging START."
+    "back on by messaging START from this number."
 )
 
 
@@ -413,6 +413,8 @@ def _consent(
         guardian_id=guardian.id,
         action=action,
         source=source,
+        # Staff rows speak for no number; every other row came from the Guardian's.
+        phone_number=None if source is ConsentSource.STAFF else guardian.phone_number,
         set_by_user_id=None if set_by is None else set_by.id,
         created_at=at,
     )

@@ -275,6 +275,7 @@ def _make_test_data(db: Session) -> None:
                 action=ConsentAction.OPT_IN,
                 source=ConsentSource.INTAKE,
                 message_id=message.id,
+                phone_number=guardian.phone_number,
             ),
             BookingReminder(
                 guardian_id=guardian.id,

@@ -319,6 +319,7 @@ def _confirm_consent_keyword(
             action=action,
             source=ConsentSource.MESSAGE,
             message_id=inbound.id,
+            phone_number=conversation.phone_number,
         )
         language = None if conversation.language is None else conversation.language.value
         is_stop = action is ConsentAction.OPT_OUT
@@ -341,8 +342,9 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn, inbound
 
     A Guardian language the turn adopted is stored, so the next turn replies in it.
 
-    A reminder consent is recorded with the inbound message as its evidence, after the link so
-    a thread linked on this very turn still has its Guardian.
+    A reminder consent is recorded with the inbound message as its evidence and the thread's
+    number as where it came from, after the link so a thread linked on this very turn still has
+    its Guardian.
 
     A reactivation request is recorded last, and flags the thread `reactivation_request`
     (REQ-132.3). The bot only returns one when the column read under the row lock said nothing
@@ -372,6 +374,7 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn, inbound
             action=decided.consent.action,
             source=decided.consent.source,
             message_id=inbound.id,
+            phone_number=conversation.phone_number,
         )
 
     if decided.flag_reason is not None:

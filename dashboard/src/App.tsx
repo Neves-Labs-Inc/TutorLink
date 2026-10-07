@@ -14,6 +14,7 @@ import { GuardianDetail } from '@/pages/admin/GuardianDetail'
 import { ChatsLayout } from '@/components/chat/ChatsLayout'
 import { ChatThread } from '@/pages/admin/ChatThread'
 import { Bookings } from '@/pages/admin/Bookings'
+import { Reminders } from '@/pages/admin/Reminders'
 import { Users } from '@/pages/admin/Users'
 import { Settings } from '@/pages/admin/Settings'
 import { Schedule } from '@/pages/tutor/Schedule'
@@ -114,6 +115,16 @@ export const App = () => (
             <RouteGuard allow={STAFF_ROLES}>
               <AppShell>
                 <Bookings />
+              </AppShell>
+            </RouteGuard>
+          }
+        />
+        <Route
+          path="/reminders"
+          element={
+            <RouteGuard allow={STAFF_ROLES}>
+              <AppShell>
+                <Reminders />
               </AppShell>
             </RouteGuard>
           }

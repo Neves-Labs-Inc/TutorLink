@@ -5,10 +5,10 @@ import { adminNavItemsFor } from './adminNav'
 const labelsFor = (role: Role): string[] => adminNavItemsFor(role).map((item) => item.label)
 
 describe('adminNavItemsFor', () => {
-  const FULL = ['Dashboard', 'Tutors', 'Children', 'Guardians', 'Chats', 'Bookings', 'Users', 'Settings']
+  const FULL = ['Dashboard', 'Tutors', 'Children', 'Guardians', 'Chats', 'Bookings', 'Reminders', 'Users', 'Settings']
 
   it('gives a manager every staff item but Users and Settings, in order', () => {
-    expect(labelsFor('manager')).toEqual(['Dashboard', 'Tutors', 'Children', 'Guardians', 'Chats', 'Bookings'])
+    expect(labelsFor('manager')).toEqual(['Dashboard', 'Tutors', 'Children', 'Guardians', 'Chats', 'Bookings', 'Reminders'])
   })
 
   it('gives an admin every item', () => {

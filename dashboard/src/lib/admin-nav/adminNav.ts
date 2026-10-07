@@ -1,5 +1,6 @@
 import {
   Baby,
+  BellRing,
   CalendarDays,
   GraduationCap,
   LayoutDashboard,
@@ -26,6 +27,7 @@ const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   { to: '/guardians', label: 'Guardians', icon: Users, allow: STAFF_ROLES },
   { to: '/chats', label: 'Chats', icon: MessageSquare, allow: STAFF_ROLES },
   { to: '/bookings', label: 'Bookings', icon: CalendarDays, allow: STAFF_ROLES },
+  { to: '/reminders', label: 'Reminders', icon: BellRing, allow: STAFF_ROLES },
   { to: '/users', label: 'Users', icon: UserCog, allow: ADMIN_ROLES },
   { to: '/settings', label: 'Settings', icon: Settings, allow: ADMIN_ROLES },
 ]

@@ -55,6 +55,8 @@ guardian's turn on the same conversation could deadlock.
 (#109). Outbound messages never extend it: Twilio refuses a free-form send (63016) once the
 Guardian has been silent for 24 hours, however much Staff or the bot wrote since. Exactly 24
 hours is closed. `is_window_open` is the rule and `window_is_open` reads it for one thread.
+`claim` and `transfer` refuse a thread outside it (`ConversationWindowClosed`): past the window
+the Guardian is reached outside the bot, so there is nothing for Staff to take over.
 """
 
 import datetime
@@ -156,6 +158,10 @@ class ConversationNotHeld(ConversationServiceError):
 
 class ConversationAlreadyHeld(ConversationServiceError):
     """A transfer to the Staff member who already holds the thread."""
+
+
+class ConversationWindowClosed(ConversationServiceError):
+    """A claim or transfer of a thread whose Guardian last wrote 24 hours ago or more."""
 
 
 class NoReactivationPending(ConversationServiceError):
@@ -279,7 +285,8 @@ def list_conversations(
 
 
 def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> OwnershipChange:
-    """Claim the conversation for `user_id`, pausing the bot. Raises if another admin holds it.
+    """Claim the conversation for `user_id`, pausing the bot. Raises if another admin holds it,
+    or if the Guardian's 24-hour window is closed.
 
     A re-claim by the current holder is a no-op success, not a conflict: a double-click or a
     retry after a dropped response asks for exactly the state the conversation is already in,
@@ -289,14 +296,24 @@ def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> Own
     The three columns move together because the schema CHECK ties `status` to
     `taken_over_by_user_id` — a half-set state is unrepresentable and this must not try to
     write one.
+
+    The holder's re-claim stays a no-op even with the window closed, and a closed window is
+    refused before "held by another": naming a holder would invite a transfer that is refused too.
     """
     conversation = _locked(db, conversation_id=conversation_id)
+    is_held_by_caller = (
+        conversation.status is ConversationStatus.HUMAN
+        and conversation.taken_over_by_user_id == user_id
+    )
+
+    if is_held_by_caller:
+        return OwnershipChange(detail=_detail(db, conversation), is_changed=False)
+
+    if not _is_window_open(db, conversation_id=conversation_id):
+        raise ConversationWindowClosed(f"conversation {conversation_id} is outside the window")
 
     if conversation.status is ConversationStatus.HUMAN:
-        if conversation.taken_over_by_user_id != user_id:
-            raise ConversationHeldByAnother(_holder(db, conversation))
-
-        return OwnershipChange(detail=_detail(db, conversation), is_changed=False)
+        raise ConversationHeldByAnother(_holder(db, conversation))
 
     conversation.status = ConversationStatus.HUMAN
     _hand_to(db, conversation, user_id=user_id)
@@ -310,7 +327,8 @@ def transfer(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> 
     The deliberate way past `claim`'s `ConversationHeldByAnother` (#109): the caller has seen
     who holds it and chosen to take it anyway. Judged under the row lock, so two transfers
     racing each other cannot both read the old holder. A bot-held thread is refused (claim it
-    instead), and so is a transfer to the current holder, which would move nothing.
+    instead), and so is a transfer to the current holder, which would move nothing. Past those,
+    a closed window is refused, as for `claim`.
     """
     conversation = _locked(db, conversation_id=conversation_id)
 
@@ -321,6 +339,9 @@ def transfer(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> 
         raise ConversationAlreadyHeld(
             f"conversation {conversation_id} is already held by {user_id}"
         )
+
+    if not _is_window_open(db, conversation_id=conversation_id):
+        raise ConversationWindowClosed(f"conversation {conversation_id} is outside the window")
 
     _hand_to(db, conversation, user_id=user_id)
 
@@ -362,10 +383,7 @@ def is_window_open(
 
 def window_is_open(db: Session, *, conversation_id: uuid.UUID) -> bool:
     """The window rule for one thread, read now. Checked before every send."""
-    return is_window_open(
-        _last_client_message_at(db, conversation_id),
-        now=datetime.datetime.now(tz=datetime.UTC),
-    )
+    return _is_window_open(db, conversation_id=conversation_id)
 
 
 def mark_read(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
@@ -714,6 +732,15 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         is_window_open=is_window_open(
             last_client_message_at, now=datetime.datetime.now(tz=datetime.UTC)
         ),
+    )
+
+
+def _is_window_open(db: Session, *, conversation_id: uuid.UUID) -> bool:
+    # `claim` and `transfer` read this rather than `window_is_open`, so a test can close the
+    # window for the notice alone and reproduce a claim that raced the window closing.
+    return is_window_open(
+        _last_client_message_at(db, conversation_id),
+        now=datetime.datetime.now(tz=datetime.UTC),
     )
 
 

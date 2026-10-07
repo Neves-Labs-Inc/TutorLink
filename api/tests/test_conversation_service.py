@@ -211,6 +211,7 @@ def test_the_status_filter_narrows_to_who_is_answering(db: Session) -> None:
     admin = _make_user(db)
     _make_conversation(db, marker=marker)
     held = _make_conversation(db, marker=marker)
+    _open_window(db, held)
     claim(db, conversation_id=held.id, user_id=admin.id)
 
     human, human_total = _page(db, q=marker, status=ConversationStatus.HUMAN)
@@ -287,6 +288,7 @@ def test_the_filters_compose_and_the_total_follows_them(db: Session) -> None:
         _make_conversation(db, marker=marker)
     wanted = _make_conversation(db, marker=marker)
     flag(db, conversation=wanted, reason=FlagReason.PARSE_ERROR)
+    _open_window(db, wanted)
     claim(db, conversation_id=wanted.id, user_id=admin.id)
 
     items, total = _page(
@@ -301,8 +303,10 @@ def test_an_inbox_row_carries_the_newest_message_and_the_holder(db: Session) -> 
     marker = _marker()
     admin = _make_user(db)
     conversation = _make_conversation(db, marker=marker, last_message_at=NOON + _minutes(5))
-    _make_message(db, conversation, body="first", at=NOON)
-    _make_message(db, conversation, body="latest", at=NOON + _minutes(5))
+    # Recent, so the Guardian's window is open for the claim.
+    now = datetime.datetime.now(tz=datetime.UTC)
+    _make_message(db, conversation, body="first", at=now - _minutes(10))
+    _make_message(db, conversation, body="latest", at=now - _minutes(5))
     claim(db, conversation_id=conversation.id, user_id=admin.id)
 
     items, _ = _page(db, q=marker)
@@ -315,6 +319,7 @@ def test_an_inbox_row_carries_the_newest_message_and_the_holder(db: Session) -> 
 def test_a_claim_pauses_the_bot_and_names_the_holder(db: Session) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db)
+    _open_window(db, conversation)
 
     detail = claim(db, conversation_id=conversation.id, user_id=admin.id).detail
 
@@ -330,6 +335,7 @@ def test_a_reclaim_by_the_holder_is_a_no_op_success(db: Session) -> None:
     is already in (`api-design.md:1568-1571`)."""
     admin = _make_user(db)
     conversation = _make_conversation(db)
+    _open_window(db, conversation)
     first = claim(db, conversation_id=conversation.id, user_id=admin.id).detail
     claimed_at = first.conversation.taken_over_at
 
@@ -344,6 +350,7 @@ def test_a_claim_on_a_conversation_another_admin_holds_names_them(db: Session) -
     holder = _make_user(db)
     contender = _make_user(db)
     conversation = _make_conversation(db)
+    _open_window(db, conversation)
     claim(db, conversation_id=conversation.id, user_id=holder.id)
 
     with pytest.raises(ConversationHeldByAnother) as raised:
@@ -359,6 +366,7 @@ def test_any_admin_may_release_not_only_the_holder(db: Session) -> None:
     could undo leaves a client talking to nobody when that admin closes their laptop."""
     holder = _make_user(db)
     conversation = _make_conversation(db)
+    _open_window(db, conversation)
     claim(db, conversation_id=conversation.id, user_id=holder.id)
 
     detail = release(db, conversation_id=conversation.id).detail
@@ -497,6 +505,7 @@ def test_a_flag_is_independent_of_who_is_answering(db: Session) -> None:
     raised while the bot was answering survives the takeover that follows it."""
     admin = _make_user(db)
     conversation = _make_conversation(db)
+    _open_window(db, conversation)
     flag(db, conversation=conversation, reason=FlagReason.GUARDIAN_LINK_REQUEST)
 
     detail = claim(db, conversation_id=conversation.id, user_id=admin.id).detail
@@ -774,6 +783,7 @@ def _make_committed_conversation(
     can lock the row for real."""
     with sessions() as session:
         conversation = _make_conversation(session)
+        _open_window(session, conversation)
         holder = _make_user(session)
         contender = _make_user(session)
         session.commit()
@@ -787,6 +797,7 @@ def _delete_committed_conversation(
     sessions: sessionmaker[Session], row: _CommittedConversation
 ) -> None:
     with sessions() as session:
+        session.execute(delete(Message).where(Message.conversation_id == row.conversation_id))
         session.execute(delete(Conversation).where(Conversation.id == row.conversation_id))
         session.execute(delete(User).where(User.id.in_([row.holder_id, row.contender_id])))
         session.commit()
@@ -928,6 +939,16 @@ def _make_message(
     db.add(message)
     db.flush()
     return message
+
+
+def _open_window(db: Session, conversation: Conversation) -> None:
+    """A Guardian message a minute old: a claim is only allowed inside the 24-hour window."""
+    _make_message(
+        db,
+        conversation,
+        body="hello",
+        at=datetime.datetime.now(tz=datetime.UTC) - _minutes(1),
+    )
 
 
 def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:

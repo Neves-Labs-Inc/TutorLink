@@ -30,7 +30,6 @@ EXPECTED_IDS = {
     "OPTED_OUT",
     "OPTED_IN",
     "TAKEOVER_NOTICE",
-    "TEMPLATE_takeover_notice",
     "HANDBACK_NOTICE",
     "FIRST_SESSION_HANDOFF",
     "SUBJECT_NEEDS_OFFICE",
@@ -110,10 +109,9 @@ EXPECTED_IDS = {
     "REACTIVATION_NOT_NEEDED",
     "REACTIVATION_PENDING",
     "TAKEOVER_NOTICE_GENERIC",
-    "TEMPLATE_takeover_notice_generic",
     "RESCHEDULE_NEEDS_OFFICE",
 }
-GENERIC_IDS = {"TAKEOVER_NOTICE_GENERIC", "TEMPLATE_takeover_notice_generic"}
+GENERIC_IDS = {"TAKEOVER_NOTICE_GENERIC"}
 
 
 def _placeholders(text: str) -> set[str]:
@@ -143,7 +141,6 @@ def test_generic_takeover_messages_have_no_placeholders(message_id: str) -> None
 
 def test_template_bodies_use_named_placeholders() -> None:
     assert _placeholders(MESSAGES["TEMPLATE_booking_reminder"]["en"]) == {"names", "week"}
-    assert _placeholders(MESSAGES["TEMPLATE_takeover_notice"]["es"]) == {"staff"}
 
 
 def test_shared_nudge_row_becomes_two_ids_with_the_same_text() -> None:

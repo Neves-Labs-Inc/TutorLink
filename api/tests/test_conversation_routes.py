@@ -495,6 +495,7 @@ def test_a_takeover_claims_the_conversation_and_broadcasts_once(
 ) -> None:
     admin = _make_user(db)
     conversation = _make_conversation(db, marker=_marker())
+    _open_window(db, conversation)
 
     response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(admin))
     body = response.json()
@@ -518,6 +519,7 @@ def test_a_reclaim_by_the_holder_is_a_no_op_200(api: TestClient, db: Session) ->
     wanted (`api-design.md:1568-1571`)."""
     admin = _make_user(db)
     conversation = _make_conversation(db, marker=_marker())
+    _open_window(db, conversation)
     headers = _auth(admin)
 
     first = api.post(f"/api/conversations/{conversation.id}/takeover", headers=headers)
@@ -536,6 +538,7 @@ def test_a_takeover_of_a_conversation_another_admin_holds_is_409_naming_them(
     holder = _make_user(db)
     contender = _make_user(db)
     conversation = _make_conversation(db, marker=_marker(), holder=holder)
+    _open_window(db, conversation)
 
     response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(contender))
 
@@ -727,6 +730,7 @@ def test_an_unauthenticated_request_is_401_not_403(api: TestClient, method: str,
 def test_a_developer_may_use_every_conversation_route(api: TestClient, db: Session) -> None:
     developer = _make_user(db, role=UserRole.DEVELOPER)
     conversation = _make_conversation(db, marker=_marker())
+    _open_window(db, conversation)
     headers = _auth(developer)
 
     responses = [
@@ -812,6 +816,7 @@ def _make_committed_conversation(
 ) -> _CommittedConversation:
     with sessions() as session:
         conversation = _make_conversation(session, marker=_marker())
+        _open_window(session, conversation)
         holder = _make_user(session)
         contender = _make_user(session)
         session.commit()
@@ -939,6 +944,16 @@ def _make_message(
     db.flush()
 
     return message
+
+
+def _open_window(db: Session, conversation: Conversation) -> None:
+    """A Guardian message a minute old: a takeover is only allowed inside the 24-hour window."""
+    _make_message(
+        db,
+        conversation,
+        body="hello",
+        at=datetime.datetime.now(tz=datetime.UTC) - _minutes(1),
+    )
 
 
 def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:

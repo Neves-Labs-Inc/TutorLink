@@ -483,6 +483,35 @@ def test_migration_0025_flags_display_names_taken_from_the_email_and_round_trips
     command.upgrade(config, "head")
 
 
+def test_migration_0026_adds_the_reminder_run_marker_and_round_trips(
+    _migration_engine: Engine,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, "0026")
+
+    with _migration_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO booking_reminder_runs (week_start) VALUES (:week)"),
+            {"week": WEEK_START},
+        )
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                connection.execute(
+                    text("INSERT INTO booking_reminder_runs (week_start) VALUES (:week)"),
+                    {"week": WEEK_START},
+                )
+        ran_at = connection.execute(text("SELECT ran_at FROM booking_reminder_runs")).scalar_one()
+    assert ran_at is not None
+
+    command.downgrade(config, "0025")
+
+    with _migration_engine.connect() as connection:
+        table = connection.execute(text("SELECT to_regclass('booking_reminder_runs')")).scalar()
+    assert table is None
+
+    command.upgrade(config, "head")
+
+
 def test_migration_0021_clamps_grades_the_old_api_allowed_past_12(
     _migration_engine: Engine,
 ) -> None:

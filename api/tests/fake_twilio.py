@@ -92,6 +92,11 @@ class FakeTwilio:
         """Fail the next `times` sends the way a refused connection does: retryable, no code."""
         self._arm(code=None, is_retryable=True, times=times)
 
+    def fail_next_with_timeout(self, *, times: int = 1) -> None:
+        """Fail the next `times` sends the way a read timeout or a reset does: no code, not
+        retryable, and Twilio may have accepted the message."""
+        self._arm(code=None, is_retryable=False, times=times, may_have_been_delivered=True)
+
     def post_status(
         self,
         client: TestClient,
@@ -114,24 +119,45 @@ class FakeTwilio:
         return client.post(STATUS_CALLBACK_PATH, data=form, headers={SIGNATURE_HEADER: signature})
 
     def post_inbound(
-        self, client: TestClient, *, from_number: str, body: str, sid: str
+        self,
+        client: TestClient,
+        *,
+        from_number: str,
+        body: str,
+        sid: str,
+        button_payload: str | None = None,
     ) -> Response:
-        """Post one inbound WhatsApp message to the real webhook route, signed like Twilio's."""
+        """Post one inbound WhatsApp message to the real webhook route, signed like Twilio's.
+
+        `button_payload` makes it a quick-reply tap: Twilio sends the button's text as `Body`
+        and its id as `ButtonPayload`."""
         form = {
             "From": f"whatsapp:{from_number}",
             "Body": body,
             "MessageSid": sid,
             "AccountSid": TEST_ACCOUNT_SID,
         }
+        if button_payload is not None:
+            form["ButtonPayload"] = button_payload
         signature = RequestValidator(TEST_AUTH_TOKEN).compute_signature(
             TEST_CLIENT_BASE_URL + INBOUND_PATH, form
         )
 
         return client.post(INBOUND_PATH, data=form, headers={SIGNATURE_HEADER: signature})
 
-    def _arm(self, *, code: str | None, is_retryable: bool, times: int) -> None:
+    def _arm(
+        self,
+        *,
+        code: str | None,
+        is_retryable: bool,
+        times: int,
+        may_have_been_delivered: bool = False,
+    ) -> None:
         failure = TwilioSendFailed(
-            f"fake Twilio refused the send with {code}", code=code, is_retryable=is_retryable
+            f"fake Twilio refused the send with {code}",
+            code=code,
+            is_retryable=is_retryable,
+            may_have_been_delivered=may_have_been_delivered,
         )
         self._failures.extend([failure] * times)
 

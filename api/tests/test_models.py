@@ -28,6 +28,8 @@ EXPECTED_TABLES = {
 
 NON_ERD_TABLES = {
     "refresh_tokens",
+    # Ticket 11: which weeks' reminder runs finished, for the Staff Reminders page.
+    "booking_reminder_runs",
 }
 
 

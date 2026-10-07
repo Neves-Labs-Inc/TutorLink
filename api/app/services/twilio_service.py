@@ -61,14 +61,26 @@ class TwilioSendFailed(TwilioServiceError):
     connection reset is not retryable, because either can happen after Twilio accepted the
     message, and a retry would then send the Guardian a duplicate.
 
+    `may_have_been_delivered` is true when the outcome is unknown rather than a refusal: a read
+    timeout, a reset, or an unexpected client error, any of which can follow Twilio accepting
+    the message. Callers record it apart from a definite failure, so Staff do not resend blindly.
+
     The message never names the recipient: callers log it, and a phone number does not belong
     in the logs.
     """
 
-    def __init__(self, message: str, *, code: str | None, is_retryable: bool) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None,
+        is_retryable: bool,
+        may_have_been_delivered: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.is_retryable = is_retryable
+        self.may_have_been_delivered = may_have_been_delivered
 
 
 def send_whatsapp_message(*, to: str, body: str) -> str:
@@ -125,17 +137,22 @@ def _create_message(*, to: str, **content: str) -> str:
     except OSError as exc:
         # The SDK lets `requests`' connection errors and timeouts through unwrapped; every one
         # of them is an `OSError`.
+        was_never_sent = _was_never_sent(exc)
         raise TwilioSendFailed(
             "could not reach Twilio to send the WhatsApp message",
             code=None,
-            is_retryable=_was_never_sent(exc),
+            is_retryable=was_never_sent,
+            may_have_been_delivered=not was_never_sent,
         ) from exc
     except Exception as exc:
         # Anything else is a bug in the SDK or here. It still has to end as a failed send, or the
         # caller's queued row would wait for a callback that can never come.
         logger.error("unexpected %s from the Twilio client", type(exc).__name__)
         raise TwilioSendFailed(
-            "unexpected error sending the WhatsApp message", code=None, is_retryable=False
+            "unexpected error sending the WhatsApp message",
+            code=None,
+            is_retryable=False,
+            may_have_been_delivered=True,
         ) from exc
 
     return message.sid

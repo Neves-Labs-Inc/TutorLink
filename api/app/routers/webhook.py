@@ -72,6 +72,7 @@ def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Respo
         twilio_from=_required(form, "From"),
         body=form.get("Body", ""),
         twilio_sid=_required(form, "MessageSid"),
+        button_payload=form.get("ButtonPayload") or None,
     )
 
     db.commit()

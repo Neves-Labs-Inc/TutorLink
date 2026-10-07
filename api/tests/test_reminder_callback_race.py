@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db import get_db
 from app.main import app
 from app.models.booking_reminder import BookingReminder
+from app.models.booking_reminder_run import BookingReminderRun
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
@@ -39,7 +40,7 @@ from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.models.system_setting import SystemSetting
 from app.models.user import User
-from app.services.reminder_service import run_week
+from app.services.reminder_service import run_week, week_start_after
 from tests.fake_twilio import FakeTwilio
 
 NOW = datetime.datetime(2026, 10, 11, 18, 0)
@@ -269,4 +270,10 @@ def _clean_up(
         session.execute(delete(Child).where(Child.id == child_id))
         session.execute(delete(Guardian).where(Guardian.id == guardian_id))
         session.execute(delete(User).where(User.id == staff_id))
+        # The committed run marked its week as run; no later test may inherit that.
+        session.execute(
+            delete(BookingReminderRun).where(
+                BookingReminderRun.week_start == week_start_after(NOW.date())
+            )
+        )
         session.commit()

@@ -11,24 +11,75 @@ Neither command ever resets a password or changes an existing account's role. An
 already taken is reported and left alone. Recovering from a lockout means running the command
 again with a *fresh* email, which is why it is repeatable; it does not mean overwriting the
 credentials of an account someone may still be using.
+
+`purge-prelaunch-data` is a one-off for go-live: run it once, by hand, then delete the command
+and its tests after launch.
 """
 
 import argparse
+import datetime
 import getpass
 import os
 import sys
+from dataclasses import dataclass
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+import psycopg.errors
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.db import SessionLocal
-from app.models.enums import UserRole
+from app.models.booking import Booking
+from app.models.booking_reminder import BookingReminder
+from app.models.booking_reminder_run import BookingReminderRun
+from app.models.bot_flow_state import BotFlowState
+from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
+from app.models.conversation import Conversation
+from app.models.enums import Language, UserRole
+from app.models.guardian import ChildGuardian, Guardian
+from app.models.home import ChildHome, GuardianHome, Home
+from app.models.message import Message
+from app.models.reminder_consent import ReminderConsent
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
+from app.services import clock
+from app.services.phone_service import (
+    InvalidPhoneNumber,
+    PhoneNumberError,
+    normalize_phone_number,
+)
+from app.services.reminder_service import TemplateNotApproved, send_sample
 from app.services.retention_scheduler import run_guarded_purge
+from app.services.twilio_service import TwilioSendFailed, TwilioServiceError
 from app.services.user_service import resolve_display_name
 
 MIN_PASSWORD_LENGTH = 8
+
+# Bounds the wait for the table locks, so an idle-in-transaction session cannot make the purge
+# (and the bot's writes queued behind it) wait forever.
+PRELAUNCH_LOCK_TIMEOUT = "10s"
+
+# FK-safe: every table is deleted before the tables it references. The link tables and
+# bot_flow_state have no creation timestamp, so they are not checked against the cutoff; they
+# go with the rows they belong to.
+PRELAUNCH_DELETE_ORDER: tuple[type, ...] = (
+    ReminderConsent,
+    BookingReminder,
+    # No FKs. A test week's run marker would otherwise make that week read as already run.
+    BookingReminderRun,
+    Booking,
+    ChildSubjectLevel,
+    Message,
+    Conversation,
+    GuardianHome,
+    ChildHome,
+    ChildGuardian,
+    Home,
+    Child,
+    Guardian,
+    BotFlowState,
+)
 
 
 def seed_admin(db: Session, *, email: str, password: str, display_name: str | None = None) -> str:
@@ -96,6 +147,57 @@ def seed_developer(
     return outcome
 
 
+class PurgeLockTimeoutError(Exception):
+    """The purged tables could not be locked within `PRELAUNCH_LOCK_TIMEOUT`."""
+
+
+@dataclass(frozen=True, slots=True)
+class PrelaunchPurge:
+    """`newer_tables` non-empty means nothing was deleted and `deleted` is empty."""
+
+    deleted: dict[str, int]
+    newer_tables: tuple[str, ...]
+
+
+def purge_prelaunch_data(db: Session, *, cutoff: datetime.datetime) -> PrelaunchPurge:
+    """Delete the test data written before launch. Does not commit: the caller owns the
+    transaction, so the whole purge lands or none of it does."""
+    # Blocks concurrent writes (reads stay open) until this transaction ends, so a row cannot
+    # arrive between the cutoff check and the DELETEs. Taken in delete order, always.
+    try:
+        db.execute(text(f"SET LOCAL lock_timeout = '{PRELAUNCH_LOCK_TIMEOUT}'"))
+        for model in PRELAUNCH_DELETE_ORDER:
+            db.execute(text(f"LOCK TABLE {model.__tablename__} IN SHARE ROW EXCLUSIVE MODE"))
+    except OperationalError as error:
+        if not isinstance(error.orig, psycopg.errors.LockNotAvailable):
+            raise
+        raise PurgeLockTimeoutError from error
+    newer_tables = tuple(
+        model.__tablename__
+        for model in PRELAUNCH_DELETE_ORDER
+        if (created := _creation_time(model)) is not None
+        and db.scalar(select(func.count()).select_from(model).where(created > cutoff))
+    )
+    deleted: dict[str, int] = {}
+
+    if not newer_tables:
+        for model in PRELAUNCH_DELETE_ORDER:
+            deleted[model.__tablename__] = db.execute(delete(model)).rowcount
+
+    return PrelaunchPurge(deleted=deleted, newer_tables=newer_tables)
+
+
+def _creation_time(model: type) -> InstrumentedAttribute[datetime.datetime] | None:
+    """The column a table's rows are checked against the cutoff by: `created_at`, or a run
+    marker's `ran_at` (when the run wrote it). `None`: the table has no such timestamp."""
+    if model is BookingReminderRun:
+        column: InstrumentedAttribute[datetime.datetime] | None = BookingReminderRun.ran_at
+    else:
+        column = getattr(model, "created_at", None)
+
+    return column
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -106,6 +208,20 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser(
         "purge-messages", help="Delete messages past chat_retention_days, and empty threads."
     )
+    send_test_reminder = subparsers.add_parser(
+        "send-test-reminder",
+        help="Send the real Booking reminder template to one phone. Writes nothing.",
+    )
+    send_test_reminder.add_argument("--to", required=True, help="The phone to send it to.")
+    send_test_reminder.add_argument(
+        "--language", required=True, choices=[language.value for language in Language]
+    )
+    purge_prelaunch = subparsers.add_parser(
+        "purge-prelaunch-data",
+        help="One-off: delete test Guardians, Children, bookings and chats written before launch.",
+    )
+    purge_prelaunch.add_argument("--confirm", action="store_true")
+    purge_prelaunch.add_argument("--cutoff", help="ISO 8601 datetime with an offset.")
 
     args = parser.parse_args(argv)
 
@@ -115,6 +231,10 @@ def main(argv: list[str] | None = None) -> int:
         status = _run_create_developer()
     elif args.command == "purge-messages":
         status = _run_purge_messages()
+    elif args.command == "send-test-reminder":
+        status = _run_send_test_reminder(to=args.to, language=Language(args.language))
+    elif args.command == "purge-prelaunch-data":
+        status = _run_purge_prelaunch_data(confirm=args.confirm, cutoff_text=args.cutoff)
     else:
         parser.error(f"unknown command: {args.command}")
         status = 2
@@ -171,6 +291,96 @@ def _run_purge_messages() -> int:
             f"{run.login_attempts_deleted} expired login attempt(s)"
         )
         status = 0
+
+    return status
+
+
+def _run_send_test_reminder(*, to: str, language: Language) -> int:
+    """Send one reminder template with sample Children and next Monday; print its SID.
+
+    No row, no chat copy, no eligibility check: it tests the template, not the run. Non-zero
+    when the template's ContentSid is blank, the number cannot be read, or Twilio refuses.
+    """
+    status = 1
+    db = SessionLocal()
+    try:
+        phone_number = normalize_phone_number(db, raw=to)
+        twilio_sid = send_sample(db, to=phone_number, language=language, now=clock.business_now())
+    except InvalidPhoneNumber:
+        print(f"not a phone number: {to}", file=sys.stderr)
+    except PhoneNumberError as exc:
+        # A deploy problem, e.g. `default_phone_country_code` maps to no region.
+        print(f"cannot read the phone number: {exc}", file=sys.stderr)
+    except TemplateNotApproved as exc:
+        print(f"{exc}; set it before sending a test reminder", file=sys.stderr)
+    except TwilioServiceError as exc:
+        code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        print(f"the send failed: {exc} (code {code})", file=sys.stderr)
+    else:
+        print(f"sent {language.value} test reminder: {twilio_sid}")
+        status = 0
+    finally:
+        db.close()
+
+    return status
+
+
+def _parse_cutoff(text: str | None) -> datetime.datetime | None:
+    cutoff = None
+
+    if text is not None:
+        try:
+            parsed = datetime.datetime.fromisoformat(text)
+        except ValueError:
+            parsed = None
+        # A naive cutoff would silently be read in the server's zone; require an offset.
+        if parsed is not None and parsed.tzinfo is not None:
+            cutoff = parsed
+
+    return cutoff
+
+
+def _run_purge_prelaunch_data(*, confirm: bool, cutoff_text: str | None) -> int:
+    cutoff = _parse_cutoff(cutoff_text)
+    status = 1
+
+    if not confirm:
+        print("refusing to purge: pass --confirm", file=sys.stderr)
+    elif cutoff is None:
+        print(
+            "refusing to purge: --cutoff is required, an ISO 8601 datetime with an offset",
+            file=sys.stderr,
+        )
+    else:
+        db = SessionLocal()
+        try:
+            # The database's clock, not the host's: row timestamps come from the former.
+            database_now = db.scalar(select(func.now()))
+            purge: PrelaunchPurge | None = None
+            if database_now is not None and cutoff > database_now:
+                print("refusing to purge: --cutoff is in the future", file=sys.stderr)
+            else:
+                try:
+                    purge = purge_prelaunch_data(db, cutoff=cutoff)
+                except PurgeLockTimeoutError:
+                    db.rollback()
+                    print("could not lock tables, try again; nothing deleted", file=sys.stderr)
+            # Commit either way: it releases the table locks. A refused purge ran no DELETE.
+            if purge is not None:
+                db.commit()
+        finally:
+            db.close()
+
+        if purge is not None and purge.newer_tables:
+            print(
+                "refusing to purge, nothing deleted: rows newer than the cutoff in "
+                + ", ".join(purge.newer_tables),
+                file=sys.stderr,
+            )
+        elif purge is not None:
+            for table, count in purge.deleted.items():
+                print(f"{table}: {count}")
+            status = 0
 
     return status
 

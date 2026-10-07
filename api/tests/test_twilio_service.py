@@ -305,6 +305,42 @@ def test_template_send_failure_carries_the_twilio_code_and_whether_to_retry(
     assert (raised.value.code, raised.value.is_retryable) == (code, is_retryable)
 
 
+@pytest.mark.parametrize(
+    ("error", "may_have_been_delivered"),
+    [
+        (TwilioRestException(status=400, uri="/Messages", msg="", code=63016), False),
+        (TwilioRestException(status=503, uri="/Messages", msg="", code=20503), False),
+        (
+            _caused_by(requests.ConnectionError("max retries"), ConnectionRefusedError(61, "")),
+            False,
+        ),
+        (requests.ConnectionError("connection reset"), True),
+        (requests.Timeout("read timed out"), True),
+        (ValueError("an SDK bug"), True),
+    ],
+    ids=[
+        "63016",
+        "http-503",
+        "connection-refused",
+        "connection-reset",
+        "read-timeout",
+        "unexpected-error",
+    ],
+)
+def test_a_send_failure_says_whether_twilio_may_have_accepted_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: None,
+    error: Exception,
+    may_have_been_delivered: bool,
+) -> None:
+    monkeypatch.setattr(twilio_service, "Client", _client_raising(error))
+
+    with pytest.raises(TwilioSendFailed) as raised:
+        send_whatsapp_template(to=TO, content_sid=CONTENT_SID, content_variables=CONTENT_VARIABLES)
+
+    assert raised.value.may_have_been_delivered is may_have_been_delivered
+
+
 def test_free_form_send_failure_carries_the_twilio_code(
     monkeypatch: pytest.MonkeyPatch, configured: None
 ) -> None:

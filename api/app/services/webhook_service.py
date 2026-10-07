@@ -51,7 +51,7 @@ from app.models.enums import (
     SystemMessageKind,
 )
 from app.models.message import Message
-from app.schemas.bot import BotTurn
+from app.schemas.bot import BotTurn, ReminderButton
 from app.services import (
     bot_messages,
     bot_service,
@@ -121,13 +121,30 @@ def signature_is_valid(*, url: str, params: Mapping[str, str], signature: str | 
     return valid
 
 
-def handle_inbound(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> InboundTurn:
+def handle_inbound(
+    db: Session,
+    *,
+    twilio_from: str,
+    body: str,
+    twilio_sid: str,
+    button_payload: str | None = None,
+) -> InboundTurn:
     """Record one inbound message and decide what to say back.
 
     The order of what follows is the specification, not an implementation choice
     (`docs/api-design.md:461-478`), and the router's signature check precedes all of it.
+
+    `button_payload` is Twilio's `ButtonPayload`: a quick-reply tap, whose `body` is the
+    button's text. A payload that is not a reminder button is ignored, and the tap is read as
+    the text it carries.
     """
-    return _turn(db, twilio_from=twilio_from, body=body, twilio_sid=twilio_sid)
+    return _turn(
+        db,
+        twilio_from=twilio_from,
+        body=body,
+        twilio_sid=twilio_sid,
+        button=_reminder_button(button_payload),
+    )
 
 
 def handle_status(
@@ -168,7 +185,24 @@ def handle_status(
     )
 
 
-def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> InboundTurn:
+def _reminder_button(payload: str | None) -> ReminderButton | None:
+    try:
+        button = None if payload is None else ReminderButton(payload)
+    except ValueError:
+        logger.info("ignored an unknown ButtonPayload: %s", payload)
+        button = None
+
+    return button
+
+
+def _turn(
+    db: Session,
+    *,
+    twilio_from: str,
+    body: str,
+    twilio_sid: str,
+    button: ReminderButton | None,
+) -> InboundTurn:
     phone_number = twilio_from.removeprefix(WHATSAPP_PREFIX)
     conversation = conversation_service.resolve_or_create(db, phone_number=phone_number)
 
@@ -188,7 +222,9 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
     if conversation.status is ConversationStatus.HUMAN:
         reply = None
         twiml = twilio_service.twiml_empty()
-        notice = _confirm_consent_keyword(db, conversation=conversation, inbound=inbound)
+        notice = _confirm_consent_keyword(
+            db, conversation=conversation, inbound=inbound, button=button
+        )
     else:
         # REQ-130.4 / P7D-I. Re-read the pending request from the row, never from the identity
         # map, and under the row lock held to the commit: two overlapping turns must not both
@@ -213,6 +249,7 @@ def _turn(db: Session, *, twilio_from: str, body: str, twilio_sid: str) -> Inbou
             guardian_id=conversation.guardian_id,
             reactivation_pending=conversation.reactivation_child_id is not None,
             language=None if conversation.language is None else conversation.language.value,
+            button=button,
         )
         _apply(db, conversation=conversation, decided=decided, inbound=inbound)
         reply = message_service.record_bot_reply(db, conversation=conversation, body=decided.reply)
@@ -251,16 +288,17 @@ def send_notice(db: Session, *, notice: Message) -> Message:
 
 
 def _confirm_consent_keyword(
-    db: Session, *, conversation: Conversation, inbound: Message
+    db: Session, *, conversation: Conversation, inbound: Message, button: ReminderButton | None
 ) -> Message | None:
-    """Under Takeover, record a STOP/BAJA/PARAR or START/ALTA keyword and queue its confirmation.
+    """Under Takeover, record a STOP/BAJA/PARAR or START/ALTA keyword, or a "Stop reminders"
+    tap, and queue its confirmation.
 
-    Only the exact keywords: the parser is not called while Staff hold the thread, so a
-    free-text phrase is theirs to handle. A thread with no Guardian has nothing to record
+    Only the exact keywords and the button: the parser is not called while Staff hold the
+    thread, so a free-text phrase (and a "Book a session" tap) is theirs to handle. A thread with no Guardian has nothing to record
     against, and is left to Staff the same way. A Spanish-only keyword (BAJA, PARAR, ALTA)
     switches the thread to Spanish, as it would with the bot, and is confirmed in Spanish.
     """
-    if bot_messages.is_stop_keyword(inbound.body):
+    if button is ReminderButton.STOP_REMINDERS or bot_messages.is_stop_keyword(inbound.body):
         action: ConsentAction | None = ConsentAction.OPT_OUT
     elif bot_messages.is_start_keyword(inbound.body):
         action = ConsentAction.OPT_IN

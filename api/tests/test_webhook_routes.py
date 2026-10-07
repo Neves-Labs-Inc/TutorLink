@@ -65,7 +65,7 @@ from app.routers.webhook import (
     get_twilio_form,
     signed_request_url,
 )
-from app.schemas.bot import BotTurn, GuardianLanguage
+from app.schemas.bot import BotTurn, GuardianLanguage, ReminderButton
 from app.security import hash_password
 from app.services import bot_service, conversation_service, message_service
 from app.services.bot_messages import render
@@ -108,6 +108,7 @@ def test_a_bot_conversation_gets_the_reply_back_as_twiml(
             "guardian_id": None,
             "reactivation_pending": False,
             "language": None,
+            "button": None,
         }
     ]
 
@@ -750,6 +751,7 @@ class BotDouble:
         guardian_id: uuid.UUID | None,
         reactivation_pending: bool = False,
         language: GuardianLanguage | None = None,
+        button: ReminderButton | None = None,
     ) -> BotTurn:
         self.calls.append(
             {
@@ -758,6 +760,7 @@ class BotDouble:
                 "guardian_id": guardian_id,
                 "reactivation_pending": reactivation_pending,
                 "language": language,
+                "button": button,
             }
         )
 
@@ -918,6 +921,23 @@ def _post(
         sent["X-Twilio-Signature"] = signature
 
     return client.post(path, data=form, headers=sent)
+
+
+@pytest.mark.parametrize(
+    ("payload", "button"),
+    [
+        ("book_session", ReminderButton.BOOK_SESSION),
+        ("stop_reminders", ReminderButton.STOP_REMINDERS),
+        ("some_other_button", None),
+    ],
+)
+def test_a_reminder_button_payload_reaches_the_bot_and_any_other_is_dropped(
+    webhook_client: TestClient, bot: "BotDouble", payload: str, button: ReminderButton | None
+) -> None:
+    response = _post_inbound(webhook_client, form={**_form(), "ButtonPayload": payload})
+
+    assert response.status_code == 200
+    assert bot.calls[0]["button"] is button
 
 
 def _post_inbound(client: TestClient, *, form: dict[str, str] | None = None) -> Response:

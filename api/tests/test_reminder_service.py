@@ -838,6 +838,29 @@ def test_a_run_that_dies_mid_send_leaves_an_interrupted_reminder_the_next_run_se
     assert len(sends_to(fake_twilio, guardian)) == 1
 
 
+def test_a_send_that_timed_out_is_recorded_as_delivery_unknown_and_not_retried(
+    world: World, db: Session, fake_twilio: FakeTwilio, approved: None
+) -> None:
+    guardian = world.guardian()
+    world.child(guardian)
+    conversation = world.conversation(guardian)
+    fake_twilio.fail_next_with_timeout()
+
+    run_week(db, now=NOW)
+
+    reminder = reminder_for(db, guardian)
+    assert reminder is not None
+    assert (reminder.status, reminder.error_code, reminder.twilio_sid) == (
+        ReminderStatus.FAILED,
+        "delivery_unknown",
+        None,
+    )
+    copy = _reminder_copy(db, conversation)
+    assert (copy.status, copy.error_code) == (MessageStatus.FAILED, "delivery_unknown")
+    # The fake was armed for one failure only, so a retry would have gone through.
+    assert sends_to(fake_twilio, guardian) == []
+
+
 def test_an_unconfigured_twilio_is_told_apart_from_an_interrupted_send(
     world: World, db: Session, approved: None
 ) -> None:

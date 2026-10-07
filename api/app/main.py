@@ -30,6 +30,7 @@ from app.routers import (
     homes,
     households,
     me,
+    reminders,
     settings,
     slots,
     stats,
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
     app.include_router(stats.router)
+    app.include_router(reminders.router)
     app.include_router(webhook.router)
     app.include_router(conversations.router)
     app.include_router(conversation_stream.router)

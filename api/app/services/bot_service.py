@@ -70,6 +70,7 @@ read — and a parser outage there greets in the stored language without a flag,
 greeting needs nothing from the parse.
 """
 
+import dataclasses
 import datetime
 import enum
 import logging
@@ -95,6 +96,7 @@ from app.schemas.bot import (
     ConsentInstruction,
     GuardianLanguage,
     ParsedIntent,
+    ReminderButton,
     RemindersRequest,
 )
 from app.services import (
@@ -106,6 +108,7 @@ from app.services import (
     clock,
     parser_service,
     reminder_consent_service,
+    reminder_service,
     scheduling_service,
     slot_service,
 )
@@ -445,6 +448,7 @@ def reply_for(
     guardian_id: uuid.UUID | None,
     reactivation_pending: bool = False,
     language: GuardianLanguage | None = None,
+    button: ReminderButton | None = None,
 ) -> BotTurn:
     """One inbound message in, one turn's decision out.
 
@@ -468,11 +472,25 @@ def reply_for(
 
     **`language`** is the stored Guardian language, `None` when not detected yet. The returned
     `BotTurn.language` is set only when this turn adopted a different one (module docstring).
+
+    **`button`** is a weekly-reminder quick-reply tap. Neither needs the parser. "Stop
+    reminders" is the STOP keyword, and "Book a session" starts a booking for the Children the
+    reminder is about (`_book_from_reminder`). Both need a known Guardian; without one the tap
+    is read as the text it carries.
     """
     state = load_state(db, phone_number=phone_number)
     guardian = _recognise(db, phone_number=phone_number, guardian_id=guardian_id)
 
-    if _resumable(state, guardian):
+    if button is ReminderButton.BOOK_SESSION and guardian is not None:
+        decided = _book_from_reminder(
+            db,
+            phone_number=phone_number,
+            body=body,
+            guardian=guardian,
+            reactivation_pending=reactivation_pending,
+            stored_language=language,
+        )
+    elif _resumable(state, guardian):
         decided = _take_turn(
             db,
             phone_number=phone_number,
@@ -481,10 +499,16 @@ def reply_for(
             state=state,
             reactivation_pending=reactivation_pending,
             stored_language=language,
+            button=button,
         )
     else:
         decided = _open(
-            db, phone_number=phone_number, body=body, guardian=guardian, stored_language=language
+            db,
+            phone_number=phone_number,
+            body=body,
+            guardian=guardian,
+            stored_language=language,
+            button=button,
         )
 
     if guardian_id is None and guardian is not None and decided.link_guardian_id is None:
@@ -502,10 +526,11 @@ def _take_turn(
     state: FlowState,
     reactivation_pending: bool,
     stored_language: GuardianLanguage | None,
+    button: ReminderButton | None,
 ) -> BotTurn:
     # The turn's one clock read; every handler uses `turn.now`.
     now = clock.business_now()
-    keyword = _keyword_request(body, guardian=guardian, step=state.step)
+    keyword = _keyword_request(body, guardian=guardian, step=state.step, button=button)
     # A keyword needs no parse, which is what keeps STOP working through a parser outage.
     parsed = (
         None
@@ -584,9 +609,10 @@ def _parse(
 
 
 def _keyword_request(
-    body: str, *, guardian: Guardian | None, step: str | None
+    body: str, *, guardian: Guardian | None, step: str | None, button: ReminderButton | None
 ) -> RemindersRequest | None:
-    """A STOP/BAJA/PARAR or START/ALTA keyword this turn acts on without the parser.
+    """A STOP/BAJA/PARAR or START/ALTA keyword this turn acts on without the parser. A "Stop
+    reminders" tap is a STOP.
 
     None before a Guardian exists: there is nothing to record against, and the message is the
     answer to the Intake question it replies to. At the reminder question only STOP counts
@@ -594,7 +620,7 @@ def _keyword_request(
     """
     if guardian is None:
         request = None
-    elif bot_messages.is_stop_keyword(body):
+    elif button is ReminderButton.STOP_REMINDERS or bot_messages.is_stop_keyword(body):
         request = "stop"
     elif bot_messages.is_start_keyword(body) and step != STEP_REMINDERS_OPT_IN:
         request = "start"
@@ -716,6 +742,7 @@ def _open(
     body: str,
     guardian: Guardian | None,
     stored_language: GuardianLanguage | None,
+    button: ReminderButton | None,
 ) -> BotTurn:
     """Greet, and ask the first question. This turn's message is not consumed.
 
@@ -724,7 +751,7 @@ def _open(
     The message is parsed for its language only, so "Hola" is greeted in Spanish. An outage
     here is not flagged: the greeting needs nothing from the parse.
     """
-    keyword = _keyword_request(body, guardian=guardian, step=None)
+    keyword = _keyword_request(body, guardian=guardian, step=None, button=button)
     parsed = (
         None
         if keyword is not None
@@ -1293,6 +1320,60 @@ def _begin_booking(turn: _Turn, *, always_ask: bool = False) -> _Next:
         )
 
     return result
+
+
+def _book_from_reminder(
+    db: Session,
+    *,
+    phone_number: str,
+    body: str,
+    guardian: Guardian,
+    reactivation_pending: bool,
+    stored_language: GuardianLanguage | None,
+) -> BotTurn:
+    """A "Book a session" tap: book for the Children a reminder sent now would name.
+
+    The week is the first Monday strictly after today, and the Children are the reminder's
+    own rule (`reminder_service.eligible_children`), recomputed at the tap: one booked since
+    the reminder went out is no longer offered. Any flow in progress is dropped, as a new
+    booking from the menu drops it. The reply stays in the stored language: a tap carries no
+    words to detect one from.
+    """
+    now = clock.business_now()
+    turn = _Turn(
+        db=db,
+        phone_number=phone_number,
+        body=body,
+        guardian=guardian,
+        now=now,
+        state=FlowState(step=STEP_MENU, collected_data={}, misses=0, prompt=""),
+        reactivation_pending=reactivation_pending,
+        language=_effective_language(None, stored=stored_language),
+    )
+    children = reminder_service.eligible_children(
+        db, guardian_id=guardian.id, week_start=reminder_service.week_start_after(now.date())
+    )
+
+    if not children:
+        result = _Next(
+            reply=f"{_say(turn, 'REMINDER_ALL_BOOKED')} {_say(turn, 'ASK_MENU')}", step=STEP_MENU
+        )
+    elif len(children) == 1:
+        subject = _ask_subject(turn, child=children[0])
+        lead = _say(turn, "REMINDER_BOOK_ONE", name=children[0].name)
+        # A flow that cannot go on (no active Subject) ends on its own reply, without the lead.
+        is_booking = subject.step is not None
+        result = (
+            dataclasses.replace(subject, reply=f"{lead} {subject.reply}") if is_booking else subject
+        )
+    else:
+        options = [{"id": str(child.id), "label": child.name} for child in children]
+        result = _Next(
+            reply=f"{_say(turn, 'ASK_WHICH_CHILD')}\n{_offer(turn.state, options)}",
+            step=STEP_BOOK_CHILD,
+        )
+
+    return _apply(turn, result)
 
 
 def _begin_change(turn: _Turn, *, moving: bool) -> _Next:

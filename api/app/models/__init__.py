@@ -2,6 +2,7 @@ from app.db import Base
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.booking_reminder import BookingReminder
+from app.models.booking_reminder_run import BookingReminderRun
 from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
@@ -96,6 +97,7 @@ __all__ = [
     "User",
     "UserRole",
     "BookingReminder",
+    "BookingReminderRun",
     "ChildSubjectLevel",
     "ConsentAction",
     "ConsentSource",

@@ -22,7 +22,8 @@ which `twilio_service`'s send timeout bounds.
 
 **One retry, only when it cannot duplicate.** `twilio_service` marks a send retryable only for
 an HTTP 5xx or a connection that was never made. A read timeout or a reset is not retried: Twilio
-may already have accepted that message.
+may already have accepted that message, so it is recorded `failed` with code `delivery_unknown`,
+which Staff see as "delivery unknown" beside `interrupted`'s "may have been delivered".
 
 Nothing here knows about the scheduler; `reminder_scheduler` decides when `run_week` runs.
 """
@@ -34,10 +35,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, and_, exists, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.booking_reminder import BookingReminder
+from app.models.booking_reminder_run import BookingReminderRun
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
@@ -78,6 +81,10 @@ TEMPLATE_NAME_PREFIX = "booking_reminder_"
 CODE_UNDELIVERABLE = "63049"
 # The error code of a reminder whose send's outcome was never written; see the module docstring.
 INTERRUPTED_CODE = "interrupted"
+# The error code of a send that timed out or was reset: Twilio may have accepted it.
+DELIVERY_UNKNOWN_CODE = "delivery_unknown"
+# The two codes that mean "may have been delivered", as opposed to "not sent".
+MAYBE_DELIVERED_CODES = frozenset({INTERRUPTED_CODE, DELIVERY_UNKNOWN_CODE})
 WHATSAPP_PREFIX = "whatsapp:"
 # Far longer than a send can take (two attempts, each capped by `twilio_service`'s timeout).
 IN_FLIGHT_WINDOW = datetime.timedelta(minutes=10)
@@ -85,6 +92,8 @@ IN_FLIGHT_WINDOW = datetime.timedelta(minutes=10)
 # either is the Guardian opting out, so the reminders stop.
 OPT_OUT_CODES = frozenset({"63050", "63033"})
 DAYS_PER_WEEK = 7
+# The Children a `send_sample` names: the same two in both languages, so the copy compares.
+SAMPLE_CHILD_NAMES = ("Ana", "Luis")
 LIVE_BOOKING_STATUSES = (BookingStatus.PENDING, BookingStatus.CONFIRMED)
 
 _TEMPLATE_SID_SETTINGS = {
@@ -111,6 +120,14 @@ _LATEST_CONSENTS = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class TemplateNotApproved(Exception):
+    """The reminder template for a language has no ContentSid: `setting_key` is blank."""
+
+    def __init__(self, setting_key: str) -> None:
+        super().__init__(f"{setting_key} is blank: the template is not approved yet")
+        self.setting_key = setting_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,11 +212,28 @@ def due_guardians(db: Session, *, now: datetime.datetime) -> list[ReminderCandid
     ]
 
 
+def eligible_children(
+    db: Session, *, guardian_id: uuid.UUID, week_start: datetime.date
+) -> list[Child]:
+    """The Guardian's Children a reminder for `week_start` names, by name: active, Evaluated,
+    and nothing pending or confirmed that Monday to Sunday. `due_guardians`' rule."""
+    return list(
+        db.scalars(
+            select(Child)
+            .join(ChildGuardian, ChildGuardian.child_id == Child.id)
+            .where(ChildGuardian.guardian_id == guardian_id, _child_is_eligible(week_start))
+            .order_by(Child.name, Child.id)
+        ).all()
+    )
+
+
 def run_week(db: Session, *, now: datetime.datetime) -> RunResult:
     """Write a row for, and remind or skip, every due Guardian with no row for the week yet.
 
     Commits once per Guardian (see the module docstring), so a failure part-way keeps every
     reminder already sent, and the next run carries on from the first Guardian without a row.
+    A run that finishes marks the week as run (`booking_reminder_runs`), even if it reminded
+    nobody.
     Run it only under the scheduler's lock: it settles chat copies an earlier run left queued.
     """
     week_start = week_start_after(now.date())
@@ -225,6 +259,7 @@ def run_week(db: Session, *, now: datetime.datetime) -> RunResult:
                 content_sid=template_sids[candidate.language],
             )
         counts[status] += 1
+    _record_run(db, week_start=week_start)
 
     return RunResult(
         week_start=week_start,
@@ -232,6 +267,30 @@ def run_week(db: Session, *, now: datetime.datetime) -> RunResult:
         failed=counts[ReminderStatus.FAILED],
         undeliverable=counts[ReminderStatus.UNDELIVERABLE],
         skipped=counts[ReminderStatus.SKIPPED],
+    )
+
+
+def send_sample(db: Session, *, to: str, language: Language, now: datetime.datetime) -> str:
+    """Send the real reminder template for `language` to `to`, naming two sample Children and
+    the week after business-local `now`; return Twilio's SID.
+
+    For a developer checking a template on their own phone: it writes no row and no chat copy,
+    checks no eligibility or consent, and never retries. Raises `TemplateNotApproved` for a
+    blank ContentSid, and `twilio_service`'s errors for a send that fails.
+    """
+    content_sid = _template_sids(db)[language]
+    if not content_sid:
+        raise TemplateNotApproved(_TEMPLATE_SID_SETTINGS[language])
+
+    code = language.value
+
+    return send_whatsapp_template(
+        to=to,
+        content_sid=content_sid,
+        content_variables={
+            "1": bot_messages.format_names(list(SAMPLE_CHILD_NAMES), code),
+            "2": bot_messages.format_week(week_start_after(now.date()), code),
+        },
     )
 
 
@@ -379,8 +438,7 @@ def _remind(
             content_variables={"1": names, "2": week},
         )
     except TwilioServiceError as exc:
-        # A missing configuration carries no Twilio code; a refusal does, and Staff need it.
-        error_code = exc.code if isinstance(exc, TwilioSendFailed) else None
+        error_code = _send_error_code(exc)
         logger.warning(
             "booking reminder for guardian %s (week %s) was not sent: %s (code %s)",
             candidate.guardian_id,
@@ -403,6 +461,19 @@ def _remind(
     return reminder.status
 
 
+def _send_error_code(error: TwilioServiceError) -> str | None:
+    """Twilio's code for a refusal, `delivery_unknown` for a send that may have been accepted,
+    and none for a missing configuration."""
+    if not isinstance(error, TwilioSendFailed):
+        code = None
+    elif error.may_have_been_delivered:
+        code = DELIVERY_UNKNOWN_CODE
+    else:
+        code = error.code
+
+    return code
+
+
 def _send_with_one_retry(*, to: str, content_sid: str, content_variables: dict[str, str]) -> str:
     try:
         twilio_sid = send_whatsapp_template(
@@ -417,6 +488,16 @@ def _send_with_one_retry(*, to: str, content_sid: str, content_variables: dict[s
         )
 
     return twilio_sid
+
+
+def _record_run(db: Session, *, week_start: datetime.date) -> None:
+    """Mark the week as run; the first finished run's time is the one kept."""
+    db.execute(
+        insert(BookingReminderRun)
+        .values(week_start=week_start)
+        .on_conflict_do_nothing(index_elements=[BookingReminderRun.week_start])
+    )
+    db.commit()
 
 
 def _record_skip(

@@ -4,11 +4,15 @@ Same transaction contract as `user_service`: nothing here commits, the caller ow
 boundary. `InvalidPhoneNumber` from `phone_service` travels through this module unchanged; the
 router decides it is a 400.
 
-**A `phone_number` edit moves `guardians.phone_number` and nothing else.** Phase 7 adds
-`conversations`, keyed on the number a thread was actually held with (`docs/erd.md`
-§conversations). When it lands, `update_client` must still not re-point an existing thread: a
-guardian who changes handset opens a *second* thread carrying the same client, and rewriting
-the old thread's key would silently reattribute the messages already in it.
+**A `phone_number` change takes the Guardian's thread with it** (#126, reversing D-L / #55,
+`docs/erd.md` §conversations). The thread at the old number that is this Guardian's is re-keyed
+to the new one, a Staff-only `number_change_note` line naming the Staff member records the move,
+and the bot's flow at both numbers is reset. Left behind, the thread would hand this Guardian to
+the old number's next holder. A thread already at the new number is merged into the
+Guardian's, or becomes theirs when they have none; one linked to another Guardian refuses the
+change (`WhatsAppChatTaken`). Echoing the same number moves nothing. Both threads are locked
+before the Guardian row is written, keeping the lock order conversation first. Reminder consent
+rows keep their number: it records where their evidence came from (#119).
 
 **Duplicate phone numbers are refused twice**, per `03-RESEARCH.md`'s normative idiom. The
 pre-check `_phone_number_taken` produces the contract's readable message; `UNIQUE
@@ -20,6 +24,7 @@ than the inline query `user_service.py:93` writes, deliberately: without it the 
 is unreachable by any test this harness can run.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -31,8 +36,16 @@ from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.models.user import User
+from app.services import conversation_service, message_service
+from app.services.bot_state import clear_state
 from app.services.conversation_service import LATEST_CONVERSATION_FIRST
 from app.services.phone_service import normalize_phone_number
+
+logger = logging.getLogger(__name__)
+
+# The Staff-only line a number change leaves in the Guardian's thread; numbers as stored.
+NUMBER_CHANGE_NOTE = "Number changed from {previous} to {current} by {staff}"
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -77,8 +90,19 @@ class ClientNotFound(ClientServiceError):
     """No guardian with that id."""
 
 
+class ActingUserNotFound(ClientServiceError):
+    """The Staff member changing a number no longer exists, so nobody can sign the note."""
+
+
 class PhoneNumberTaken(ClientServiceError):
     """Another client already holds that phone number, active or deactivated."""
+
+
+class WhatsAppChatTaken(ClientServiceError):
+    """The WhatsApp thread at the new number is linked to another Guardian.
+
+    Apart from `PhoneNumberTaken` so the bot's Intake, which handles that one, never meets it.
+    """
 
 
 def list_clients(
@@ -131,12 +155,18 @@ def get_client(db: Session, *, client_id: uuid.UUID) -> ClientDetail:
 def create_client(
     db: Session, *, name: str, phone_number: str, home: HomeInput | None
 ) -> ClientDetail:
-    """Never an upsert: a number any client already holds, active or deactivated, is refused."""
+    """Never an upsert: a number any client already holds, active or deactivated, is refused.
+
+    An unlinked WhatsApp thread already at the number becomes the new Guardian's. One linked to
+    another Guardian (data from before threads followed their Guardian) is left alone.
+    """
     canonical = normalize_phone_number(db, raw=phone_number)
 
     if _phone_number_taken(db, phone_number=canonical, exclude_id=None):
         raise PhoneNumberTaken
 
+    # Locked before the Guardian is inserted: conversation first, as every turn does.
+    thread = conversation_service.lock_thread_at(db, phone_number=canonical)
     client = Guardian(name=name, phone_number=canonical, is_active=True)
 
     # The savepoint wraps the insert and nothing else. Unwinding it on `IntegrityError` is what
@@ -157,8 +187,15 @@ def create_client(
     if home is not None:
         homes = [_attach_home(db, client=client, home=home)]
 
-    # Nothing can link a conversation to a client that did not exist until now.
-    return ClientDetail(client=client, homes=homes, children=[], language_conversation=None)
+    language_conversation = None
+    if thread is not None and thread.guardian_id is None:
+        language_conversation = conversation_service.link_guardian(
+            db, conversation=thread, guardian_id=client.id
+        )
+
+    return ClientDetail(
+        client=client, homes=homes, children=[], language_conversation=language_conversation
+    )
 
 
 def update_client(
@@ -168,6 +205,7 @@ def update_client(
     name: str | None,
     phone_number: str | None,
     is_active: bool | None,
+    acting_user_id: uuid.UUID,
 ) -> ClientDetail:
     """The only deactivation and reactivation path there is; `is_active` moves either way.
 
@@ -179,15 +217,44 @@ def update_client(
     `create_client` gives: a number claimed between the pre-check and the write is the
     constraint's 409, not a 500, and unwinding to the savepoint leaves the `Session` usable for
     the rest of the request.
+
+    A number that actually changes takes the Guardian's thread with it (see the module
+    docstring); `acting_user_id` is the Staff member the thread's number-change line names.
     """
     client = _guardian(db, client_id=client_id)
+    previous_number = client.phone_number
     canonical: str | None = None
+    change: conversation_service.NumberChange | None = None
+    staff: User | None = None
 
     if phone_number is not None:
         canonical = normalize_phone_number(db, raw=phone_number)
 
         if _phone_number_taken(db, phone_number=canonical, exclude_id=client.id):
             raise PhoneNumberTaken
+
+    is_number_changed = canonical is not None and canonical != previous_number
+
+    if is_number_changed:
+        # Read before anything is written: a token can outlive its user row, and the note
+        # needs an author.
+        staff = db.get(User, acting_user_id)
+
+        if staff is None:
+            raise ActingUserNotFound
+
+        # Locked before the Guardian's row is written: conversation first, as every turn does.
+        change = conversation_service.lock_number_change(
+            db, guardian_id=client.id, previous_number=previous_number, phone_number=canonical
+        )
+
+        if change.is_new_number_thread_anothers:
+            logger.warning(
+                "refused guardian %s's number change: the thread at the new number is another"
+                " guardian's",
+                client.id,
+            )
+            raise WhatsAppChatTaken
 
     # The edits are applied *inside* the savepoint because `begin_nested` flushes whatever is
     # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`):
@@ -210,6 +277,11 @@ def update_client(
             db.flush()
     except IntegrityError as exc:
         raise PhoneNumberTaken from exc
+
+    if canonical is not None and change is not None and staff is not None:
+        _follow_number_change(
+            db, change=change, previous_number=previous_number, phone_number=canonical, staff=staff
+        )
 
     return _detail(db, client)
 
@@ -280,6 +352,32 @@ def _phone_number_taken(db: Session, *, phone_number: str, exclude_id: uuid.UUID
         statement = statement.where(Guardian.id != exclude_id)
 
     return db.scalars(statement).first() is not None
+
+
+def _follow_number_change(
+    db: Session,
+    *,
+    change: conversation_service.NumberChange,
+    previous_number: str,
+    phone_number: str,
+    staff: User,
+) -> None:
+    """Move the Guardian's thread to their new number, note it there, and reset the bot."""
+    thread = conversation_service.follow_number_change(db, change=change)
+
+    if thread is not None:
+        message_service.record_number_change_note(
+            db,
+            conversation=thread,
+            body=NUMBER_CHANGE_NOTE.format(
+                previous=previous_number, current=phone_number, staff=staff.display_name
+            ),
+            author_user_id=staff.id,
+        )
+
+    # A half-finished flow at either number belongs to whoever was there before.
+    for number in (previous_number, phone_number):
+        clear_state(db, phone_number=number)
 
 
 def _guardian(db: Session, *, client_id: uuid.UUID) -> Guardian:

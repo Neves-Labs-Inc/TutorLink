@@ -566,9 +566,13 @@ def _skip_reason(
 
 
 def _conversation_for(db: Session, *, candidate: ReminderCandidate) -> Conversation:
-    """The thread at the Guardian's number, opened if there is none, and linked to them."""
+    """The thread at the Guardian's number, opened if there is none, and linked to them.
+
+    Linked even when it names someone else: that Guardian has left this number, since the
+    candidate holds it.
+    """
     conversation = conversation_service.resolve_or_create(db, phone_number=candidate.phone_number)
-    if conversation.guardian_id is None:
+    if conversation_service.owner_id(db, conversation=conversation) != candidate.guardian_id:
         conversation_service.link_guardian(
             db, conversation=conversation, guardian_id=candidate.guardian_id
         )

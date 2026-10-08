@@ -37,8 +37,8 @@ variable "domain" {
 variable "github_repo" {
   description = <<-EOT
     Repository part of the OIDC subject the deploy role trusts. The repo uses GitHub's immutable
-    subject format, <owner>@<owner-id>/<repo>@<repo-id>, which also survives a rename or a
-    recreated repo of the same name. Read it with
+    subject format, <owner>@<owner-id>/<repo>@<repo-id>. The names are part of it, so renaming the
+    owner or repo changes the subject (the org rename from Siraneves did). Read it with
     `gh api repos/Neves-Labs-Inc/TutorLink/actions/oidc/customization/sub` (sub_claim_prefix, minus "repo:").
   EOT
   type        = string

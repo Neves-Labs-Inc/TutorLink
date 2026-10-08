@@ -82,8 +82,8 @@ def test_a_conversation_without_a_guardian_is_accepted(db: Session) -> None:
 
 
 def test_two_conversations_may_share_a_guardian(db: Session) -> None:
-    """`ix_conversations_guardian_id` is deliberately not unique: a guardian who changes
-    handsets gets a second thread, and the older one stays readable as history."""
+    """`ix_conversations_guardian_id` is deliberately not unique: threads from before a thread
+    followed its guardian's number (#126) can share a guardian."""
     guardian = _make_guardian(db)
     db.add(_conversation(_phone_number(), guardian_id=guardian.id))
     db.add(_conversation(_phone_number(), guardian_id=guardian.id))

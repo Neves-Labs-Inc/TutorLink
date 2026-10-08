@@ -291,12 +291,17 @@ exist until intake succeeded would lose exactly the conversations an admin most 
 that stalled part-way through it. `guardian_id` is backfilled when the guardian row is created and stays
 NULL otherwise, which is why the conversation list has to be able to render a bare phone number.
 
-`conversations.phone_number` is never rewritten. When an admin corrects or changes a guardian's number on
-the client screen, `guardians.phone_number` moves and the conversation stays where it is: a thread records
-what was said to one WhatsApp identity, and re-pointing it would make the archive claim messages went to a
-number Twilio never sent them to. The next inbound message from the new number opens a second conversation
-carrying the same `guardian_id`, which is why `INDEX (guardian_id)` is not unique. A guardian who has
-changed handsets has more than one thread, the older one still readable as history.
+A thread follows the guardian who owns it (#126, reversing D-L / #55's "never rewritten"). When an admin
+changes a guardian's number from N to M on the client screen, the guardian's thread at N is re-keyed to M
+with all its state, and a Staff-only `number_change_note` message ("Number changed from N to M by <Staff>")
+records where the earlier messages went; it is never sent. N is left with no thread, so whoever writes from
+N next opens a fresh one and is recognised by the number alone — a thread left behind at N would hand its
+`guardian_id` to the number's next holder. WhatsApp's 24-hour window counts only client messages after the
+latest `number_change_note`. A thread already at M (unlinked, or linked to this guardian) gives its messages
+to the guardian's thread and is deleted; the guardian's thread keeps all its own state. With no thread at N,
+the one at M becomes the guardian's. A thread at M linked to another guardian (only data from before this
+rule) refuses the change with 409. Creating a guardian links an unlinked thread already at their number.
+`INDEX (guardian_id)` is still not unique: threads from before this rule can share a guardian.
 
 `last_read_at` is a single watermark shared by every admin rather than one per admin. This is a shared
 inbox for a small team, and a takeover is already a shared act — one admin claims a conversation and any

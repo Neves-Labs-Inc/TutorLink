@@ -399,7 +399,8 @@ export const systemLineLabel = (
   message: Pick<Message, 'system_kind' | 'status' | 'error_code' | 'reminder_child_names' | 'author' | 'body'>,
   isWindowOpen: boolean,
 ): SystemLineLabel => {
-  const isFailed = message.status === 'failed'
+  // A number-change note is Staff-only and never sent, so it can't fail or retry.
+  const isFailed = message.status === 'failed' && message.system_kind !== 'number_change_note'
   const reason = failureReason(message.error_code)
   const progress = PROGRESS_WORDS[message.status] ?? 'sent'
   const names = joinNames(message.reminder_child_names ?? [])

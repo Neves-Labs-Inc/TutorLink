@@ -19,6 +19,7 @@ export type SystemMessageKind =
   | 'handback_notice'
   | 'booking_reminder'
   | 'consent_notice'
+  | 'number_change_note'
 
 export type ConversationGuardianRef = { id: string; name: string }
 // The API's `UserRef`: a Staff member is named by Display name, never by email.

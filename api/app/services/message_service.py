@@ -198,6 +198,27 @@ def record_system_notice(
     )
 
 
+def record_number_change_note(
+    db: Session, *, conversation: Conversation, body: str, author_user_id: uuid.UUID
+) -> Message:
+    """Record the Staff-only line that a Guardian's number changed, by `author_user_id`.
+
+    `sent` with no SID because it is never sent: the Guardian is not told, nothing queues it
+    and nothing retries it. It marks where the thread's earlier messages went, and the 24-hour
+    window counts only what the Guardian wrote after it.
+    """
+    return _insert(
+        db,
+        conversation=conversation,
+        author_kind=MessageAuthor.SYSTEM,
+        body=body,
+        status=MessageStatus.SENT,
+        twilio_sid=None,
+        author_user_id=author_user_id,
+        system_kind=SystemMessageKind.NUMBER_CHANGE_NOTE,
+    )
+
+
 def requeue(db: Session, *, message: Message, body: str) -> Message:
     """Put a failed notice back to `queued` for a retry, with the copy the retry will send.
 

@@ -181,6 +181,8 @@ class SystemMessageKind(str, enum.Enum):
     HANDBACK_NOTICE = "handback_notice"
     BOOKING_REMINDER = "booking_reminder"
     CONSENT_NOTICE = "consent_notice"
+    # Staff-only: records a Guardian's number change in their thread. Never sent to WhatsApp.
+    NUMBER_CHANGE_NOTE = "number_change_note"
 
 
 def _values(enum_class: type[enum.Enum]) -> list[str]:

@@ -27,9 +27,9 @@ number into a UNIQUE column, which is the duplicate-row hole this whole module e
 close, reopened on exactly the inputs that need it most.
 
 Phase 7's `conversations.phone_number` is keyed on this same canonical form (`docs/erd.md`
-§conversations). A thread stays on the number it was actually held with, so when a guardian
-changes handset the new number opens a second thread and the old thread is **never**
-re-pointed. Nothing here or downstream may rewrite an existing conversation's key.
+§conversations). A thread follows the guardian who owns it: when Staff change a guardian's
+number, `client_service` re-keys their thread to the new number (#126), so the old number's
+next holder starts a thread of their own.
 
 This module knows nothing about FastAPI; it raises the domain exceptions below and the caller
 decides what they mean. Nothing here writes or commits.

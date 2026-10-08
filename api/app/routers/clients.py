@@ -30,6 +30,7 @@ from app.schemas.client import (
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.client_service import (
+    ActingUserNotFound,
     ClientDetail,
     ClientNotFound,
     ClientWithCounts,
@@ -45,6 +46,7 @@ from app.services.phone_service import InvalidPhoneNumber
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
+ACTING_USER_NOT_FOUND_ERROR = "Your account no longer exists; sign in again"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -121,9 +123,12 @@ def update(
             name=payload.name,
             phone_number=payload.phone_number,
             is_active=payload.is_active,
+            acting_user_id=user.id,
         )
     except ClientNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CLIENT_NOT_FOUND_ERROR) from exc
+    except ActingUserNotFound as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, ACTING_USER_NOT_FOUND_ERROR) from exc
     except PhoneNumberTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, PHONE_NUMBER_TAKEN_ERROR) from exc
     except InvalidPhoneNumber as exc:

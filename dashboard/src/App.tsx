@@ -14,6 +14,7 @@ import { GuardianDetail } from '@/pages/admin/GuardianDetail'
 import { ChatsLayout } from '@/components/chat/ChatsLayout'
 import { ChatThread } from '@/pages/admin/ChatThread'
 import { Bookings } from '@/pages/admin/Bookings'
+import { BookingsRoute } from '@/components/bookings/prototype/BookingsPrototype'
 import { Reminders } from '@/pages/admin/Reminders'
 import { Users } from '@/pages/admin/Users'
 import { Settings } from '@/pages/admin/Settings'
@@ -112,11 +113,15 @@ export const App = () => (
         <Route
           path="/bookings"
           element={
-            <RouteGuard allow={STAFF_ROLES}>
-              <AppShell>
-                <Bookings />
-              </AppShell>
-            </RouteGuard>
+            <BookingsRoute
+              guarded={
+                <RouteGuard allow={STAFF_ROLES}>
+                  <AppShell>
+                    <Bookings />
+                  </AppShell>
+                </RouteGuard>
+              }
+            />
           }
         />
         <Route

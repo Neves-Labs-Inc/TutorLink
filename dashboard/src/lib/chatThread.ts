@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { QueryClient, QueryKey } from '@tanstack/react-query'
 
 import { api } from '@/lib/api'
 import type {
@@ -9,6 +10,7 @@ import type {
   MessageAuthorKind,
   MessageStatus,
 } from '@/lib/queries/conversations'
+import type { Page } from '@/lib/queries/page'
 
 export type ThreadAlignment = 'start' | 'end'
 
@@ -98,6 +100,28 @@ export const applyMessageUpdate = (thread: Message[], updated: Message): Message
   return thread.map((message) => (message.id === updated.id ? updated : message))
 }
 
+// A messages fetch already in flight may have read the row before this change committed and would
+// overwrite it on landing, so it is cancelled first and fetched again once the change is in place.
+export const applyMessageToPages = async (
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  updated: Message,
+): Promise<void> => {
+  const wasFetching = queryClient.isFetching({ queryKey }) > 0
+
+  await queryClient.cancelQueries({ queryKey })
+  queryClient.setQueriesData<Page<Message>>({ queryKey }, (page) => {
+    if (page === undefined) return page
+
+    const items = applyMessageUpdate(page.items, updated)
+
+    return items === page.items ? page : { ...page, items }
+  })
+  if (wasFetching) {
+    queryClient.invalidateQueries({ queryKey })
+  }
+}
+
 // Each fetched page is newest-first (`api-design.md:1531`) and `pages` runs from the newest
 // window (index 0) to the oldest window fetched last. Reversing each page and then the page
 // order turns that into reading order; de-duplicating by id covers a page re-fetched after a
@@ -144,6 +168,27 @@ export const reconcileLiveMessage = (
   }
 
   return next
+}
+
+// Pending messages (optimistic bubbles, echoes, socket-refused sends) sit on top of the pages, but
+// once a page carries the row the server copy wins: it is the one a reconnect refetch corrects.
+export const assembleThread = (paged: Message[], pending: Message[]): Message[] => {
+  const pagedIds = new Set(paged.map((message) => message.id))
+
+  return pending
+    .filter((message) => !pagedIds.has(message.id))
+    .reduce((thread, message) => reconcileLiveMessage(thread, message), paged)
+}
+
+const FAILED_ANNOUNCEMENT = 'A message failed to send.'
+const NO_BREAK_SPACE = '\u00A0'
+
+// Screen readers only speak a live region when its text changes, so every other failure carries a
+// trailing no-break space: each one is announced, with the same spoken words.
+export const failedAnnouncement = (failedCount: number): string => {
+  if (failedCount === 0) return ''
+
+  return failedCount % 2 === 0 ? `${FAILED_ANNOUNCEMENT}${NO_BREAK_SPACE}` : FAILED_ANNOUNCEMENT
 }
 
 // The send the socket refused stays on screen as "Failed to send", so the unsent text can still

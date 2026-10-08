@@ -683,7 +683,7 @@ def test_a_status_callback_that_advances_a_row_publishes_one_message_updated(
 
 
 def test_a_bad_signature_on_the_status_callback_is_403_and_changes_nothing(
-    webhook_client: TestClient, db: Session
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
 ) -> None:
     message = _admin_message(db)
 
@@ -695,6 +695,7 @@ def test_a_bad_signature_on_the_status_callback_is_403_and_changes_nothing(
     assert response.status_code == 403
     assert response.json() == {"detail": INVALID_SIGNATURE_ERROR}
     assert message.status is MessageStatus.QUEUED
+    assert published == []
 
 
 def test_a_bot_reply_never_reaches_the_status_callback(

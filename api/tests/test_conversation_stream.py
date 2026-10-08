@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -609,22 +610,29 @@ def test_a_message_updated_notice_is_rebuilt_into_the_status_frame(
 
 
 def test_a_message_updated_notice_for_a_message_that_is_gone_is_skipped(
-    sockets: TestClient, db: Session
+    sockets: TestClient, db: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Retention can delete the row between the callback's commit and the pump's read; that
-    costs one frame and never the pump."""
+    costs one frame and never the pump, and the skip is logged so it is never silent."""
+    caplog.set_level(logging.INFO, logger=conversation_stream.__name__)
     user = _make_user(db)
     conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    gone_message_id = uuid.uuid4()
 
     with _authenticated(sockets, user) as socket:
         broadcast_service.publish(
-            MessageUpdated(conversation_id=conversation.id, message={"id": str(uuid.uuid4())})
+            MessageUpdated(conversation_id=conversation.id, message={"id": str(gone_message_id)})
         )
         broadcast_service.publish(ConversationUpdated(conversation={"id": str(conversation.id)}))
 
         frame = _receive(socket)
 
     assert frame["type"] == "conversation.updated"
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == conversation_stream.__name__ and record.levelno == logging.INFO
+    ] == [f"skipped a status broadcast for message {gone_message_id}, which no longer exists"]
 
 
 def test_one_socket_disconnecting_leaves_the_other_serving(

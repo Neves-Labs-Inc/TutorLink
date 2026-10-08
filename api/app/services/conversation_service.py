@@ -17,8 +17,9 @@ every other write path in the codebase is deliberate, not an oversight. Matching
 on write by the same library and Twilio delivers E.164.
 
 **A thread follows the Guardian who owns it** (#126, reversing **D-L** / #55's "never
-rewritten"). When Staff change a Guardian's number, `client_service` locks the Guardian's thread
-(`lock_guardian_thread`) and re-keys it (`rekey`), and a Staff-only `number_change_note` line
+rewritten"). When Staff change a Guardian's number, `client_service` locks the threads at both
+numbers (`lock_number_change`) and carries the Guardian's thread over (`follow_number_change`),
+merging in any thread already at the new number, and a Staff-only `number_change_note` line
 records where the earlier messages went. Left behind, the thread's `guardian_id` would make the
 bot treat the old number's next holder as this Guardian. `ix_conversations_guardian_id` is still
 not unique: threads from before this rule can share a Guardian.
@@ -64,7 +65,7 @@ import datetime
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, ScalarSelect, Select, func, or_, select
+from sqlalchemy import ColumnElement, ScalarSelect, Select, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -137,6 +138,28 @@ class OwnershipChange:
 
     detail: ConversationDetail
     is_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class NumberChange:
+    """The threads one Guardian's number change touches, as `lock_number_change` locked them.
+
+    `guardian_thread` is the thread at the old number when it is the Guardian's;
+    `thread_at_new_number` is whatever thread sits at the new number, whoever it names.
+    """
+
+    guardian_id: uuid.UUID
+    phone_number: str
+    guardian_thread: Conversation | None
+    thread_at_new_number: Conversation | None
+
+    @property
+    def is_new_number_thread_anothers(self) -> bool:
+        """The new number's thread names a different Guardian: only data from before threads
+        followed their Guardian (#126) can, and merging it would hand over their history."""
+        thread = self.thread_at_new_number
+
+        return thread is not None and thread.guardian_id not in (None, self.guardian_id)
 
 
 class ConversationServiceError(Exception):
@@ -228,74 +251,119 @@ def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
     return conversation
 
 
-def lock_guardian_thread(
-    db: Session, *, guardian_id: uuid.UUID, phone_number: str
-) -> Conversation | None:
-    """The thread at `phone_number` if it is `guardian_id`'s, locked for the rest of the
-    transaction; `None` when there is none or it belongs to someone else.
+def lock_thread_at(db: Session, *, phone_number: str) -> Conversation | None:
+    """The thread at `phone_number`, locked for the rest of the transaction; `None` if none.
+
+    For a caller about to write a Guardian at that number: taken first, the lock keeps the
+    order conversation first, so a turn at the number running Intake finishes (and wins the
+    number) instead of deadlocking on the Guardian row.
+    """
+    return _conversation_for(db, phone_number=phone_number)
+
+
+def lock_number_change(
+    db: Session, *, guardian_id: uuid.UUID, previous_number: str, phone_number: str
+) -> NumberChange:
+    """The threads a Guardian's number change from `previous_number` to `phone_number`
+    touches, locked for the rest of the transaction.
 
     The first half of a number change: `client_service` takes this before it writes the
-    Guardian's new number, so the lock order stays conversation first (an inbound turn locks
-    the thread, then may touch the Guardian's row through a consent insert).
+    Guardian's new number, so the lock order stays conversation first. Holding the thread at
+    the new number before the Guardian row means a turn there finishes first: an Intake that
+    ends by writing a Guardian at that number wins it, and the change is the 409.
     """
-    conversation = _conversation_for(db, phone_number=phone_number)
+    found: dict[str, Conversation | None] = {}
+    # One order for every change, so two changes over the same pair of numbers cannot deadlock.
+    for number in sorted({previous_number, phone_number}):
+        found[number] = _conversation_for(db, phone_number=number)
 
-    if conversation is None or conversation.guardian_id != guardian_id:
+    previous = found[previous_number]
+    is_guardians = previous is not None and previous.guardian_id == guardian_id
+
+    return NumberChange(
+        guardian_id=guardian_id,
+        phone_number=phone_number,
+        guardian_thread=previous if is_guardians else None,
+        thread_at_new_number=found[phone_number],
+    )
+
+
+def follow_number_change(db: Session, *, change: NumberChange) -> Conversation | None:
+    """Carry the Guardian's thread to their new number: the thread now theirs there, or `None`
+    when there is none.
+
+    The second half of a number change, on what `lock_number_change` returned. A thread at the
+    new number gives its messages to the Guardian's thread and is deleted; the Guardian's
+    thread keeps all its own state. With no Guardian's thread, the one at the new number
+    becomes theirs. A thread there that is another Guardian's is never touched: the caller
+    refuses that change first.
+
+    The savepoint covers a first message from the new number that opened a thread there after
+    the lock: `UNIQUE (phone_number)` refuses the move, the savepoint unwinds it, and the
+    number change goes on without it rather than as a 500.
+    """
+    guardian_thread = change.guardian_thread
+    at_new_number = change.thread_at_new_number
+
+    if change.is_new_number_thread_anothers:
         return None
 
-    return conversation
+    followed: Conversation | None = None
+    if guardian_thread is not None and at_new_number is not None:
+        _merge(db, into=guardian_thread, merged=at_new_number)
+        _rekey(db, conversation=guardian_thread, phone_number=change.phone_number)
+        followed = guardian_thread
+    elif guardian_thread is not None:
+        is_moved = _rekey(db, conversation=guardian_thread, phone_number=change.phone_number)
+        followed = guardian_thread if is_moved else None
+    elif at_new_number is not None:
+        followed = link_guardian(db, conversation=at_new_number, guardian_id=change.guardian_id)
 
-
-def rekey(db: Session, *, conversation: Conversation, phone_number: str) -> bool:
-    """Move a thread its Guardian owns to their new number. False when nothing moved.
-
-    The second half of a number change, on a thread `lock_guardian_thread` returned. A thread
-    already at `phone_number` is left alone for now, and so is this one: merging the two is a
-    later change. The savepoint covers a first message from the new number that opened a
-    thread there after the check: `UNIQUE (phone_number)` refuses the move, the savepoint
-    unwinds it, and the number change goes on without it rather than as a 500.
-    """
-    # A plain read: locking the thread at the new number would wait on its turn while this
-    # transaction holds the Guardian's row, which an Intake at that number then waits on.
-    existing_id = db.scalars(
-        select(Conversation.id).where(Conversation.phone_number == phone_number)
-    ).first()
-
-    if existing_id is not None:
-        return False
-
-    try:
-        with db.begin_nested():
-            conversation.phone_number = phone_number
-            db.flush()
-    except IntegrityError:
-        return False
-
-    return True
+    return followed
 
 
 def owner_id(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     """The thread's Guardian while they still hold its number; `None` otherwise.
 
     A thread can stay linked to a Guardian who has since left its number: a move skipped
-    because a thread already sat at the new number, a thread from before threads followed
-    their Guardian (#126), or one keyed on a non-canonical number the move did not match.
-    Trusting that link would hand the old Guardian's Children and consent to the number's next
-    holder, so the webhook asks this instead and, on `None`, recognises the sender by number.
+    because a thread opened at the new number mid-change, a thread from before threads
+    followed their Guardian (#126), or one keyed on a non-canonical number the move did not
+    match. Trusting that link would hand the old Guardian's Children and consent to the
+    number's next holder, so the webhook asks this instead and, on `None`, recognises the
+    sender by number.
     """
     guardian = _guardian(db, conversation)
 
     if guardian is None:
         return None
 
-    try:
-        canonical = normalize_phone_number(db, raw=conversation.phone_number)
-    except InvalidPhoneNumber:
-        canonical = conversation.phone_number
-
-    is_holding = guardian.phone_number in {conversation.phone_number, canonical}
+    is_holding = guardian.phone_number in _spellings(db, phone_number=conversation.phone_number)
 
     return guardian.id if is_holding else None
+
+
+def link_to_holder(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
+    """The Guardian holding the thread's number, linking the thread to them when it names
+    someone else or no one; `None` when nobody holds it.
+
+    For a turn the bot does not take (a thread under Takeover), which would otherwise leave a
+    thread left behind at a number showing, and recording consent for, its old Guardian.
+    """
+    owner = owner_id(db, conversation=conversation)
+
+    if owner is not None:
+        return owner
+
+    holder_id = db.scalars(
+        select(Guardian.id).where(
+            Guardian.phone_number.in_(_spellings(db, phone_number=conversation.phone_number))
+        )
+    ).first()
+
+    if holder_id is not None:
+        link_guardian(db, conversation=conversation, guardian_id=holder_id)
+
+    return holder_id
 
 
 def get(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
@@ -765,6 +833,48 @@ def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
         .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
+
+
+def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:
+    """Move every message of `merged` into `into`, then delete `merged`, now empty.
+
+    `messages` is the only table that references a conversation. Both rows are locked by the
+    caller. The delete is a statement rather than `Session.delete`, which would try to null
+    the foreign key on any message the session still has loaded under `merged`.
+    """
+    db.flush()
+    db.execute(
+        update(Message)
+        .where(Message.conversation_id == merged.id)
+        .values(conversation_id=into.id)
+        .execution_options(synchronize_session="fetch")
+    )
+    db.execute(delete(Conversation).where(Conversation.id == merged.id))
+    db.expunge(merged)
+    db.expire(into, ["messages"])
+
+
+def _rekey(db: Session, *, conversation: Conversation, phone_number: str) -> bool:
+    """Put the thread at `phone_number`; False when a thread opened there first."""
+    try:
+        with db.begin_nested():
+            conversation.phone_number = phone_number
+            db.flush()
+    except IntegrityError:
+        return False
+
+    return True
+
+
+def _spellings(db: Session, *, phone_number: str) -> set[str]:
+    """A thread's number as stored and as `phone_service` would store it (P7-H keeps the
+    inbound form verbatim); just the stored form when it does not parse."""
+    try:
+        canonical = normalize_phone_number(db, raw=phone_number)
+    except InvalidPhoneNumber:
+        canonical = phone_number
+
+    return {phone_number, canonical}
 
 
 def lock(db: Session, *, conversation_id: uuid.UUID) -> Conversation:

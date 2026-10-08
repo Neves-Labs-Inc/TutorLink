@@ -899,7 +899,7 @@ def test_an_unconfigured_twilio_is_told_apart_from_an_interrupted_send(
     assert (reminder.status, reminder.error_code) == (ReminderStatus.FAILED, None)
 
 
-def test_the_reminder_lands_in_the_thread_at_the_guardians_number_even_if_a_former_guardian_had_it(
+def test_the_reminder_lands_in_the_thread_at_the_guardians_number_and_takes_it_from_a_former_one(
     world: World, db: Session, fake_twilio: FakeTwilio, approved: None
 ) -> None:
     current = world.guardian()
@@ -915,7 +915,7 @@ def test_the_reminder_lands_in_the_thread_at_the_guardians_number_even_if_a_form
     assert copy.twilio_sid == sent.sid
     assert "Ana" in copy.body
     db.refresh(thread)
-    assert thread.guardian_id == former.id
+    assert thread.guardian_id == current.id
 
 
 def _reminder_copy(db: Session, conversation: Conversation) -> Message:

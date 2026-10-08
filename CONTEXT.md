@@ -53,7 +53,7 @@ The people a Booking can be with: Tutors, Admins, and Managers.
 _Avoid_: Employee, operator
 
 **Tutor**:
-A Staff member who teaches sessions. Sees only their own Bookings.
+A Staff member who teaches sessions. Sees only their own Bookings. Can exist before they can sign in.
 _Avoid_: Teacher, instructor
 
 **Location**:
@@ -61,11 +61,11 @@ Where a Booking happens: one of the Guardian's homes, or In office. In office ne
 _Avoid_: Venue, place, home (for the general case)
 
 **Admin**:
-A Staff member with full dashboard access, including Users and Settings.
+A Staff member with full dashboard access, including Users and Settings. Can be booked, but is never offered to Guardians by the bot.
 _Avoid_: Superuser, owner
 
 **Manager**:
-A Staff member with the same dashboard access as an Admin except Users and Settings. Can use chat and evaluate Children.
+A Tutor with extra privileges: the same dashboard access as an Admin except Users and Settings. Teaches sessions and is offered by the bot like any Tutor; can also use chat and evaluate Children.
 _Avoid_: Supervisor, moderator
 
 **Display name**:

@@ -53,9 +53,11 @@ export const BookingFilterFields = ({
   return (
     <div className="space-y-4">
       <div
-        className={
-          isStacked ? 'space-y-4' : 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5'
-        }
+        className={cn(
+          isStacked ? 'space-y-4' : 'grid grid-cols-1 gap-4 sm:grid-cols-2',
+          // Three fields without From/To: one column each, so none is left empty.
+          !isStacked && (showDateRange ? 'lg:grid-cols-5' : 'lg:grid-cols-3'),
+        )}
       >
         {showDateRange && (
           <>

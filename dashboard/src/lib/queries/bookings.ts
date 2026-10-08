@@ -1,5 +1,6 @@
 import { keepPreviousData, queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { remainingPages } from '@/lib/booking-calendar/booking-calendar'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
 
 export type NamedRef = { id: string; name: string }
@@ -35,6 +36,10 @@ export type BookingListParams = {
   page_size?: number
 }
 
+export type BookingWeekParams = Omit<BookingListParams, 'page' | 'page_size'>
+
+export type BookingWeek = { items: Booking[]; total: number }
+
 export type BookingCreate = {
   child_id: string
   tutor_id: string
@@ -55,16 +60,39 @@ export type BookingWriteResult = {
   end_time: string
 }
 
+// The API caps `page_size` at 100 (`api/app/schemas/common.py`).
+const MAX_PAGE_SIZE = 100
+
+const fetchBookingPage = async (params: BookingListParams): Promise<Page<Booking>> => {
+  const response = await api.get<Page<Booking>>(`/api/bookings?${bookingSearchParams(params)}`)
+
+  return response.data
+}
+
 export const bookingQueries = {
   list: (params: BookingListParams = {}) =>
     queryOptions({
       queryKey: ['bookings', 'list', params],
-      queryFn: async () => {
-        const response = await api.get<Page<Booking>>(`/api/bookings?${bookingSearchParams(params)}`)
-
-        return response.data
-      },
+      queryFn: () => fetchBookingPage(params),
       placeholderData: keepPreviousData,
+    }),
+
+  // Every booking in the window, however many pages it spans. Shares the `['bookings', 'list']`
+  // prefix so the invalidations that refresh the list refresh the calendar too. No placeholder
+  // data: a new week shows its skeleton rather than the previous week's entries under its heading.
+  week: (params: BookingWeekParams) =>
+    queryOptions({
+      queryKey: ['bookings', 'list', 'week', params],
+      queryFn: async (): Promise<BookingWeek> => {
+        const first = await fetchBookingPage({ ...params, page: 1, page_size: MAX_PAGE_SIZE })
+        const rest = await Promise.all(
+          remainingPages(first.total, MAX_PAGE_SIZE).map((page) =>
+            fetchBookingPage({ ...params, page, page_size: MAX_PAGE_SIZE }),
+          ),
+        )
+
+        return { items: [first, ...rest].flatMap((page) => page.items), total: first.total }
+      },
     }),
 
   detail: (bookingId: string) =>

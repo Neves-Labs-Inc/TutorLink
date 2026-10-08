@@ -378,6 +378,20 @@ describe('systemLineLabel', () => {
       canRetry: false,
     })
   })
+
+  it('shows a number-change note as its plain body with no status or Retry', () => {
+    const body = 'Number changed from +12025550101 to +14155550123 by Ana'
+
+    expect(
+      systemLineLabel(systemMessage({ system_kind: 'number_change_note', status: 'sent', body }), true),
+    ).toEqual({ text: body, isFailed: false, canRetry: false })
+    expect(
+      systemLineLabel(systemMessage({ system_kind: 'number_change_note', status: 'sent', body }), false),
+    ).toEqual({ text: body, isFailed: false, canRetry: false })
+    expect(
+      systemLineLabel(systemMessage({ system_kind: 'number_change_note', status: 'failed', body }), true),
+    ).toEqual({ text: body, isFailed: false, canRetry: false })
+  })
 })
 
 describe('joinNames', () => {

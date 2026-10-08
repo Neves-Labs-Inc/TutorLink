@@ -222,6 +222,9 @@ def _turn(
     if conversation.status is ConversationStatus.HUMAN:
         reply = None
         twiml = twilio_service.twiml_empty()
+        # The bot's turn re-links a thread whose Guardian left its number; this one must too,
+        # or Staff read the sender as that Guardian and their STOP finds no one to record for.
+        conversation_service.link_to_holder(db, conversation=conversation)
         notice = _confirm_consent_keyword(
             db, conversation=conversation, inbound=inbound, button=button
         )

@@ -297,9 +297,11 @@ with all its state, and a Staff-only `number_change_note` message ("Number chang
 records where the earlier messages went; it is never sent. N is left with no thread, so whoever writes from
 N next opens a fresh one and is recognised by the number alone — a thread left behind at N would hand its
 `guardian_id` to the number's next holder. WhatsApp's 24-hour window counts only client messages after the
-latest `number_change_note`. If a thread already exists at M the move is skipped for now. `INDEX
-(guardian_id)` is still not unique: threads from before this rule, or ones opened at M before the change,
-can share a guardian.
+latest `number_change_note`. A thread already at M (unlinked, or linked to this guardian) gives its messages
+to the guardian's thread and is deleted; the guardian's thread keeps all its own state. With no thread at N,
+the one at M becomes the guardian's. A thread at M linked to another guardian (only data from before this
+rule) refuses the change with 409. Creating a guardian links an unlinked thread already at their number.
+`INDEX (guardian_id)` is still not unique: threads from before this rule can share a guardian.
 
 `last_read_at` is a single watermark shared by every admin rather than one per admin. This is a shared
 inbox for a small team, and a takeover is already a shared act — one admin claims a conversation and any

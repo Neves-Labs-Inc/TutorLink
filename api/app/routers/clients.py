@@ -36,6 +36,7 @@ from app.services.client_service import (
     ClientWithCounts,
     HomeInput,
     PhoneNumberTaken,
+    WhatsAppChatTaken,
     create_client,
     get_client,
     list_clients,
@@ -47,6 +48,7 @@ CLIENT_NOT_FOUND_ERROR = "Client not found"
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
 ACTING_USER_NOT_FOUND_ERROR = "Your account no longer exists; sign in again"
+WHATSAPP_CHAT_TAKEN_ERROR = "That number's WhatsApp chat belongs to another Guardian"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -131,6 +133,8 @@ def update(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, ACTING_USER_NOT_FOUND_ERROR) from exc
     except PhoneNumberTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, PHONE_NUMBER_TAKEN_ERROR) from exc
+    except WhatsAppChatTaken as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, WHATSAPP_CHAT_TAKEN_ERROR) from exc
     except InvalidPhoneNumber as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
 

@@ -1,9 +1,10 @@
 """A number change racing an Intake that finishes at the Guardian's new number.
 
 The inbound turn from M holds the thread at M for the whole turn and, as Intake ends, inserts a
-Guardian at M. The PATCH moving the Guardian to M has written M into `guardians` by then, so
-that insert waits on the PATCH. If the PATCH in turn waited on the thread at M, PostgreSQL
-would abort one of them as a deadlock, and the PATCH would answer 500.
+Guardian at M. The PATCH moving the Guardian to M locks the thread at M before it writes M into
+`guardians`, so it waits for the turn: the Intake wins the number and the PATCH answers 409.
+Were the PATCH to write the Guardian first and then wait on the thread, the turn's insert would
+wait on the PATCH and PostgreSQL would abort one of them as a deadlock, a 500.
 
 Two real connections are needed, so everything here is committed for real: the test creates its
 own rows and deletes them whatever happens. The PATCH runs through the route on another thread
@@ -21,7 +22,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import get_db
@@ -34,7 +34,7 @@ from app.models.message import Message
 from app.models.user import User
 from app.security import create_access_token
 
-# Long enough that a PATCH which does not wait on the thread at M has finished within it.
+# Long enough that a PATCH which did not wait on the thread at M would have written M by then.
 PATCH_SETTLE_SECONDS = 1.0
 AREA_CODES = ("202", "212", "312", "415", "617")
 SUBSCRIBER_NUMBERS = 10_000
@@ -122,7 +122,7 @@ def committed_api(
         del app.dependency_overrides[get_db]
 
 
-def test_a_number_change_racing_an_intake_at_the_new_number_succeeds_without_a_deadlock(
+def test_a_number_change_racing_an_intake_at_the_new_number_loses_to_it_without_a_deadlock(
     committed_sessions: sessionmaker[Session],
     committed: Committed,
     committed_api: TestClient,
@@ -139,7 +139,7 @@ def test_a_number_change_racing_an_intake_at_the_new_number_succeeds_without_a_d
                 json={"phone_number": committed.new_number},
                 headers={"Authorization": f"Bearer {token}"},
             )
-            outcome["result"] = (response.status_code, response.json()["phone_number"])
+            outcome["result"] = response.status_code
         except Exception as exc:  # noqa: BLE001 - a deadlock surfaces here; asserted below
             outcome["result"] = repr(exc)
 
@@ -152,15 +152,12 @@ def test_a_number_change_racing_an_intake_at_the_new_number_succeeds_without_a_d
         patching.start()
         patching.join(PATCH_SETTLE_SECONDS)
 
-        # Intake ends by creating its Guardian at M, which the committed PATCH now holds.
-        try:
-            turn.add(Guardian(name="Intake", phone_number=committed.new_number))
-            turn.flush()
-            is_number_taken = False
-        except IntegrityError:
-            is_number_taken = True
-        turn.rollback()
+        # Intake ends by creating its Guardian at M, which the waiting PATCH has not written.
+        turn.add(Guardian(name="Intake", phone_number=committed.new_number))
+        turn.commit()
 
     patching.join()
-    assert outcome["result"] == (200, committed.new_number)
-    assert is_number_taken
+    assert outcome["result"] == 409
+    with committed_sessions() as session:
+        guardian = session.get_one(Guardian, committed.guardian_id)
+        assert guardian.phone_number == committed.old_number

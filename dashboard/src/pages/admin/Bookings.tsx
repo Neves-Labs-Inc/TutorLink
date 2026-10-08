@@ -1,8 +1,12 @@
 import { useRef, useState } from 'react'
-import { SlidersHorizontal } from 'lucide-react'
+import { CalendarDays, List, SlidersHorizontal } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
+import {
+  BookingCalendar,
+  type BookingCalendarStatus,
+} from '@/components/bookings/BookingCalendar'
 import { BookingDetailPanel } from '@/components/bookings/BookingDetailPanel'
 import { BookingFilterFields } from '@/components/bookings/BookingFilterFields'
 import { BookingForm } from '@/components/bookings/BookingForm'
@@ -14,6 +18,12 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { errorDetail } from '@/lib/api'
+import {
+  bookingViewFromSearchParams,
+  calendarListParams,
+  withBookingView,
+  type BookingView,
+} from '@/lib/booking-calendar/booking-calendar'
 import { childPickerOption } from '@/lib/booking-form/bookingForm'
 import {
   activeFilterCount,
@@ -25,21 +35,34 @@ import {
   EMPTY_FILTERS,
   type BookingFilterState,
 } from '@/lib/bookings/bookings'
-import { formatIsoDate } from '@/lib/dates/dates'
+import { formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
 import { childQueries } from '@/lib/queries/children'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import { subjectQueries } from '@/lib/queries/subjects'
 import { tutorQueries } from '@/lib/queries/tutors'
+import { weekStartIso } from '@/lib/tutor-schedule/tutorSchedule'
+import { cn } from '@/lib/utils'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const REFERENCE_PAGE_SIZE = 100
+
+// The incoming view fades in; there is no exit animation.
+const viewEnterClasses = 'animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none'
+const toggleClasses =
+  'inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:translate-y-px md:min-h-0 md:py-1.5'
+const toggleOn = 'bg-primary text-primary-foreground'
+const toggleOff = 'text-muted-foreground hover:bg-muted hover:text-foreground'
+
+const queryStatus = (query: { isPending: boolean; isError: boolean }): BookingCalendarStatus =>
+  query.isPending ? 'pending' : query.isError ? 'error' : 'ready'
 
 export const Bookings = () => {
   const queryClient = useQueryClient()
 
   const [searchParams, setSearchParams] = useSearchParams()
   const [page, setPage] = useState(1)
+  const [weekStart, setWeekStart] = useState(() => weekStartIso(todayLocalIso(new Date())))
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -47,10 +70,19 @@ export const Bookings = () => {
   const [childOption, setChildOption] = useState<SearchPickerOption | null>(null)
 
   const filters = bookingFiltersFromSearchParams(searchParams)
+  const view = bookingViewFromSearchParams(searchParams)
+  const isCalendar = view === 'calendar'
+  // From/To are hidden in calendar view, so nothing there counts or clears them.
+  const visibleFilters = isCalendar ? { ...filters, from: '', to: '' } : filters
 
-  const bookings = useQuery(
-    bookingQueries.list({ ...bookingListParams(filters), page, page_size: DEFAULT_PAGE_SIZE }),
-  )
+  const bookings = useQuery({
+    ...bookingQueries.list({ ...bookingListParams(filters), page, page_size: DEFAULT_PAGE_SIZE }),
+    enabled: !isCalendar,
+  })
+  const week = useQuery({
+    ...bookingQueries.week(calendarListParams(filters, weekStart)),
+    enabled: isCalendar,
+  })
   const tutors = useQuery(tutorQueries.list({ page_size: REFERENCE_PAGE_SIZE }))
   const subjects = useQuery(subjectQueries.list({ page_size: REFERENCE_PAGE_SIZE }))
   const filteredChild = useQuery({
@@ -65,8 +97,12 @@ export const Bookings = () => {
   }
 
   const applyFilters = (next: BookingFilterState) => {
-    setSearchParams(bookingFilterSearchParams(next))
+    setSearchParams(withBookingView(bookingFilterSearchParams(next), view))
     setPage(1)
+  }
+
+  const handleViewChange = (next: BookingView) => {
+    setSearchParams(withBookingView(searchParams, next))
   }
 
   const handleChildChange = (option: SearchPickerOption | null) => {
@@ -81,18 +117,24 @@ export const Bookings = () => {
   }
 
   // Clear all disables itself at 0 filters, so move focus on to keep it inside the panel.
+  // In calendar view the hidden From/To survive, so switching back to List restores them.
   const handleClearAll = () => {
-    applyFilters(EMPTY_FILTERS)
+    applyFilters(
+      isCalendar ? { ...EMPTY_FILTERS, from: filters.from, to: filters.to } : EMPTY_FILTERS,
+    )
     setChildOption(null)
     showBookingsRef.current?.focus()
   }
 
-  const filterCount = activeFilterCount(filters)
+  const filterCount = activeFilterCount(visibleFilters)
   const filtersButtonLabel = filterCount === 0 ? 'Filters' : `Filters, ${filterCount} active`
-  const showBookingsLabel =
-    bookings.data === undefined || bookings.isPlaceholderData
-      ? 'Show bookings'
-      : `Show ${bookingCountLabel(bookings.data.total)}`
+  const total = isCalendar
+    ? week.data?.total
+    : bookings.data === undefined || bookings.isPlaceholderData
+      ? undefined
+      : bookings.data.total
+  const showBookingsLabel = total === undefined ? 'Show bookings' : `Show ${bookingCountLabel(total)}`
+  const countTotal = isCalendar ? week.data?.total : bookings.data?.total
 
   const filterFieldProps = {
     filters,
@@ -102,6 +144,7 @@ export const Bookings = () => {
     searchChildren,
     tutors: tutors.data?.items ?? [],
     subjects: subjects.data?.items ?? [],
+    showDateRange: !isCalendar,
   }
 
   const columns: Column<Booking>[] = [
@@ -159,29 +202,74 @@ export const Bookings = () => {
         </CardContent>
       </Card>
 
-      {bookings.data !== undefined && (
-        <p className="text-sm text-muted-foreground">{bookingCountLabel(bookings.data.total)}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        {countTotal !== undefined && (
+          <p className="text-sm text-muted-foreground">{bookingCountLabel(countTotal)}</p>
+        )}
+        <div
+          role="group"
+          aria-label="View"
+          className="ml-auto inline-flex gap-1 rounded-lg border border-border p-1"
+        >
+          <button
+            type="button"
+            aria-pressed={!isCalendar}
+            className={cn(toggleClasses, isCalendar ? toggleOff : toggleOn)}
+            onClick={() => handleViewChange('list')}
+          >
+            <List aria-hidden="true" className="size-4" />
+            List
+          </button>
+          <button
+            type="button"
+            aria-pressed={isCalendar}
+            className={cn(toggleClasses, isCalendar ? toggleOn : toggleOff)}
+            onClick={() => handleViewChange('calendar')}
+          >
+            <CalendarDays aria-hidden="true" className="size-4" />
+            Calendar
+          </button>
+        </div>
+      </div>
+
+      {isCalendar ? (
+        <div key="calendar" className={viewEnterClasses}>
+          <BookingCalendar
+            weekStart={weekStart}
+            onWeekChange={setWeekStart}
+            query={{
+              status: queryStatus(week),
+              bookings: week.data?.items ?? [],
+              error: week.error,
+              refetch: () => week.refetch(),
+            }}
+            filtersActive={filterCount > 0}
+            onSelect={setSelectedBookingId}
+          />
+        </div>
+      ) : (
+        <div key="list" className={cn('space-y-6', viewEnterClasses)}>
+          <DataTable
+            caption="Bookings"
+            columns={columns}
+            rows={bookings.data?.items ?? []}
+            rowKey={(booking) => booking.id}
+            status={queryStatus(bookings)}
+            errorMessage={errorDetail(bookings.error) ?? LOAD_FALLBACK_ERROR}
+            onRetry={() => bookings.refetch()}
+            emptyMessage="No bookings match these filters."
+            onRowSelect={(booking) => setSelectedBookingId(booking.id)}
+          />
+
+          <Pager
+            page={page}
+            pageSize={DEFAULT_PAGE_SIZE}
+            total={bookings.data?.total ?? 0}
+            onPageChange={setPage}
+            disabled={bookings.isPending}
+          />
+        </div>
       )}
-
-      <DataTable
-        caption="Bookings"
-        columns={columns}
-        rows={bookings.data?.items ?? []}
-        rowKey={(booking) => booking.id}
-        status={bookings.isPending ? 'pending' : bookings.isError ? 'error' : 'ready'}
-        errorMessage={errorDetail(bookings.error) ?? LOAD_FALLBACK_ERROR}
-        onRetry={() => bookings.refetch()}
-        emptyMessage="No bookings match these filters."
-        onRowSelect={(booking) => setSelectedBookingId(booking.id)}
-      />
-
-      <Pager
-        page={page}
-        pageSize={DEFAULT_PAGE_SIZE}
-        total={bookings.data?.total ?? 0}
-        onPageChange={setPage}
-        disabled={bookings.isPending}
-      />
 
       <SlideOver
         open={filtersOpen}

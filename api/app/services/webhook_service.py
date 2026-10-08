@@ -246,7 +246,7 @@ def _turn(
             db,
             phone_number=phone_number,
             body=body,
-            guardian_id=conversation.guardian_id,
+            guardian_id=conversation_service.owner_id(db, conversation=conversation),
             reactivation_pending=conversation.reactivation_child_id is not None,
             language=None if conversation.language is None else conversation.language.value,
             button=button,
@@ -306,7 +306,8 @@ def _confirm_consent_keyword(
         action = None
 
     notice = None
-    if action is not None and conversation.guardian_id is not None:
+    owner = conversation_service.owner_id(db, conversation=conversation)
+    if action is not None and owner is not None:
         # The bot's language rule for a keyword: a Spanish-only one switches the thread.
         detected = bot_service.keyword_language(inbound.body)
         if detected is not None and conversation.language is not Language(detected):
@@ -315,7 +316,7 @@ def _confirm_consent_keyword(
             )
         reminder_consent_service.record_consent(
             db,
-            guardian_id=conversation.guardian_id,
+            guardian_id=owner,
             action=action,
             source=ConsentSource.MESSAGE,
             message_id=inbound.id,
@@ -360,7 +361,10 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn, inbound
             db, conversation=conversation, language=Language(decided.language)
         )
 
-    if decided.consent is not None and conversation.guardian_id is None:
+    # Read after the link, so a thread linked on this very turn has its Guardian.
+    owner = conversation_service.owner_id(db, conversation=conversation)
+
+    if decided.consent is not None and owner is None:
         # The bot asks only at a step that has a Guardian, and reports the link on that turn.
         logger.warning(
             "dropped a %s consent on conversation %s: it has no guardian",
@@ -370,7 +374,7 @@ def _apply(db: Session, *, conversation: Conversation, decided: BotTurn, inbound
     elif decided.consent is not None:
         reminder_consent_service.record_consent(
             db,
-            guardian_id=conversation.guardian_id,
+            guardian_id=owner,
             action=decided.consent.action,
             source=decided.consent.source,
             message_id=inbound.id,

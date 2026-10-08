@@ -2126,8 +2126,9 @@ def _refuse_while_pending(turn: _Turn) -> _Next:
 def _recognise(db: Session, *, phone_number: str, guardian_id: uuid.UUID | None) -> Guardian | None:
     """REQ-075.1: recognition is by phone number alone, with no challenge.
 
-    The conversation's own `guardian_id` wins when the webhook has one, so a guardian whose
-    number was edited on the client record still resolves through the thread they are on.
+    The conversation's own `guardian_id` wins when the webhook has one. A thread follows the
+    guardian who owns it (a number change re-keys it, #126), so the guardian linked to the thread
+    at a number is the one holding that number, for every change made since that rule.
     `is_active` is deliberately not filtered: a deactivated client is recognised and then
     refused at the write path by `_resolve`, which is a clearer outcome than an intake that
     collides with their own row on `UNIQUE (phone_number)`.

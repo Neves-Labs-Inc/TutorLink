@@ -7,7 +7,7 @@ rollback, so a caller that holds the transaction open across further work holds 
 it. This module knows nothing about FastAPI, status codes or request bodies; it raises the
 domain exceptions below and `app.routers.conversations` maps them.
 
-**`phone_number` is stored exactly as it arrives and is never rewritten afterwards.**
+**`phone_number` is stored exactly as it arrives.**
 `resolve_or_create` is called from the webhook with Twilio's `From` minus the `whatsapp:`
 prefix and nothing else done to it (decision **P7-H**): an inbound message is proof of
 dialability by delivery, and `phone_service`'s strict `is_valid_number` refusing it would drop
@@ -16,12 +16,12 @@ every other write path in the codebase is deliberate, not an oversight. Matching
 `guardians.phone_number` still compares like with like, because that column is E.164-normalised
 on write by the same library and Twilio delivers E.164.
 
-Nothing here assigns `phone_number` after the insert, and that is the invariant rather than an
-omission (issue #55, decision **D-L**, `phone_service.py:1-30`, `erd.md:274-279`): correcting a
-guardian's number moves `guardians.phone_number` and leaves the thread where it is. The next
-inbound message from the new number opens a *second* conversation carrying the same
-`guardian_id`, which is why `ix_conversations_guardian_id` is not unique. Re-pointing the thread
-would make the archive claim messages went to a number Twilio never sent them to.
+**A thread follows the Guardian who owns it** (#126, reversing **D-L** / #55's "never
+rewritten"). When Staff change a Guardian's number, `client_service` locks the Guardian's thread
+(`lock_guardian_thread`) and re-keys it (`rekey`), and a Staff-only `number_change_note` line
+records where the earlier messages went. Left behind, the thread's `guardian_id` would make the
+bot treat the old number's next holder as this Guardian. `ix_conversations_guardian_id` is still
+not unique: threads from before this rule can share a Guardian.
 
 **A duplicate phone number is refused twice**, per the normative idiom `client_service` ships:
 the named predicate `_conversation_for` answers the ordinary case, `UNIQUE (phone_number)` is
@@ -52,7 +52,8 @@ child, through `child_service.update_child`. Taken the other way round, an appro
 guardian's turn on the same conversation could deadlock.
 
 **WhatsApp's 24-hour window is measured from the Guardian's latest `client` message only**
-(#109). Outbound messages never extend it: Twilio refuses a free-form send (63016) once the
+(#109), and only one written after the thread's latest `number_change_note` (#126): earlier
+ones came from a number this thread no longer replies to. Outbound messages never extend it: Twilio refuses a free-form send (63016) once the
 Guardian has been silent for 24 hours, however much Staff or the bot wrote since. Exactly 24
 hours is closed. `is_window_open` is the rule and `window_is_open` reads it for one thread.
 `claim` and `transfer` refuse a thread outside it (`ConversationWindowClosed`): past the window
@@ -69,11 +70,18 @@ from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import ConversationStatus, FlagReason, Language, MessageAuthor
+from app.models.enums import (
+    ConversationStatus,
+    FlagReason,
+    Language,
+    MessageAuthor,
+    SystemMessageKind,
+)
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
 from app.services import child_service
+from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
 
 # WhatsApp's customer-service window: free-form messages only within this of the last inbound.
 WHATSAPP_WINDOW = datetime.timedelta(hours=24)
@@ -185,7 +193,8 @@ def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
 
     The webhook's entry point, and the reason this is not a plain `get`: a conversation exists
     because a message arrived, so first contact has to create one rather than fail. See the
-    module docstring for why `phone_number` is taken verbatim and never rewritten.
+    module docstring for why `phone_number` is taken verbatim, and for the one later write to
+    it: a number change re-keys the Guardian's thread.
     """
     existing = _conversation_for(db, phone_number=phone_number)
 
@@ -217,6 +226,76 @@ def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
         return winner
 
     return conversation
+
+
+def lock_guardian_thread(
+    db: Session, *, guardian_id: uuid.UUID, phone_number: str
+) -> Conversation | None:
+    """The thread at `phone_number` if it is `guardian_id`'s, locked for the rest of the
+    transaction; `None` when there is none or it belongs to someone else.
+
+    The first half of a number change: `client_service` takes this before it writes the
+    Guardian's new number, so the lock order stays conversation first (an inbound turn locks
+    the thread, then may touch the Guardian's row through a consent insert).
+    """
+    conversation = _conversation_for(db, phone_number=phone_number)
+
+    if conversation is None or conversation.guardian_id != guardian_id:
+        return None
+
+    return conversation
+
+
+def rekey(db: Session, *, conversation: Conversation, phone_number: str) -> bool:
+    """Move a thread its Guardian owns to their new number. False when nothing moved.
+
+    The second half of a number change, on a thread `lock_guardian_thread` returned. A thread
+    already at `phone_number` is left alone for now, and so is this one: merging the two is a
+    later change. The savepoint covers a first message from the new number that opened a
+    thread there after the check: `UNIQUE (phone_number)` refuses the move, the savepoint
+    unwinds it, and the number change goes on without it rather than as a 500.
+    """
+    # A plain read: locking the thread at the new number would wait on its turn while this
+    # transaction holds the Guardian's row, which an Intake at that number then waits on.
+    existing_id = db.scalars(
+        select(Conversation.id).where(Conversation.phone_number == phone_number)
+    ).first()
+
+    if existing_id is not None:
+        return False
+
+    try:
+        with db.begin_nested():
+            conversation.phone_number = phone_number
+            db.flush()
+    except IntegrityError:
+        return False
+
+    return True
+
+
+def owner_id(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
+    """The thread's Guardian while they still hold its number; `None` otherwise.
+
+    A thread can stay linked to a Guardian who has since left its number: a move skipped
+    because a thread already sat at the new number, a thread from before threads followed
+    their Guardian (#126), or one keyed on a non-canonical number the move did not match.
+    Trusting that link would hand the old Guardian's Children and consent to the number's next
+    holder, so the webhook asks this instead and, on `None`, recognises the sender by number.
+    """
+    guardian = _guardian(db, conversation)
+
+    if guardian is None:
+        return None
+
+    try:
+        canonical = normalize_phone_number(db, raw=conversation.phone_number)
+    except InvalidPhoneNumber:
+        canonical = conversation.phone_number
+
+    is_holding = guardian.phone_number in {conversation.phone_number, canonical}
+
+    return guardian.id if is_holding else None
 
 
 def get(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
@@ -677,7 +756,15 @@ def _substring_pattern(raw: str | None) -> str | None:
 
 
 def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
-    return db.scalars(select(Conversation).where(Conversation.phone_number == phone_number)).first()
+    # Locked, and re-read rather than served from the identity map: an inbound turn that waits
+    # here on a number change re-checks the key after it commits, so it either lands before
+    # the move (and moves with the thread) or finds no thread at the old number and opens one.
+    return db.execute(
+        select(Conversation)
+        .where(Conversation.phone_number == phone_number)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
 
 
 def lock(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
@@ -752,10 +839,22 @@ def _hand_to(db: Session, conversation: Conversation, *, user_id: uuid.UUID) -> 
 
 
 def _last_client_message_at(db: Session, conversation_id: uuid.UUID) -> datetime.datetime | None:
+    # Only what the Guardian wrote since the latest number change opens the window: earlier
+    # messages came from a number Twilio no longer sends this thread's replies to.
+    number_changed_at = (
+        select(func.max(Message.created_at))
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.system_kind == SystemMessageKind.NUMBER_CHANGE_NOTE,
+        )
+        .scalar_subquery()
+    )
+
     return db.scalar(
         select(func.max(Message.created_at)).where(
             Message.conversation_id == conversation_id,
             Message.author_kind == MessageAuthor.CLIENT,
+            or_(number_changed_at.is_(None), Message.created_at > number_changed_at),
         )
     )
 

@@ -1473,38 +1473,76 @@ Returns full detail for a single booking, including the address and access code 
 
 ### `POST /api/bookings`
 
-Create a confirmed booking. Called by the bot after the client selects a slot.
+Create a confirmed booking. **Office only.** Called by the bot after the client selects a slot (a
+Regular booking at a home with a Tutor or Manager), and by the dashboard for every shape below.
+
+**The shapes.** A booking has a `kind` (`regular` or `evaluation`), a Staff member (`user_id`, a
+Tutor, Manager or Admin — a Developer is not bookable and is refused like an unknown id) and a
+`location` (`home`, naming one of the child's homes in `home_id`, or `in_office`, naming none). The
+Staff member's role is read from `users.role` at write time. Which rules run depends on the kind and
+the role (#130, #132, #133, #151):
+
+| | Evaluation | Regular, Admin | Regular, Tutor/Manager |
+|---|---|---|---|
+| Staff role allowed | Admin or Manager | Admin | Tutor or Manager |
+| `subject_id` | must be absent | required | required |
+| `availability_id` | must be absent | must be absent | required: a range of that Staff member's profile (rule 1) |
+| Gap (rule 3) | no | no | yes |
+| Time off (rule 4) | no | no | yes |
+| Grade ceiling (rule 5) | no | no | yes |
+| Overlap (rule 2 + EXCLUDE) | yes | yes | yes |
+| Home linked to the child (rule 6) | when `location = home` | when `location = home` | when `location = home` |
+| Child not Evaluated, no live Evaluation (rules 8, 9) | yes | no | no |
+| Window + lead time | hard block | hard block | hard block |
+| Created status | `confirmed` | `confirmed` | `confirmed` |
+
+A Manager with no teaching profile can take Evaluations; a Regular booking with them fails rule 1,
+since no range can be theirs. Creating a booking here sends no WhatsApp message, for either kind.
 
 **Validation**
 
-The requested range is accepted when it satisfies all of the following:
+The requested range is accepted when it satisfies every rule its column above says runs:
 
-1. it sits entirely inside an active `tutor_availability` range for that tutor and day
-2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
-3. it is at least `session_gap_minutes` clear of the nearest booking on either side — refused when `new.start_time < booking.end_time + session_gap_minutes AND new.end_time + session_gap_minutes > booking.start_time` holds for any booking counted by rule 2. That is rule 2's comparison with the booking widened by the gap on both sides, and it is the comparison step 3 of `GET /api/slots/available` subtracts by, so the offer surface and this check read the same rows the same way. The inequalities are strict, so clearance of exactly `session_gap_minutes` is accepted
+1. it sits inside the `tutor_availability` range the caller named, which must exist, be active and
+   belong to the Staff member's teaching profile. The range being another profile's, withdrawn, or
+   named by a Manager with no profile is a hard **400**; the time falling outside it — the wrong
+   weekday or the wrong hours — is the `outside_slot` warning (below). The range's `mode` is not
+   checked: it limits only the bot.
+2. it overlaps no existing booking of that Staff member, of either kind, with
+   `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
+3. it is at least the travel gap clear of the nearest live booking of that Staff member on either side, of either kind — refused when `new.start_time < booking.end_time + gap AND new.end_time + gap > booking.start_time` holds for any booking counted by rule 2. The gap is `session_gap_minutes` when either booking is at a home and **zero** when both are `in_office` (#132): two office sessions may run back to back. That is rule 2's comparison with the booking widened by the gap on both sides, and it is the comparison step 3 of `GET /api/slots/available` subtracts by, so the offer surface and this check read the same rows the same way. The inequalities are strict, so clearance of exactly the gap is accepted
 4. it is not blocked by a `tutor_availability_exceptions` row with `status = 'approved'` covering
    `scheduled_date` — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they
    are set. `pending` and `rejected` rows never block a booking.
-5. the tutor's `max_grade_level` for the **booked subject** is at or above the booked child's
-   `grade_level`. The ceiling is per subject, so this resolves the `(tutor_id, subject_id)` pair from
-   `bookings.subject_id` — there is no tutor-wide grade to fall back on. A tutor qualified for the child's
+5. the Staff member's `max_grade_level` for the **booked subject** is at or above the booked child's
+   Subject level for that subject (never the Overall grade; with no level the comparison is skipped). The ceiling is per subject, so this resolves the `(tutor_id, subject_id)` pair from
+   `bookings.subject_id` — there is no tutor-wide grade to fall back on. A Staff member qualified for the child's
    grade in one subject is still refused for a subject where their ceiling is lower. The boundary is
-   inclusive: a ceiling equal to the child's grade is accepted.
+   inclusive: a ceiling equal to the child's level is accepted.
 
    A **missing** `tutor_subjects` row for the booked subject is a refusal, not a pass. With no assignment
-   there is no ceiling to compare against, and the tutor does not teach the subject at all. Written as a
+   there is no ceiling to compare against, and the Staff member does not teach the subject at all. Written as a
    join that silently drops the row, the strongest possible violation would return success.
 
 6. `home_id` is one of the booked child's homes — a `child_homes` row exists for
-   `(child_id, home_id)`. Any other home is refused, including one belonging to a different family.
+   `(child_id, home_id)`. Any other home is refused, including one belonging to a different family. Nothing to check `in_office`.
 
 7. `booked_by_guardian_id`, when present, is one of the booked child's guardians — a `child_guardians`
-   row exists for `(child_id, booked_by_guardian_id)`. NULL is always allowed and is the admin path.
+   row exists for `(child_id, booked_by_guardian_id)`. NULL is always allowed and is the Office path.
 
-Rule 1 failing is **400**. Rules 2, 3 and 4 failing are **409**, the conflict case the error table already
-names. Rules 5, 6 and 7 failing are **422** — the request is well-formed and conflicts with nothing, it
-just names a combination that is not permitted: a tutor not qualified to teach that child at that grade,
-a home the child does not live at, or a guardian not linked to the child.
+8. (Evaluation) the child is not Evaluated: `children.evaluated_at IS NULL`. Clearing the mark reopens it.
+
+9. (Evaluation) the child has no other live Evaluation — no booking with `kind = 'evaluation'` and
+   `status IN (pending, confirmed)`. Completed and Cancelled ones do not count. The guarantee is the
+   partial unique index `uq_bookings_one_live_evaluation_per_child`; this check is the readable 409.
+
+**Status codes.** A missing or retired reference and rule 1's hard half are **400**, as are the window
+gates. Rules 2 and 9 and unconfirmed warnings are **409**, the conflict case the error table already
+names. Rules 5, 6, 7 and 8, a role the kind does not take, and a Subject, slot or home present or absent
+against the kind or Location are **422** — the request is well-formed and conflicts with nothing, it
+just names a combination that is not permitted: a Tutor asked to run an Evaluation, a Staff member not
+qualified to teach that child at that level, a home the child does not live at, a guardian not linked
+to the child, or a child already Evaluated.
 
 Rules 6 and 7 are deliberately independent of each other. The home is checked against the **child**, never
 against the booking guardian, so a guardian booking a session at the child's *other* home — the co-parent's
@@ -1515,9 +1553,26 @@ the only thing separating the two requests. Two siblings sharing a home each pas
 `child_homes` row.
 
 This enumeration is the authority for what `POST /api/bookings` enforces, and it belongs in one place in
-code — a single ordered rule set carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
-rules 6 and 7 from #38), not prose scattered across issues. The list has been amended three times in two
-days; treat it as open and expect a fourth.
+code — ordered rule tables carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
+rules 6 and 7 from #38, rules 8 and 9 from #133), not prose scattered across issues. The list has been
+amended four times; treat it as open and expect a fifth.
+
+**Confirmable warnings (#151).** For a Regular booking with a Tutor or Manager, four checks are warnings
+the Office may confirm rather than refusals: `outside_slot` (rule 1's time half), `gap` (rule 3),
+`time_off` (rule 4) and `grade_ceiling` (rule 5). The contract:
+
+1. Hard blocks are checked first and never come back as warnings: overlap, home not linked, the window
+   and lead time, reference failures, the kind/role/Subject/slot/Location shape, and the Evaluation
+   preconditions.
+2. The service collects **every** failing warning rather than stopping at the first.
+3. Any unconfirmed warning refuses with **409** and the body
+   `{"detail": "...", "warnings": [{"code": "gap", "message": "..."}, ...]}`. The messages are the
+   same sentences the hard refusals carry.
+4. The client resubmits the same body with `confirm_warnings: ["gap", ...]`. The write lands only if
+   every warning raised on **that** submission is listed; a new or unlisted one refuses again with a
+   fresh `warnings[]` naming what is still unconfirmed. An unknown code is **400**.
+5. Overrides are not recorded. The bot passes no confirmations, so every warning still refuses it as
+   a plain 409 or 422 and it re-offers.
 
 Rule 3 is checked here and not only in `GET /api/slots/available`, even though the two now apply the same
 gap-expanded comparison. Agreement removes the case where a slot the bot was just offered is refused on
@@ -1547,13 +1602,15 @@ runtime-editable `session_length_minutes` and `session_gap_minutes` — under a 
 either setting would leave every existing booking failing its own validation the next time it is edited.
 
 `scheduled_date` in the past returns **400**, as does a date further ahead than `booking_lookahead_days`.
-A start time earlier than `now + min_booking_lead_hours` returns **400**.
+A start time earlier than `now + min_booking_lead_hours` returns **400**. Both apply to every kind.
 
 **Request**
 ```json
 {
   "child_id": "uuid",
-  "tutor_id": "uuid",
+  "user_id": "uuid",
+  "kind": "regular",
+  "location": "home",
   "subject_id": "uuid",
   "availability_id": "uuid",
   "home_id": "uuid",
@@ -1561,13 +1618,14 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
   "start_time": "09:00",
   "end_time": "10:00",
   "booked_by_guardian_id": null,
-  "notes": null
+  "notes": null,
+  "confirm_warnings": []
 }
 ```
 
-`home_id` is **required** — `bookings.home_id` is `NOT NULL` and rule 6 validates it against the child's `child_homes` rows. It is not derivable once a child has two homes, which is the case the column exists for. `booked_by_guardian_id` is optional and `null` is the admin path; when present, rule 7 validates it against `child_guardians`.
+`home_id` is required exactly when `location` is `home` and rule 6 validates it against the child's `child_homes` rows. It is not derivable once a child has two homes, which is the case the column exists for. `subject_id` is required for a Regular booking and must be absent on an Evaluation; `availability_id` is required for a Regular booking with a Tutor or Manager and must be absent otherwise. `booked_by_guardian_id` is optional and `null` is the Office path; when present, rule 7 validates it against `child_guardians`. `confirm_warnings` is optional and empty by default.
 
-**Which `is_active` this endpoint honours.** A `tutor_id`, `subject_id`, `home_id`, `child_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a tutor `GET /api/slots/available` has already stopped offering. That 400 is deliberately not one of the 422s below — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
+**Which `is_active` this endpoint honours.** A `user_id`, `subject_id`, `home_id`, `child_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a Staff member `GET /api/slots/available` has already stopped offering. `users.is_active` is the only flag that decides whether a Tutor or Manager is active; `tutors.is_active` is not consulted. That 400 is deliberately not one of the 422s above — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
 
 **Response**
 ```json

@@ -11,14 +11,16 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import UserRole
+from app.models.enums import BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import create_access_token, hash_password
+from app.services import clock
 
 # --- levels -----------------------------------------------------------------------------------
 
@@ -215,6 +217,53 @@ def test_clearing_evaluated_keeps_the_levels(api: TestClient, db: Session) -> No
     assert [row["level"] for row in detail["levels"]] == [5]
 
 
+# --- Evaluated and the Evaluation booking stay separate acts (#133) -------------------------
+
+
+def test_marking_evaluated_leaves_a_live_evaluation_untouched(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    evaluation = _book_evaluation(api, admin, child)
+    api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
+
+    response = api.post(_evaluated_url(child), headers=_auth(admin))
+
+    assert response.status_code == 200
+    assert db.get_one(Booking, evaluation).status is BookingStatus.CONFIRMED
+
+
+def test_clearing_evaluated_makes_a_new_evaluation_creatable(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
+    api.post(_evaluated_url(child), headers=_auth(admin))
+    refused = api.post("/api/bookings", json=_evaluation_body(admin, child), headers=_auth(admin))
+
+    cleared = api.delete(_evaluated_url(child), headers=_auth(admin))
+    created = api.post("/api/bookings", json=_evaluation_body(admin, child), headers=_auth(admin))
+
+    assert refused.status_code == 422
+    assert cleared.status_code == 204
+    assert created.status_code == 201
+
+
+def test_completing_an_evaluation_does_not_mark_the_child_evaluated(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    evaluation = _book_evaluation(api, admin, child)
+
+    response = api.patch(
+        f"/api/bookings/{evaluation}", json={"status": "completed"}, headers=_auth(admin)
+    )
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert detail["evaluated"] is None
+
+
 def test_evaluated_on_an_unknown_child_is_404(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     url = f"/api/children/{uuid.uuid4()}/evaluated"
@@ -377,6 +426,26 @@ def _make_user(
 def _auth(user: User) -> dict[str, str]:
     token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
+
+
+def _evaluation_body(staff: User, child: Child) -> dict[str, object]:
+    """An Evaluation In office with `staff`, three days out: inside the window, clear of the
+    lead time, and on no one's schedule."""
+    return {
+        "child_id": str(child.id),
+        "user_id": str(staff.id),
+        "kind": "evaluation",
+        "location": "in_office",
+        "scheduled_date": (clock.business_today() + datetime.timedelta(days=3)).isoformat(),
+        "start_time": "09:00:00",
+        "end_time": "10:00:00",
+    }
+
+
+def _book_evaluation(api: TestClient, staff: User, child: Child) -> uuid.UUID:
+    response = api.post("/api/bookings", json=_evaluation_body(staff, child), headers=_auth(staff))
+    assert response.status_code == 201, response.json()
+    return uuid.UUID(response.json()["id"])
 
 
 def _make_tutor(db: Session) -> Tutor:

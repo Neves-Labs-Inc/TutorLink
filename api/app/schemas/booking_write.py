@@ -7,6 +7,11 @@ The prose rules above that example are the contract — rule 6 validates `home_i
 example is the half that is stale. Per `CONSTITUTION.md` §1 that divergence is reported and not
 patched; it is recorded as amendment P4-1.
 
+`BookingWarning` is one entry of the 409's `warnings[]` (#151): the code the client resubmits in
+`confirm_warnings`, and the message it shows. The body is `{"detail": ..., "warnings": [...]}`,
+`detail` kept as the string every other refusal carries, so a client that reads only `detail`
+still gets a sentence.
+
 `BookingCreated` restates the five fields of the documented response rather than importing a
 shape from `schemas/booking.py`. The duplication is deliberate: it is what lets the read path
 and the write path be built at the same time, and the name is `BookingCreated` rather than
@@ -21,6 +26,12 @@ from typing import Self
 from pydantic import BaseModel, model_validator
 
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
+from app.services.booking_write_service import WarningCode
+
+
+class BookingWarning(BaseModel):
+    code: WarningCode
+    message: str
 
 
 class BookingCreate(BaseModel):
@@ -40,6 +51,9 @@ class BookingCreate(BaseModel):
     end_time: datetime.time
     booked_by_guardian_id: uuid.UUID | None = None
     notes: str | None = None
+    # The warning contract (#151): the codes from a previous 409's `warnings[]` the Office has
+    # confirmed. The write lands only if every warning raised on this submission is here.
+    confirm_warnings: list[WarningCode] = []
 
     @model_validator(mode="after")
     def _times_are_ordered(self) -> Self:

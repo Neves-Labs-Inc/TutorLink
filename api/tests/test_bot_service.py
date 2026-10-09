@@ -42,13 +42,20 @@ from sqlalchemy import Column, delete, event, func, select, update
 from sqlalchemy.orm import ORMExecuteState, Session
 from sqlalchemy.sql import visitors
 
-from app.models.availability import TutorAvailability
+from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.bot_flow_state import BotFlowState
 from app.models.child import NOTES_MAX_LENGTH, Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, FlagReason, UserRole
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ExceptionStatus,
+    FlagReason,
+    UserRole,
+)
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
@@ -984,6 +991,52 @@ def test_a_conflict_on_the_write_re_offers_rather_than_erroring(
     monkeypatch.setattr(booking_write_service, "create_booking", racing)
 
     turn = _book(chat, world)
+
+    assert render("SLOT_JUST_TAKEN", "en") in turn.reply
+    assert turn.flag_reason is None
+    assert chat.step == bot_service.STEP_BOOK_SLOT
+
+
+def test_a_gap_conflict_on_the_write_re_offers_rather_than_erroring(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """The gap is a warning the Office can confirm (#151), but the bot confirms nothing: a
+    session booked into the chosen slot's gap between the offer and the confirm is still
+    `GapNotRespected` to the bot, and still a re-offer."""
+    # A second range leaves the afternoon free, so the re-offer has something to show.
+    _make_availability(
+        db, world.first_tutor_id, date=DATE, start=datetime.time(14, 0), end=datetime.time(16, 0)
+    )
+    _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
+    _make_booking(db, world, client, date=DATE, start=datetime.time(10, 15))
+    chat.say(value="1")
+
+    turn = chat.say(value="yes")
+
+    assert render("SLOT_JUST_TAKEN", "en") in turn.reply
+    assert turn.flag_reason is None
+    assert chat.step == bot_service.STEP_BOOK_SLOT
+
+
+def test_time_off_approved_since_the_offer_re_offers_rather_than_erroring(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
+    db.add(
+        TutorAvailabilityException(
+            tutor_id=world.first_tutor_id,
+            start_date=DATE,
+            end_date=DATE,
+            start_time=NINE,
+            end_time=datetime.time(10, 0),
+            reason="vacation",
+            status=ExceptionStatus.APPROVED,
+        )
+    )
+    db.flush()
+    chat.say(value="1")
+
+    turn = chat.say(value="yes")
 
     assert render("SLOT_JUST_TAKEN", "en") in turn.reply
     assert turn.flag_reason is None

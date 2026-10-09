@@ -1,6 +1,10 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
 
+import BrandColorField from '@/components/settings/BrandColorField'
+import EmailPreview from '@/components/settings/EmailPreview'
+import EmailPreviewSkeleton from '@/components/settings/EmailPreviewSkeleton'
+import { CONTROL_HEIGHT, FADE_IN, SKELETON_BAR } from '@/components/settings/emailTemplateClasses'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -20,17 +24,18 @@ import {
   settingQueries,
   updateSettings,
   type SettingsPage,
-  type TestEmailPayload,
 } from '@/lib/queries/settings'
 import {
+  BRAND_COLOR_KEY,
   TEMPLATE_SECTIONS,
+  draftEmailPayload,
   emailTemplateUpdates,
   hasTemplateErrors,
-  previewSampleValues,
-  renderPreview,
   savedTemplateValue,
   testEmailSentMessage,
+  validateBrandColor,
   validateTemplate,
+  type EmailDraftPayload,
   type TemplateSectionConfig,
 } from '@/lib/settings/emailTemplates'
 import { cn } from '@/lib/utils'
@@ -43,6 +48,8 @@ type TemplateSectionProps = {
   section: TemplateSectionConfig
   subject: string
   body: string
+  // Null while the draft colour is invalid; the preview and test send both need a valid one.
+  brandColor: string | null
   disabled: boolean
   onSubjectChange: (value: string) => void
   onBodyChange: (value: string) => void
@@ -50,12 +57,9 @@ type TemplateSectionProps = {
   actions?: ReactNode
 }
 
+const BRAND_COLOR_PRESET_SLOTS = [0, 1, 2, 3]
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const CARD_DESCRIPTION = 'The emails TutorLink sends when you invite someone or they reset their password.'
-const BLANK_PREVIEW = '—'
-const FADE_IN = 'animate-in fade-in-0 ease-out motion-reduce:animate-none'
-const bar = 'animate-pulse rounded-lg bg-muted motion-reduce:animate-none'
-const controlClasses = 'h-11 md:h-10'
 const mono = 'font-mono text-foreground'
 
 const idPrefix = (section: TemplateSectionConfig): string =>
@@ -80,46 +84,80 @@ const PlaceholderList = ({ placeholders }: { placeholders: readonly string[] }) 
   </>
 )
 
-const SkeletonSection = ({ hasDivider }: { hasDivider: boolean }) => (
-  <div className={cn('space-y-6', hasDivider && 'border-t border-border pt-6')}>
-    <div className={cn(bar, 'h-4 w-16')} />
+// Every section sits under the brand colour block, so each has the divider.
+const SkeletonSection = () => (
+  <div className="space-y-6 border-t border-border pt-6">
+    <div className={cn(SKELETON_BAR, 'h-4 w-16')} />
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <div className="space-y-4">
+      <div className="min-w-0 space-y-4">
         <div className="space-y-1.5">
-          <div className={cn(bar, 'h-4 w-14')} />
-          <div className={cn(bar, 'h-11 w-full md:h-10')} />
+          <div className={cn(SKELETON_BAR, 'h-4 w-14')} />
+          <div className={cn(SKELETON_BAR, 'h-11 w-full md:h-10')} />
         </div>
         <div className="space-y-1.5">
-          <div className={cn(bar, 'h-4 w-10')} />
-          <div className={cn(bar, 'h-[254px] w-full md:h-[214px]')} />
+          <div className={cn(SKELETON_BAR, 'h-4 w-10')} />
+          <div className={cn(SKELETON_BAR, 'h-[254px] w-full md:h-[214px]')} />
         </div>
-        <div className={cn(bar, 'h-3 w-64 max-w-full')} />
+        {/* The placeholder hint wraps to two lines below lg. */}
+        <div className="space-y-2 py-0.5">
+          <div className={cn(SKELETON_BAR, 'h-3 w-full lg:w-96')} />
+          <div className={cn(SKELETON_BAR, 'h-3 w-40 lg:hidden')} />
+        </div>
       </div>
-      <div className={cn(bar, 'h-48 w-full')} />
+      <div className="min-w-0 space-y-1.5">
+        <div className={cn(SKELETON_BAR, 'h-4 w-28')} />
+        <EmailPreviewSkeleton />
+      </div>
     </div>
-    <div className={cn(bar, 'h-11 w-44 md:h-8')} />
+    <div className={cn(SKELETON_BAR, 'h-11 w-44 md:h-8')} />
+  </div>
+)
+
+// Swatch, hex and the four presets wrap the same way as the real row.
+const BrandColorSkeleton = () => (
+  <div className="space-y-1.5">
+    <div className={cn(SKELETON_BAR, 'h-4 w-24')} />
+    <div className="flex flex-wrap items-center gap-2">
+      <div className={cn(SKELETON_BAR, CONTROL_HEIGHT, 'w-14')} />
+      <div className={cn(SKELETON_BAR, CONTROL_HEIGHT, 'w-32')} />
+      <div className="flex gap-2 sm:border-l sm:border-border sm:pl-2">
+        {BRAND_COLOR_PRESET_SLOTS.map((slot) => (
+          <div key={slot} className={cn(SKELETON_BAR, 'size-11 md:size-10')} />
+        ))}
+      </div>
+    </div>
+    <div className={cn(SKELETON_BAR, 'hidden h-3 w-80 max-w-full sm:block')} />
+    <div className="space-y-1 sm:hidden">
+      <div className={cn(SKELETON_BAR, 'h-3 w-full')} />
+      <div className={cn(SKELETON_BAR, 'h-3 w-40')} />
+    </div>
   </div>
 )
 
 export const EmailTemplatesSkeleton = () => (
   <Card aria-busy="true">
     <CardHeader>
-      <div className={cn(bar, 'h-5 w-32')} />
-      <div className={cn(bar, 'h-4 w-80 max-w-full')} />
+      <div className={cn(SKELETON_BAR, 'h-5 w-32')} />
+      {/* The description wraps to two lines below lg. */}
+      <div className="space-y-1">
+        <div className={cn(SKELETON_BAR, 'h-4 w-full lg:w-[32rem]')} />
+        <div className={cn(SKELETON_BAR, 'h-4 w-48 lg:hidden')} />
+      </div>
     </CardHeader>
     <CardContent className="space-y-6">
-      {TEMPLATE_SECTIONS.map((section, index) => (
-        <SkeletonSection key={section.id} hasDivider={index > 0} />
+      <BrandColorSkeleton />
+      {TEMPLATE_SECTIONS.map((section) => (
+        <SkeletonSection key={section.id} />
       ))}
     </CardContent>
     <CardFooter>
-      <div className={cn(bar, 'h-11 w-28 md:h-8')} />
+      <div className={cn(SKELETON_BAR, 'h-11 w-28 md:h-8')} />
     </CardFooter>
   </Card>
 )
 
 type TestEmailRowProps = {
-  mutation: UseMutationResult<void, Error, TestEmailPayload>
+  mutation: UseMutationResult<void, Error, EmailDraftPayload>
   isDisabled: boolean
   email: string | undefined
   onSend: () => void
@@ -157,6 +195,7 @@ const TemplateSection = ({
   section,
   subject,
   body,
+  brandColor,
   disabled,
   onSubjectChange,
   onBodyChange,
@@ -170,9 +209,7 @@ const TemplateSection = ({
   const error = validateTemplate(section, subject, body)
   const subjectError = error?.field === 'subject' ? error.message : null
   const bodyError = error?.field === 'body' ? error.message : null
-  const values = previewSampleValues(window.location.origin)
-  const previewSubject = renderPreview(section, subject, values)
-  const previewBody = renderPreview(section, body, values)
+  const previewPayload = error === null && brandColor !== null ? draftEmailPayload(section, subject, body, brandColor) : null
   const hasActions = actions !== undefined && actions !== null && actions !== false
 
   return (
@@ -181,13 +218,13 @@ const TemplateSection = ({
         {section.title}
       </h3>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor={`${prefix}-subject`}>Subject</Label>
             <Input
               id={`${prefix}-subject`}
               name={section.keys.subject}
-              className={controlClasses}
+              className={CONTROL_HEIGHT}
               autoComplete="off"
               value={subject}
               disabled={disabled}
@@ -225,24 +262,8 @@ const TemplateSection = ({
             <span className={mono}>{'{link}'}</span>.
           </p>
         </div>
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground">
-            Preview <span className="font-normal">· Sample values</span>
-          </p>
-          <div
-            aria-label={`${section.title} preview`}
-            role="group"
-            className="rounded-lg border border-border bg-muted px-3 py-2 text-sm"
-          >
-            <p className={cn('font-medium wrap-anywhere', previewSubject === '' && 'text-muted-foreground')}>
-              {previewSubject || BLANK_PREVIEW}
-            </p>
-            <p
-              className={cn('mt-2 whitespace-pre-wrap wrap-anywhere', previewBody === '' && 'text-muted-foreground')}
-            >
-              {previewBody || BLANK_PREVIEW}
-            </p>
-          </div>
+        <div className="min-w-0">
+          <EmailPreview section={section} payload={previewPayload} />
         </div>
       </div>
       {hasActions && actions}
@@ -254,6 +275,7 @@ const TemplateSectionWithTest = ({
   section,
   subject,
   body,
+  brandColor,
   disabled,
   email,
   onSubjectChange,
@@ -261,21 +283,24 @@ const TemplateSectionWithTest = ({
   mutation,
 }: Omit<TemplateSectionProps, 'actions'> & {
   email: string | undefined
-  mutation: UseMutationResult<void, Error, TestEmailPayload>
+  mutation: UseMutationResult<void, Error, EmailDraftPayload>
 }) => (
   <TemplateSection
     section={section}
     subject={subject}
     body={body}
+    brandColor={brandColor}
     disabled={disabled}
     onSubjectChange={onSubjectChange}
     onBodyChange={onBodyChange}
     actions={
       <TestEmailRow
         mutation={mutation}
-        isDisabled={validateTemplate(section, subject, body) !== null}
+        isDisabled={brandColor === null || validateTemplate(section, subject, body) !== null}
         email={email}
-        onSend={() => mutation.mutate({ template: section.id, subject, body })}
+        onSend={() => {
+          if (brandColor !== null) mutation.mutate(draftEmailPayload(section, subject, body, brandColor))
+        }}
       />
     }
   />
@@ -304,6 +329,8 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
   const canSave = updates.length > 0 && !hasErrors && !save.isPending
   const valueOf = (key: string) => draft[key] ?? savedTemplateValue(page.items, key)
   const setValue = (key: string, value: string) => setDraft((current) => ({ ...current, [key]: value }))
+  const brandColor = valueOf(BRAND_COLOR_KEY)
+  const brandColorError = validateBrandColor(brandColor)
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -325,14 +352,21 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
           <CardDescription>{CARD_DESCRIPTION}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          {TEMPLATE_SECTIONS.map((section, index) => (
-            <div key={section.id} className={cn(index > 0 && 'border-t border-border pt-6')}>
+          <BrandColorField
+            value={brandColor}
+            error={brandColorError}
+            disabled={save.isPending}
+            onChange={(value) => setValue(BRAND_COLOR_KEY, value)}
+          />
+          {TEMPLATE_SECTIONS.map((section) => (
+            <div key={section.id} className="border-t border-border pt-6">
               <TemplateSectionWithTest
                 section={section}
                 email={me.data?.email}
                 mutation={testMutations[section.id]}
                 subject={valueOf(section.keys.subject)}
                 body={valueOf(section.keys.body)}
+                brandColor={brandColorError === null ? brandColor : null}
                 disabled={save.isPending}
                 onSubjectChange={(value) => setValue(section.keys.subject, value)}
                 onBodyChange={(value) => setValue(section.keys.body, value)}

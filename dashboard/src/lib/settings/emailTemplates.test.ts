@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import type { Setting } from './settings'
 import {
+  BRAND_COLOR_PRESETS,
   EMAIL_TEMPLATE_KEYS,
   TEMPLATE_SECTIONS,
+  draftEmailPayload,
   emailTemplateSettings,
   emailTemplateUpdates,
   findPlaceholders,
   hasAllEmailTemplates,
   hasTemplateErrors,
-  previewSampleValues,
-  renderPreview,
+  isPresetSelected,
+  normalizeBrandColor,
+  previewDocument,
   testEmailSentMessage,
+  validateBrandColor,
   validateTemplate,
 } from './emailTemplates'
 import { generalSettings } from './reminders'
@@ -29,6 +33,7 @@ const savedTemplates = (): Setting[] => [
   setting('email_invite_body', 'Hi {name}, go to {link}'),
   setting('email_reset_subject', 'Reset'),
   setting('email_reset_body', 'Go to {link}'),
+  setting('email_brand_color', '#74C8C9'),
 ]
 
 describe('findPlaceholders', () => {
@@ -86,33 +91,14 @@ describe('validateTemplate', () => {
   })
 })
 
-describe('renderPreview', () => {
-  const values = previewSampleValues('https://app.test')
-
-  it('uses the sample values', () => {
-    expect(renderPreview(invite, 'Hi {name} from {actor_name}: {link}', values)).toBe(
-      'Hi Alex Smith from Your Admin: https://app.test/set-password?token=example',
-    )
-  })
-
-  it('leaves unknown placeholders and literal braces as typed', () => {
-    expect(renderPreview(invite, '{nmae} { x }', values)).toBe('{nmae} { x }')
-  })
-
-  it("does not substitute another section's placeholder", () => {
-    expect(renderPreview(reset, 'Hi {actor_name}, {name}', values)).toBe('Hi {actor_name}, Alex Smith')
-  })
-
-  it('returns an empty string for blank text', () => {
-    expect(renderPreview(invite, '  \n ', values)).toBe('')
-  })
-})
-
 describe('key filtering', () => {
   const all = [setting('some_limit', '5'), setting('reminder_hour', '9'), ...savedTemplates()]
 
-  it('keeps only the four template keys', () => {
-    expect(emailTemplateSettings(all).map((item) => item.key)).toEqual([...EMAIL_TEMPLATE_KEYS])
+  it('keeps the four template keys and the brand colour', () => {
+    expect(emailTemplateSettings(all).map((item) => item.key)).toEqual([
+      ...EMAIL_TEMPLATE_KEYS,
+      'email_brand_color',
+    ])
   })
 
   it('removes them from the general settings', () => {
@@ -122,6 +108,7 @@ describe('key filtering', () => {
   it('knows when a key is missing', () => {
     expect(hasAllEmailTemplates(all)).toBe(true)
     expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_reset_body'))).toBe(false)
+    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_brand_color'))).toBe(false)
   })
 })
 
@@ -137,6 +124,19 @@ describe('emailTemplateUpdates', () => {
   it('ignores draft keys that are not template keys', () => {
     expect(emailTemplateUpdates(savedTemplates(), { reminder_hour: '5' })).toEqual([])
   })
+
+  it('sends a changed brand colour uppercase alongside template changes', () => {
+    const draft = { email_brand_color: '#cb9bc3', email_reset_subject: 'New' }
+
+    expect(emailTemplateUpdates(savedTemplates(), draft)).toEqual([
+      { key: 'email_reset_subject', value: 'New' },
+      { key: 'email_brand_color', value: '#CB9BC3' },
+    ])
+  })
+
+  it('treats a colour that differs only in case as unchanged', () => {
+    expect(emailTemplateUpdates(savedTemplates(), { email_brand_color: '#74c8c9' })).toEqual([])
+  })
 })
 
 describe('hasTemplateErrors', () => {
@@ -147,6 +147,10 @@ describe('hasTemplateErrors', () => {
   it('is true when any section draft is invalid', () => {
     expect(hasTemplateErrors(savedTemplates(), { email_reset_body: 'no link' })).toBe(true)
   })
+
+  it('is true when the draft colour is invalid', () => {
+    expect(hasTemplateErrors(savedTemplates(), { email_brand_color: '#74C8C' })).toBe(true)
+  })
 })
 
 describe('testEmailSentMessage', () => {
@@ -156,5 +160,78 @@ describe('testEmailSentMessage', () => {
 
   it('drops the address when the signed-in user is not loaded', () => {
     expect(testEmailSentMessage(undefined)).toBe('Test email sent.')
+  })
+})
+
+describe('validateBrandColor', () => {
+  it.each(['#74C8C9', '#74c8c9', '#000000', '#aBcDeF'])('accepts %s', (value) => {
+    expect(validateBrandColor(value)).toBeNull()
+  })
+
+  it.each(['', '74C8C9', '#74C8C', '#74C8C9F', '#GGGGGG', ' #74C8C9', '#74C8C9 ', '#fff', 'red'])(
+    'rejects %j with the API message',
+    (value) => {
+      expect(validateBrandColor(value)).toBe('Enter a colour like #74C8C9.')
+    },
+  )
+})
+
+describe('normalizeBrandColor', () => {
+  it('uppercases the hex', () => {
+    expect(normalizeBrandColor('#cb9bc3')).toBe('#CB9BC3')
+  })
+})
+
+describe('BRAND_COLOR_PRESETS', () => {
+  it('offers the four palette colours in order', () => {
+    expect(BRAND_COLOR_PRESETS).toEqual([
+      { name: 'Turquoise', hex: '#74C8C9' },
+      { name: 'Lavender', hex: '#CB9BC3' },
+      { name: 'Beige/Gold', hex: '#D6B990' },
+      { name: 'Olive', hex: '#C4BD82' },
+    ])
+  })
+})
+
+describe('isPresetSelected', () => {
+  const [turquoise] = BRAND_COLOR_PRESETS
+
+  it('matches the draft whatever its case', () => {
+    expect(isPresetSelected(turquoise, '#74c8c9')).toBe(true)
+  })
+
+  it('does not match another colour', () => {
+    expect(isPresetSelected(turquoise, '#CB9BC3')).toBe(false)
+  })
+})
+
+describe('draftEmailPayload', () => {
+  it('sends the draft as typed with the colour uppercase', () => {
+    expect(draftEmailPayload(reset, 'Reset {name}', 'Go\n{link}\n', '#d6b990')).toEqual({
+      template: 'password_reset',
+      subject: 'Reset {name}',
+      body: 'Go\n{link}\n',
+      brand_color: '#D6B990',
+    })
+  })
+})
+
+describe('previewDocument', () => {
+  it('makes links open a new context, which the sandbox then blocks', () => {
+    expect(previewDocument('<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>')).toBe(
+      '<!doctype html><html><head><base target="_blank"><meta charset="utf-8"></head><body></body></html>',
+    )
+  })
+
+  it('keeps head attributes and never inserts before the doctype', () => {
+    expect(previewDocument('<!DOCTYPE html><HEAD lang="en"><title>x</title></HEAD>')).toBe(
+      '<!DOCTYPE html><HEAD lang="en"><base target="_blank"><title>x</title></HEAD>',
+    )
+  })
+
+  it('does not mistake a header element for the head', () => {
+    expect(previewDocument('<!doctype html><header>x</header>')).toBe(
+      '<!doctype html><base target="_blank"><header>x</header>',
+    )
   })
 })

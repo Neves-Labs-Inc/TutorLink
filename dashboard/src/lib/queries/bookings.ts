@@ -64,16 +64,31 @@ export type BookingPage = Page<Booking> & { counts_by_kind?: BookingCounts }
 // `counts_by_kind` is the shown week's, from its first page, so the kind tabs can count it.
 export type BookingWeek = { items: Booking[]; total: number; counts_by_kind?: BookingCounts }
 
+// The confirmable checks of `POST /api/bookings` (`api/app/services/booking_write_service.py`).
+export type WarningCode = 'outside_slot' | 'gap' | 'time_off' | 'grade_ceiling'
+
+// One entry of the 409's `warnings[]`: the code to resubmit in `confirm_warnings` and the
+// sentence to show.
+export type BookingWarning = { code: WarningCode; message: string }
+
 export type BookingCreate = {
   child_id: string
-  tutor_id: string
-  subject_id: string
-  availability_id: string
-  home_id: string
+  kind: BookingKind
+  // The Staff member's user id, not a tutor profile id.
+  user_id: string
+  location: BookingLocation
+  // Null when the session is In office.
+  home_id: string | null
+  // Null on an Evaluation.
+  subject_id: string | null
+  // Null on an Evaluation and for an Admin, who has no availability.
+  availability_id: string | null
   scheduled_date: string
   start_time: string
   end_time: string
-  notes?: string | null
+  notes?: string
+  // The codes of a previous 409's `warnings[]` the Office has confirmed.
+  confirm_warnings: WarningCode[]
 }
 
 export type BookingWriteResult = {

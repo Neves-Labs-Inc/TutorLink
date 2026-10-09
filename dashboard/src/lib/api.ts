@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import type { BookingWarning } from '@/lib/queries/bookings'
 import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -58,6 +59,19 @@ export const errorDetail = (error: unknown): string | null => {
   }
 
   return detail
+}
+
+// The `warnings[]` of a refusal the Office may confirm (`POST /api/bookings` 409), or null when
+// the failure carried none and is a plain block.
+export const warningsOf = (error: unknown): BookingWarning[] | null => {
+  let warnings: BookingWarning[] | null = null
+
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data as { warnings?: unknown } | undefined
+    warnings = Array.isArray(data?.warnings) ? (data.warnings as BookingWarning[]) : null
+  }
+
+  return warnings
 }
 
 // The HTTP status of a failed request, so callers can tell a refusal (403) from a conflict (409)

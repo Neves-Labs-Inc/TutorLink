@@ -39,7 +39,8 @@ names below. They never use raw hex, `oklch()`, or Tailwind palette colours (`re
 ### Status tones (badges)
 
 There are four tone pairs, each a `-bg` fill with a matching text colour. They are used **only**
-through `StatusBadge`.
+through `StatusBadge`. The `pending` pair is also used by the booking form's confirmable-warnings
+block.
 
 | Tone | Classes | Meaning |
 |---|---|---|

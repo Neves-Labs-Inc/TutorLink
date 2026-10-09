@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import type { TemplateSectionId } from '@/lib/settings/emailTemplates'
 import type { Setting, SettingUpdate } from '@/lib/settings/settings'
 
 export type SettingsPage = {
@@ -33,4 +34,15 @@ export const updateSettings = async (updates: SettingUpdate[]): Promise<Settings
   const response = await api.patch<SettingsPage>('/api/settings', { updates })
 
   return response.data
+}
+
+export type TestEmailPayload = {
+  template: TemplateSectionId
+  subject: string
+  body: string
+}
+
+// Sends the draft as typed, saved or not, to the signed-in user; 204 on success.
+export const sendTestEmail = async (payload: TestEmailPayload): Promise<void> => {
+  await api.post('/api/settings/email-templates/test', payload)
 }

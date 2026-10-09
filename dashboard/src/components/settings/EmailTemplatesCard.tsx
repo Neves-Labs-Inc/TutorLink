@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -14,7 +14,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { errorDetail } from '@/lib/api'
-import { settingQueries, updateSettings, type SettingsPage } from '@/lib/queries/settings'
+import { meQueries } from '@/lib/queries/me'
+import {
+  sendTestEmail,
+  settingQueries,
+  updateSettings,
+  type SettingsPage,
+  type TestEmailPayload,
+} from '@/lib/queries/settings'
 import {
   TEMPLATE_SECTIONS,
   emailTemplateUpdates,
@@ -22,6 +29,7 @@ import {
   previewSampleValues,
   renderPreview,
   savedTemplateValue,
+  testEmailSentMessage,
   validateTemplate,
   type TemplateSectionConfig,
 } from '@/lib/settings/emailTemplates'
@@ -38,7 +46,7 @@ type TemplateSectionProps = {
   disabled: boolean
   onSubjectChange: (value: string) => void
   onBodyChange: (value: string) => void
-  // Room for ticket 04's test-send button; renders nothing (and no spacing) when empty.
+  // The section's test-send row; renders after the fields/preview grid.
   actions?: ReactNode
 }
 
@@ -89,6 +97,7 @@ const SkeletonSection = ({ hasDivider }: { hasDivider: boolean }) => (
       </div>
       <div className={cn(bar, 'h-48 w-full')} />
     </div>
+    <div className={cn(bar, 'h-11 w-44 md:h-8')} />
   </div>
 )
 
@@ -107,6 +116,41 @@ export const EmailTemplatesSkeleton = () => (
       <div className={cn(bar, 'h-11 w-28 md:h-8')} />
     </CardFooter>
   </Card>
+)
+
+type TestEmailRowProps = {
+  mutation: UseMutationResult<void, Error, TestEmailPayload>
+  isDisabled: boolean
+  email: string | undefined
+  onSend: () => void
+}
+
+const TestEmailRow = ({ mutation, isDisabled, email, onSend }: TestEmailRowProps) => (
+  <div className="flex flex-col items-start gap-1.5">
+    <Button
+      type="button"
+      variant="outline"
+      className="h-11 md:h-8 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+      disabled={isDisabled}
+      // aria-disabled (not disabled) while sending, so keyboard focus stays on the button.
+      aria-disabled={mutation.isPending}
+      onClick={() => {
+        if (!mutation.isPending) onSend()
+      }}
+    >
+      {mutation.isPending ? 'Sending…' : 'Send test email to me'}
+    </Button>
+    {mutation.isSuccess && (
+      <p role="status" className={cn('max-w-full text-sm text-muted-foreground break-words duration-200', FADE_IN)}>
+        {testEmailSentMessage(email)}
+      </p>
+    )}
+    {mutation.isError && (
+      <p role="alert" className={cn('max-w-full text-sm font-medium text-destructive break-words duration-200', FADE_IN)}>
+        {errorDetail(mutation.error) ?? SAVE_FALLBACK_ERROR}
+      </p>
+    )}
+  </div>
 )
 
 const TemplateSection = ({
@@ -180,7 +224,6 @@ const TemplateSection = ({
             You can use <PlaceholderList placeholders={section.placeholders} />. The body must include{' '}
             <span className={mono}>{'{link}'}</span>.
           </p>
-          {hasActions && <div className="flex flex-wrap items-center gap-3">{actions}</div>}
         </div>
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground">
@@ -202,9 +245,41 @@ const TemplateSection = ({
           </div>
         </div>
       </div>
+      {hasActions && actions}
     </section>
   )
 }
+
+const TemplateSectionWithTest = ({
+  section,
+  subject,
+  body,
+  disabled,
+  email,
+  onSubjectChange,
+  onBodyChange,
+  mutation,
+}: Omit<TemplateSectionProps, 'actions'> & {
+  email: string | undefined
+  mutation: UseMutationResult<void, Error, TestEmailPayload>
+}) => (
+  <TemplateSection
+    section={section}
+    subject={subject}
+    body={body}
+    disabled={disabled}
+    onSubjectChange={onSubjectChange}
+    onBodyChange={onBodyChange}
+    actions={
+      <TestEmailRow
+        mutation={mutation}
+        isDisabled={validateTemplate(section, subject, body) !== null}
+        email={email}
+        onSend={() => mutation.mutate({ template: section.id, subject, body })}
+      />
+    }
+  />
+)
 
 export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
   const queryClient = useQueryClient()
@@ -217,6 +292,12 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
       setDraft({})
     },
   })
+
+  // One mutation per section so their sending/result states stay independent.
+  const me = useQuery(meQueries.detail())
+  const inviteTest = useMutation({ mutationFn: sendTestEmail })
+  const resetTest = useMutation({ mutationFn: sendTestEmail })
+  const testMutations = { invite: inviteTest, password_reset: resetTest }
 
   const updates = emailTemplateUpdates(page.items, draft)
   const hasErrors = hasTemplateErrors(page.items, draft)
@@ -232,6 +313,8 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
   const handleDiscard = () => {
     setDraft({})
     save.reset()
+    inviteTest.reset()
+    resetTest.reset()
   }
 
   return (
@@ -244,8 +327,10 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
         <CardContent className="space-y-6">
           {TEMPLATE_SECTIONS.map((section, index) => (
             <div key={section.id} className={cn(index > 0 && 'border-t border-border pt-6')}>
-              <TemplateSection
+              <TemplateSectionWithTest
                 section={section}
+                email={me.data?.email}
+                mutation={testMutations[section.id]}
                 subject={valueOf(section.keys.subject)}
                 body={valueOf(section.keys.body)}
                 disabled={save.isPending}

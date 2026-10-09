@@ -10,6 +10,7 @@ import {
   hasTemplateErrors,
   previewSampleValues,
   renderPreview,
+  testEmailSentMessage,
   validateTemplate,
 } from './emailTemplates'
 import { generalSettings } from './reminders'
@@ -145,5 +146,15 @@ describe('hasTemplateErrors', () => {
 
   it('is true when any section draft is invalid', () => {
     expect(hasTemplateErrors(savedTemplates(), { email_reset_body: 'no link' })).toBe(true)
+  })
+})
+
+describe('testEmailSentMessage', () => {
+  it('names the signed-in email when it is known', () => {
+    expect(testEmailSentMessage('ana@example.com')).toBe('Test email sent to ana@example.com.')
+  })
+
+  it('drops the address when the signed-in user is not loaded', () => {
+    expect(testEmailSentMessage(undefined)).toBe('Test email sent.')
   })
 })

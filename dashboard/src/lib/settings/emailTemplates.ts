@@ -136,3 +136,7 @@ export const hasTemplateErrors = (settings: Setting[], draft: Record<string, str
         draft[section.keys.body] ?? savedTemplateValue(settings, section.keys.body),
       ) !== null,
   )
+
+// Falls back to a bare confirmation when `GET /api/me` has not loaded.
+export const testEmailSentMessage = (email: string | undefined): string =>
+  email === undefined ? 'Test email sent.' : `Test email sent to ${email}.`

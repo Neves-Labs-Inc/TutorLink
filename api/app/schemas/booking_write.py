@@ -23,7 +23,7 @@ import datetime
 import uuid
 from typing import Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
 from app.services.booking_write_service import WarningCode
@@ -34,11 +34,12 @@ class BookingWarning(BaseModel):
     message: str
 
 
-class BookingCreate(BaseModel):
-    child_id: uuid.UUID
+class _BookingWrite(BaseModel):
+    """What a create and an edit both name: the Staff member, the Location, the shape-dependent
+    references and the time range, under the warning contract."""
+
     # The Staff member, as a user (#130).
     user_id: uuid.UUID
-    kind: BookingKind
     location: BookingLocation
     # Required by shape, not by schema: a home Location names `home_id`, a Regular booking
     # `subject_id`, and a Tutor/Manager Regular booking `availability_id`. The service refuses
@@ -49,8 +50,6 @@ class BookingCreate(BaseModel):
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
-    booked_by_guardian_id: uuid.UUID | None = None
-    notes: str | None = None
     # The warning contract (#151): the codes from a previous 409's `warnings[]` the Office has
     # confirmed. The write lands only if every warning raised on this submission is here.
     confirm_warnings: list[WarningCode] = []
@@ -65,6 +64,29 @@ class BookingCreate(BaseModel):
             raise ValueError("end_time must be after start_time")
 
         return self
+
+
+class BookingCreate(_BookingWrite):
+    child_id: uuid.UUID
+    kind: BookingKind
+    booked_by_guardian_id: uuid.UUID | None = None
+    notes: str | None = None
+
+
+class BookingReplace(_BookingWrite):
+    """The body of `PUT /api/bookings/{id}`: a full replacement of the editable fields. The
+    Child, the booking guardian and the notes are not editable here and are not accepted;
+    `kind` may be omitted or equal to the row's, never different. The response is
+    `BookingDetail` (`schemas/booking.py`), the shape the dashboard already reads, with
+    `updated_at` bumped.
+
+    `extra="forbid"`: a body carrying `child_id`, `notes` or `booked_by_guardian_id` is refused
+    rather than silently ignored, so a client that believes it changed one of them learns it
+    did not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: BookingKind | None = None
 
 
 class BookingCreated(BaseModel):

@@ -1,9 +1,19 @@
-"""Booking creation: the rules by kind and Staff role, the warning contract, and the conflict
-guarantee behind them.
+"""Booking creation and in-place editing: the rules by kind and Staff role, the warning
+contract, and the conflict guarantee behind them.
 
 Same transaction contract as every other service here — nothing in this module commits, the
 router owns the boundary. `db.flush()` inside the savepoint is what makes the constraints speak
 before the request ends.
+
+**`create_booking` and `replace_booking` run one pipeline, `_validate`.** The dashboard
+Reschedule edits a booking in place (same id, kind and status) and every create rule is re-run
+against the new values, so the two differ only in what `_Context` carries: on an edit the row
+itself is left out of its own neighbours (`exclude_booking_id`) — it does not overlap, crowd or
+duplicate itself — and rule 8 is skipped, because the Evaluation being edited already exists and
+Franklin allows editing it after the Child was marked (answers.md, planner 3). **Correction
+mode**: when the row's current start is already past, the window and lead-time gates are
+skipped (`skip_window`), so the Office can fix a session that has already happened; a booking
+still in the future is held to them as hard blocks like a create.
 
 **The rules are `_HARD_RULES` and `_WARNING_RULES`, two ordered tables keyed by `BookingKind`,
 and that is the enumeration `docs/api-design.md` ("`POST /api/bookings`") asks for by name.**
@@ -53,7 +63,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -113,8 +123,40 @@ class BookingRequest:
     notes: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class BookingReplacement:
+    """The editable fields of `PUT /api/bookings/{id}`: everything a `BookingRequest` names
+    except the Child, the kind, the booking guardian and the notes, which an edit keeps.
+
+    `kind` is here only to be checked: a body naming a kind other than the row's is refused.
+    """
+
+    user_id: uuid.UUID
+    location: BookingLocation
+    subject_id: uuid.UUID | None
+    availability_id: uuid.UUID | None
+    home_id: uuid.UUID | None
+    scheduled_date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    kind: BookingKind | None
+
+
 class BookingWriteError(Exception):
     """Base class for every failure this module reports."""
+
+
+class BookingNotFound(BookingWriteError):
+    """No `bookings` row for the id being edited — 404."""
+
+
+class BookingNotLive(BookingWriteError):
+    """The row being edited is Completed or Cancelled — 409. Only a live booking is edited in
+    place; a finished one is history."""
+
+
+class BookingKindImmutable(BookingWriteError):
+    """The body names a kind other than the row's — 422. A booking never changes kind."""
 
 
 class BookingReferenceNotFound(BookingWriteError):
@@ -205,6 +247,9 @@ class _Context:
     child: Child
     gap_minutes: int
     teaching: _Teaching | None
+    # The booking being edited, left out of every read that would otherwise find it; `None`
+    # on a create.
+    exclude_booking_id: uuid.UUID | None
 
 
 type _Rule = Callable[[Session, _Context], None]
@@ -228,24 +273,16 @@ def create_booking(
     caller does not speak the contract — the bot — and gets each warning as its rule's own
     exception instead, so a gap it cannot confirm is still `GapNotRespected`.
 
-    The shape is checked before any read, so a Subject on an Evaluation is refused for what it
-    is rather than for an id it never needed. References resolve next, so a mistyped id — or
-    one naming a row an admin has retired — is always REQ-044.24's 400 rather than a confusing
-    rule failure about a row the caller never named. The window gates run ahead of the rules,
-    because a date in the past is refused whatever the Staff member's schedule says.
+    The order of the checks is `_validate`'s.
     """
-    _check_shape(request)
-    settings = scheduling_service.load_scheduling_settings(db)
-    staff = _resolve_staff(db, request=request)
-    _check_role(request, role=staff.role)
-    context = _resolve(db, request=request, gap_minutes=settings.session_gap_minutes)
-
-    _assert_within_window(request, now=now, settings=settings)
-
-    for rule in _HARD_RULES[request.kind]:
-        rule(db, context)
-
-    _run_warning_rules(db, context, confirm_warnings=confirm_warnings)
+    _validate(
+        db,
+        request=request,
+        now=now,
+        confirm_warnings=confirm_warnings,
+        exclude_booking_id=None,
+        skip_window=False,
+    )
 
     booking = Booking(
         child_id=request.child_id,
@@ -286,6 +323,157 @@ def create_booking(
         raise _conflict_of(exc) from exc
 
     return booking
+
+
+def replace_booking(
+    db: Session,
+    *,
+    booking_id: uuid.UUID,
+    replacement: BookingReplacement,
+    now: datetime.datetime,
+    confirm_warnings: frozenset[WarningCode],
+) -> Booking:
+    """The booking edited in place — same id, kind and status — or the first hard block, or
+    the warnings left unconfirmed. Always bumps `updated_at`, even when nothing else changed:
+    the dashboard reads it back as the version it last saw.
+
+    **Locking.** `_resolve` documents the lock order conversation → child → home → bookings
+    and forbids locking a booking ahead of the child and home reads, so the row is first read
+    unlocked for the fields an edit keeps, and locked `FOR UPDATE` only once `_validate` has
+    taken the child and the home. `child_id` and `kind` cannot change under that unlocked read
+    (nothing edits them), but `status` can — a status transition that commits in between is seen
+    when the lock lands, and the edit is refused rather than reviving a booking just cancelled.
+    The lock then holds for the rules, the write and the flush, so two edits of one booking
+    serialise instead of both passing the rules against the same neighbours.
+    """
+    row = db.get(Booking, booking_id)
+
+    if row is None:
+        raise BookingNotFound
+    if replacement.kind is not None and replacement.kind is not row.kind:
+        raise BookingKindImmutable
+    _check_live(row)
+
+    request = _request_of(row, replacement)
+    # Correction mode: a session that has already started is being corrected, not booked, and
+    # the window gates would refuse every correction of a past session.
+    starts_at = datetime.datetime.combine(row.scheduled_date, row.start_time)
+    is_past = starts_at <= now
+
+    _validate(
+        db,
+        request=request,
+        now=now,
+        confirm_warnings=confirm_warnings,
+        exclude_booking_id=row.id,
+        skip_window=is_past,
+        before_rules=lambda: _check_live(_lock(db, row)),
+    )
+
+    # The same second layer as the create (see there): the EXCLUDE and the partial unique
+    # index hold against what the rules could not see, inside a savepoint so the `Session`
+    # survives the rollback. The assignments are *inside* `begin_nested` for the reason the
+    # create's comment gives: `_take_snapshot` flushes dirty state before emitting SAVEPOINT,
+    # so a row dirtied above the `with` would be UPDATEd in the outer transaction and a
+    # constraint failure there poisons the `Session`.
+    try:
+        with db.begin_nested():
+            row.user_id = request.user_id
+            row.location = request.location
+            row.subject_id = request.subject_id
+            row.availability_id = request.availability_id
+            row.home_id = request.home_id
+            row.scheduled_date = request.scheduled_date
+            row.start_time = request.start_time
+            row.end_time = request.end_time
+            # Set here rather than left to the column's `onupdate`: that fires only when some
+            # column changed, and an edit restating the current values must still bump it.
+            row.updated_at = datetime.datetime.now(tz=datetime.UTC)
+            db.flush()
+    except IntegrityError as exc:
+        raise _conflict_of(exc) from exc
+
+    return row
+
+
+def _validate(
+    db: Session,
+    *,
+    request: BookingRequest,
+    now: datetime.datetime,
+    confirm_warnings: frozenset[WarningCode] | None,
+    exclude_booking_id: uuid.UUID | None,
+    skip_window: bool,
+    before_rules: Callable[[], None] = lambda: None,
+) -> None:
+    """The one rule pipeline, for a create and for an edit.
+
+    The shape is checked before any read, so a Subject on an Evaluation is refused for what it
+    is rather than for an id it never needed. References resolve next, so a mistyped id — or
+    one naming a row an admin has retired — is always REQ-044.24's 400 rather than a confusing
+    rule failure about a row the caller never named. The window gates run ahead of the rules,
+    because a date in the past is refused whatever the Staff member's schedule says.
+
+    `before_rules` runs once the references are resolved — and so once the child and the home
+    are share-locked — and before any rule reads a booking: it is where an edit takes its own
+    row's lock without breaking `_resolve`'s lock order.
+    """
+    _check_shape(request)
+    settings = scheduling_service.load_scheduling_settings(db)
+    staff = _resolve_staff(db, request=request)
+    _check_role(request, role=staff.role)
+    context = _resolve(
+        db,
+        request=request,
+        gap_minutes=settings.session_gap_minutes,
+        exclude_booking_id=exclude_booking_id,
+    )
+    before_rules()
+
+    if not skip_window:
+        _assert_within_window(request, now=now, settings=settings)
+
+    for rule in _HARD_RULES[request.kind]:
+        rule(db, context)
+
+    _run_warning_rules(db, context, confirm_warnings=confirm_warnings)
+
+
+def _lock(db: Session, row: Booking) -> Booking:
+    """The row `FOR UPDATE`, re-read so a status changed by a concurrent transaction is seen
+    (`populate_existing`, as `_resolve` does for the child)."""
+    return db.execute(
+        select(Booking)
+        .where(Booking.id == row.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+
+
+def _check_live(row: Booking) -> None:
+    if row.status.value not in LIVE_BOOKING_STATUSES:
+        raise BookingNotLive
+
+
+def _request_of(row: Booking, replacement: BookingReplacement) -> BookingRequest:
+    """The full request the rules judge: the row's immutable fields with the edit's values."""
+    return BookingRequest(
+        child_id=row.child_id,
+        user_id=replacement.user_id,
+        kind=row.kind,
+        location=replacement.location,
+        subject_id=replacement.subject_id,
+        availability_id=replacement.availability_id,
+        home_id=replacement.home_id,
+        scheduled_date=replacement.scheduled_date,
+        start_time=replacement.start_time,
+        end_time=replacement.end_time,
+        # Not editable here and so not re-judged: the row keeps its guardian untouched. Passing
+        # it through would make a Guardian deactivated since the booking block every edit of it
+        # with a 400 naming an id the body cannot carry.
+        booked_by_guardian_id=None,
+        notes=row.notes,
+    )
 
 
 def _conflict_of(exc: IntegrityError) -> BookingWriteError:
@@ -337,6 +525,7 @@ def _rule_2_no_live_overlap(db: Session, context: _Context) -> None:
         scheduled_date=request.scheduled_date,
         start_time=request.start_time,
         end_time=request.end_time,
+        exclude_booking_id=context.exclude_booking_id,
     ):
         raise BookingOverlaps
 
@@ -354,6 +543,7 @@ def _rule_3_gap_respected(db: Session, context: _Context, teaching: _Teaching) -
         start_time=request.start_time,
         end_time=request.end_time,
         gap_minutes=context.gap_minutes,
+        exclude_booking_id=context.exclude_booking_id,
     ):
         raise GapNotRespected
 
@@ -449,19 +639,29 @@ def _rule_7_guardian_linked_to_child(db: Session, context: _Context) -> None:
 
 def _rule_8_child_not_evaluated(db: Session, context: _Context) -> None:
     """Rule 8 — 422 (#133). An Evaluation is for a Child not yet Evaluated. Clearing the mark
-    (`child_evaluation_service`, which this module never touches) reopens it."""
+    (`child_evaluation_service`, which this module never touches) reopens it.
+
+    Not applied to an edit: the Evaluation already exists, and the Office may move it after
+    the Child was marked (answers.md, planner 3). The Completed → Confirmed revert stays strict
+    and is `booking_status_service`'s, not this rule's.
+    """
+    if context.exclude_booking_id is not None:
+        return
+
     if context.child.evaluated_at is not None:
         raise ChildAlreadyEvaluated
 
 
 def _rule_9_no_live_evaluation(db: Session, context: _Context) -> None:
     """Rule 9 — 409 (#133), the readable half of `uq_bookings_one_live_evaluation_per_child`.
-    Completed and Cancelled Evaluations do not count."""
+    Completed and Cancelled Evaluations do not count, and neither does the Evaluation being
+    edited: only *another* live one refuses."""
     live = db.scalars(
         select(Booking.id).where(
             Booking.child_id == context.request.child_id,
             Booking.kind == BookingKind.EVALUATION,
             Booking.status.in_(LIVE_BOOKING_STATUSES),
+            _not_the_booking(context.exclude_booking_id),
         )
     ).first()
 
@@ -570,7 +770,13 @@ def _resolve_staff(db: Session, *, request: BookingRequest) -> User:
     return staff
 
 
-def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Context:
+def _resolve(
+    db: Session,
+    *,
+    request: BookingRequest,
+    gap_minutes: int,
+    exclude_booking_id: uuid.UUID | None,
+) -> _Context:
     """The rows the rules read, and REQ-044.24's 400 when one of them is missing or retired.
 
     `retirable` is every reference that carries `is_active`, and a deactivated one is refused
@@ -637,6 +843,7 @@ def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Cont
         child=child,
         gap_minutes=gap_minutes,
         teaching=_resolve_teaching(db, request=request),
+        exclude_booking_id=exclude_booking_id,
     )
 
 
@@ -696,12 +903,18 @@ def _overlapping_booking(
     scheduled_date: datetime.date,
     start_time: datetime.time,
     end_time: datetime.time,
+    exclude_booking_id: uuid.UUID | None,
 ) -> bool:
     """Rule 2's pre-check, named rather than inline so a test can reach past it to the
     constraint (D-I). Nothing else in this module may compare bookings by hand."""
     return any(
         scheduling_service.overlaps(start_time, end_time, booking.start_time, booking.end_time)
-        for booking in _live_bookings(db, user_id=user_id, scheduled_date=scheduled_date)
+        for booking in _live_bookings(
+            db,
+            user_id=user_id,
+            scheduled_date=scheduled_date,
+            exclude_booking_id=exclude_booking_id,
+        )
     )
 
 
@@ -714,6 +927,7 @@ def _gap_encroached(
     start_time: datetime.time,
     end_time: datetime.time,
     gap_minutes: int,
+    exclude_booking_id: uuid.UUID | None,
 ) -> bool:
     """Rule 3's pre-check. Named for the same reason as `_overlapping_booking`, and reading the
     same rows through `_live_bookings` so the two rules can never disagree about which bookings
@@ -728,26 +942,46 @@ def _gap_encroached(
                 location, booking.location, gap_minutes=gap_minutes
             ),
         )
-        for booking in _live_bookings(db, user_id=user_id, scheduled_date=scheduled_date)
+        for booking in _live_bookings(
+            db,
+            user_id=user_id,
+            scheduled_date=scheduled_date,
+            exclude_booking_id=exclude_booking_id,
+        )
     )
 
 
 def _live_bookings(
-    db: Session, *, user_id: uuid.UUID, scheduled_date: datetime.date
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    scheduled_date: datetime.date,
+    exclude_booking_id: uuid.UUID | None,
 ) -> list[Booking]:
     """`LIVE_BOOKING_STATUSES` is the single definition of a booking that counts — the same set
     the exclusion constraint's `WHERE` covers, so a cancelled booking frees its range here
     exactly as it does in the database. Keyed on the Staff member's user, as the constraint is,
-    and of either kind: an Evaluation is a neighbour like any other session."""
+    and of either kind: an Evaluation is a neighbour like any other session. The booking being
+    edited is not its own neighbour."""
     return list(
         db.scalars(
             select(Booking).where(
                 Booking.user_id == user_id,
                 Booking.scheduled_date == scheduled_date,
                 Booking.status.in_(LIVE_BOOKING_STATUSES),
+                _not_the_booking(exclude_booking_id),
             )
         ).all()
     )
+
+
+def _not_the_booking(exclude_booking_id: uuid.UUID | None) -> ColumnElement[bool]:
+    """Every row on a create; every row but the one being edited on an edit. Spelled out
+    because `Booking.id != None` would render as `IS NOT NULL`, which is right by accident."""
+    if exclude_booking_id is None:
+        return true()
+
+    return Booking.id != exclude_booking_id
 
 
 def _approved_exceptions(

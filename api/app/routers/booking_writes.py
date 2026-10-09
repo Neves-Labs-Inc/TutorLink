@@ -1,13 +1,17 @@
-"""Booking creation.
+"""Booking creation and the dashboard Reschedule, `PUT /api/bookings/{id}`.
 
 Shares the `/api/bookings` prefix with `routers/bookings.py` and `routers/booking_status.py`
-by design, so the three can be built and reviewed separately; the four paths do not shadow one
+by design, so the three can be built and reviewed separately; the paths do not shadow one
 another.
 
-`POST /api/bookings` is **Office only** (`docs/api-design.md`) and so takes `OfficePrincipal`.
-It deliberately does **not** take `TutorScope` (`CONSTITUTION.md` §15): the validation touches
-five tutor-owned mappers with no tutor filter to apply, and an unread scope would arm
+Both routes are **Office only** (`docs/api-design.md`) and so take `OfficePrincipal`. They
+deliberately do **not** take `TutorScope` (`CONSTITUTION.md` §15): the validation touches five
+tutor-owned mappers with no tutor filter to apply, and an unread scope would arm
 `_guard_unapplied_scope` and turn every one of those queries into a 500.
+
+`PUT` answers with `BookingDetail`, the shape `GET /api/bookings/{id}` returns, so the
+dashboard's edit form reads back the row it already knows how to show, `updated_at` included.
+Neither route sends a WhatsApp message: a dashboard write is the Office's to announce.
 
 The clock is read here rather than in the service, through `clock.business_now`, which hands
 the service a **naive** datetime in the business wall-clock (`BUSINESS_TIMEZONE`):
@@ -29,6 +33,7 @@ into 400.
 hard refusals use, so a rule reads the same whether it blocked or warned.
 """
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -38,12 +43,23 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
-from app.schemas.booking_write import BookingCreate, BookingCreated, BookingWarning
+from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
+from app.schemas.booking import BookingDetail, booking_detail
+from app.schemas.booking_write import (
+    BookingCreate,
+    BookingCreated,
+    BookingReplace,
+    BookingWarning,
+)
 from app.services import clock
 from app.services.booking_write_service import (
     BlockedByException,
+    BookingKindImmutable,
+    BookingNotFound,
+    BookingNotLive,
     BookingOverlaps,
     BookingReferenceNotFound,
+    BookingReplacement,
     BookingRequest,
     BookingShapeInvalid,
     BookingWriteError,
@@ -60,8 +76,11 @@ from app.services.booking_write_service import (
     UnconfirmedWarnings,
     WarningCode,
     create_booking,
+    replace_booking,
 )
 
+BOOKING_NOT_LIVE_ERROR = "Only a pending or confirmed booking can be edited"
+BOOKING_KIND_IMMUTABLE_ERROR = "A booking's kind cannot be changed"
 REFERENCE_NOT_FOUND_ERROR = "One of the ids in the request does not exist"
 OUTSIDE_AVAILABILITY_ERROR = "That time is not inside the availability range that was named"
 BOOKING_OVERLAPS_ERROR = "That Staff member already has a booking overlapping this time"
@@ -88,6 +107,9 @@ WARNING_MESSAGES: dict[WarningCode, str] = {
 }
 
 _STATUS_BY_ERROR: tuple[tuple[type[BookingWriteError], int, str], ...] = (
+    (BookingNotFound, status.HTTP_404_NOT_FOUND, BOOKING_NOT_FOUND_ERROR),
+    (BookingNotLive, status.HTTP_409_CONFLICT, BOOKING_NOT_LIVE_ERROR),
+    (BookingKindImmutable, status.HTTP_422_UNPROCESSABLE_CONTENT, BOOKING_KIND_IMMUTABLE_ERROR),
     (BookingReferenceNotFound, status.HTTP_400_BAD_REQUEST, REFERENCE_NOT_FOUND_ERROR),
     (OutsideAvailability, status.HTTP_400_BAD_REQUEST, OUTSIDE_AVAILABILITY_ERROR),
     (DateOutOfWindow, status.HTTP_400_BAD_REQUEST, DATE_OUT_OF_WINDOW_ERROR),
@@ -134,6 +156,28 @@ def create(
     return _created(booking)
 
 
+@router.put("/{booking_id}", response_model=BookingDetail)
+def replace(
+    booking_id: uuid.UUID, payload: BookingReplace, user: OfficePrincipal, db: DbSession
+) -> BookingDetail | JSONResponse:
+    try:
+        booking = replace_booking(
+            db,
+            booking_id=booking_id,
+            replacement=_replacement(payload),
+            now=clock.business_now(),
+            confirm_warnings=frozenset(payload.confirm_warnings),
+        )
+    except UnconfirmedWarnings as exc:
+        return _warnings_response(exc)
+    except BookingWriteError as exc:
+        raise _http_error(exc) from exc
+
+    db.commit()
+
+    return booking_detail(booking)
+
+
 def _http_error(exc: BookingWriteError) -> HTTPException:
     for error, status_code, detail in _STATUS_BY_ERROR:
         if isinstance(exc, error):
@@ -169,6 +213,20 @@ def _request(payload: BookingCreate) -> BookingRequest:
         end_time=payload.end_time,
         booked_by_guardian_id=payload.booked_by_guardian_id,
         notes=payload.notes,
+    )
+
+
+def _replacement(payload: BookingReplace) -> BookingReplacement:
+    return BookingReplacement(
+        user_id=payload.user_id,
+        location=payload.location,
+        subject_id=payload.subject_id,
+        availability_id=payload.availability_id,
+        home_id=payload.home_id,
+        scheduled_date=payload.scheduled_date,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        kind=payload.kind,
     )
 
 

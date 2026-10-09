@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 
 import { chromeFor } from '@/lib/auth/auth'
 import { cn } from '@/lib/utils'
+import Toaster from '@/components/shared/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { AdminSidebar } from './AdminSidebar'
 import { TutorNav } from './TutorNav'
@@ -28,6 +29,7 @@ export const AppShell = ({ children }: AppShellProps) => {
           {children}
         </main>
       </div>
+      <Toaster aboveTabBar={isTutor} />
     </div>
   )
 }

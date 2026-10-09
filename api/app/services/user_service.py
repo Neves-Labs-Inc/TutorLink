@@ -8,7 +8,11 @@ change anyone's role to `developer`, and may not write to an existing developer 
 (email, name, role, active flag, and later invites). A developer may do all of it.
 
 **Nobody sets a password here.** Accounts are created with no password (`hashed_password` is
-NULL) and get one through an invite.
+NULL) and get one through an Invite: `invite_user` emails a single-use link, and a user shows
+as Invited while that link is live. The send happens before the caller commits, inside a
+savepoint with the link row, so a refused send leaves no link behind (answers 04 #7): Invited
+only ever shows when a mail went out. Changing a user's email revokes every live link they
+hold, since each was sent to the old address.
 Managers are ordinary accounts on this boundary: an admin or developer creates, edits, promotes,
 demotes and deactivates them (#108). A Manager never reaches this module, since `/api/users` is
 admin-only.
@@ -33,16 +37,27 @@ at all, and a failure between the two writes is one rollback rather than a perso
 profile or a profile whose person never landed.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import UserRole
+from app.models.password_link import PasswordLinkPurpose
 from app.models.user import User
+from app.services.auth_service import normalise_email
+from app.services.mail_service import public_url, send_email
+from app.services.mail_templates import invite_email
 from app.services.name_rules import normalize_name
+from app.services.password_link_service import issue_link, revoke_links_for_user
 from app.services.tutor_service import PROFILE_ROLES, create_profile
+
+SET_PASSWORD_PATH = "/set-password"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +91,14 @@ class ProfileAlreadyLinked(UserServiceError):
 
 class InvalidUserShape(UserServiceError):
     """A Tutor or Manager with no profile, or an Admin or Developer with one."""
+
+
+class UserHasPassword(UserServiceError):
+    """An Invite for a user who can already sign in."""
+
+
+class UserInactive(UserServiceError):
+    """An Invite for a deactivated user (answers 04 #3)."""
 
 
 def _visible(is_active: bool) -> Select[tuple[User]]:
@@ -183,7 +206,9 @@ def update_user(
     role: UserRole | None,
     is_active: bool | None,
     name: str | None,
+    now: datetime,
 ) -> User:
+    """`now` dates the revocation of the user's links when `email` changes address."""
     user = get_user(db, user_id=user_id)
 
     # Both directions. An admin may not promote anyone to developer (#13), and may not write to
@@ -197,11 +222,15 @@ def update_user(
     name = normalize_name(name) if name is not None else None
 
     if email is not None:
-        normalized_email = email.strip().lower()
+        normalized_email = normalise_email(email)
         clash = db.scalars(select(User).where(User.email == normalized_email)).first()
 
         if clash is not None and clash.id != user.id:
             raise EmailTaken
+
+        # Every live link was sent to the old address; an unchanged address is not a change.
+        if normalized_email != user.email:
+            revoke_links_for_user(db, user_id=user.id, now=now)
 
         user.email = normalized_email
 
@@ -231,6 +260,45 @@ def deactivate_user(db: Session, *, actor_role: UserRole, user_id: uuid.UUID) ->
 
     user.is_active = False
     db.flush()
+
+    return user
+
+
+def invite_user(
+    db: Session, *, actor_role: UserRole, actor_name: str, user_id: uuid.UUID, now: datetime
+) -> User:
+    """Issue the user a single-use Invite link and email it, naming `actor_name` as the sender.
+
+    Every check runs before anything is written. The link row and the send share a savepoint:
+    a send that raises (`MailServiceError`) unwinds the row and the revocation of the older
+    links, and the exception reaches the caller with nothing kept.
+
+    The user row is locked for the transaction, so two Invites at once (a double-clicked
+    Resend, two Admins) run one after the other and the second revokes the first's link: at
+    most one live Invite, as `password_link_service` promises.
+    """
+    user = db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
+
+    if user is None:
+        raise UserNotFound
+
+    if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
+        raise RoleNotPermitted
+
+    if user.hashed_password is not None:
+        raise UserHasPassword
+
+    if not user.is_active:
+        raise UserInactive
+
+    with db.begin_nested():
+        _link, token = issue_link(db, user=user, purpose=PasswordLinkPurpose.INVITE, now=now)
+        rendered = invite_email(
+            name=user.name,
+            actor_name=actor_name,
+            link=public_url(f"{SET_PASSWORD_PATH}?token={token}"),
+        )
+        send_email(to=user.email, subject=rendered.subject, text=rendered.text, html=rendered.html)
 
     return user
 

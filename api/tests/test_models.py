@@ -30,6 +30,8 @@ NON_ERD_TABLES = {
     "refresh_tokens",
     # Ticket 11: which weeks' reminder runs finished, for the Staff Reminders page.
     "booking_reminder_runs",
+    # Spec 04: the hashed Invite and password-reset links, as `refresh_tokens`.
+    "password_links",
 }
 
 

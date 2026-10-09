@@ -20,6 +20,7 @@ pass every test and fail in production.
 """
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +31,7 @@ from app.models.enums import UserRole
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.services.name_rules import normalize_name
+from app.services.password_link_service import revoke_links_for_user
 from app.services.phone_service import normalize_phone_number
 
 # The roles that carry a teaching profile, and the only ones the bot offers (#130).
@@ -63,7 +65,8 @@ class TutorUniqueViolation(TutorServiceError):
 
 
 class TutorAccountForbidden(TutorServiceError):
-    """The actor may not write this person's account through their profile."""
+    """The actor may not write this person's account through their profile, or a Manager
+    tried to change a login email."""
 
 
 def assert_may_write_person(*, actor_role: UserRole, tutor: Tutor) -> None:
@@ -73,6 +76,10 @@ def assert_may_write_person(*, actor_role: UserRole, tutor: Tutor) -> None:
     boundary seen from the Tutors page. A Manager may write Tutors and nobody else (not a peer
     Manager, not an Admin or Developer who kept a profile after promotion); an Admin may write
     anyone but a Developer; a Developer may write anyone.
+
+    A login email is narrower still: it is an Admin's to change (answers 04 #11), which
+    `update_tutor` checks on top of this, since the address a password link goes to is the
+    account.
     """
     target = tutor.user.role
 
@@ -281,10 +288,17 @@ def update_tutor(
     phone_number: str | None,
     bio: str | None,
     is_active: bool | None,
+    now: datetime,
 ) -> Tutor:
     """`name`, `email` and `is_active` are the person's and are written to the user; a chosen
     name clears `name_is_default`. `phone_number` and `bio` are the profile's. The actor must
     be allowed to write this person (`assert_may_write_person`), checked before any edit.
+
+    A login email is an Admin's to change: a Manager sending a *different* `email` is refused
+    (`TutorAccountForbidden`), even for a Tutor, so a Manager cannot point a login at an
+    address they control. Echoing the stored address back, in any casing, is not a change: the
+    dashboard form always sends it. Changing the address revokes every live password link the
+    person holds, dated `now`, since each was sent to the old one.
 
     The duplicate checks exclude this person, so a `PATCH` echoing back the email or number
     already stored — in any format, since both sides are normalised first — is a no-op on that
@@ -296,15 +310,21 @@ def update_tutor(
     """
     tutor = get_tutor(db, tutor_id=tutor_id)
     assert_may_write_person(actor_role=actor_role, tutor=tutor)
+    normalized_email = email.strip().lower() if email is not None else None
+    email_changed = normalized_email is not None and normalized_email != tutor.user.email
+
+    # Refused before any other check: the dashboard form always echoes the stored address, so
+    # only a real change is the Admin-only write.
+    if email_changed and actor_role is UserRole.MANAGER:
+        raise TutorAccountForbidden
+
     cleaned_name = normalize_name(name) if name is not None else None
-    normalized_email: str | None = None
     canonical_phone_number: str | None = None
 
-    if email is not None:
-        normalized_email = email.strip().lower()
-
-        if _email_taken(db, email=normalized_email, exclude_user_id=tutor.user_id):
-            raise TutorEmailTaken
+    if normalized_email is not None and _email_taken(
+        db, email=normalized_email, exclude_user_id=tutor.user_id
+    ):
+        raise TutorEmailTaken
 
     if phone_number is not None:
         canonical_phone_number = normalize_phone_number(db, raw=phone_number)
@@ -340,6 +360,9 @@ def update_tutor(
             db.flush()
     except IntegrityError as exc:
         raise TutorUniqueViolation from exc
+
+    if email_changed:
+        revoke_links_for_user(db, user_id=tutor.user_id, now=now)
 
     return tutor
 

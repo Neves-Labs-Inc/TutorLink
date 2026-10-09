@@ -40,6 +40,7 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
+from app.models.password_link import PasswordLink, PasswordLinkPurpose
 from app.models.refresh_token import RefreshToken
 from app.models.reminder_consent import ReminderConsent
 from app.models.subject import Subject
@@ -85,6 +86,8 @@ __all__ = [
     "Home",
     "LoginAttempt",
     "Message",
+    "PasswordLink",
+    "PasswordLinkPurpose",
     "MessageAuthor",
     "MessageStatus",
     "RefreshToken",

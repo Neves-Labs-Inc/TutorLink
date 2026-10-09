@@ -128,6 +128,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/users"): Access.ADMIN,
     ("PATCH", "/api/users/{user_id}"): Access.ADMIN,
     ("DELETE", "/api/users/{user_id}"): Access.ADMIN,
+    ("POST", "/api/users/{user_id}/invite"): Access.ADMIN,
     ("GET", "/api/settings"): Access.ADMIN,
     ("PATCH", "/api/settings"): Access.ADMIN,
 }

@@ -13,8 +13,10 @@ can name one and every way that can fail. Its phone numbers come from the reserv
 is why it is the fixtures rather than the payloads that carry arbitrary strings.
 """
 
+import hashlib
 import itertools
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,11 +24,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import UserRole
+from app.models.password_link import PasswordLink
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.users import INVALID_SHAPE_ERROR
 from app.security import create_access_token, hash_password, verify_password
+from tests.fake_mail import FakeMail, token_from
 
 PASSWORD = "correct horse battery staple"
 DISPLAY_NAME = "Ana Souza"
@@ -1001,3 +1005,244 @@ def test_a_manager_is_refused_users_and_settings(
     assert response.status_code == 403
     db.refresh(target)
     assert (target.name, target.is_active) == ("Test User", True)
+
+
+# --- invites ---------------------------------------------------------------------------------
+
+INVITE_DAYS = 7
+# How far a route's own `datetime.now(UTC)` may drift from the test's reading of the clock.
+CLOCK_SLACK = timedelta(minutes=1)
+
+
+def _make_invitee(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
+    user = _make_user(db, role=role, is_active=is_active)
+    user.hashed_password = None
+    db.flush()
+    return user
+
+
+def _sha256(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _links(db: Session, user: User) -> list[PasswordLink]:
+    return list(
+        db.scalars(
+            select(PasswordLink)
+            .where(PasswordLink.user_id == user.id)
+            .order_by(PasswordLink.created_at, PasswordLink.id)
+        ).all()
+    )
+
+
+def _live_links(db: Session, user: User) -> list[PasswordLink]:
+    now = datetime.now(UTC)
+    return [
+        link
+        for link in _links(db, user)
+        if link.used_at is None and link.revoked_at is None and link.expires_at > now
+    ]
+
+
+def test_inviting_a_user_without_a_login_emails_a_single_use_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    admin.name = "Rita Admin"
+    invitee = _make_invitee(db)
+
+    response = api.post(f"/api/users/{invitee.id}/invite", headers=_auth(admin))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(invitee.id)
+    assert body["has_password"] is False
+    expires_at = datetime.fromisoformat(body["invite_expires_at"])
+    expected = datetime.now(UTC) + timedelta(days=INVITE_DAYS)
+    assert abs(expires_at - expected) < CLOCK_SLACK
+
+    assert len(fake_mail.sent) == 1
+    email = fake_mail.sent[0]
+    assert email.to == invitee.email
+    assert email.subject == "You're invited to TutorLink"
+    assert "Rita Admin" in email.text
+    assert "http://testserver/set-password?token=" in email.text
+    assert "expires in 7 days" in email.text
+    assert email.html is not None and "http://testserver/set-password?token=" in email.html
+
+    token = token_from(email)
+    (link,) = _links(db, invitee)
+    assert link.token_hash == _sha256(token)
+    assert link.email == invitee.email
+    # The plaintext lives in the email alone: no column of the row carries it.
+    stored_values = [str(value) for value in vars(link).values() if value is not None]
+    assert not any(token in value for value in stored_values)
+
+
+def test_a_second_invite_replaces_the_first_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+    headers = _auth(admin)
+
+    first = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+    second = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    assert (first.status_code, second.status_code) == (200, 200)
+    by_hash = {link.token_hash: link for link in _links(db, invitee)}
+    older = by_hash[_sha256(token_from(fake_mail.sent[0]))]
+    newer = by_hash[_sha256(token_from(fake_mail.sent[1]))]
+    assert older.revoked_at is not None
+    assert newer.revoked_at is None
+    assert _live_links(db, invitee) == [newer]
+
+
+def test_a_user_with_a_password_cannot_be_invited(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+
+    response = api.post(f"/api/users/{target.id}/invite", headers=_auth(admin))
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "That user already has a password"
+    assert fake_mail.sent == []
+    assert _links(db, target) == []
+
+
+def test_a_deactivated_user_cannot_be_invited(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    dormant = _make_invitee(db, is_active=False)
+
+    response = api.post(f"/api/users/{dormant.id}/invite", headers=_auth(admin))
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Deactivated users cannot be invited"
+    assert fake_mail.sent == []
+    assert _links(db, dormant) == []
+
+
+def test_only_a_developer_may_invite_a_developer(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    target = _make_invitee(db, role=UserRole.DEVELOPER)
+
+    refused = api.post(f"/api/users/{target.id}/invite", headers=_auth(admin))
+    allowed = api.post(f"/api/users/{target.id}/invite", headers=_auth(developer))
+
+    assert refused.status_code == 403
+    assert allowed.status_code == 200
+    assert len(fake_mail.sent) == 1
+
+
+def test_a_manager_may_not_invite(api: TestClient, db: Session, fake_mail: FakeMail) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    target = _make_invitee(db)
+
+    response = api.post(f"/api/users/{target.id}/invite", headers=_auth(manager))
+
+    assert response.status_code == 403
+    assert fake_mail.sent == []
+
+
+def test_inviting_an_unknown_id_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(f"/api/users/{uuid.uuid4()}/invite", headers=_auth(admin))
+
+    assert response.status_code == 404
+
+
+def test_a_failed_send_keeps_no_link_and_the_user_is_not_invited(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+    headers = _auth(admin)
+    fake_mail.fail_next()
+
+    response = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Could not send the invite email. Try again."
+    assert fake_mail.sent == []
+    assert _links(db, invitee) == []
+    shown = api.get(f"/api/users/{invitee.id}", headers=headers).json()
+    assert shown["invite_expires_at"] is None
+    assert shown["has_password"] is False
+
+
+def test_a_failed_resend_keeps_the_earlier_link_live(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    """The savepoint unwinds the revocation too: a resend that never went out changes nothing."""
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+    fake_mail.fail_next()
+
+    response = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    assert response.status_code == 502
+    (live,) = _live_links(db, invitee)
+    assert live.token_hash == _sha256(token_from(fake_mail.sent[0]))
+
+
+def test_changing_the_email_revokes_every_live_link(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    response = api.patch(
+        f"/api/users/{invitee.id}", headers=headers, json={"email": "moved@example.com"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["invite_expires_at"] is None
+    assert _live_links(db, invitee) == []
+
+
+def test_echoing_the_same_email_in_any_casing_leaves_the_links_alone(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    response = api.patch(
+        f"/api/users/{invitee.id}", headers=headers, json={"email": invitee.email.upper()}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["invite_expires_at"] is not None
+    assert len(_live_links(db, invitee)) == 1
+
+
+def test_the_list_shows_an_expiry_only_for_a_live_invite(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    invited = _make_invitee(db)
+    lapsed = _make_invitee(db)
+    never = _make_invitee(db)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invited.id}/invite", headers=headers)
+    api.post(f"/api/users/{lapsed.id}/invite", headers=headers)
+    (stale,) = _links(db, lapsed)
+    stale.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.flush()
+
+    items = api.get("/api/users?page_size=100", headers=headers).json()["items"]
+
+    by_id = {item["id"]: item["invite_expires_at"] for item in items}
+    assert by_id[str(invited.id)] is not None
+    assert by_id[str(lapsed.id)] is None
+    assert by_id[str(never.id)] is None
+    assert by_id[str(admin.id)] is None

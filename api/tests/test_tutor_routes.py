@@ -22,6 +22,7 @@ takes one from `0180`…`0199`, which the generator never reaches.
 
 import itertools
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -32,11 +33,13 @@ from sqlalchemy.orm import Session
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import UserRole
+from app.models.password_link import PasswordLink, PasswordLinkPurpose
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.security import create_access_token, hash_password
 from app.services import tutor_service
+from app.services.password_link_service import issue_link
 
 PASSWORD = "correct horse battery staple"
 ALLOWED_FAILURE_CODES = frozenset({400, 401, 403, 404, 409})
@@ -1030,20 +1033,15 @@ def test_writing_a_profile_is_writing_its_account(
     profile.user.role = target_role
     db.flush()
 
+    # No `email`: a login email is an Admin's to change, whoever the target is (see below).
     patched = api.patch(
-        f"/api/tutors/{profile.id}",
-        headers=_auth(actor),
-        json={"email": "taken.over@example.com", "is_active": False},
+        f"/api/tutors/{profile.id}", headers=_auth(actor), json={"is_active": False}
     )
     deleted = api.delete(f"/api/tutors/{profile.id}", headers=_auth(actor))
 
     assert (patched.status_code, deleted.status_code) == (expected, expected)
     db.refresh(profile.user)
-    if expected == 403:
-        assert (profile.user.email, profile.user.is_active) != ("taken.over@example.com", False)
-        assert profile.user.is_active is True
-    else:
-        assert profile.user.is_active is False
+    assert profile.user.is_active is (expected == 403)
 
 
 @pytest.mark.parametrize("name", ["", "   ", "x" * 256, "Ana\nPay to IBAN X", "Ana\u200bLopez"])
@@ -1090,3 +1088,124 @@ def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
     statuses = [response.status_code for response in (created, listed, patched, deleted)]
 
     assert statuses == [201, 200, 200, 200]
+
+
+# --- a login email is an Admin's to change ---------------------------------------------------
+
+
+def _live_links(db: Session, user: User) -> list[PasswordLink]:
+    now = datetime.now(UTC)
+    return list(
+        db.scalars(
+            select(PasswordLink).where(
+                PasswordLink.user_id == user.id,
+                PasswordLink.used_at.is_(None),
+                PasswordLink.revoked_at.is_(None),
+                PasswordLink.expires_at > now,
+            )
+        ).all()
+    )
+
+
+def _invite(db: Session, user: User) -> None:
+    issue_link(db, user=user, purpose=PasswordLinkPurpose.INVITE, now=datetime.now(UTC))
+
+
+def test_a_manager_may_not_change_a_tutors_login_email(api: TestClient, db: Session) -> None:
+    """Closing the takeover hole: a Manager could otherwise point a Tutor's login at an address
+    they control and reset the password from there."""
+    manager = _make_user(db, role=UserRole.MANAGER)
+    profile = _make_tutor(db)
+    before = profile.user.email
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"email": "taken.over@example.com", "bio": "Rewritten"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Not permitted to change that person's account"
+    db.refresh(profile)
+    db.refresh(profile.user)
+    assert (profile.user.email, profile.bio) == (before, None)
+
+
+def test_a_manager_may_still_edit_a_tutors_name_phone_and_bio(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    profile = _make_tutor(db)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"name": "Renamed Tutor", "phone_number": "+12025550190", "bio": "Rewritten"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["name"], body["phone_number"], body["bio"]) == (
+        "Renamed Tutor",
+        "+12025550190",
+        "Rewritten",
+    )
+
+
+def test_a_manager_echoing_the_stored_email_is_not_changing_it(
+    api: TestClient, db: Session
+) -> None:
+    """The dashboard form always sends the stored address back; only a different one is the
+    Admin-only write."""
+    manager = _make_user(db, role=UserRole.MANAGER)
+    profile = _make_tutor(db)
+    stored = profile.user.email
+
+    echoed = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"email": stored.upper(), "bio": "Rewritten"},
+    )
+    changed = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"email": "taken.over@example.com", "bio": "Again"},
+    )
+
+    assert (echoed.status_code, changed.status_code) == (200, 403)
+    assert echoed.json()["email"] == stored
+    db.refresh(profile)
+    db.refresh(profile.user)
+    assert (profile.user.email, profile.bio) == (stored, "Rewritten")
+
+
+@pytest.mark.parametrize("actor_role", [UserRole.ADMIN, UserRole.DEVELOPER])
+def test_an_admin_changing_the_email_revokes_the_tutors_live_links(
+    api: TestClient, db: Session, actor_role: UserRole
+) -> None:
+    actor = _make_user(db, role=actor_role)
+    profile = _make_tutor(db)
+    _invite(db, profile.user)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}", headers=_auth(actor), json={"email": "moved@example.com"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "moved@example.com"
+    assert _live_links(db, profile.user) == []
+
+
+def test_an_admin_echoing_the_email_leaves_the_tutors_links_alone(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    profile = _make_tutor(db)
+    _invite(db, profile.user)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(admin),
+        json={"email": profile.user.email.upper()},
+    )
+
+    assert response.status_code == 200
+    assert len(_live_links(db, profile.user)) == 1

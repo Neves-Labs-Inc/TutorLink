@@ -13,13 +13,15 @@ The write routes take `OfficePrincipal` and deliberately **not** `TutorScope`: t
 Office-only, they have no filter to apply, and an unread scope would turn every one of them into
 a 500 the moment it touched `tutors`. A profile edit is an account edit (one record per person),
 so `PATCH` and `DELETE` also apply `tutor_service.assert_may_write_person`: a Manager may write
-Tutors only, and a Developer's account is a Developer's to write.
+Tutors only, and a Developer's account is a Developer's to write. A login email is narrower
+still: only an Admin or Developer may change one, so a Manager's `PATCH` carrying `email` is 403.
 
 `POST /{tutor_id}/subjects` and its `DELETE` live in `routers/tutor_subjects.py`, which mounts
 them on this same prefix.
 """
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -166,6 +168,7 @@ def update(
             phone_number=payload.phone_number,
             bio=payload.bio,
             is_active=payload.is_active,
+            now=datetime.now(UTC),
         )
     except TutorNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc

@@ -200,11 +200,10 @@ def test_the_invite_renders_the_saved_template(
     assert email.subject == f"{RECIPIENT_NAME}, join {ACTOR_NAME}"
     assert email.text == f"Hello {RECIPIENT_NAME},\n\n{ACTOR_NAME} says hi.\nOpen {link} today."
     assert email.html is not None
-    assert f"<p>Hello {RECIPIENT_NAME_ESCAPED},</p>" in email.html
-    assert (
-        f'<p>{ACTOR_NAME_ESCAPED} says hi.<br>Open <a href="{link}">{link}</a> today.</p>'
-        in email.html
-    )
+    assert f">Hello {RECIPIENT_NAME_ESCAPED},</p>" in email.html
+    assert f'>{ACTOR_NAME_ESCAPED} says hi.<br>Open <a href="{link}"' in email.html
+    assert f">{link}</a> today.</p>" in email.html
+    assert "Set your password" not in email.html
     assert "<b>" not in email.html
 
 
@@ -234,8 +233,15 @@ def test_the_invite_carries_the_default_copy(
         "The TutorLink team"
     )
     assert email.html is not None
-    assert f'<p><a href="{link}">{link}</a></p>' in email.html
-    assert "<p>See you soon,<br>The TutorLink team</p>" in email.html
+    assert ">See you soon,<br>The TutorLink team</p>" in email.html
+    assert "TutorLink</p>" in email.html
+    assert "Sent by TutorLink" in email.html
+    assert "#2F4A9E" in email.html
+    assert f'href="{link}"' in email.html
+    assert ">Set your password</a>" in email.html
+    assert "Or paste this link into your browser:" in email.html
+    assert f">{link}</a>" in email.html
+    assert "width:100%;max-width:560px" in email.html
 
 
 # --- the forgot-password route --------------------------------------------------------------------
@@ -263,8 +269,10 @@ def test_the_reset_email_renders_the_saved_template(
     assert email.subject == f"Reset for {RECIPIENT_NAME}"
     assert email.text == f"Hey {RECIPIENT_NAME}\n\nGo to {link}\n\nBye"
     assert email.html is not None
-    assert f"<p>Hey {RECIPIENT_NAME_ESCAPED}</p>" in email.html
-    assert f'<p>Go to <a href="{link}">{link}</a></p>' in email.html
+    assert f">Hey {RECIPIENT_NAME_ESCAPED}</p>" in email.html
+    assert f'>Go to <a href="{link}"' in email.html
+    assert f">{link}</a></p>" in email.html
+    assert "Reset password" not in email.html
 
 
 def test_the_reset_email_carries_the_default_copy(
@@ -290,6 +298,11 @@ def test_the_reset_email_carries_the_default_copy(
         "\n"
         "The TutorLink team"
     )
+    assert email.html is not None
+    assert ">Reset password</a>" in email.html
+    assert f'href="{link}"' in email.html
+    assert "Or paste this link into your browser:" in email.html
+    assert "Sent by TutorLink" in email.html
 
 
 # --- helpers ------------------------------------------------------------------------------------

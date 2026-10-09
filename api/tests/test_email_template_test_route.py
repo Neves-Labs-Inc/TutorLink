@@ -64,7 +64,11 @@ def test_a_valid_draft_is_emailed_to_the_admin_with_the_dummy_link(
     assert email.text == expected_text
     assert email.html is not None
     assert "Ada &lt;Lovelace&gt;" in email.html
-    assert f'<a href="{DUMMY_LINK}">{DUMMY_LINK}</a>' in email.html
+    assert f'<a href="{DUMMY_LINK}"' in email.html
+    assert f">{DUMMY_LINK}</a>" in email.html
+    assert "TutorLink</p>" in email.html
+    assert "Sent by TutorLink" in email.html
+    assert "#2F4A9E" in email.html
 
 
 @pytest.mark.parametrize(

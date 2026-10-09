@@ -39,6 +39,7 @@ from app.security import MIN_PASSWORD_LENGTH, hash_password, password_is_encodab
 from app.services.auth_service import normalise_email, revoke_all_refresh_tokens_for_user
 from app.services.mail_service import MailServiceError, public_url, send_email
 from app.services.mail_templates import (
+    DEFAULT_BRAND_COLOR,
     LINK_PLACEHOLDER,
     NAME_PLACEHOLDER,
     TemplateKind,
@@ -244,6 +245,7 @@ def send_reset_email(*, to: str, name: str, token: str, template: EmailTemplate)
                 NAME_PLACEHOLDER: name,
                 LINK_PLACEHOLDER: public_url(f"{SET_PASSWORD_PATH}?token={token}"),
             },
+            brand_color=DEFAULT_BRAND_COLOR,
         )
         send_email(to=to, subject=rendered.subject, text=rendered.text, html=rendered.html)
     except MailServiceError as exc:

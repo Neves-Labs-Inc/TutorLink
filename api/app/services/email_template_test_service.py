@@ -13,6 +13,7 @@ from app.models.user import User
 from app.services.mail_service import public_url, send_email
 from app.services.mail_templates import (
     ACTOR_NAME_PLACEHOLDER,
+    DEFAULT_BRAND_COLOR,
     LINK_PLACEHOLDER,
     NAME_PLACEHOLDER,
     TemplateKind,
@@ -45,6 +46,7 @@ def send_test_email(
             ACTOR_NAME_PLACEHOLDER: user.name,
             LINK_PLACEHOLDER: public_url(DUMMY_LINK_PATH),
         },
+        brand_color=DEFAULT_BRAND_COLOR,
     )
 
     send_email(

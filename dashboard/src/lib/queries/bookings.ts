@@ -5,28 +5,46 @@ import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
 
 export type NamedRef = { id: string; name: string }
 
+export type StaffRole = 'tutor' | 'manager' | 'admin'
+
+// The Staff member a Booking is with; `id` is the user's id, not a tutor profile id.
+export type StaffRef = { id: string; name: string; role: StaffRole }
+
+export type BookingKind = 'regular' | 'evaluation'
+
+export type BookingLocation = 'home' | 'in_office'
+
 export type Booking = {
   id: string
   child: NamedRef
-  tutor: NamedRef
-  subject: NamedRef
+  staff: StaffRef
+  kind: BookingKind
+  location: BookingLocation
+  // Null on an Evaluation.
+  subject: NamedRef | null
   scheduled_date: string
   start_time: string
   end_time: string
   status: 'pending' | 'confirmed' | 'cancelled' | 'completed'
   notes: string | null
+  updated_at: string
 }
 
 export type BookingChild = NamedRef & { notes: string | null }
 
 export type BookingDetail = Omit<Booking, 'child'> & {
   child: BookingChild
-  home: { id: string; label: string | null; address: string; access_code: string }
+  // Null when the session is In office.
+  home: { id: string; label: string | null; address: string; access_code: string } | null
   booked_by_guardian: NamedRef | null
 }
 
 export type BookingListParams = {
   status?: Booking['status'][]
+  kind?: BookingKind
+  location?: BookingLocation
+  // The Staff member's user id. `tutor_id` is the older tutor-profile filter.
+  user_id?: string
   tutor_id?: string
   subject_id?: string
   child_id?: string
@@ -39,6 +57,11 @@ export type BookingListParams = {
 export type BookingWeekParams = Omit<BookingListParams, 'page' | 'page_size'>
 
 export type BookingWeek = { items: Booking[]; total: number }
+
+// `counts_by_kind` is optional until the API sends it (ticket 03).
+export type BookingPage = Page<Booking> & {
+  counts_by_kind?: { regular: number; evaluation: number }
+}
 
 export type BookingCreate = {
   child_id: string
@@ -63,8 +86,8 @@ export type BookingWriteResult = {
 // The API caps `page_size` at 100 (`api/app/schemas/common.py`).
 const MAX_PAGE_SIZE = 100
 
-const fetchBookingPage = async (params: BookingListParams): Promise<Page<Booking>> => {
-  const response = await api.get<Page<Booking>>(`/api/bookings?${bookingSearchParams(params)}`)
+const fetchBookingPage = async (params: BookingListParams): Promise<BookingPage> => {
+  const response = await api.get<BookingPage>(`/api/bookings?${bookingSearchParams(params)}`)
 
   return response.data
 }
@@ -131,6 +154,15 @@ export const bookingSearchParams = (params: BookingListParams): string => {
 
   for (const status of params.status ?? []) {
     search.append('status', status)
+  }
+  if (params.kind !== undefined) {
+    search.append('kind', params.kind)
+  }
+  if (params.location !== undefined) {
+    search.append('location', params.location)
+  }
+  if (params.user_id !== undefined) {
+    search.append('user_id', params.user_id)
   }
   if (params.tutor_id !== undefined) {
     search.append('tutor_id', params.tutor_id)

@@ -19,13 +19,16 @@ const TODAY = '2026-09-22'
 const booking = (id: string, childName: string): Booking => ({
   id,
   child: { id: `child-${id}`, name: childName },
-  tutor: { id: 'tutor-1', name: 'Tutor One' },
+  staff: { id: 'user-1', name: 'Tutor One', role: 'tutor' },
+  kind: 'regular',
+  location: 'home',
   subject: { id: 'subject-1', name: 'Maths' },
   scheduled_date: '2026-09-22',
   start_time: '09:00:00',
   end_time: '10:00:00',
   status: 'confirmed',
   notes: null,
+  updated_at: '2026-09-21T10:00:00Z',
 })
 
 describe('defaultWindow', () => {

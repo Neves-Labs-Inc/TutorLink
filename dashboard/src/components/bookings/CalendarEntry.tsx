@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel } from '@/lib/bookings/bookings'
 import type { Booking } from '@/lib/queries/bookings'
 import { cn } from '@/lib/utils'
@@ -33,8 +35,10 @@ export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps
       <>
         <p className="font-medium tabular-nums text-foreground">{time}</p>
         <p className="font-medium text-foreground break-words">{booking.child.name}</p>
-        <p className="text-muted-foreground break-words">{booking.tutor.name}</p>
-        <p className="text-muted-foreground break-words">{booking.subject.name}</p>
+        <p className="text-muted-foreground break-words">{booking.staff.name}</p>
+        <p className="text-muted-foreground break-words">
+          {locationLabel(booking)} · <SubjectCell booking={booking} emptyAs="em" />
+        </p>
         <StatusBadge status={booking.status} />
       </>
     )
@@ -47,7 +51,8 @@ export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps
         </div>
         <p className="text-sm text-foreground">{booking.child.name}</p>
         <p className="text-xs text-muted-foreground">
-          {booking.tutor.name} · {booking.subject.name}
+          {booking.staff.name} · {locationLabel(booking)} ·{' '}
+          <SubjectCell booking={booking} emptyAs="em" />
         </p>
       </>
     )

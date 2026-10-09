@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel, statusLabel, STATUS_OPTIONS, type BookingStatus } from '@/lib/bookings/bookings'
 import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries, updateBookingStatus } from '@/lib/queries/bookings'
@@ -38,7 +40,7 @@ export const BookingDetailPanel = ({ bookingId, onOpenChange }: BookingDetailPan
     open={bookingId !== null}
     onOpenChange={onOpenChange}
     title="Booking detail"
-    description="The session, the home it is at, and its status."
+    description="The session, where it happens, and its status."
   >
     {bookingId !== null && <PanelBody bookingId={bookingId} />}
   </SlideOver>
@@ -92,15 +94,21 @@ const PanelBody = ({ bookingId }: PanelBodyProps) => {
               detail.booked_by_guardian.name
             )}
           </DetailRow>
-          <DetailRow label="Tutor">{detail.tutor.name}</DetailRow>
-          <DetailRow label="Subject">{detail.subject.name}</DetailRow>
+          <DetailRow label="Staff">{detail.staff.name}</DetailRow>
+          <DetailRow label="Subject">
+            <SubjectCell booking={detail} emptyAs="dash" />
+          </DetailRow>
           <DetailRow label="Date">{formatIsoDate(detail.scheduled_date)}</DetailRow>
           <DetailRow label="Time">{bookingTimeLabel(detail)}</DetailRow>
-          {detail.home.label !== null && <DetailRow label="Home">{detail.home.label}</DetailRow>}
-          <DetailRow label="Address">{detail.home.address}</DetailRow>
-          <DetailRow label="Access code">
-            <span className="font-mono">{detail.home.access_code}</span>
-          </DetailRow>
+          <DetailRow label="Location">{locationLabel(detail)}</DetailRow>
+          {detail.home !== null && (
+            <>
+              <DetailRow label="Address">{detail.home.address}</DetailRow>
+              <DetailRow label="Access code">
+                <span className="font-mono">{detail.home.access_code}</span>
+              </DetailRow>
+            </>
+          )}
         </dl>
 
         <div className="space-y-1.5">

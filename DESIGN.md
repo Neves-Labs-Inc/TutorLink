@@ -168,6 +168,8 @@ Inline empty lists inside a card use the bare phrase "No children" (no full stop
   - the SearchPicker description ("Grade not set · inactive").
 
   No italics, no badge, no extra colour.
+- Exception: a mixed-kind booking list (Bookings, My Sessions, the calendar) marks an
+  Evaluation's missing Subject as `<em>Evaluation</em>`; every other surface shows the dash.
 - Optional form fields say so in the label: `Notes (optional)`. A field that becomes optional
   follows the same pattern, for example `Grade level (optional)`.
 

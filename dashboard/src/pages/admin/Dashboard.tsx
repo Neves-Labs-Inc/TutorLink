@@ -6,6 +6,8 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import {
   hasDateRolledOver,
   queriedDateLabel,
@@ -37,6 +39,24 @@ const STATUS_COLUMN: Column<Booking> = {
   cell: (row) => <StatusBadge status={row.status} />,
 }
 
+const STAFF_COLUMN: Column<Booking> = {
+  id: 'staff',
+  header: 'Staff',
+  cell: (row) => row.staff.name,
+}
+
+const LOCATION_COLUMN: Column<Booking> = {
+  id: 'location',
+  header: 'Location',
+  cell: (row) => locationLabel(row),
+}
+
+const SUBJECT_COLUMN: Column<Booking> = {
+  id: 'subject',
+  header: 'Subject',
+  cell: (row) => <SubjectCell booking={row} emptyAs="dash" />,
+}
+
 const TODAY_COLUMNS: Column<Booking>[] = [
   {
     id: 'time',
@@ -45,15 +65,17 @@ const TODAY_COLUMNS: Column<Booking>[] = [
     cell: (row) => `${formatTime(row.start_time)} – ${formatTime(row.end_time)}`,
   },
   { id: 'child', header: 'Child', cell: (row) => row.child.name },
-  { id: 'tutor', header: 'Tutor', cell: (row) => row.tutor.name },
-  { id: 'subject', header: 'Subject', cell: (row) => row.subject.name },
+  STAFF_COLUMN,
+  LOCATION_COLUMN,
+  SUBJECT_COLUMN,
   STATUS_COLUMN,
 ]
 
 const RECENT_COLUMNS: Column<Booking>[] = [
   { id: 'child', header: 'Child', primary: true, cell: (row) => row.child.name },
-  { id: 'tutor', header: 'Tutor', cell: (row) => row.tutor.name },
-  { id: 'subject', header: 'Subject', cell: (row) => row.subject.name },
+  STAFF_COLUMN,
+  LOCATION_COLUMN,
+  SUBJECT_COLUMN,
   { id: 'date', header: 'Date', cell: (row) => formatIsoDate(row.scheduled_date) },
   STATUS_COLUMN,
 ]

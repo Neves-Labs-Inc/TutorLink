@@ -12,6 +12,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/useAuth'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel } from '@/lib/bookings/bookings'
 import { formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
@@ -54,7 +56,12 @@ const columns: Column<Booking>[] = [
   },
   { id: 'time', header: 'Time', cell: (booking) => bookingTimeLabel(booking) },
   { id: 'child', header: 'Child', cell: (booking) => booking.child.name },
-  { id: 'subject', header: 'Subject', cell: (booking) => booking.subject.name },
+  { id: 'location', header: 'Location', cell: (booking) => locationLabel(booking) },
+  {
+    id: 'subject',
+    header: 'Subject',
+    cell: (booking) => <SubjectCell booking={booking} emptyAs="em" />,
+  },
   {
     id: 'status',
     header: 'Status',

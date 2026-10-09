@@ -5,6 +5,8 @@ import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel } from '@/lib/bookings/bookings'
 import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries } from '@/lib/queries/bookings'
@@ -41,7 +43,7 @@ export const SessionDetailPanel = ({ bookingId, onClose }: SessionDetailPanelPro
       if (!open) onClose()
     }}
     title="Session detail"
-    description="The session, and the home it is at."
+    description="The session, and where it happens."
   >
     {bookingId !== null && <PanelBody key={bookingId} bookingId={bookingId} />}
   </SlideOver>
@@ -80,7 +82,9 @@ const PanelBody = ({ bookingId }: PanelBodyProps) => {
       <div className="space-y-6">
         <dl className="space-y-3">
           <DetailRow label="Child">{detail.child.name}</DetailRow>
-          <DetailRow label="Subject">{detail.subject.name}</DetailRow>
+          <DetailRow label="Subject">
+            <SubjectCell booking={detail} emptyAs="dash" />
+          </DetailRow>
           <DetailRow label="Date">{formatIsoDate(detail.scheduled_date)}</DetailRow>
           <DetailRow label="Time">{bookingTimeLabel(detail)}</DetailRow>
           <DetailRow label="Status">
@@ -100,26 +104,30 @@ const PanelBody = ({ bookingId }: PanelBodyProps) => {
           {/* The home on the booking, never the guardian's: a child with separated guardians has
               two, and the session is at one of them (`admin-dashboard-design.md:287-288`). */}
           <dl className="space-y-3">
-            {detail.home.label !== null && <DetailRow label="Home">{detail.home.label}</DetailRow>}
-            <DetailRow label="Address">{detail.home.address}</DetailRow>
-            <DetailRow label="Access code">
-              <div className="flex flex-wrap items-center gap-2">
-                {codeVisible ? (
-                  <span className="font-mono">{detail.home.access_code}</span>
-                ) : (
-                  <span className="text-muted-foreground">{HIDDEN_CODE_LABEL}</span>
-                )}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-expanded={codeVisible}
-                  onClick={() => setCodeVisible(!codeVisible)}
-                >
-                  {codeVisible ? 'Hide access code' : 'Show access code'}
-                </Button>
-              </div>
-            </DetailRow>
+            <DetailRow label="Location">{locationLabel(detail)}</DetailRow>
+            {detail.home !== null && (
+              <>
+                <DetailRow label="Address">{detail.home.address}</DetailRow>
+                <DetailRow label="Access code">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {codeVisible ? (
+                      <span className="font-mono">{detail.home.access_code}</span>
+                    ) : (
+                      <span className="text-muted-foreground">{HIDDEN_CODE_LABEL}</span>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-expanded={codeVisible}
+                      onClick={() => setCodeVisible(!codeVisible)}
+                    >
+                      {codeVisible ? 'Hide access code' : 'Show access code'}
+                    </Button>
+                  </div>
+                </DetailRow>
+              </>
+            )}
           </dl>
         </div>
 

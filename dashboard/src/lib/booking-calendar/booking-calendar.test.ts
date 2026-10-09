@@ -13,13 +13,16 @@ import {
 const booking = (overrides: Partial<Booking> = {}): Booking => ({
   id: 'booking-1',
   child: { id: 'child-1', name: 'Ana Souza' },
-  tutor: { id: 'tutor-1', name: 'Maria Lima' },
+  staff: { id: 'user-1', name: 'Maria Lima', role: 'tutor' },
+  kind: 'regular',
+  location: 'home',
   subject: { id: 'subject-1', name: 'Maths' },
   scheduled_date: '2026-09-21',
   start_time: '16:00:00',
   end_time: '17:00:00',
   status: 'confirmed',
   notes: null,
+  updated_at: '2026-09-21T10:00:00Z',
   ...overrides,
 })
 

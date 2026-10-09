@@ -12,6 +12,8 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingFilterSearchParams, EMPTY_FILTERS } from '@/lib/bookings/bookings'
 import { formatIsoDate, formatTime, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
@@ -34,7 +36,8 @@ const COLUMNS: Column<Booking>[] = [
     cell: (row) => `${formatTime(row.start_time)} – ${formatTime(row.end_time)}`,
   },
   { id: 'child', header: 'Child', cell: (row) => row.child.name },
-  { id: 'subject', header: 'Subject', cell: (row) => row.subject.name },
+  { id: 'location', header: 'Location', cell: (row) => locationLabel(row) },
+  { id: 'subject', header: 'Subject', cell: (row) => <SubjectCell booking={row} emptyAs="dash" /> },
   { id: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },
 ]
 

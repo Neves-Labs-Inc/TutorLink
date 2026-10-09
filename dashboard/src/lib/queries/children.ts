@@ -20,7 +20,8 @@ export type NextSession = {
   start_time: string
   end_time: string
   tutor: NamedRef
-  subject: NamedRef
+  // Null on an Evaluation.
+  subject: NamedRef | null
 }
 
 export type StaffRef = {

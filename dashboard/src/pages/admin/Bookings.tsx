@@ -18,6 +18,8 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import {
   bookingViewFromSearchParams,
   calendarListParams,
@@ -156,8 +158,13 @@ export const Bookings = () => {
     },
     { id: 'time', header: 'Time', cell: (booking) => bookingTimeLabel(booking) },
     { id: 'child', header: 'Child', cell: (booking) => booking.child.name },
-    { id: 'tutor', header: 'Tutor', cell: (booking) => booking.tutor.name },
-    { id: 'subject', header: 'Subject', cell: (booking) => booking.subject.name },
+    { id: 'staff', header: 'Staff', cell: (booking) => booking.staff.name },
+    { id: 'location', header: 'Location', cell: (booking) => locationLabel(booking) },
+    {
+      id: 'subject',
+      header: 'Subject',
+      cell: (booking) => <SubjectCell booking={booking} emptyAs="em" />,
+    },
     {
       id: 'status',
       header: 'Status',

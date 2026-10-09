@@ -72,10 +72,10 @@ export const isLevelMuted = (level: ChildLevel): boolean => !level.is_active
 export const evaluatedStatusLabel = (evaluated: Evaluated | null): string =>
   evaluated === null
     ? NOT_EVALUATED
-    : `Evaluated by ${evaluated.by.display_name}, ${dateOf(evaluated.at)}`
+    : `Evaluated by ${evaluated.by.name}, ${dateOf(evaluated.at)}`
 
 export const evaluatedCell = (evaluated: Evaluated | null): string =>
-  evaluated === null ? NO_VALUE : `${evaluated.by.display_name}, ${dateOf(evaluated.at)}`
+  evaluated === null ? NO_VALUE : `${evaluated.by.name}, ${dateOf(evaluated.at)}`
 
 const firstName = (name: string): string => name.trim().split(/\s+/)[0]
 

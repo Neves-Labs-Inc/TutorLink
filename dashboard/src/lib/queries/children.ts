@@ -25,7 +25,7 @@ export type NextSession = {
 
 export type StaffRef = {
   id: string
-  display_name: string
+  name: string
 }
 
 export type Evaluated = {

@@ -24,7 +24,7 @@ export type TutorCreatePayload = {
 
 export type UserCreatePayload = {
   email: string
-  display_name: string
+  name: string
   password: string
   role: string
   tutor_id?: string
@@ -33,7 +33,7 @@ export type UserCreatePayload = {
 
 export type UserUpdatePayload = {
   email: string
-  display_name: string
+  name: string
   role: string
   is_active: boolean
   password?: string
@@ -51,7 +51,7 @@ const ALL_ROLE_OPTIONS: RoleOption[] = [...BASE_ROLE_OPTIONS, DEVELOPER_ROLE_OPT
 
 const MIN_PASSWORD_LENGTH = 8
 
-// The `users.display_name` column is varchar(255); the server counts code points after a trim.
+// The `users.name` column is varchar(255); the server counts code points after a trim.
 const DISPLAY_NAME_MAX_LENGTH = 255
 
 // Mirrors the server's blank and length checks so the form can say so before a round trip. The
@@ -133,7 +133,7 @@ export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): strin
 export const createUserPayload = (draft: UserDraft): UserCreatePayload => {
   const payload: UserCreatePayload = {
     email: draft.email.trim(),
-    display_name: draft.displayName.trim(),
+    name: draft.displayName.trim(),
     password: draft.password,
     role: draft.role,
   }
@@ -161,7 +161,7 @@ export const updateUserPayload = (
 ): UserUpdatePayload => {
   const payload: UserUpdatePayload = {
     email: draft.email.trim(),
-    display_name: draft.displayName.trim(),
+    name: draft.displayName.trim(),
     role: draft.role,
     is_active: draft.isActive,
   }

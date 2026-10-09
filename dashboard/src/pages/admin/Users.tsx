@@ -116,7 +116,7 @@ export const Users = () => {
 
   const openEditForm = (user: User) => {
     setForm({
-      displayName: user.display_name,
+      displayName: user.name,
       email: user.email,
       password: '',
       role: user.role,
@@ -169,7 +169,7 @@ export const Users = () => {
   }
 
   const columns: Column<User>[] = [
-    { id: 'displayName', header: 'Display name', primary: true, cell: (user) => user.display_name },
+    { id: 'displayName', header: 'Display name', primary: true, cell: (user) => user.name },
     { id: 'email', header: 'Email', cell: (user) => (
         // Cards at 375 must wrap a long email anywhere; the desktop table only when it has to.
         <span className="break-all md:break-normal md:[overflow-wrap:anywhere]">{user.email}</span>
@@ -284,7 +284,7 @@ export const Users = () => {
         body={
           deactivateTarget === null
             ? ''
-            : `Deactivate ${deactivateTarget.display_name} (${deactivateTarget.email})? They will no longer be able to sign in.`
+            : `Deactivate ${deactivateTarget.name} (${deactivateTarget.email})? They will no longer be able to sign in.`
         }
         confirmLabel="Deactivate"
         destructive

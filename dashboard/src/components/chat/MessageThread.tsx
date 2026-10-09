@@ -189,7 +189,7 @@ const MessageBubble = ({ message }: { message: BubbleMessage }) => {
   return (
     <div className={cn('flex flex-col', alignment === 'end' ? 'items-end' : 'items-start')}>
       {message.author_kind === 'admin' && message.author !== null && (
-        <span className="mb-0.5 text-xs text-muted-foreground">{message.author.display_name}</span>
+        <span className="mb-0.5 text-xs text-muted-foreground">{message.author.name}</span>
       )}
       <div
         className={cn(

@@ -319,7 +319,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
       setPendingMessages((current) => [
         ...current,
-        optimisticMessage(clientMessageId, body, holder.id, holder.display_name),
+        optimisticMessage(clientMessageId, body, holder.id, holder.name),
       ])
       setLastSentId(clientMessageId)
       sentIdsRef.current.add(clientMessageId)
@@ -328,7 +328,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   }
 
   const holder = conversation.data?.taken_over_by
-  const holderName = holder?.display_name ?? null
+  const holderName = holder?.name ?? null
   const guardianName = conversation.data?.guardian?.name ?? conversation.data?.phone_number ?? 'The Guardian'
 
   let content: ReactNode
@@ -519,7 +519,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
         open={transferDialogOpen}
         onOpenChange={setTransferDialogOpen}
         title="Transfer to me"
-        body={transferConfirmBody(holderName, me.data?.display_name ?? null)}
+        body={transferConfirmBody(holderName, me.data?.name ?? null)}
         confirmLabel="Transfer to me"
         pending={transfer.isPending}
         confirmDisabled={conversation.data ? !isTransferOffered(conversation.data) : false}

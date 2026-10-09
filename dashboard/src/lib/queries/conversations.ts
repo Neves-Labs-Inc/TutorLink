@@ -23,7 +23,7 @@ export type SystemMessageKind =
 
 export type ConversationGuardianRef = { id: string; name: string }
 // The API's `UserRef`: a Staff member is named by Display name, never by email.
-export type ConversationAdminRef = { id: string; display_name: string }
+export type ConversationAdminRef = { id: string; name: string }
 
 export type ReactivationRequest = {
   child: { id: string; name: string; is_active: boolean }

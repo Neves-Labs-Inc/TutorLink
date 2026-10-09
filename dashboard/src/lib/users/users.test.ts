@@ -201,7 +201,7 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: emptyNewTutor,
       }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'admin' })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'admin' })
   })
 
   it('includes tutor_id for a tutor role linking an existing tutor', () => {
@@ -215,7 +215,7 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: emptyNewTutor,
       }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
   })
 
   it('omits tutor_id for a tutor role with no selection', () => {
@@ -229,7 +229,7 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: emptyNewTutor,
       }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'tutor' })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'tutor' })
   })
 
   it('includes a trimmed tutor object for a tutor role creating a new tutor', () => {
@@ -245,7 +245,7 @@ describe('createUserPayload', () => {
       }),
     ).toEqual({
       email: 'person@example.com',
-      display_name: 'Maria Lopez',
+      name: 'Maria Lopez',
       password: 'longenough',
       role: 'tutor',
       tutor: { name: 'Jane Doe', phone_number: '555-0100', bio: 'Loves algebra' },
@@ -265,7 +265,7 @@ describe('createUserPayload', () => {
       }),
     ).toEqual({
       email: 'person@example.com',
-      display_name: 'Maria Lopez',
+      name: 'Maria Lopez',
       password: 'longenough',
       role: 'tutor',
       tutor: { name: 'Jane Doe', phone_number: '555-0100' },
@@ -286,7 +286,7 @@ describe('createUserPayload', () => {
         tutorMode: 'link',
         newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: 'Loves algebra' },
       }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
   })
 
   it('sends only tutor when a tutor is also selected and the mode is new', () => {
@@ -302,7 +302,7 @@ describe('createUserPayload', () => {
       }),
     ).toEqual({
       email: 'person@example.com',
-      display_name: 'Maria Lopez',
+      name: 'Maria Lopez',
       password: 'longenough',
       role: 'tutor',
       tutor: { name: 'Jane Doe', phone_number: '555-0100' },
@@ -320,7 +320,7 @@ describe('createUserPayload', () => {
         tutorMode: 'new',
         newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: 'Loves algebra' },
       }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', password: 'longenough', role: 'admin' })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'admin' })
   })
 })
 
@@ -328,19 +328,19 @@ describe('updateUserPayload', () => {
   it('omits password when blank', () => {
     expect(
       updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: '', role: 'admin', isActive: true }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', role: 'admin', is_active: true })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: true })
   })
 
   it('omits password when only whitespace', () => {
     expect(
       updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: '   ', role: 'admin', isActive: true }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', role: 'admin', is_active: true })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: true })
   })
 
   it('includes password when non-empty', () => {
     expect(
       updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: 'newpassword', role: 'admin', isActive: false }),
-    ).toEqual({ email: 'person@example.com', display_name: 'Maria Lopez', role: 'admin', is_active: false, password: 'newpassword' })
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: false, password: 'newpassword' })
   })
 
   it('never includes a tutor_id field', () => {

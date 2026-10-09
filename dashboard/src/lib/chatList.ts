@@ -58,7 +58,7 @@ export const conversationDisplayName = (conversation: Conversation): string =>
 
 // Only present while `status === 'human'`; naming the holder is the point of the badge.
 export const conversationHolderLabel = (conversation: Conversation): string | null =>
-  conversation.status === 'human' ? (conversation.taken_over_by?.display_name ?? null) : null
+  conversation.status === 'human' ? (conversation.taken_over_by?.name ?? null) : null
 
 // These are routine handoffs, not the bot breaking (P7-E) — `StatusBadge` gives them a tone
 // distinct from the shared destructive tone `stuck`/`parse_error` render in.

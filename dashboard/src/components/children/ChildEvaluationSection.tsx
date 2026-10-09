@@ -173,7 +173,7 @@ export const ChildEvaluationSection = ({ child }: ChildEvaluationSectionProps) =
         </div>
       ),
     },
-    { id: 'set_by', header: LEVEL_HEADERS.setBy, cell: (entry) => entry.set_by.display_name },
+    { id: 'set_by', header: LEVEL_HEADERS.setBy, cell: (entry) => entry.set_by.name },
     {
       id: 'actions',
       header: LEVEL_HEADERS.actions,

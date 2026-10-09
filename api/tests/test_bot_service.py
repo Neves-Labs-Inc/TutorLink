@@ -647,9 +647,61 @@ def test_the_cancel_list_labels_a_booking_with_a_human_date_and_time(
 
     expected = (
         f"{US_DATE}, 4:00-5:00 PM: "
-        f"{world.subject_name} for Sam Guardian with {world.first_tutor_name}"
+        f"{world.subject_name} for Sam Guardian with {world.first_tutor_name} at Home"
     )
     assert expected in turn.reply
+
+
+def test_the_cancel_list_names_a_labelled_home_an_unlabelled_home_and_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    secret = _add_home(db, client, label=None, address="77 Secret Lane")
+    labelled = _add_home(db, client, label="Dad's", address="2 Other Street")
+    _make_booking(db, world, client, date=DATE, start=datetime.time(13, 0), home_id=labelled.id)
+    _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0), home_id=secret.id)
+    _make_booking(
+        db,
+        world,
+        client,
+        date=DATE,
+        start=datetime.time(15, 0),
+        location=BookingLocation.IN_OFFICE,
+        home_id=None,
+    )
+    chat.say("hi")
+
+    turn = chat.say("cancel please", intent=BotIntent.CANCEL)
+
+    tutor = world.first_tutor_name
+    assert (
+        f"1:00-2:00 PM: {world.subject_name} for Sam Guardian with {tutor} at Dad's" in turn.reply
+    )
+    assert f"2:00-3:00 PM: {world.subject_name} for Sam Guardian with {tutor} at home" in turn.reply
+    assert f"3:00-4:00 PM: {world.subject_name} for Sam Guardian with {tutor} at the office" in (
+        turn.reply
+    )
+    assert "77 Secret Lane" not in turn.reply
+    assert "2 Other Street" not in turn.reply
+    assert "9999" not in turn.reply
+
+
+def test_the_reschedule_list_names_the_location_too(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _make_booking(
+        db,
+        world,
+        client,
+        date=DATE,
+        start=datetime.time(15, 0),
+        location=BookingLocation.IN_OFFICE,
+        home_id=None,
+    )
+    chat.say("hi")
+
+    turn = chat.say("move it", intent=BotIntent.RESCHEDULE)
+
+    assert f"with {world.first_tutor_name} at the office" in turn.reply
 
 
 @pytest.mark.parametrize("intent", [BotIntent.CANCEL, BotIntent.RESCHEDULE])
@@ -881,6 +933,24 @@ def test_a_booking_is_written_confirmed_through_the_write_service(
     assert _text_before_placeholder("BOOKING_CONFIRMED") in turn.reply
 
 
+@pytest.mark.parametrize(("label", "place"), [("Mom's", "at Mom's"), (None, "at home")])
+def test_a_new_booking_names_the_home_in_the_confirm_question_and_the_booked_reply(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, label: str | None, place: str
+) -> None:
+    db.get(Home, client.home_id).label = label
+    db.flush()
+    _book(chat, world, stop_after_offer=True)
+    slot = chat.state.collected_data["options"][0]["label"]
+
+    confirm = chat.say(value="1")
+    booked = chat.say(value="yes")
+
+    assert slot.endswith(f" {place}")
+    assert f"{slot} on" in confirm.reply
+    assert f"{slot} on" in booked.reply
+    assert "1 Test Street" not in confirm.reply + booked.reply
+
+
 def test_the_slot_offer_shows_a_human_date_and_times_but_stores_iso(
     chat: Chat, world: BotWorld, client: ClientWorld
 ) -> None:
@@ -888,6 +958,9 @@ def test_the_slot_offer_shows_a_human_date_and_times_but_stores_iso(
 
     assert turn.reply.startswith(f"These times are available on {US_DATE}:\n1. 9:00-10:00 AM with ")
     assert "\n3. 10:30-11:30 AM with " in turn.reply
+    slot_lines = [line for line in turn.reply.splitlines() if line[:1].isdigit()]
+    assert slot_lines
+    assert all(line.endswith(" at Home") for line in slot_lines)
     assert DATE.isoformat() not in turn.reply
     assert "09:00" not in turn.reply
     assert chat.state.collected_data["book_date"] == DATE.isoformat()
@@ -941,7 +1014,7 @@ def test_more_than_one_active_home_asks_which_one(
 
     turn = _book(chat, world, stop_after_date=True)
 
-    assert render("ASK_WHICH_HOME", "en") in turn.reply
+    assert render("ASK_WHERE", "en") in turn.reply
     assert "Dad's" in turn.reply
     assert chat.step == bot_service.STEP_BOOK_HOME
 
@@ -952,7 +1025,7 @@ def test_exactly_one_active_home_is_not_asked_about(
     """The common path must not cost a needless turn (#39)."""
     turn = _book(chat, world, stop_after_date=True)
 
-    assert render("ASK_WHICH_HOME", "en") not in turn.reply
+    assert render("ASK_WHERE", "en") not in turn.reply
     assert chat.step == bot_service.STEP_BOOK_SLOT
 
 
@@ -965,7 +1038,7 @@ def test_a_deactivated_home_is_not_counted_and_is_never_offered(
 
     turn = _book(chat, world, stop_after_date=True)
 
-    assert render("ASK_WHICH_HOME", "en") not in turn.reply
+    assert render("ASK_WHERE", "en") not in turn.reply
     assert "Old place" not in turn.reply
 
 
@@ -1616,6 +1689,7 @@ def test_rescheduling_leaves_the_old_booking_cancelled_and_a_new_one_confirmed(
     assert len(live) == 1
     assert live[0].id != original.id
     assert _text_before_placeholder("BOOKING_MOVED") in turn.reply
+    assert " at Home on " in turn.reply
 
 
 def test_the_reschedule_confirmation_names_the_session_being_replaced(
@@ -1959,7 +2033,7 @@ _STEP_PROMPTS = {
     bot_service.STEP_BOOK_SUBJECT: f"{render('ASK_SUBJECT', 'en')}\n1. Option",
     bot_service.STEP_BOOK_TUTOR: f"{render('ASK_TUTOR', 'en')}\n1. Option",
     bot_service.STEP_BOOK_DATE: render("ASK_DATE", "en"),
-    bot_service.STEP_BOOK_HOME: f"{render('ASK_WHICH_HOME', 'en')}\n1. Option",
+    bot_service.STEP_BOOK_HOME: f"{render('ASK_WHERE', 'en')}\n1. Option",
     bot_service.STEP_BOOK_SLOT: "These times are available on Tuesday, October 14:\n1. Option",
     bot_service.STEP_BOOK_CONFIRM: "To confirm: Option on Tuesday, October 14. Should I book it?",
     bot_service.STEP_FIRST_SESSION_SUBJECT: f"{render('ASK_SUBJECT', 'en')}\n1. Option",
@@ -3528,7 +3602,7 @@ def _make_staff(db: Session) -> User:
     return user
 
 
-def _add_home(db: Session, client: ClientWorld, *, label: str, address: str) -> Home:
+def _add_home(db: Session, client: ClientWorld, *, label: str | None, address: str) -> Home:
     home = Home(label=label, address=address, access_code="9999")
     db.add(home)
     db.flush()
@@ -3543,6 +3617,13 @@ def _add_home(db: Session, client: ClientWorld, *, label: str, address: str) -> 
     return home
 
 
+class _Unset:
+    """Marks "no home_id passed", since `None` is a real value (an In office booking)."""
+
+
+_UNSET = _Unset()
+
+
 def _make_booking(
     db: Session,
     world: BotWorld,
@@ -3550,15 +3631,17 @@ def _make_booking(
     *,
     date: datetime.date,
     start: datetime.time = datetime.time(16, 0),
+    location: BookingLocation = BookingLocation.HOME,
+    home_id: uuid.UUID | None | _Unset = _UNSET,
 ) -> Booking:
     booking = Booking(
         child_id=client.child_id,
         user_id=user_id_of(db, world.first_tutor_id),
         kind=BookingKind.REGULAR,
-        location=BookingLocation.HOME,
+        location=location,
         subject_id=world.subject_id,
         availability_id=world.first_availability_id,
-        home_id=client.home_id,
+        home_id=client.home_id if isinstance(home_id, _Unset) else home_id,
         booked_by_guardian_id=client.guardian_id,
         scheduled_date=date,
         start_time=start,

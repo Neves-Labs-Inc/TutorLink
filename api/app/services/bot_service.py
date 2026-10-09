@@ -1789,11 +1789,20 @@ def _ask_home(turn: _Turn) -> _Next:
     else:
         options = [{"id": str(home.id), "label": home.label or home.address} for home in homes]
         result = _Next(
-            reply=f"{_say(turn, 'ASK_WHICH_HOME')}\n{_offer(turn.state, options)}",
+            reply=f"{_say(turn, 'ASK_WHERE')}\n{_offer(turn.state, options)}",
             step=STEP_BOOK_HOME,
         )
 
     return result
+
+
+def _place(turn: _Turn) -> str:
+    """The Location phrase for the session being built ("at Dad's", "at home")."""
+    home = turn.db.get(Home, uuid.UUID(turn.data["book_home_id"]))
+
+    return bot_messages.format_location(
+        BookingLocation.HOME, home.label if home else None, turn.language
+    )
 
 
 def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1835,12 +1844,14 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
         no_slots = _say(turn, "NO_SLOTS", date=bot_messages.format_date(date, turn.language))
         return _Next(reply=f"{no_slots} {_say(turn, 'ASK_DATE')}", step=STEP_BOOK_DATE)
 
+    place = _place(turn)
     options = [
         {
             "id": str(slot.availability_id),
             "label": bot_messages.format_slot_label(
                 bot_messages.format_time_range(slot.start_time, slot.end_time, turn.language),
                 slot.tutor_name,
+                place,
                 turn.language,
             ),
             "tutor_id": str(slot.tutor_id),
@@ -2353,6 +2364,9 @@ def _booking_label(booking: Booking, language: str) -> str:
         _subject_name(booking.subject, language),
         booking.child.name,
         booking.staff.name,
+        bot_messages.format_location(
+            booking.location, booking.home.label if booking.home else None, language
+        ),
         language,
     )
 

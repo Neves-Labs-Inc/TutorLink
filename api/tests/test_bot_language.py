@@ -527,7 +527,7 @@ def test_a_spanish_guardian_books_a_session_in_spanish(
     whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
 ) -> None:
     tutor = spanish.tutor.user.name
-    slot = format_slot_label(format_time_range(NINE, TEN, "es"), tutor, "es")
+    slot = format_slot_label(format_time_range(NINE, TEN, "es"), tutor, "en Home", "es")
     date = format_date(DATE, "es")
 
     replies = [
@@ -593,7 +593,9 @@ def test_a_spanish_guardian_moves_a_session_in_spanish(
 ) -> None:
     original = _make_booking(db, spanish, start=FOUR_PM)
     line = _session_line(spanish, start=FOUR_PM, end=FIVE_PM)
-    slot = format_slot_label(format_time_range(NINE, TEN, "es"), spanish.tutor.user.name, "es")
+    slot = format_slot_label(
+        format_time_range(NINE, TEN, "es"), spanish.tutor.user.name, "en Home", "es"
+    )
     date = format_date(DATE, "es")
 
     replies = [
@@ -694,5 +696,6 @@ def _session_line(world: SpanishWorld, *, start: datetime.time, end: datetime.ti
         SPANISH_SUBJECT,
         CHILD_NAME,
         world.tutor.user.name,
+        "en Home",
         "es",
     )

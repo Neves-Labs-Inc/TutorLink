@@ -122,6 +122,15 @@ def test_wrong_password_unknown_email_and_inactive_user_raise_the_identical_type
     assert raised == [InvalidCredentials, InvalidCredentials, InvalidCredentials]
 
 
+def test_a_user_with_no_password_cannot_sign_in_with_any_password(db: Session) -> None:
+    user = _make_user(db, email="invited@x.com")
+    user.hashed_password = None
+    db.flush()
+
+    with pytest.raises(InvalidCredentials):
+        authenticate_user(db, email="invited@x.com", password=PASSWORD)
+
+
 def test_email_lookup_ignores_case_and_surrounding_whitespace(db: Session) -> None:
     user = _make_user(db, email="admin@x.com")
 

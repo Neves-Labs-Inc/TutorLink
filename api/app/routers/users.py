@@ -41,8 +41,7 @@ EMAIL_TAKEN_ERROR = "A user with that email already exists"
 USER_NOT_FOUND_ERROR = "User not found"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
 INVALID_SHAPE_ERROR = (
-    "A tutor or manager account requires a tutor profile, any other role must have none, "
-    "and a password must be at least 8 characters"
+    "A tutor or manager account requires a tutor profile, any other role must have none"
 )
 PROFILE_ALREADY_LINKED_ERROR = "That tutor profile already has a user account"
 TUTOR_PHONE_NUMBER_TAKEN_ERROR = "A tutor with that phone number already exists"
@@ -91,7 +90,6 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
             db,
             actor_role=user.role,
             email=payload.email,
-            password=payload.password,
             role=payload.role,
             tutor_id=payload.tutor_id,
             tutor=_tutor_profile_input(payload.tutor),
@@ -130,7 +128,6 @@ def update(
             actor_role=user.role,
             user_id=user_id,
             email=payload.email,
-            password=payload.password,
             role=payload.role,
             is_active=payload.is_active,
             name=payload.name,
@@ -174,6 +171,8 @@ def _read(user: User) -> UserRead:
         role=user.role,
         tutor_id=user.profile_id,
         is_active=user.is_active,
+        has_password=user.hashed_password is not None,
+        invite_expires_at=None,
     )
 
 

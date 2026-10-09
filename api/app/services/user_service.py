@@ -3,13 +3,12 @@
 Same transaction contract as `auth_service`: nothing here commits, the caller owns the
 boundary.
 
-**The developer boundary is three rules, not two.** #13 states the first two — an admin may
-not create a `developer`, and may not change anyone's role to `developer`. Those alone leave
-the boundary open, because `PATCH /api/users/{id}` can set a password: an admin who cannot
-*become* a developer can still overwrite an existing developer's password and simply log in as
-one. Deactivating them is the same hole in the other direction.
+**The developer boundary is three rules.** An admin may not create a `developer`, may not
+change anyone's role to `developer`, and may not write to an existing developer account at all
+(email, name, role, active flag, and later invites). A developer may do all of it.
 
-So an admin may not write to a developer account at all. A developer may do all of it.
+**Nobody sets a password here.** Accounts are created with no password (`hashed_password` is
+NULL) and get one through an invite.
 Managers are ordinary accounts on this boundary: an admin or developer creates, edits, promotes,
 demotes and deactivates them (#108). A Manager never reaches this module, since `/api/users` is
 admin-only.
@@ -42,12 +41,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import UserRole
 from app.models.user import User
-from app.security import hash_password, password_is_encodable
 from app.services.name_rules import normalize_name
 from app.services.tutor_service import PROFILE_ROLES, create_profile
-
-
-MIN_PASSWORD_LENGTH = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +75,7 @@ class ProfileAlreadyLinked(UserServiceError):
 
 
 class InvalidUserShape(UserServiceError):
-    """A Tutor or Manager with no profile, an Admin or Developer with one, or an unusable
-    password."""
+    """A Tutor or Manager with no profile, or an Admin or Developer with one."""
 
 
 def _visible(is_active: bool) -> Select[tuple[User]]:
@@ -123,7 +117,6 @@ def create_user(
     *,
     actor_role: UserRole,
     email: str,
-    password: str,
     role: UserRole,
     tutor_id: uuid.UUID | None,
     tutor: TutorProfileInput | None,
@@ -131,7 +124,7 @@ def create_user(
 ) -> User:
     """The account, and the profile too for a Tutor or Manager.
 
-    Every check runs before the first INSERT: the developer boundary, the name, the password,
+    Every check runs before the first INSERT: the developer boundary, the name,
     the role/profile pairing and the email. `create_profile` then checks the phone number and
     writes the account and the profile inside one savepoint, so nothing is left behind by a
     refusal on either side.
@@ -145,7 +138,6 @@ def create_user(
         raise ProfileAlreadyLinked
 
     cleaned_name = normalize_name(name)
-    _assert_password_usable(password)
     _assert_create_shape(role=role, has_profile_input=tutor is not None)
 
     if db.scalars(select(User).where(User.email == normalized_email)).first() is not None:
@@ -155,7 +147,7 @@ def create_user(
         email=normalized_email,
         name=cleaned_name,
         name_is_default=False,
-        hashed_password=hash_password(password),
+        hashed_password=None,
         role=role,
         is_active=True,
     )
@@ -188,7 +180,6 @@ def update_user(
     actor_role: UserRole,
     user_id: uuid.UUID,
     email: str | None,
-    password: str | None,
     role: UserRole | None,
     is_active: bool | None,
     name: str | None,
@@ -196,7 +187,7 @@ def update_user(
     user = get_user(db, user_id=user_id)
 
     # Both directions. An admin may not promote anyone to developer (#13), and may not write to
-    # an existing developer at all — otherwise setting their password is a way to become one.
+    # an existing developer at all.
     if actor_role is not UserRole.DEVELOPER and (
         role is UserRole.DEVELOPER or user.role is UserRole.DEVELOPER
     ):
@@ -213,10 +204,6 @@ def update_user(
             raise EmailTaken
 
         user.email = normalized_email
-
-    if password is not None:
-        _assert_password_usable(password)
-        user.hashed_password = hash_password(password)
 
     if name is not None:
         user.name = name
@@ -236,7 +223,7 @@ def update_user(
 
 def deactivate_user(db: Session, *, actor_role: UserRole, user_id: uuid.UUID) -> User:
     """Soft delete. Same boundary as `update_user`: an admin cannot deactivate a developer,
-    because locking the super-user out is the same breach as taking their password."""
+    because locking the super-user out is the same breach as editing them."""
     user = get_user(db, user_id=user_id)
 
     if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
@@ -246,11 +233,6 @@ def deactivate_user(db: Session, *, actor_role: UserRole, user_id: uuid.UUID) ->
     db.flush()
 
     return user
-
-
-def _assert_password_usable(password: str) -> None:
-    if len(password) < MIN_PASSWORD_LENGTH or not password_is_encodable(password):
-        raise InvalidUserShape
 
 
 def _assert_create_shape(*, role: UserRole, has_profile_input: bool) -> None:

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel
@@ -30,6 +31,10 @@ class UserRead(BaseModel):
     # Derived: the user's profile id, or null for a user with none. Read-only on every route.
     tutor_id: uuid.UUID | None
     is_active: bool
+    # Whether the account can sign in by password; the hash itself is never exposed.
+    has_password: bool
+    # Always null until invites exist; declared now so the read shape stays stable.
+    invite_expires_at: datetime | None
 
 
 class MeRead(BaseModel):
@@ -61,7 +66,6 @@ class UserCreate(BaseModel):
     email: Email
     # Required for every role, tutors included. Blank or too long is the service's 422.
     name: str
-    password: str
     role: UserRole
     tutor_id: uuid.UUID | None = None
     tutor: TutorProfileCreate | None = None
@@ -72,6 +76,5 @@ class UserUpdate(BaseModel):
     # drops a profile. A role change to Admin keeps it; a change to Tutor or Manager needs it.
     email: Email | None = None
     name: str | None = None
-    password: str | None = None
     role: UserRole | None = None
     is_active: bool | None = None

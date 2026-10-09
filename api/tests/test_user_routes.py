@@ -92,7 +92,6 @@ def _create_payload(**overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
         "email": f"user-{uuid.uuid4().hex[:12]}@example.com",
         "name": DISPLAY_NAME,
-        "password": PASSWORD,
         "role": "tutor",
     }
     body.update(overrides)
@@ -208,7 +207,6 @@ def test_an_admin_cannot_create_a_developer(api: TestClient, db: Session) -> Non
         json={
             "email": "new@example.com",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "developer",
         },
     )
@@ -240,9 +238,10 @@ def test_an_admin_cannot_promote_themselves(api: TestClient, db: Session) -> Non
     assert admin.role is UserRole.ADMIN
 
 
-def test_an_admin_cannot_set_a_developers_password(api: TestClient, db: Session) -> None:
-    """The hole #13's wording leaves open. An admin who cannot *become* a developer could
-    still overwrite one's password and log in as them, which defeats the boundary entirely."""
+def test_a_password_in_a_patch_is_ignored_and_a_developer_is_still_refused(
+    api: TestClient, db: Session
+) -> None:
+    """Any write to a developer is refused for an admin, and a `password` key never lands."""
     admin = _make_user(db)
     developer = _make_user(db, role=UserRole.DEVELOPER)
 
@@ -279,11 +278,10 @@ def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
         json={
             "email": "dev2@example.com",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "developer",
         },
     )
-    promoted = api.patch(f"/api/users/{other.id}", headers=headers, json={"password": PASSWORD})
+    promoted = api.patch(f"/api/users/{other.id}", headers=headers, json={"is_active": True})
 
     assert created.status_code == 201
     assert created.json()["role"] == "developer"
@@ -305,7 +303,6 @@ def test_creating_a_tutor_account_requires_a_profile_input(api: TestClient, db: 
         json={
             "email": "t1@example.com",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "tutor",
         },
     )
@@ -315,7 +312,6 @@ def test_creating_a_tutor_account_requires_a_profile_input(api: TestClient, db: 
         json={
             "email": "t2@example.com",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "tutor",
             "tutor_id": str(uuid.uuid4()),
         },
@@ -335,7 +331,6 @@ def test_tutor_id_is_refused_for_every_role(api: TestClient, db: Session) -> Non
         json={
             "email": "a@example.com",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "admin",
             "tutor_id": str(_make_tutor(db).id),
         },
@@ -354,7 +349,6 @@ def test_duplicate_email_is_409(api: TestClient, db: Session) -> None:
         json={
             "email": admin.email,
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "admin",
         },
     )
@@ -371,31 +365,11 @@ def test_email_is_normalised_on_create(api: TestClient, db: Session) -> None:
         json={
             "email": "  MiXeD@Example.COM ",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "admin",
         },
     ).json()
 
     assert body["email"] == "mixed@example.com"
-
-
-def test_short_password_is_400_not_422(api: TestClient, db: Session) -> None:
-    """REQ-029: validation failures are 400, and the body is always {"detail": "<string>"}."""
-    admin = _make_user(db)
-
-    response = api.post(
-        "/api/users",
-        headers=_auth(admin),
-        json={
-            "email": "short@example.com",
-            "name": DISPLAY_NAME,
-            "password": "short",
-            "role": "admin",
-        },
-    )
-
-    assert response.status_code == 400
-    assert isinstance(response.json()["detail"], str)
 
 
 def test_malformed_body_is_400_not_422(api: TestClient, db: Session) -> None:
@@ -437,14 +411,86 @@ def test_password_never_comes_back(api: TestClient, db: Session) -> None:
         json={
             "email": "quiet@example.com",
             "name": DISPLAY_NAME,
-            "password": PASSWORD,
             "role": "admin",
         },
     ).json()
 
     assert "password" not in body
     assert "hashed_password" not in body
+    assert body["has_password"] is False
     assert PASSWORD not in str(body)
+
+
+@pytest.mark.parametrize(
+    ("role", "with_profile"),
+    [("admin", False), ("manager", True), ("tutor", True)],
+)
+def test_every_created_role_has_no_password_and_no_invite_yet(
+    api: TestClient, db: Session, role: str, with_profile: bool
+) -> None:
+    admin = _make_user(db)
+    extra = {"tutor": _profile()} if with_profile else {}
+
+    response = api.post(
+        "/api/users", headers=_auth(admin), json=_create_payload(role=role, **extra)
+    )
+
+    body = response.json()
+    assert response.status_code == 201
+    assert body["has_password"] is False
+    assert body["invite_expires_at"] is None
+    assert db.get_one(User, uuid.UUID(body["id"])).hashed_password is None
+
+
+def test_a_password_in_the_create_body_is_ignored(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/users",
+        headers=_auth(admin),
+        json=_create_payload(role="admin", password=PASSWORD),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["has_password"] is False
+    assert db.get_one(User, uuid.UUID(response.json()["id"])).hashed_password is None
+
+
+def test_a_password_in_a_patch_leaves_the_hash_alone(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+    passwordless = _make_user(db)
+    passwordless.hashed_password = None
+    db.flush()
+
+    kept = api.patch(
+        f"/api/users/{target.id}", headers=_auth(admin), json={"password": "new-password-123"}
+    )
+    still_none = api.patch(
+        f"/api/users/{passwordless.id}",
+        headers=_auth(admin),
+        json={"password": "new-password-123"},
+    )
+
+    assert kept.status_code == 200
+    assert still_none.status_code == 200
+    db.refresh(target)
+    db.refresh(passwordless)
+    assert verify_password(PASSWORD, target.hashed_password)
+    assert passwordless.hashed_password is None
+
+
+def test_the_list_says_who_has_a_password(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    passwordless = _make_user(db)
+    passwordless.hashed_password = None
+    db.flush()
+
+    items = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
+    by_id = {item["id"]: item["has_password"] for item in items}
+
+    assert by_id[str(admin.id)] is True
+    assert by_id[str(passwordless.id)] is False
 
 
 # --- the two ways a tutor account names its profile -----------------------------------------

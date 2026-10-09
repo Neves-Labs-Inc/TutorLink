@@ -16,6 +16,8 @@ from typing import Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.models.enums import AvailabilityMode
+
 
 class AvailabilityRead(BaseModel):
     id: uuid.UUID
@@ -24,12 +26,15 @@ class AvailabilityRead(BaseModel):
     start_time: datetime.time
     end_time: datetime.time
     is_active: bool
+    mode: AvailabilityMode
 
 
 class AvailabilityCreate(BaseModel):
     day_of_week: int = Field(ge=0, le=6)
     start_time: datetime.time
     end_time: datetime.time
+    # The product default, not the column's `traveler` server default (that is for raw inserts).
+    mode: AvailabilityMode = AvailabilityMode.ANYWHERE
 
     @model_validator(mode="after")
     def _range_is_coherent(self) -> Self:
@@ -43,3 +48,4 @@ class AvailabilityUpdate(BaseModel):
     start_time: datetime.time | None = None
     end_time: datetime.time | None = None
     is_active: bool | None = None
+    mode: AvailabilityMode | None = None

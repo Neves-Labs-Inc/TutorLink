@@ -23,7 +23,7 @@ English).
 before it is recorded and before a Retry: an ownership change undone in the meantime (a
 hand-back, a later transfer) sends no notice about it.
 
-**No email-derived name reaches a Guardian.** A holder whose `display_name_is_default` is set
+**No email-derived name reaches a Guardian.** A holder whose `name_is_default` is set
 gets the nameless notice. The Staff-facing line still names them,
 through `author_user_id`.
 """
@@ -307,9 +307,9 @@ def _plan(
 
     if kind is SystemMessageKind.HANDBACK_NOTICE:
         body = render("HANDBACK_NOTICE", language)
-    elif author.display_name_is_default:
+    elif author.name_is_default:
         body = render("TAKEOVER_NOTICE_GENERIC", language)
     else:
-        body = render("TAKEOVER_NOTICE", language, staff=author.display_name)
+        body = render("TAKEOVER_NOTICE", language, staff=author.name)
 
     return _Plan(body=body, refusal=None if is_open else WINDOW_CLOSED)

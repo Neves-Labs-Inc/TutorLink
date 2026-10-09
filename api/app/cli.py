@@ -42,7 +42,7 @@ from app.models.home import ChildHome, GuardianHome, Home
 from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.models.user import User
-from app.security import hash_password, password_is_encodable
+from app.security import MIN_PASSWORD_LENGTH, hash_password, password_is_encodable
 from app.services import clock
 from app.services.phone_service import (
     InvalidPhoneNumber,
@@ -52,9 +52,7 @@ from app.services.phone_service import (
 from app.services.reminder_service import TemplateNotApproved, send_sample
 from app.services.retention_scheduler import run_guarded_purge
 from app.services.twilio_service import TwilioSendFailed, TwilioServiceError
-from app.services.user_service import InvalidDisplayName, normalize_display_name
-
-MIN_PASSWORD_LENGTH = 8
+from app.services.name_rules import InvalidName, normalize_name
 
 # Bounds the wait for the table locks, so an idle-in-transaction session cannot make the purge
 # (and the bot's writes queued behind it) wait forever.
@@ -82,13 +80,13 @@ PRELAUNCH_DELETE_ORDER: tuple[type, ...] = (
 )
 
 
-def seed_admin(db: Session, *, email: str, password: str, display_name: str) -> str:
+def seed_admin(db: Session, *, email: str, password: str, name: str) -> str:
     """Create the first admin, or confirm one already exists. Never resets a password.
 
-    Raises `InvalidDisplayName` for a blank or over-long name, before anything is written.
+    Raises `InvalidName` for a blank or over-long name, before anything is written.
     """
     normalized_email = email.strip().lower()
-    name = normalize_display_name(display_name)
+    name = normalize_name(name)
     existing = db.scalars(select(User).where(User.email == normalized_email)).first()
 
     if existing is not None:
@@ -96,11 +94,10 @@ def seed_admin(db: Session, *, email: str, password: str, display_name: str) -> 
     else:
         user = User(
             email=normalized_email,
-            display_name=name,
-            display_name_is_default=False,
+            name=name,
+            name_is_default=False,
             hashed_password=hash_password(password),
             role=UserRole.ADMIN,
-            tutor_id=None,
             is_active=True,
         )
         db.add(user)
@@ -110,7 +107,7 @@ def seed_admin(db: Session, *, email: str, password: str, display_name: str) -> 
     return outcome
 
 
-def seed_developer(db: Session, *, email: str, password: str, display_name: str) -> str:
+def seed_developer(db: Session, *, email: str, password: str, name: str) -> str:
     """Create the first developer, or leave an existing account alone.
 
     Three outcomes rather than two. `conflict` is the one that matters: an email already held
@@ -119,20 +116,19 @@ def seed_developer(db: Session, *, email: str, password: str, display_name: str)
     and would hand the holder of that mailbox more access than whoever ran the command
     intended.
 
-    Raises `InvalidDisplayName` for a blank or over-long name, before anything is written.
+    Raises `InvalidName` for a blank or over-long name, before anything is written.
     """
     normalized_email = email.strip().lower()
-    name = normalize_display_name(display_name)
+    name = normalize_name(name)
     existing = db.scalars(select(User).where(User.email == normalized_email)).first()
 
     if existing is None:
         user = User(
             email=normalized_email,
-            display_name=name,
-            display_name_is_default=False,
+            name=name,
+            name_is_default=False,
             hashed_password=hash_password(password),
             role=UserRole.DEVELOPER,
-            tutor_id=None,
             is_active=True,
         )
         db.add(user)
@@ -203,12 +199,15 @@ def main(argv: list[str] | None = None) -> int:
     seed_admin_parser = subparsers.add_parser(
         "seed-admin", help="Create the first admin account, idempotently."
     )
-    seed_admin_parser.add_argument("--display-name", help="Else TUTORLINK_ADMIN_DISPLAY_NAME.")
+    # The flag keeps its name; the field it writes is `users.name`.
+    seed_admin_parser.add_argument(
+        "--display-name", dest="name", help="Else TUTORLINK_ADMIN_DISPLAY_NAME."
+    )
     create_developer_parser = subparsers.add_parser(
         "create-developer", help="Create a developer account. Never promotes an existing user."
     )
     create_developer_parser.add_argument(
-        "--display-name", help="Else TUTORLINK_DEVELOPER_DISPLAY_NAME."
+        "--display-name", dest="name", help="Else TUTORLINK_DEVELOPER_DISPLAY_NAME."
     )
     subparsers.add_parser(
         "purge-messages", help="Delete messages past chat_retention_days, and empty threads."
@@ -231,9 +230,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "seed-admin":
-        status = _run_seed_admin(display_name=args.display_name)
+        status = _run_seed_admin(name=args.name)
     elif args.command == "create-developer":
-        status = _run_create_developer(display_name=args.display_name)
+        status = _run_create_developer(name=args.name)
     elif args.command == "purge-messages":
         status = _run_purge_messages()
     elif args.command == "send-test-reminder":
@@ -247,11 +246,11 @@ def main(argv: list[str] | None = None) -> int:
     return status
 
 
-def _run_seed_admin(display_name: str | None = None) -> int:
+def _run_seed_admin(name: str | None = None) -> int:
     status = 2
     email = _resolve_email(env_var="TUTORLINK_ADMIN_EMAIL", prompt="Admin email: ")
-    name = _resolve_display_name(
-        given=display_name, env_var="TUTORLINK_ADMIN_DISPLAY_NAME", prompt="Admin display name: "
+    name = _resolve_name(
+        given=name, env_var="TUTORLINK_ADMIN_DISPLAY_NAME", prompt="Admin display name: "
     )
 
     if email is not None and name is not None:
@@ -266,9 +265,7 @@ def _run_seed_admin(display_name: str | None = None) -> int:
                 normalized_email = email.strip().lower()
                 db = SessionLocal()
                 try:
-                    result = seed_admin(
-                        db, email=normalized_email, password=password, display_name=name
-                    )
+                    result = seed_admin(db, email=normalized_email, password=password, name=name)
                 finally:
                     db.close()
 
@@ -395,11 +392,11 @@ def _run_purge_prelaunch_data(*, confirm: bool, cutoff_text: str | None) -> int:
     return status
 
 
-def _run_create_developer(display_name: str | None = None) -> int:
+def _run_create_developer(name: str | None = None) -> int:
     status = 2
     email = _resolve_email(env_var="TUTORLINK_DEVELOPER_EMAIL", prompt="Developer email: ")
-    name = _resolve_display_name(
-        given=display_name,
+    name = _resolve_name(
+        given=name,
         env_var="TUTORLINK_DEVELOPER_DISPLAY_NAME",
         prompt="Developer display name: ",
     )
@@ -419,7 +416,7 @@ def _run_create_developer(display_name: str | None = None) -> int:
                 db = SessionLocal()
                 try:
                     result = seed_developer(
-                        db, email=normalized_email, password=password, display_name=name
+                        db, email=normalized_email, password=password, name=name
                     )
                     existing_role = (
                         db.scalars(select(User).where(User.email == normalized_email)).one().role
@@ -458,7 +455,7 @@ def _resolve_email(*, env_var: str, prompt: str) -> str | None:
     return email
 
 
-def _resolve_display_name(*, given: str | None, env_var: str, prompt: str) -> str | None:
+def _resolve_name(*, given: str | None, env_var: str, prompt: str) -> str | None:
     """`--display-name`, else the environment, else a prompt — the email's order, flag first."""
     value = given if given is not None else os.environ.get(env_var)
 
@@ -494,14 +491,14 @@ def _resolve_password(*, env_var: str, prompt: str) -> str | None:
     return password
 
 
-def _validate(email: str, password: str, display_name: str) -> str | None:
+def _validate(email: str, password: str, name: str) -> str | None:
     normalized_email = email.strip().lower()
-    display_name_error = _display_name_error(display_name)
+    name_error = _name_error(name)
 
     if not normalized_email or "@" not in normalized_email:
         error = "invalid email"
-    elif display_name_error is not None:
-        error = display_name_error
+    elif name_error is not None:
+        error = name_error
     elif len(password) < MIN_PASSWORD_LENGTH:
         error = f"password must be at least {MIN_PASSWORD_LENGTH} characters"
     elif not password_is_encodable(password):
@@ -512,11 +509,11 @@ def _validate(email: str, password: str, display_name: str) -> str | None:
     return error
 
 
-def _display_name_error(display_name: str) -> str | None:
+def _name_error(name: str) -> str | None:
     """The shared validator's message for an unusable name, or `None`; never a traceback."""
     try:
-        normalize_display_name(display_name)
-    except InvalidDisplayName as exc:
+        normalize_name(name)
+    except InvalidName as exc:
         error: str | None = str(exc)
     else:
         error = None

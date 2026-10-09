@@ -301,6 +301,7 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `WS /api/conversations/stream` | ✓ | ✓ | ✗ |
 | `GET /api/subjects` | ✓ | ✓ | ✓ |
 | `POST/PATCH/DELETE /api/subjects` | ✓ | ✓ | ✗ |
+| `GET /api/staff` | ✓ | ✓ | ✗ |
 | `GET /api/users` | ✓ | ✓ | ✗ |
 | `POST/PATCH/DELETE /api/users` | ✓ | ✓ (not `developer`) | ✗ |
 | `GET /api/settings` | All fields | Admin-visible fields only | ✗ |
@@ -462,6 +463,38 @@ Update email, password, role, or active status.
 ### `DELETE /api/users/{id}`
 
 Soft delete — sets `is_active = false`.
+
+---
+
+## Staff
+
+```
+GET    /api/staff
+```
+
+Office only (Admin, Manager, Developer); a Tutor is **403** `Office access required`. The one list of everyone a Booking can be with, read by the booking form and the Bookings Staff filter. Read-only and reference-shaped: it carries no email and no `is_active`, so it widens nothing `/api/users` keeps Admin-only.
+
+### `GET /api/staff`
+
+Returns the **active** users whose role is `tutor`, `manager` or `admin`, ordered by `name` then `id`. Paged like every list (`page`, `page_size`, default and maximum sizes apply); there is no other filter.
+
+- A **Developer is never listed**, whatever the caller's role.
+- Only `users.is_active` decides who is active — `tutors.is_active` is not consulted, the same rule `POST /api/bookings` applies.
+- `id` is the `users.id` that `POST /api/bookings.user_id` takes.
+- `tutor_id` is the teaching profile's `tutors.id` — what `GET /api/tutors/{id}/availability` takes — and `null` for a person with none: an Admin, or a Manager migrated without a profile.
+
+**Response**
+```json
+{
+  "items": [
+    { "id": "uuid", "name": "Sarah Miller", "role": "tutor", "tutor_id": "uuid" },
+    { "id": "uuid", "name": "Olivia Park", "role": "admin", "tutor_id": null }
+  ],
+  "total": 12,
+  "page": 1,
+  "page_size": 20
+}
+```
 
 ---
 
@@ -868,6 +901,8 @@ themselves rather than acting as wildcards, the same rule `?q=` follows on
 
 Ordered by `Child.name`, then `Child.id`.
 
+`?awaiting_evaluation=true` narrows to active, not-Evaluated children (whatever `is_active` says), oldest `created_at` first. `?evaluable=true` narrows further to those with no live Evaluation (a `pending` or `confirmed` booking of `kind = 'evaluation'`), i.e. who may be booked an Evaluation; a child whose only Evaluations are `completed` or `cancelled` is included. It is ordered like `awaiting_evaluation` and composes with `?q=`.
+
 `guardians` lists every linked guardian, active or not, ordered by name then id. `homes` lists
 only the child's **active** homes, ordered by creation. `next_session` is the child's earliest
 booking that is live and starts after now (business time) — `null` when there is none.
@@ -1087,6 +1122,7 @@ Returns tutors, active by default. See [Soft deletes and the `is_active` filter]
   "items": [
     {
       "id": "uuid",
+      "user_id": "uuid",
       "name": "Sarah Miller",
       "email": "sarah@example.com",
       "phone_number": "+1987654321",
@@ -1106,6 +1142,8 @@ Returns tutors, active by default. See [Soft deletes and the `is_active` filter]
   "page_size": 20
 }
 ```
+
+`id` is the teaching profile; `user_id` is the account behind it — what `POST /api/bookings.user_id` takes, and the `id` the same person has in `GET /api/staff`.
 
 ### `GET /api/tutors/{id}`
 
@@ -1178,7 +1216,8 @@ Returns the tutor's full weekly schedule.
       "day_of_week": 0,
       "start_time": "09:00:00",
       "end_time": "12:00:00",
-      "is_active": true
+      "is_active": true,
+      "mode": "anywhere"
     }
   ],
   "total": 42,
@@ -1196,13 +1235,22 @@ Add a recurring weekly slot.
 {
   "day_of_week": 0,
   "start_time": "09:00",
-  "end_time": "12:00"
+  "end_time": "12:00",
+  "mode": "anywhere"
 }
 ```
 
+`mode` is optional and one of `traveler` (Home visits), `anywhere` (Home or office) or `only_office` (Office only). Omitted, it defaults to `anywhere`; an unknown value is a 400. The mode limits only what the bot offers; the Office can book any Location. Every slot is returned with its `mode`.
+
 ### `PATCH /api/availability/{id}`
 
-Update a slot's time or active status.
+Update a slot's time, active status or `mode`.
+
+```json
+{ "mode": "traveler" }
+```
+
+A `mode` change runs no booking checks and leaves existing bookings alone; omitting `mode` leaves it as it was.
 
 ### `DELETE /api/availability/{id}`
 
@@ -1427,15 +1475,20 @@ This must stay in step with `POST /api/bookings` below. The offer surface and th
 GET    /api/bookings
 GET    /api/bookings/{id}
 POST   /api/bookings
+PUT    /api/bookings/{id}
 PATCH  /api/bookings/{id}
 ```
 
 ### `GET /api/bookings`
 
-Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&child_id=uuid&from=2026-08-01&to=2026-08-31`
+Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&child_id=uuid&kind=evaluation&location=in_office&user_id=uuid&from=2026-08-01&to=2026-08-31`
 
 `?child_id=` filters to one child's bookings. It composes with every filter above and with the
 tutor scope on a tutor token; an unknown id returns an empty page, never a **404**.
+
+**`?kind=regular|evaluation`** and **`?location=home|in_office`** filter on the booking's kind and Location. **`?user_id=`** filters to one Staff member's bookings by user id (`bookings.user_id`), an Admin's Evaluations included; `tutor_id` stays the teaching profile's id, and the two simply AND. All three compose with every other filter and with the tutor scope. On a tutor token the scope wins: `?user_id=<another user>` ANDs with the tutor's own rows and returns an empty page (`total: 0`, both counts `0`), never a **403** and never that user's rows. `?subject_id=` never returns an Evaluation, since an Evaluation has no subject.
+
+**`counts_by_kind`** reports, for each kind, the `total` this same request would return with `kind` forced to that value: every other filter, the tutor scope and the date range apply, and `kind` itself is ignored. On the Regular tab `counts_by_kind.evaluation` is therefore still what the Evaluation tab would show. Only this endpoint returns it; the client bookings list (`GET /api/clients/{id}/bookings`) keeps the plain page.
 
 **`?status=` may be repeated**, and repeated values are ORed: `?status=pending&status=confirmed` returns every booking in either status. A single `?status=confirmed` is the one-element case and means what it has always meant, and omitting `status` still returns every status. Repetition rather than a comma-separated list, because every filter in this contract carries one value per key: a comma inside a value slot would need an escaping rule that then has to be documented for every parameter, and a repeated key needs none. This is the first multi-value parameter in this contract, and the form is chosen here rather than improvised later.
 
@@ -1448,18 +1501,22 @@ tutor scope on a tutor token; an unknown id returns an empty page, never a **404
     {
       "id": "uuid",
       "child": { "id": "uuid", "name": "Tommy Doe" },
-      "tutor": { "id": "uuid", "name": "Sarah Miller" },
+      "staff": { "id": "uuid", "name": "Sarah Miller", "role": "tutor" },
+      "kind": "regular",
+      "location": "home",
       "subject": { "id": "uuid", "name": "Math" },
       "scheduled_date": "2026-08-10",
       "start_time": "09:00:00",
       "end_time": "10:00:00",
       "status": "confirmed",
-      "notes": null
+      "notes": null,
+      "updated_at": "2026-08-01T12:00:00"
     }
   ],
   "total": 42,
   "page": 1,
-  "page_size": 20
+  "page_size": 20,
+  "counts_by_kind": { "regular": 40, "evaluation": 2 }
 }
 ```
 
@@ -1473,38 +1530,76 @@ Returns full detail for a single booking, including the address and access code 
 
 ### `POST /api/bookings`
 
-Create a confirmed booking. Called by the bot after the client selects a slot.
+Create a confirmed booking. **Office only.** Called by the bot after the client selects a slot (a
+Regular booking at a home with a Tutor or Manager), and by the dashboard for every shape below.
+
+**The shapes.** A booking has a `kind` (`regular` or `evaluation`), a Staff member (`user_id`, a
+Tutor, Manager or Admin — a Developer is not bookable and is refused like an unknown id) and a
+`location` (`home`, naming one of the child's homes in `home_id`, or `in_office`, naming none). The
+Staff member's role is read from `users.role` at write time. Which rules run depends on the kind and
+the role (#130, #132, #133, #151):
+
+| | Evaluation | Regular, Admin | Regular, Tutor/Manager |
+|---|---|---|---|
+| Staff role allowed | Admin or Manager | Admin | Tutor or Manager |
+| `subject_id` | must be absent | required | required |
+| `availability_id` | must be absent | must be absent | required: a range of that Staff member's profile (rule 1) |
+| Gap (rule 3) | no | no | yes |
+| Time off (rule 4) | no | no | yes |
+| Grade ceiling (rule 5) | no | no | yes |
+| Overlap (rule 2 + EXCLUDE) | yes | yes | yes |
+| Home linked to the child (rule 6) | when `location = home` | when `location = home` | when `location = home` |
+| Child not Evaluated, no live Evaluation (rules 8, 9) | yes | no | no |
+| Window + lead time | hard block | hard block | hard block |
+| Created status | `confirmed` | `confirmed` | `confirmed` |
+
+A Manager with no teaching profile can take Evaluations; a Regular booking with them fails rule 1,
+since no range can be theirs. Creating a booking here sends no WhatsApp message, for either kind.
 
 **Validation**
 
-The requested range is accepted when it satisfies all of the following:
+The requested range is accepted when it satisfies every rule its column above says runs:
 
-1. it sits entirely inside an active `tutor_availability` range for that tutor and day
-2. it overlaps no existing booking for that tutor with `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
-3. it is at least `session_gap_minutes` clear of the nearest booking on either side — refused when `new.start_time < booking.end_time + session_gap_minutes AND new.end_time + session_gap_minutes > booking.start_time` holds for any booking counted by rule 2. That is rule 2's comparison with the booking widened by the gap on both sides, and it is the comparison step 3 of `GET /api/slots/available` subtracts by, so the offer surface and this check read the same rows the same way. The inequalities are strict, so clearance of exactly `session_gap_minutes` is accepted
+1. it sits inside the `tutor_availability` range the caller named, which must exist, be active and
+   belong to the Staff member's teaching profile. The range being another profile's, withdrawn, or
+   named by a Manager with no profile is a hard **400**; the time falling outside it — the wrong
+   weekday or the wrong hours — is the `outside_slot` warning (below). The range's `mode` is not
+   checked: it limits only the bot.
+2. it overlaps no existing booking of that Staff member, of either kind, with
+   `status IN (pending, confirmed)` — `new.start_time < booking.end_time AND new.end_time > booking.start_time`. This check exists to return a clean 409 with a useful message; the guarantee itself is held by the `excl_bookings_live_overlap` exclusion constraint (see `erd.md`), since a read-then-write check alone races under concurrent requests
+3. it is at least the travel gap clear of the nearest live booking of that Staff member on either side, of either kind — refused when `new.start_time < booking.end_time + gap AND new.end_time + gap > booking.start_time` holds for any booking counted by rule 2. The gap is `session_gap_minutes` when either booking is at a home and **zero** when both are `in_office` (#132): two office sessions may run back to back. That is rule 2's comparison with the booking widened by the gap on both sides, and it is the comparison step 3 of `GET /api/slots/available` subtracts by, so the offer surface and this check read the same rows the same way. The inequalities are strict, so clearance of exactly the gap is accepted
 4. it is not blocked by a `tutor_availability_exceptions` row with `status = 'approved'` covering
    `scheduled_date` — the whole day when `start_time`/`end_time` are NULL, or by time overlap when they
    are set. `pending` and `rejected` rows never block a booking.
-5. the tutor's `max_grade_level` for the **booked subject** is at or above the booked child's
-   `grade_level`. The ceiling is per subject, so this resolves the `(tutor_id, subject_id)` pair from
-   `bookings.subject_id` — there is no tutor-wide grade to fall back on. A tutor qualified for the child's
+5. the Staff member's `max_grade_level` for the **booked subject** is at or above the booked child's
+   Subject level for that subject (never the Overall grade; with no level the comparison is skipped). The ceiling is per subject, so this resolves the `(tutor_id, subject_id)` pair from
+   `bookings.subject_id` — there is no tutor-wide grade to fall back on. A Staff member qualified for the child's
    grade in one subject is still refused for a subject where their ceiling is lower. The boundary is
-   inclusive: a ceiling equal to the child's grade is accepted.
+   inclusive: a ceiling equal to the child's level is accepted.
 
    A **missing** `tutor_subjects` row for the booked subject is a refusal, not a pass. With no assignment
-   there is no ceiling to compare against, and the tutor does not teach the subject at all. Written as a
+   there is no ceiling to compare against, and the Staff member does not teach the subject at all. Written as a
    join that silently drops the row, the strongest possible violation would return success.
 
 6. `home_id` is one of the booked child's homes — a `child_homes` row exists for
-   `(child_id, home_id)`. Any other home is refused, including one belonging to a different family.
+   `(child_id, home_id)`. Any other home is refused, including one belonging to a different family. Nothing to check `in_office`.
 
 7. `booked_by_guardian_id`, when present, is one of the booked child's guardians — a `child_guardians`
-   row exists for `(child_id, booked_by_guardian_id)`. NULL is always allowed and is the admin path.
+   row exists for `(child_id, booked_by_guardian_id)`. NULL is always allowed and is the Office path.
 
-Rule 1 failing is **400**. Rules 2, 3 and 4 failing are **409**, the conflict case the error table already
-names. Rules 5, 6 and 7 failing are **422** — the request is well-formed and conflicts with nothing, it
-just names a combination that is not permitted: a tutor not qualified to teach that child at that grade,
-a home the child does not live at, or a guardian not linked to the child.
+8. (Evaluation) the child is not Evaluated: `children.evaluated_at IS NULL`. Clearing the mark reopens it.
+
+9. (Evaluation) the child has no other live Evaluation — no booking with `kind = 'evaluation'` and
+   `status IN (pending, confirmed)`. Completed and Cancelled ones do not count. The guarantee is the
+   partial unique index `uq_bookings_one_live_evaluation_per_child`; this check is the readable 409.
+
+**Status codes.** A missing or retired reference and rule 1's hard half are **400**, as are the window
+gates. Rules 2 and 9 and unconfirmed warnings are **409**, the conflict case the error table already
+names. Rules 5, 6, 7 and 8, a role the kind does not take, and a Subject, slot or home present or absent
+against the kind or Location are **422** — the request is well-formed and conflicts with nothing, it
+just names a combination that is not permitted: a Tutor asked to run an Evaluation, a Staff member not
+qualified to teach that child at that level, a home the child does not live at, a guardian not linked
+to the child, or a child already Evaluated.
 
 Rules 6 and 7 are deliberately independent of each other. The home is checked against the **child**, never
 against the booking guardian, so a guardian booking a session at the child's *other* home — the co-parent's
@@ -1515,9 +1610,26 @@ the only thing separating the two requests. Two siblings sharing a home each pas
 `child_homes` row.
 
 This enumeration is the authority for what `POST /api/bookings` enforces, and it belongs in one place in
-code — a single ordered rule set carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
-rules 6 and 7 from #38), not prose scattered across issues. The list has been amended three times in two
-days; treat it as open and expect a fourth.
+code — ordered rule tables carrying these issue numbers as comments (rule 4 from #24, rule 5 from #36,
+rules 6 and 7 from #38, rules 8 and 9 from #133), not prose scattered across issues. The list has been
+amended four times; treat it as open and expect a fifth.
+
+**Confirmable warnings (#151).** For a Regular booking with a Tutor or Manager, four checks are warnings
+the Office may confirm rather than refusals: `outside_slot` (rule 1's time half), `gap` (rule 3),
+`time_off` (rule 4) and `grade_ceiling` (rule 5). The contract:
+
+1. Hard blocks are checked first and never come back as warnings: overlap, home not linked, the window
+   and lead time, reference failures, the kind/role/Subject/slot/Location shape, and the Evaluation
+   preconditions.
+2. The service collects **every** failing warning rather than stopping at the first.
+3. Any unconfirmed warning refuses with **409** and the body
+   `{"detail": "...", "warnings": [{"code": "gap", "message": "..."}, ...]}`. The messages are the
+   same sentences the hard refusals carry.
+4. The client resubmits the same body with `confirm_warnings: ["gap", ...]`. The write lands only if
+   every warning raised on **that** submission is listed; a new or unlisted one refuses again with a
+   fresh `warnings[]` naming what is still unconfirmed. An unknown code is **400**.
+5. Overrides are not recorded. The bot passes no confirmations, so every warning still refuses it as
+   a plain 409 or 422 and it re-offers.
 
 Rule 3 is checked here and not only in `GET /api/slots/available`, even though the two now apply the same
 gap-expanded comparison. Agreement removes the case where a slot the bot was just offered is refused on
@@ -1547,13 +1659,15 @@ runtime-editable `session_length_minutes` and `session_gap_minutes` — under a 
 either setting would leave every existing booking failing its own validation the next time it is edited.
 
 `scheduled_date` in the past returns **400**, as does a date further ahead than `booking_lookahead_days`.
-A start time earlier than `now + min_booking_lead_hours` returns **400**.
+A start time earlier than `now + min_booking_lead_hours` returns **400**. Both apply to every kind.
 
 **Request**
 ```json
 {
   "child_id": "uuid",
-  "tutor_id": "uuid",
+  "user_id": "uuid",
+  "kind": "regular",
+  "location": "home",
   "subject_id": "uuid",
   "availability_id": "uuid",
   "home_id": "uuid",
@@ -1561,13 +1675,14 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
   "start_time": "09:00",
   "end_time": "10:00",
   "booked_by_guardian_id": null,
-  "notes": null
+  "notes": null,
+  "confirm_warnings": []
 }
 ```
 
-`home_id` is **required** — `bookings.home_id` is `NOT NULL` and rule 6 validates it against the child's `child_homes` rows. It is not derivable once a child has two homes, which is the case the column exists for. `booked_by_guardian_id` is optional and `null` is the admin path; when present, rule 7 validates it against `child_guardians`.
+`home_id` is required exactly when `location` is `home` and rule 6 validates it against the child's `child_homes` rows. It is not derivable once a child has two homes, which is the case the column exists for. `subject_id` is required for a Regular booking and must be absent on an Evaluation; `availability_id` is required for a Regular booking with a Tutor or Manager and must be absent otherwise. `booked_by_guardian_id` is optional and `null` is the Office path; when present, rule 7 validates it against `child_guardians`. `confirm_warnings` is optional and empty by default.
 
-**Which `is_active` this endpoint honours.** A `tutor_id`, `subject_id`, `home_id`, `child_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a tutor `GET /api/slots/available` has already stopped offering. That 400 is deliberately not one of the 422s below — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
+**Which `is_active` this endpoint honours.** A `user_id`, `subject_id`, `home_id`, `child_id` or `booked_by_guardian_id` naming a **deactivated** row is refused with **400**, exactly as a missing one is: a soft delete keeps the row and all its dependents, so an existence check alone would let this endpoint confirm a session against a Staff member `GET /api/slots/available` has already stopped offering. `users.is_active` is the only flag that decides whether a Tutor or Manager is active; `tutors.is_active` is not consulted. That 400 is deliberately not one of the 422s above — 422 refuses a *combination* of two individually valid rows, while a retired reference is a property of one row, which is what rule 1 already answers with 400. `tutor_availability.is_active` is rule 1's business rather than a reference failure: a withdrawn range names the wrong times, not the wrong row.
 
 **Response**
 ```json
@@ -1580,11 +1695,53 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**.
 }
 ```
 
+### `PUT /api/bookings/{id}`
+
+Edit a live booking in place. **Office only.** This is the dashboard Reschedule: the booking keeps
+its id, its `kind`, its `status` and its Child, and every rule of `POST /api/bookings` re-runs
+against the new values with the booking itself left out of its own neighbours (rules 2 and 3), under
+the same warning contract. No WhatsApp message is sent; the Office tells the Guardian itself.
+
+**Request** — a full replacement of the editable fields:
+```json
+{
+  "user_id": "uuid",
+  "location": "home",
+  "home_id": "uuid",
+  "subject_id": "uuid",
+  "availability_id": "uuid",
+  "scheduled_date": "2026-10-16",
+  "start_time": "16:00:00",
+  "end_time": "17:00:00",
+  "notes": "ring the side door",
+  "confirm_warnings": []
+}
+```
+
+- `kind` may be omitted or equal to the row's; a different one is **422**.
+- `notes` has three readings: **omitted** keeps the row's notes, **`null`** clears them, a string
+  replaces them. A client that does not name notes has nothing to say about them.
+- `child_id` and `booked_by_guardian_id` are not editable and a body naming either is **400**,
+  refused rather than silently ignored, so a client that believes it changed one of them learns it
+  did not.
+- **Correction mode.** When the row's current start is already past, the window and lead-time gates
+  are skipped and the new time may be past too: a session that has already happened is being
+  corrected, not booked. A future booking moved into the past, or beyond the window, is **400** as
+  on a create.
+- An Evaluation of a Child already Evaluated may still be edited (rule 8 is skipped; rule 9 still
+  holds against *other* live Evaluations).
+
+**Response** is the booking's `GET /api/bookings/{id}` shape with `updated_at` bumped, even when
+the body restates the current values.
+
+**Status codes.** As `POST /api/bookings`, plus **404** for an unknown id and **409** for a
+`completed` or `cancelled` booking ("Only a pending or confirmed booking can be edited").
+
 ### `PATCH /api/bookings/{id}`
 
-Update booking status. Used for cancellations, completions, and rescheduling.
+Update booking status. Used for cancellations and completions.
 
-**`status` is the only writable field.** The request body carries nothing else, and `notes` in particular cannot be edited through this endpoint — a booking's notes are set at creation and are read-only thereafter. That is a property of this contract, not a gap in a client.
+**`status` is the only writable field.** The request body carries nothing else, and `notes` in particular cannot be edited through this endpoint — a booking's notes are edited through `PUT /api/bookings/{id}`. That is a property of this contract, not a gap in a client.
 
 **The legal transitions are exactly these:**
 
@@ -1606,7 +1763,7 @@ A transition is decided once. The endpoint reads the row under a lock, judges th
 }
 ```
 
-For rescheduling, cancel the existing booking and create a new one via `POST /api/bookings`.
+For rescheduling, edit the booking in place via `PUT /api/bookings/{id}`.
 
 ---
 
@@ -1646,19 +1803,24 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
   "week_end": "2026-08-30",
   "today_session_count": 12,
   "upcoming_week_session_count": 35,
+  "today_evaluation_count": 1,
+  "upcoming_week_evaluation_count": 3,
   "active_tutor_count": 8,
   "active_client_count": 63,
   "recent_bookings": [
     {
       "id": "uuid",
       "child": { "id": "uuid", "name": "Tommy Doe" },
-      "tutor": { "id": "uuid", "name": "Sarah Miller" },
+      "staff": { "id": "uuid", "name": "Sarah Miller", "role": "tutor" },
+      "kind": "regular",
+      "location": "home",
       "subject": { "id": "uuid", "name": "Math" },
       "scheduled_date": "2026-08-27",
       "start_time": "09:00:00",
       "end_time": "10:00:00",
       "status": "confirmed",
-      "notes": null
+      "notes": null,
+      "updated_at": "2026-08-01T12:00:00"
     }
   ]
 }
@@ -1670,6 +1832,8 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
 | `week_end` | The Sunday of the ISO week containing `date` |
 | `today_session_count` | Live sessions on `date` |
 | `upcoming_week_session_count` | Live sessions from the day after `date` through `week_end`, inclusive |
+| `today_evaluation_count` | Of `today_session_count`, the live Evaluations (`kind = evaluation`) |
+| `upcoming_week_evaluation_count` | Of `upcoming_week_session_count`, the live Evaluations |
 | `active_tutor_count` | `tutors` rows with `is_active = true` |
 | `active_client_count` | `guardians` rows with `is_active = true` |
 | `recent_bookings` | The five most recently created bookings, newest first |
@@ -1689,6 +1853,7 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
 
 - `today_session_count` is the number of live bookings on `date`. **For an admin-or-above caller it equals the `total` of `GET /api/bookings?status=pending&status=confirmed&from=<date>&to=<date>`** — the same status set, the same inclusive bounds on the same column. That call is exactly the list a dashboard renders beneath this number, so the count and the rows agree by construction rather than by luck.
 - `upcoming_week_session_count` equals the `total` of that same call with `from=<date + 1 day>&to=<week_end>`. **The equality holds on a Sunday as well**, where that call's `from` is a day later than its `to`: an inverted range returns an empty page, so both sides are `0` and the assertion needs no Sunday case.
+- `today_evaluation_count` equals the `total` of `GET /api/bookings?status=pending&status=confirmed&kind=evaluation&from=<date>&to=<date>`, and `upcoming_week_evaluation_count` the `total` of the same call with `from=<date + 1 day>&to=<week_end>` (0 on a Sunday). They are subsets of the session counts, which keep counting every kind; the dashboard shows them as an "incl. N Evaluations" line.
 - `active_tutor_count` is the number of `tutors` rows with `is_active = true`. **For an admin-or-above caller it equals the `total` of `GET /api/tutors?is_active=true`** — same column, same predicate, same treatment of the deactivated set.
 - `active_client_count` is the number of `guardians` rows with `is_active = true`, equal to the `total` of `GET /api/clients?is_active=true` on the same terms and under the same role qualifier. A *client* is a `guardian`: neither `children` nor `homes` enters this count.
 - **The role qualifier is load-bearing.** `GET /api/tutors` is scoped to "own profile only" for a tutor, so its `total` on a tutor token is 1, and `GET /api/bookings` is scoped to "own bookings only", so its `total` on that token counts that tutor's sessions rather than the system's. Only `admin` and `developer` can observe both sides of any of these equalities, and only they can call this endpoint at all — which is what makes the equality statable without a caveat rather than in spite of one.
@@ -1703,7 +1868,7 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
 - **Ordering is `created_at` descending, tie-broken by `id` descending.** This is a feed of what was just booked, not of what happens next; the two session counts above already answer what happens next. `created_at` is an absolute instant, so ordering by it needs no zone this system does not have, unlike `scheduled_date + start_time`, which is a bare date beside a bare time and has no offset to order by. The `id` tie-break is there because ids are `gen_random_uuid()` and carry no insertion order — without it, two bookings created in the same transaction have no defined order and the endpoint is not deterministic.
 - **Every status appears, `cancelled` and `completed` included.** That deliberately differs from the session counts above: the counts answer what is live, the feed answers what just happened, and a booking cancelled ten minutes ago is exactly the recent activity an admin opened the page to see. Each row's `status` field reports which it is.
 - **Five is fixed and there is no parameter.** The widget is "last 5". A caller wanting more wants paging over an ordered `GET /api/bookings`, which is a change to that endpoint and not to this one.
-- **Each object is identical to a [`GET /api/bookings`](#get-apibookings) item** — the same nine fields, the same nesting, the same names. That is deliberate: a second booking-summary shape is a second thing to keep in step.
+- **Each object is identical to a [`GET /api/bookings`](#get-apibookings) item** — the same twelve fields, the same nesting, the same names. That is deliberate: a second booking-summary shape is a second thing to keep in step.
 
 **What this endpoint deliberately does not carry.** The dashboard's today's-sessions widget is a count *and a list*; only the count is here. The list is `GET /api/bookings?status=pending&status=confirmed&from=<date>&to=<date>`, which already exists in this contract, already pages and already returns the envelope. **The status filter is not optional decoration:** without it the list returns that day's cancellations too, and the widget renders a count above a list of different rows. Scoped this way the two agree, and the equality above says so. An aggregate endpoint returns aggregates: a second unbounded copy of a booking list inside this one would be a second path to the same rows, which is what this endpoint exists to remove rather than to add.
 

@@ -37,20 +37,22 @@ from sqlalchemy.orm import Session
 from app.dependencies import (
     ADMIN_REQUIRED_ERROR,
     CREDENTIALS_ERROR,
-    STAFF_REQUIRED_ERROR,
+    OFFICE_REQUIRED_ERROR,
     TUTOR_SCOPE_ERROR,
 )
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, ExceptionStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
+from app.routers.booking_status import OFFICE_ONLY_TRANSITION_ERROR
 from app.routers.exceptions import EXCEPTION_NOT_DELETABLE_ERROR
 from app.security import create_access_token, hash_password
+from tests.support import user_id_of
 
 MONDAY = datetime.date(2026, 9, 7)
 
@@ -252,7 +254,7 @@ def test_a_tutor_listing_bookings_sees_one_of_the_two_in_the_database(
     assert response.status_code == 200
     assert body["total"] == 1
     assert [row["id"] for row in body["items"]] == [str(world.booking_id)]
-    assert body["items"][0]["tutor"]["id"] == str(world.tutor.id)
+    assert body["items"][0]["staff"]["id"] == str(world.tutor.user_id)
     assert body["items"][0]["subject"]["name"] == world.subject.name
     assert str(world.other_tutor.id) not in response.text
 
@@ -275,7 +277,7 @@ def test_a_tutor_reads_their_own_booking(api: TestClient, world: World) -> None:
 
     assert response.status_code == 200
     assert body["id"] == str(world.booking_id)
-    assert body["tutor"]["id"] == str(world.tutor.id)
+    assert body["staff"]["id"] == str(world.tutor.user_id)
     assert body["home"]["id"] == str(world.home_id)
     assert body["child"]["id"] == str(world.child_id)
 
@@ -416,29 +418,34 @@ def test_a_tutor_deleting_another_tutors_pending_request_is_403(
             "PATCH",
             "/api/exceptions/{pending_id}",
             {"status": "approved"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/exceptions/{other_pending_id}",
             {"status": "rejected"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
         ("DELETE", "/api/exceptions/{approved_id}", None, EXCEPTION_NOT_DELETABLE_ERROR),
         (
             "POST",
             "/api/tutors/{tutor_id}/availability",
             {"day_of_week": 3, "start_time": "09:00:00", "end_time": "12:00:00"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/availability/{slot_id}",
             {"start_time": "10:00:00", "end_time": "11:00:00"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
-        ("DELETE", "/api/availability/{slot_id}", None, STAFF_REQUIRED_ERROR),
-        ("PATCH", "/api/bookings/{booking_id}", {"status": "cancelled"}, STAFF_REQUIRED_ERROR),
+        ("DELETE", "/api/availability/{slot_id}", None, OFFICE_REQUIRED_ERROR),
+        (
+            "PATCH",
+            "/api/bookings/{booking_id}",
+            {"status": "cancelled"},
+            OFFICE_ONLY_TRANSITION_ERROR,
+        ),
     ],
     ids=[
         "decide-own-pending",
@@ -483,7 +490,9 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
         "/api/bookings",
         json={
             "child_id": str(world.child_id),
-            "tutor_id": str(world.tutor.id),
+            "user_id": str(world.tutor.user_id),
+            "kind": "regular",
+            "location": "home",
             "subject_id": str(world.subject.id),
             "availability_id": str(world.slot_id),
             "home_id": str(world.home_id),
@@ -494,7 +503,7 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
         headers=world.tutor_headers,
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _booking_count(db) == 2
 
 
@@ -504,13 +513,13 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
 @pytest.mark.parametrize(
     ("template", "detail"),
     [
-        ("/api/clients", STAFF_REQUIRED_ERROR),
+        ("/api/clients", OFFICE_REQUIRED_ERROR),
         ("/api/users", ADMIN_REQUIRED_ERROR),
         ("/api/settings", ADMIN_REQUIRED_ERROR),
-        ("/api/stats/overview?date=2026-09-07", STAFF_REQUIRED_ERROR),
+        ("/api/stats/overview?date=2026-09-07", OFFICE_REQUIRED_ERROR),
         (
             "/api/slots/available?subject_id={subject_id}&date=2026-09-07&grade_level=7",
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
     ],
     ids=["clients", "users", "settings", "stats", "slots"],
@@ -572,8 +581,8 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
     template: str,
     body: dict[str, str] | None,
 ) -> None:
-    """`users.tutor_id` is nullable because admins have no tutor profile, so a `tutor` row in
-    that state is a data error. `dependencies.py:196-226` refuses it rather than reading it as
+    """Only admins have no profile, so a `tutor` user with none is a data error.
+    `dependencies.py` refuses it rather than reading it as
     "unscoped" — a 200 here would carry every tutor's rows."""
     response = api.request(
         method, template.format(**_targets(world)), json=body, headers=world.unlinked_headers
@@ -645,9 +654,8 @@ def _targets(world: World) -> dict[str, str]:
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -656,15 +664,21 @@ def _make_tutor(db: Session) -> Tutor:
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("isolation-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("isolation-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("isolation-password")
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
@@ -745,7 +759,9 @@ def _make_booking(
 ) -> uuid.UUID:
     booking = Booking(
         child_id=child_id,
-        tutor_id=tutor_id,
+        user_id=user_id_of(db, tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject_id,
         availability_id=availability_id,
         home_id=home_id,
@@ -797,7 +813,7 @@ def _slot_is_active(db: Session, slot_id: uuid.UUID) -> bool:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 

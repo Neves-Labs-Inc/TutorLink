@@ -22,6 +22,7 @@ takes one from `0180`…`0199`, which the generator never reaches.
 
 import itertools
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -32,11 +33,13 @@ from sqlalchemy.orm import Session
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import UserRole
+from app.models.password_link import PasswordLink, PasswordLinkPurpose
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.security import create_access_token, hash_password
 from app.services import tutor_service
+from app.services.password_link_service import issue_link
 
 PASSWORD = "correct horse battery staple"
 ALLOWED_FAILURE_CODES = frozenset({400, 401, 403, 404, 409})
@@ -54,21 +57,27 @@ def _make_user(
     role: UserRole = UserRole.ADMIN,
     tutor_id: uuid.UUID | None = None,
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password(PASSWORD),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password(PASSWORD),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(PASSWORD)
+        user.role = role
+        user.is_active = True
     db.flush()
     return user
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -81,10 +90,13 @@ def _make_tutor(
 ) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=name or f"Tutor {suffix}",
+        user=User(
+            email=f"tutor-{suffix}@example.com",
+            name=name or f"Tutor {suffix}",
+            role=UserRole.TUTOR,
+            is_active=is_active,
+        ),
         phone_number=phone_number or _phone_number(),
-        email=f"tutor-{suffix}@example.com",
-        is_active=is_active,
     )
     db.add(tutor)
     db.flush()
@@ -193,7 +205,7 @@ def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
 def test_paging_over_tutors_sharing_one_name_repeats_nothing_and_loses_nothing(
     api: TestClient, db: Session
 ) -> None:
-    """`tutors.name` is not unique, so `ORDER BY name` alone leaves the tie order up to the
+    """`users.name` is not unique, so `ORDER BY name` alone leaves the tie order up to the
     plan — and `LIMIT/OFFSET` is a different plan from the unpaged scan. Without `Tutor.id` as
     the final sort key one of these namesakes can land on two pages and another on none."""
     admin = _make_user(db)
@@ -339,8 +351,8 @@ def test_an_admin_reading_an_id_that_does_not_exist_is_404(api: TestClient, db: 
 
 
 def test_a_tutor_account_without_a_profile_is_refused(api: TestClient, db: Session) -> None:
-    """`users.tutor_id` is NULL because admins have no profile; a *tutor* in that state is a
-    data error, and `dependencies.py:217-218` refuses rather than scoping to NULL."""
+    """Only admins have no profile; a *tutor* user with none is a data error, and
+    `dependencies.py` refuses rather than scoping to `None`."""
     orphan = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
     profile = _make_tutor(db)
     headers = _auth(orphan)
@@ -391,7 +403,7 @@ def test_no_failure_escapes_the_agreed_status_codes(api: TestClient, db: Session
         api.get(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin)),
         api.get(f"/api/tutors/{uuid.uuid4()}", headers=_auth(tutor_user)),
         api.post("/api/tutors", headers=_auth(admin), json=_payload(phone_number="12345")),
-        api.post("/api/tutors", headers=_auth(admin), json=_payload(email=profile.email)),
+        api.post("/api/tutors", headers=_auth(admin), json=_payload(email=profile.user.email)),
         api.post("/api/tutors", headers=_auth(tutor_user), json=_payload()),
         api.patch(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin), json={"bio": "x"}),
         api.delete(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin)),
@@ -619,7 +631,28 @@ def test_read_one_does_not_embed_availability(api: TestClient, db: Session) -> N
 
     body = api.get(f"/api/tutors/{tutor.id}", headers=_auth(admin)).json()
 
-    assert set(body) == {"id", "name", "email", "phone_number", "bio", "is_active", "subjects"}
+    assert set(body) == {
+        "id",
+        "user_id",
+        "name",
+        "email",
+        "phone_number",
+        "bio",
+        "is_active",
+        "subjects",
+    }
+
+
+def test_a_tutor_item_carries_the_user_id_a_booking_takes(api: TestClient, db: Session) -> None:
+    """`id` is the profile; `user_id` is what `POST /api/bookings.user_id` names."""
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+
+    listed = api.get("/api/tutors", headers=_auth(admin)).json()["items"]
+    item = next(row for row in listed if row["id"] == str(tutor.id))
+
+    assert item["user_id"] == str(tutor.user_id)
+    assert item["user_id"] != item["id"]
 
 
 # --- writes: normalisation, the two UNIQUE columns, and soft delete ----------------------------
@@ -647,6 +680,55 @@ def test_create_returns_201_and_canonicalises_email_and_phone(api: TestClient, d
     assert body["is_active"] is True
     assert body["subjects"] == []
     assert db.get(Tutor, uuid.UUID(body["id"])) is not None
+
+
+def test_create_makes_a_person_who_cannot_sign_in_yet(api: TestClient, db: Session) -> None:
+    """One record per person: `POST /api/tutors` writes a `tutor` user with no password, and
+    the Users page lists them with their profile id."""
+    admin = _make_user(db)
+
+    response = api.post("/api/tutors", headers=_auth(admin), json=_payload(name="Ada Lovelace"))
+    body = response.json()
+    tutor = db.get_one(Tutor, uuid.UUID(body["id"]))
+    listed = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
+
+    assert response.status_code == 201
+    assert (tutor.user.role, tutor.user.hashed_password, tutor.user.name) == (
+        UserRole.TUTOR,
+        None,
+        "Ada Lovelace",
+    )
+    assert {
+        "id": str(tutor.user_id),
+        "tutor_id": body["id"],
+        "name": "Ada Lovelace",
+        "role": "tutor",
+    }.items() <= next(row for row in listed if row["id"] == str(tutor.user_id)).items()
+
+
+@pytest.mark.parametrize("how", ["delete", "patch"])
+def test_deactivating_a_tutor_deactivates_the_person(
+    api: TestClient, db: Session, how: str
+) -> None:
+    """`users.is_active` is the one flag (#130): the login stops on the very next request."""
+    admin = _make_user(db)
+    profile = _make_tutor(db)
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile.id)
+
+    before = api.get("/api/tutors", headers=_auth(tutor_user))
+    if how == "delete":
+        response = api.delete(f"/api/tutors/{profile.id}", headers=_auth(admin))
+    else:
+        response = api.patch(
+            f"/api/tutors/{profile.id}", headers=_auth(admin), json={"is_active": False}
+        )
+    after = api.get("/api/tutors", headers=_auth(tutor_user))
+
+    assert before.status_code == 200
+    assert (response.status_code, response.json()["is_active"]) == (200, False)
+    db.refresh(tutor_user)
+    assert tutor_user.is_active is False
+    assert after.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -691,14 +773,14 @@ def test_patch_rejects_an_email_the_shared_rule_refuses(
 ) -> None:
     admin = _make_user(db)
     tutor = _make_tutor(db)
-    original = tutor.email
+    original = tutor.user.email
 
     response = api.patch(f"/api/tutors/{tutor.id}", headers=_auth(admin), json={"email": email})
 
     assert response.status_code == 400
     assert "email" in response.json()["detail"]
     db.refresh(tutor)
-    assert tutor.email == original
+    assert tutor.user.email == original
 
 
 def test_create_with_a_duplicate_email_is_409(api: TestClient, db: Session) -> None:
@@ -706,7 +788,7 @@ def test_create_with_a_duplicate_email_is_409(api: TestClient, db: Session) -> N
     existing = _make_tutor(db)
 
     response = api.post(
-        "/api/tutors", headers=_auth(admin), json=_payload(email=existing.email.upper())
+        "/api/tutors", headers=_auth(admin), json=_payload(email=existing.user.email.upper())
     )
 
     assert response.status_code == 409
@@ -783,12 +865,12 @@ def test_patch_echoing_the_tutors_own_email_and_phone_back_is_200(
     response = api.patch(
         f"/api/tutors/{tutor.id}",
         headers=_auth(admin),
-        json={"email": tutor.email, "phone_number": "202-555-0185", "bio": "Unchanged"},
+        json={"email": tutor.user.email, "phone_number": "202-555-0185", "bio": "Unchanged"},
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["email"] == tutor.email
+    assert body["email"] == tutor.user.email
     assert body["phone_number"] == "+12025550185"
     assert body["bio"] == "Unchanged"
 
@@ -799,7 +881,7 @@ def test_patch_taking_another_tutors_email_is_409(api: TestClient, db: Session) 
     challenger = _make_tutor(db)
 
     response = api.patch(
-        f"/api/tutors/{challenger.id}", headers=_auth(admin), json={"email": incumbent.email}
+        f"/api/tutors/{challenger.id}", headers=_auth(admin), json={"email": incumbent.user.email}
     )
 
     assert response.status_code == 409
@@ -824,7 +906,7 @@ def test_the_constraint_answers_a_patch_when_the_pre_check_does_not(
     monkeypatch.setattr(tutor_service, "_email_taken", lambda *_, **__: False)
 
     response = api.patch(
-        f"/api/tutors/{challenger.id}", headers=headers, json={"email": incumbent.email}
+        f"/api/tutors/{challenger.id}", headers=headers, json={"email": incumbent.user.email}
     )
 
     assert response.status_code == 409
@@ -882,7 +964,7 @@ def test_delete_is_a_soft_delete_that_keeps_the_row_and_its_assignments(
     assert response.json()["is_active"] is False
     assert [row["name"] for row in response.json()["subjects"]] == ["Algebra"]
     db.refresh(tutor)
-    assert tutor.is_active is False
+    assert tutor.user.is_active is False
     assert (
         db.scalars(select(TutorSubject).where(TutorSubject.tutor_id == tutor.id)).first()
         is not None
@@ -912,7 +994,7 @@ def test_a_tutor_token_is_refused_on_every_write(api: TestClient, db: Session) -
 
     assert [response.status_code for response in (created, patched, deleted)] == [403, 403, 403]
     db.refresh(profile)
-    assert profile.is_active is True
+    assert profile.user.is_active is True
     assert profile.bio is None
 
 
@@ -924,6 +1006,73 @@ def test_no_token_is_401_not_403(api: TestClient, db: Session) -> None:
     created = api.post("/api/tutors", json=_payload())
 
     assert [response.status_code for response in (listed, read, created)] == [401, 401, 401]
+
+
+@pytest.mark.parametrize(
+    ("actor_role", "target_role", "expected"),
+    [
+        (UserRole.MANAGER, UserRole.TUTOR, 200),
+        (UserRole.MANAGER, UserRole.MANAGER, 403),
+        (UserRole.MANAGER, UserRole.ADMIN, 403),
+        (UserRole.MANAGER, UserRole.DEVELOPER, 403),
+        (UserRole.ADMIN, UserRole.MANAGER, 200),
+        (UserRole.ADMIN, UserRole.ADMIN, 200),
+        (UserRole.ADMIN, UserRole.DEVELOPER, 403),
+        (UserRole.DEVELOPER, UserRole.DEVELOPER, 200),
+    ],
+    ids=lambda value: value.value if isinstance(value, UserRole) else str(value),
+)
+def test_writing_a_profile_is_writing_its_account(
+    api: TestClient, db: Session, actor_role: UserRole, target_role: UserRole, expected: int
+) -> None:
+    """A Manager may write Tutors only; an Admin anyone but a Developer; a Developer anyone.
+    The same boundary `/api/users` keeps, seen from the Tutors page — otherwise a Manager could
+    rewrite or disable the login of a peer, an Admin or a Developer who kept a profile."""
+    actor = _make_user(db, role=actor_role)
+    profile = _make_tutor(db)
+    profile.user.role = target_role
+    db.flush()
+
+    # No `email`: a login email is an Admin's to change, whoever the target is (see below).
+    patched = api.patch(
+        f"/api/tutors/{profile.id}", headers=_auth(actor), json={"is_active": False}
+    )
+    deleted = api.delete(f"/api/tutors/{profile.id}", headers=_auth(actor))
+
+    assert (patched.status_code, deleted.status_code) == (expected, expected)
+    db.refresh(profile.user)
+    assert profile.user.is_active is (expected == 403)
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 256, "Ana\nPay to IBAN X", "Ana\u200bLopez"])
+def test_an_unusable_name_is_422_on_create_and_update(
+    api: TestClient, db: Session, name: str
+) -> None:
+    """`users.name` has one rule (#109), and the Tutors page writes that column too."""
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    original = tutor.user.name
+
+    created = api.post("/api/tutors", headers=_auth(admin), json=_payload(name=name))
+    patched = api.patch(f"/api/tutors/{tutor.id}", headers=_auth(admin), json={"name": name})
+
+    assert (created.status_code, patched.status_code) == (422, 422)
+    assert isinstance(patched.json()["detail"], str)
+    db.refresh(tutor.user)
+    assert tutor.user.name == original
+
+
+def test_a_name_is_trimmed_and_collapsed_on_create_and_update(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+
+    created = api.post("/api/tutors", headers=_auth(admin), json=_payload(name="  José   Núñez "))
+    patched = api.patch(
+        f"/api/tutors/{tutor.id}", headers=_auth(admin), json={"name": " Zoë    Ångström "}
+    )
+
+    assert (created.status_code, created.json()["name"]) == (201, "José Núñez")
+    assert (patched.status_code, patched.json()["name"]) == (200, "Zoë Ångström")
 
 
 def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
@@ -939,3 +1088,124 @@ def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
     statuses = [response.status_code for response in (created, listed, patched, deleted)]
 
     assert statuses == [201, 200, 200, 200]
+
+
+# --- a login email is an Admin's to change ---------------------------------------------------
+
+
+def _live_links(db: Session, user: User) -> list[PasswordLink]:
+    now = datetime.now(UTC)
+    return list(
+        db.scalars(
+            select(PasswordLink).where(
+                PasswordLink.user_id == user.id,
+                PasswordLink.used_at.is_(None),
+                PasswordLink.revoked_at.is_(None),
+                PasswordLink.expires_at > now,
+            )
+        ).all()
+    )
+
+
+def _invite(db: Session, user: User) -> None:
+    issue_link(db, user=user, purpose=PasswordLinkPurpose.INVITE, now=datetime.now(UTC))
+
+
+def test_a_manager_may_not_change_a_tutors_login_email(api: TestClient, db: Session) -> None:
+    """Closing the takeover hole: a Manager could otherwise point a Tutor's login at an address
+    they control and reset the password from there."""
+    manager = _make_user(db, role=UserRole.MANAGER)
+    profile = _make_tutor(db)
+    before = profile.user.email
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"email": "taken.over@example.com", "bio": "Rewritten"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Not permitted to change that person's account"
+    db.refresh(profile)
+    db.refresh(profile.user)
+    assert (profile.user.email, profile.bio) == (before, None)
+
+
+def test_a_manager_may_still_edit_a_tutors_name_phone_and_bio(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    profile = _make_tutor(db)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"name": "Renamed Tutor", "phone_number": "+12025550190", "bio": "Rewritten"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["name"], body["phone_number"], body["bio"]) == (
+        "Renamed Tutor",
+        "+12025550190",
+        "Rewritten",
+    )
+
+
+def test_a_manager_echoing_the_stored_email_is_not_changing_it(
+    api: TestClient, db: Session
+) -> None:
+    """The dashboard form always sends the stored address back; only a different one is the
+    Admin-only write."""
+    manager = _make_user(db, role=UserRole.MANAGER)
+    profile = _make_tutor(db)
+    stored = profile.user.email
+
+    echoed = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"email": stored.upper(), "bio": "Rewritten"},
+    )
+    changed = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(manager),
+        json={"email": "taken.over@example.com", "bio": "Again"},
+    )
+
+    assert (echoed.status_code, changed.status_code) == (200, 403)
+    assert echoed.json()["email"] == stored
+    db.refresh(profile)
+    db.refresh(profile.user)
+    assert (profile.user.email, profile.bio) == (stored, "Rewritten")
+
+
+@pytest.mark.parametrize("actor_role", [UserRole.ADMIN, UserRole.DEVELOPER])
+def test_an_admin_changing_the_email_revokes_the_tutors_live_links(
+    api: TestClient, db: Session, actor_role: UserRole
+) -> None:
+    actor = _make_user(db, role=actor_role)
+    profile = _make_tutor(db)
+    _invite(db, profile.user)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}", headers=_auth(actor), json={"email": "moved@example.com"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "moved@example.com"
+    assert _live_links(db, profile.user) == []
+
+
+def test_an_admin_echoing_the_email_leaves_the_tutors_links_alone(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    profile = _make_tutor(db)
+    _invite(db, profile.user)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(admin),
+        json={"email": profile.user.email.upper()},
+    )
+
+    assert response.status_code == 200
+    assert len(_live_links(db, profile.user)) == 1

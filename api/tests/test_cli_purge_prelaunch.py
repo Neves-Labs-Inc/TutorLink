@@ -22,6 +22,8 @@ from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
+    BookingKind,
+    BookingLocation,
     BookingStatus,
     ConsentAction,
     ConsentSource,
@@ -212,11 +214,14 @@ def _make_test_data(db: Session) -> None:
     suffix = uuid.uuid4().hex[:12]
     staff = User(
         email=f"staff-{suffix}@example.com",
-        display_name="Staff",
+        name="Staff",
         hashed_password=hash_password("purge-password"),
         role=UserRole.ADMIN,
     )
-    tutor = Tutor(name="Tutor", phone_number=f"+1{suffix[:10]}", email=f"t-{suffix}@example.com")
+    tutor = Tutor(
+        user=User(email=f"t-{suffix}@example.com", name="Tutor", role=UserRole.TUTOR),
+        phone_number=f"+1{suffix[:10]}",
+    )
     subject = Subject(name=f"Subject {suffix}")
     guardian = Guardian(name="Guardian", phone_number=f"+2{suffix[:10]}")
     home = Home(address=f"{suffix} Test Street", access_code="0000")
@@ -258,7 +263,9 @@ def _make_test_data(db: Session) -> None:
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
             Booking(
                 child_id=child.id,
-                tutor_id=tutor.id,
+                user_id=tutor.user_id,
+                kind=BookingKind.REGULAR,
+                location=BookingLocation.HOME,
                 subject_id=subject.id,
                 availability_id=availability.id,
                 home_id=home.id,

@@ -8,13 +8,16 @@ B1's — and named differently so a later reader consolidating them does so on p
 import datetime
 import uuid
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 from app.models.enums import BookingStatus
 
 
 class BookingStatusUpdate(BaseModel):
     status: BookingStatus
+    # The `updated_at` the caller last read; when sent, a changed row is refused (#151).
+    # Aware, as the column is: a naive value could never equal it and would always read stale.
+    expected_updated_at: AwareDatetime | None = None
 
 
 class BookingStatusChanged(BaseModel):
@@ -23,3 +26,4 @@ class BookingStatusChanged(BaseModel):
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
+    updated_at: datetime.datetime

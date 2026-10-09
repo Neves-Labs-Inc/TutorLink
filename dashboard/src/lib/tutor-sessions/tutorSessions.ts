@@ -1,4 +1,4 @@
-import { addDaysIso, formatIsoDate } from '@/lib/dates/dates'
+import { addDaysIso, formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
 import type { Booking, BookingListParams } from '@/lib/queries/bookings'
 
 export type SessionTab = 'upcoming' | 'past'
@@ -144,3 +144,15 @@ const sessionWindow = (state: SessionFilterState, todayIso: string): SessionWind
 // String surgery, not a `Date`: `scheduled_date` is a bare business-local date, and routing it
 // through a `Date` is how a window silently shifts a day at a timezone boundary.
 const firstOfMonthIso = (iso: string): string => `${iso.slice(0, 8)}01`
+
+// Device clock decides whether to show the action; the API's 409 stays the authority. Date and
+// time are compared as local strings (`YYYY-MM-DD`, `HH:MM:SS` sort lexically), no timezone math.
+export const canMarkCompleted = (
+  booking: Pick<Booking, 'status' | 'scheduled_date' | 'start_time'>,
+  now: Date,
+): boolean => {
+  const start = `${booking.scheduled_date}T${booking.start_time}`
+  const current = `${todayLocalIso(now)}T${now.toTimeString().slice(0, 8)}`
+
+  return booking.status === 'confirmed' && start <= current
+}

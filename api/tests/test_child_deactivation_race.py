@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
@@ -85,6 +85,7 @@ class World:
     admin: User
     child_id: uuid.UUID
     tutor_id: uuid.UUID
+    user_id: uuid.UUID
     subject_id: uuid.UUID
     availability_id: uuid.UUID
     home_id: uuid.UUID
@@ -364,12 +365,13 @@ def _make_world(session: Session) -> World:
     spare_home = Home(address=f"{suffix[:6]} Spare Street", access_code="1234")
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     tutor = Tutor(
-        name=f"Tutor {suffix}", phone_number=f"+1{suffix[-10:]}", email=f"t-{suffix}@example.com"
+        user=User(email=f"t-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
+        phone_number=f"+1{suffix[-10:]}",
     )
     subject = Subject(name=f"Subject {suffix}")
     admin = User(
         email=f"admin-{suffix}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("race-password"),
         role=UserRole.ADMIN,
         is_active=True,
@@ -393,6 +395,7 @@ def _make_world(session: Session) -> World:
         admin=admin,
         child_id=child.id,
         tutor_id=tutor.id,
+        user_id=tutor.user_id,
         subject_id=subject.id,
         availability_id=availability.id,
         home_id=home.id,
@@ -409,7 +412,9 @@ def _add_booking(
 ) -> uuid.UUID:
     booking = Booking(
         child_id=world.child_id,
-        tutor_id=world.tutor_id,
+        user_id=world.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject_id,
         availability_id=world.availability_id,
         home_id=world.home_id,
@@ -434,11 +439,12 @@ def _delete_world(sessions: sessionmaker[Session], world: World) -> None:
         session.execute(delete(ChildGuardian).where(ChildGuardian.child_id == world.child_id))
         session.execute(delete(ChildHome).where(ChildHome.child_id == world.child_id))
         session.execute(delete(Child).where(Child.id == world.child_id))
+        tutor_user_id = session.scalar(select(Tutor.user_id).where(Tutor.id == world.tutor_id))
         session.execute(delete(Tutor).where(Tutor.id == world.tutor_id))
         session.execute(delete(Subject).where(Subject.id == world.subject_id))
         session.execute(delete(Home).where(Home.id.in_([world.home_id, world.spare_home_id])))
         session.execute(delete(Guardian).where(Guardian.id == world.guardian_id))
-        session.execute(delete(User).where(User.id == world.admin.id))
+        session.execute(delete(User).where(User.id.in_([world.admin.id, tutor_user_id])))
         session.commit()
 
 
@@ -463,7 +469,9 @@ def _post_booking(
         headers=_auth(world.admin),
         json={
             "child_id": str(world.child_id),
-            "tutor_id": str(world.tutor_id),
+            "user_id": str(world.user_id),
+            "kind": "regular",
+            "location": "home",
             "subject_id": str(world.subject_id),
             "availability_id": str(world.availability_id),
             "home_id": str(home_id),
@@ -503,6 +511,8 @@ def _statuses(session: Session, child_id: uuid.UUID) -> list[BookingStatus]:
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    # Every caller here is Office with no profile, and the row is detached by now: no lazy
+    # load of `profile`. The principal reads the row on every request anyway.
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=None)
 
     return {"Authorization": f"Bearer {token}"}

@@ -12,6 +12,8 @@ can be rendered into the chat when the template is not needed.
 import datetime
 import unicodedata
 
+from app.models.enums import BookingLocation
+
 DEFAULT_LANGUAGE = "en"
 SPANISH = "es"
 NOON_HOUR = 12
@@ -202,9 +204,17 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": 'Which day would you like? For example, "Tuesday" or "October 14".',
         "es": '¿Qué día le gustaría? Por ejemplo, "martes" o "14 de octubre".',
     },
-    "ASK_WHICH_HOME": {
-        "en": "Which address should the tutor come to?",
-        "es": "¿A qué dirección debe ir el tutor?",
+    "ASK_WHERE": {
+        "en": "Where should the session be?",
+        "es": "¿Dónde debe ser la sesión?",
+    },
+    "OFFICE_OPTION": {"en": "At the office", "es": "En la oficina"},
+    "AT_OFFICE": {"en": "at the office", "es": "en la oficina"},
+    "AT_HOME_LABELLED": {"en": "at {label}", "es": "en {label}"},
+    "AT_HOME": {"en": "at home", "es": "en casa"},
+    "SESSION_CHANGED_MEANWHILE": {
+        "en": "That session was changed after you picked it, so I haven't changed anything. Please start again if you'd still like to change it.",
+        "es": "Esa sesión se modificó después de que usted la eligió, así que no hice ningún cambio. Si todavía desea cambiarla, por favor empiece de nuevo.",
     },
     "ASK_SLOT": {
         "en": "These times are available on {date}:",
@@ -335,8 +345,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "es": 'Por favor, envíe el día que desea la sesión, como "el próximo martes" o "14 de octubre".',
     },
     "NUDGE_book_home": {
-        "en": "Please reply with the number or name of the address for the session:",
-        "es": "Por favor, responda con el número o el nombre de la dirección para la sesión:",
+        "en": "Please reply with the number of where you'd like the session:",
+        "es": "Por favor, responda con el número del lugar donde desea la sesión:",
     },
     "NUDGE_book_slot": {
         "en": "Please reply with the number of the time you'd like:",
@@ -491,10 +501,10 @@ _MONTHS = {
 _MERIDIEMS = {"en": ("AM", "PM"), "es": ("a. m.", "p. m.")}
 _AND = {"en": "and", "es": "y"}
 _SESSION_LINE = {
-    "en": "{date}, {time}: {subject} for {child} with {tutor}",
-    "es": "{date}, {time}: {subject} para {child} con {tutor}",
+    "en": "{date}, {time}: {subject} for {child} with {tutor} {place}",
+    "es": "{date}, {time}: {subject} para {child} con {tutor} {place}",
 }
-_SLOT_LABEL = {"en": "{time} with {tutor}", "es": "{time} con {tutor}"}
+_SLOT_LABEL = {"en": "{time} with {tutor} {place}", "es": "{time} con {tutor} {place}"}
 
 
 def _code(language: str | None) -> str:
@@ -547,18 +557,35 @@ def format_time_range(start: datetime.time, end: datetime.time, language: str | 
     return result
 
 
+def format_location(location: BookingLocation, home_label: str | None, language: str | None) -> str:
+    """ "at the office", "at Dad's" or "at home". Takes a label, never a Home: no address leaks."""
+    if location == BookingLocation.IN_OFFICE:
+        message_id = "AT_OFFICE"
+    elif home_label:
+        message_id = "AT_HOME_LABELLED"
+    else:
+        message_id = "AT_HOME"
+    return render(message_id, language, label=home_label or "")
+
+
 def format_session_line(
-    date: str, time: str, subject: str, child: str, tutor: str, language: str | None
+    date: str,
+    time: str,
+    subject: str,
+    child: str,
+    tutor: str,
+    place: str,
+    language: str | None,
 ) -> str:
-    """ "{date}, {time}: {subject} for {child} with {tutor}" from already-formatted parts."""
+    """ "{date}, {time}: {subject} for {child} with {tutor} {place}" from already-formatted parts."""
     return _SESSION_LINE[_code(language)].format(
-        date=date, time=time, subject=subject, child=child, tutor=tutor
+        date=date, time=time, subject=subject, child=child, tutor=tutor, place=place
     )
 
 
-def format_slot_label(time: str, tutor: str, language: str | None) -> str:
-    """ "4:00-5:00 PM with Mr. Lee" from an already-formatted time range, for a slot list."""
-    return _SLOT_LABEL[_code(language)].format(time=time, tutor=tutor)
+def format_slot_label(time: str, tutor: str, place: str, language: str | None) -> str:
+    """ "4:00-5:00 PM with Mr. Lee at the office" from a formatted time range, for a slot list."""
+    return _SLOT_LABEL[_code(language)].format(time=time, tutor=tutor, place=place)
 
 
 def format_names(names: list[str], language: str | None) -> str:

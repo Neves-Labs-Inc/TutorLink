@@ -4,6 +4,7 @@ import { Check, CheckCheck, CircleAlert, Clock, type LucideIcon } from 'lucide-r
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
+  failedAnnouncement,
   formatMessageTimestamp,
   messageAlignment,
   messageStatusLabel,
@@ -49,8 +50,6 @@ const STATUS_ICONS: Partial<Record<Message['status'], LucideIcon>> = {
   failed: CircleAlert,
 }
 
-const FAILED_ANNOUNCEMENT = 'A message failed to send.'
-
 // Only a message already on screen moving to `failed` counts: one loaded failed, or an echo
 // replacing an optimistic bubble (a new id), is not a live change and the composer already says so.
 const hasNewlyFailed = (previous: Message[], next: Message[]): boolean => {
@@ -85,7 +84,7 @@ export const MessageThread = ({
   retry,
 }: MessageThreadProps) => {
   const [previousMessages, setPreviousMessages] = useState(messages)
-  const [announcement, setAnnouncement] = useState('')
+  const [failedCount, setFailedCount] = useState(0)
   const scrollerRef = useRef<HTMLDivElement>(null)
   // Last layout measured before the next render; starts "at the bottom".
   const distanceFromBottomRef = useRef(0)
@@ -144,7 +143,7 @@ export const MessageThread = ({
 
   // Adjusted during render rather than in an effect, so the announcement lands with the update.
   if (messages !== previousMessages) {
-    if (hasNewlyFailed(previousMessages, messages)) setAnnouncement(FAILED_ANNOUNCEMENT)
+    if (hasNewlyFailed(previousMessages, messages)) setFailedCount((count) => count + 1)
     setPreviousMessages(messages)
   }
 
@@ -154,8 +153,9 @@ export const MessageThread = ({
       onScroll={handleScroll}
       className="flex flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-4 py-4"
     >
+      {/* Stays mounted: swapping the node drops announcements in VoiceOver and NVDA. */}
       <p className="sr-only" aria-live="polite">
-        {announcement}
+        {failedAnnouncement(failedCount)}
       </p>
 
       {hasMore && (
@@ -189,7 +189,7 @@ const MessageBubble = ({ message }: { message: BubbleMessage }) => {
   return (
     <div className={cn('flex flex-col', alignment === 'end' ? 'items-end' : 'items-start')}>
       {message.author_kind === 'admin' && message.author !== null && (
-        <span className="mb-0.5 text-xs text-muted-foreground">{message.author.display_name}</span>
+        <span className="mb-0.5 text-xs text-muted-foreground">{message.author.name}</span>
       )}
       <div
         className={cn(

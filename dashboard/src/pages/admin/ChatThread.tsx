@@ -15,7 +15,9 @@ import { useConversationStream } from '@/hooks/use-conversation-stream/useConver
 import { errorDetail } from '@/lib/api'
 import { decodeAccessToken } from '@/lib/auth/auth'
 import {
+  applyMessageToPages,
   applyMessageUpdate,
+  assembleThread,
   canTransfer,
   composerClosedNotice,
   focusRequest,
@@ -50,7 +52,6 @@ import {
   type Message,
 } from '@/lib/queries/conversations'
 import { meQueries } from '@/lib/queries/me'
-import type { Page } from '@/lib/queries/page'
 import type { Language } from '@/lib/reminders/reminders'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -191,6 +192,11 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
     ),
   })
 
+  const applyMessageEverywhere = (updated: Message) => {
+    setPendingMessages((current) => applyMessageUpdate(current, updated))
+    applyMessageToPages(queryClient, messagesQueryPrefix(id), updated)
+  }
+
   const stream = useConversationStream({
     onMessageCreated: (frame) => {
       if (frame.conversation_id === id) {
@@ -211,20 +217,10 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
       }
     },
     // A status change swaps the message in place, in every cached page and in the pending list
-    // (which wins over the pages when the thread is assembled), so the bubble never refetches.
+    // (for a message no page carries yet), so the bubble never refetches.
     onMessageUpdated: (frame) => {
       if (frame.conversation_id === id) {
-        setPendingMessages((current) => applyMessageUpdate(current, frame.message))
-        queryClient.setQueriesData<Page<Message>>(
-          { queryKey: messagesQueryPrefix(id) },
-          (page) => {
-            if (page === undefined) return page
-
-            const items = applyMessageUpdate(page.items, frame.message)
-
-            return items === page.items ? page : { ...page, items }
-          },
-        )
+        applyMessageEverywhere(frame.message)
       }
     },
     onError: (_detail, code) => {
@@ -299,19 +295,12 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
     onError: (_error, messageId) => handleRefusal({ kind: 'retry', messageId }),
     onSuccess: (updated) => {
       pendingFocusRef.current = focusRequest(RETRY_FOCUS_TARGETS, Date.now())
-      setPendingMessages((current) => applyMessageUpdate(current, updated))
-      queryClient.setQueriesData<Page<Message>>({ queryKey: messagesQueryPrefix(id) }, (page) => {
-        if (page === undefined) return page
-
-        const items = applyMessageUpdate(page.items, updated)
-
-        return items === page.items ? page : { ...page, items }
-      })
+      applyMessageEverywhere(updated)
     },
   })
 
   const paged = mergeMessagePages(pages.map((page) => page.data?.items ?? []))
-  const thread = pendingMessages.reduce((acc, message) => reconcileLiveMessage(acc, message), paged)
+  const thread = assembleThread(paged, pendingMessages)
   const total = pages[0]?.data?.total ?? conversation.data?.message_count ?? 0
   const hasMore = thread.length < total
   const loadingMore = pages[pages.length - 1]?.isFetching ?? false
@@ -330,7 +319,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
       setPendingMessages((current) => [
         ...current,
-        optimisticMessage(clientMessageId, body, holder.id, holder.display_name),
+        optimisticMessage(clientMessageId, body, holder.id, holder.name),
       ])
       setLastSentId(clientMessageId)
       sentIdsRef.current.add(clientMessageId)
@@ -339,7 +328,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   }
 
   const holder = conversation.data?.taken_over_by
-  const holderName = holder?.display_name ?? null
+  const holderName = holder?.name ?? null
   const guardianName = conversation.data?.guardian?.name ?? conversation.data?.phone_number ?? 'The Guardian'
 
   let content: ReactNode
@@ -530,7 +519,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
         open={transferDialogOpen}
         onOpenChange={setTransferDialogOpen}
         title="Transfer to me"
-        body={transferConfirmBody(holderName, me.data?.display_name ?? null)}
+        body={transferConfirmBody(holderName, me.data?.name ?? null)}
         confirmLabel="Transfer to me"
         pending={transfer.isPending}
         confirmDisabled={conversation.data ? !isTransferOffered(conversation.data) : false}

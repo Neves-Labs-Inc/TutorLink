@@ -12,14 +12,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import Principal, TutorScope, assert_can_access_tutor
-from app.models.booking import Booking
-from app.models.enums import BookingStatus
-from app.schemas.booking import BookingChild, BookingDetail, BookingSummary, HomeRef, NamedRef
-from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
+from app.dependencies import Principal, TutorScope, assert_can_access_booking
+from app.models.enums import BookingKind, BookingLocation, BookingStatus
+from app.schemas.booking import (
+    BookingDetail,
+    BookingKindCounts,
+    BookingPage,
+    booking_detail,
+    booking_summary,
+)
+from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.booking_service import (
     BookingFilters,
     BookingNotFound,
+    count_bookings_by_kind,
     get_booking,
     list_bookings,
 )
@@ -31,18 +37,21 @@ DbSession = Annotated[Session, Depends(get_db)]
 router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 
 
-@router.get("", response_model=Page[BookingSummary])
+@router.get("", response_model=BookingPage)
 def list_bookings_route(
     scope: TutorScope,
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     subject_id: uuid.UUID | None = None,
     child_id: uuid.UUID | None = None,
+    kind: BookingKind | None = None,
+    location: BookingLocation | None = None,
+    user_id: uuid.UUID | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
-) -> Page[BookingSummary]:
+) -> BookingPage:
     # `?tutor_id=` here is the `TutorScope` dependency's own query parameter
     # (`get_tutor_scope`, `dependencies.py:258-261`), not redeclared here: a tutor sees only
     # their own bookings, and redeclaring it would shadow the dependency's parameter and break
@@ -54,6 +63,9 @@ def list_bookings_route(
         date_to=date_to,
         subject_id=subject_id,
         child_id=child_id,
+        kind=kind,
+        location=location,
+        user_id=user_id,
     )
 
     bookings, total = list_bookings(
@@ -64,11 +76,16 @@ def list_bookings_route(
         offset=(page - 1) * page_size,
     )
 
-    return Page[BookingSummary](
-        items=[_summary(row) for row in bookings],
+    counts = count_bookings_by_kind(db, tutor_id=scope.tutor_id, filters=filters)
+
+    return BookingPage(
+        items=[booking_summary(row) for row in bookings],
         total=total,
         page=page,
         page_size=page_size,
+        counts_by_kind=BookingKindCounts(
+            regular=counts[BookingKind.REGULAR], evaluation=counts[BookingKind.EVALUATION]
+        ),
     )
 
 
@@ -79,45 +96,6 @@ def get_booking_route(booking_id: uuid.UUID, user: Principal, db: DbSession) -> 
     except BookingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, BOOKING_NOT_FOUND_ERROR) from exc
 
-    assert_can_access_tutor(user, booking.tutor_id)
+    assert_can_access_booking(user, booking.user_id)
 
-    return _detail(booking)
-
-
-def _summary(row: Booking) -> BookingSummary:
-    return BookingSummary(
-        id=row.id,
-        child=NamedRef(id=row.child.id, name=row.child.name),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.name),
-        subject=NamedRef(id=row.subject.id, name=row.subject.name),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
-    )
-
-
-def _detail(row: Booking) -> BookingDetail:
-    return BookingDetail(
-        id=row.id,
-        child=BookingChild(id=row.child.id, name=row.child.name, notes=row.child.notes),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.name),
-        subject=NamedRef(id=row.subject.id, name=row.subject.name),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
-        home=HomeRef(
-            id=row.home.id,
-            label=row.home.label,
-            address=row.home.address,
-            access_code=row.home.access_code,
-        ),
-        booked_by_guardian=(
-            None
-            if row.booked_by_guardian is None
-            else NamedRef(id=row.booked_by_guardian.id, name=row.booked_by_guardian.name)
-        ),
-    )
+    return booking_detail(booking)

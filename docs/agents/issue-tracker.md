@@ -11,7 +11,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-Repo: `Siraneves/TutorLink` (inferred from `git remote -v`; `gh` does this automatically when run inside a clone).
+Repo: `Neves-Labs-Inc/TutorLink`. It moved there from `Siraneves/TutorLink`; an old `git remote` URL still redirects, but always name the new owner. Inside a clone `gh` resolves it automatically; outside one (e.g. a scratch directory) pass `-R Neves-Labs-Inc/TutorLink` or set `GH_REPO`.
 
 ## Pull requests as a triage surface
 

@@ -85,10 +85,19 @@ from sqlalchemy.orm import Session
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH, Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ConsentAction, ConsentSource, FlagReason
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ConsentAction,
+    ConsentSource,
+    FlagReason,
+)
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
+from app.models.tutor import Tutor
+from app.models.user import User
 from app.schemas.bot import (
     AnswerKind,
     BotIntent,
@@ -112,6 +121,7 @@ from app.services import (
     scheduling_service,
     slot_service,
 )
+from app.services.tutor_service import PROFILE_ROLES
 from app.services.bot_state import FlowState, clear_state, load_state, save_state
 from app.services.name_matching import exact_matches, named_children, typo_matches
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
@@ -315,10 +325,17 @@ _BOOKING_KEYS = (
     "book_subject_id",
     "book_tutor_id",
     "book_date",
+    "book_location",
     "book_home_id",
+    "reschedule_location",
+    "reschedule_home_id",
     "chosen",
     "reschedule_booking_id",
+    # The picked Booking's `updated_at`, ISO, for the race guard (#151). Absent from a flow an
+    # older build saved, which then runs unguarded.
+    "reschedule_updated_at",
     "cancel_booking_id",
+    "cancel_updated_at",
 )
 
 # What each step's handler reads out of `collected_data` before it writes anything of its own —
@@ -341,12 +358,13 @@ _REQUIRED_KEYS: dict[str, frozenset[str]] = {
     STEP_BOOK_SLOT: frozenset({"book_date"}),
     STEP_REACTIVATION_CONFIRM: frozenset({"reactivation_child_id", "reactivation_child_name"}),
     STEP_CANCEL_CONFIRM: frozenset({"cancel_booking_id"}),
+    # No `book_home_id`: an In office booking has none. `book_location` is optional too — a
+    # flow saved by a build before the Location step only ever booked a home (`_location_of`).
     STEP_BOOK_CONFIRM: frozenset(
         {
             "chosen",
             "book_child_id",
             "book_subject_id",
-            "book_home_id",
             "book_date",
             "book_tutor_id",
         }
@@ -1420,6 +1438,7 @@ def _cancel_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
     turn.data["cancel_booking_id"] = str(booking.id)
+    turn.data["cancel_updated_at"] = booking.updated_at.isoformat()
 
     return _Next(
         reply=_say(
@@ -1443,6 +1462,7 @@ def _cancel_confirm(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return None
 
     booking_id = uuid.UUID(turn.data.pop("cancel_booking_id"))
+    expected_updated_at = _stored_updated_at(turn.data.pop("cancel_updated_at", None))
 
     if not answer:
         return _Next(reply=f"{_say(turn, 'CANCEL_KEPT')} {_say(turn, 'ASK_MENU')}", step=STEP_MENU)
@@ -1462,12 +1482,33 @@ def _cancel_confirm(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
 
     try:
         booking_status_service.change_status(
-            turn.db, booking_id=booking.id, target=BookingStatus.CANCELLED
+            turn.db,
+            booking_id=booking.id,
+            target=BookingStatus.CANCELLED,
+            expected_updated_at=expected_updated_at,
         )
+    except booking_status_service.BookingChanged:
+        return _changed_meanwhile(turn)
     except booking_status_service.BookingStatusError:
         return _stuck(turn)
 
     return _Next(reply=_say(turn, "CANCELLED"), step=None)
+
+
+def _stored_updated_at(raw: object) -> datetime.datetime | None:
+    """The `updated_at` a pick stored, or None for a flow an older build saved."""
+    return datetime.datetime.fromisoformat(raw) if isinstance(raw, str) else None
+
+
+def _changed_meanwhile(turn: _Turn) -> _Next:
+    """#151: the office edited the session between the pick and the "yes". Nothing was
+    written; the parent starts over from the menu. Not a `_stuck`: the bot did its job."""
+    _reset_booking(turn.data)
+
+    return _Next(
+        reply=f"{_say(turn, 'SESSION_CHANGED_MEANWHILE')} {_say(turn, 'ASK_MENU')}",
+        step=STEP_MENU,
+    )
 
 
 def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1488,19 +1529,36 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     if _inside_cutoff(turn.db, booking=booking, now=turn.now):
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
+    # An Evaluation (no Subject) is not on the list the bot offers (ticket 07); reaching here
+    # with one is a bug worth a flag, not a reply.
+    if booking.subject_id is None:
+        return _stuck(turn)
+
     _reset_booking(turn.data)
     turn.data["book_child_id"] = str(booking.child_id)
     turn.data["book_subject_id"] = str(booking.subject_id)
 
     turn.data["reschedule_booking_id"] = str(booking.id)
+    turn.data["reschedule_updated_at"] = booking.updated_at.isoformat()
 
     # The bot moves only a session it could have booked; the rest go to the office, and the
-    # old session stays until Staff move it. Nothing on that path writes or cancels.
-    if _needs_office(turn.db, child=booking.child, subject_id=booking.subject_id):
+    # old session stays until Staff move it. Nothing on that path writes or cancels. A Staff
+    # member the bot cannot offer — an Admin, or a Tutor since promoted — has no slots to move
+    # the session to (#130).
+    profile_id = _offerable_profile_id(turn.db, user_id=booking.user_id)
+    if profile_id is None or _needs_office(
+        turn.db, child=booking.child, subject_id=booking.subject_id
+    ):
         return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_FIRST_SESSION_DATE)
 
-    turn.data["book_tutor_id"] = str(booking.tutor_id)
-    turn.data["book_home_id"] = str(booking.home_id)
+    turn.data["book_tutor_id"] = str(profile_id)
+
+    # The old Location rides along as the Location step's preset, in keys of its own so a
+    # Location picked for a day that turned out to have no slots is never mistaken for it:
+    # kept silently when the new day still allows it, ignored otherwise (`_ask_location`).
+    turn.data["reschedule_location"] = booking.location.value
+    if booking.home_id is not None:
+        turn.data["reschedule_home_id"] = str(booking.home_id)
 
     return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_BOOK_DATE)
 
@@ -1640,7 +1698,7 @@ def _book_date(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
 
     turn.data["book_date"] = date.isoformat()
 
-    return _ask_home(turn)
+    return _ask_location(turn)
 
 
 def _first_session_subject(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1688,17 +1746,7 @@ def _first_session_date(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     moving = _booking_to_move(turn)
 
     if moving is not None:
-        reply = _say(
-            turn,
-            "RESCHEDULE_NEEDS_OFFICE",
-            child=child.name,
-            subject=_subject_name(moving.subject, turn.language),
-            old_date=bot_messages.format_date(moving.scheduled_date, turn.language),
-            old_time=bot_messages.format_time_range(
-                moving.start_time, moving.end_time, turn.language
-            ),
-            date=bot_messages.format_date(date, turn.language),
-        )
+        reply = _reschedule_handoff_reply(turn, child=child, moving=moving, date=date)
     elif child.evaluated_at is None:
         reply = _say(turn, "FIRST_SESSION_HANDOFF", name=child.name)
     else:
@@ -1717,6 +1765,22 @@ def _booking_to_move(turn: _Turn) -> Booking | None:
     raw = turn.data.get("reschedule_booking_id")
 
     return None if not raw else turn.db.get(Booking, uuid.UUID(raw))
+
+
+def _reschedule_handoff_reply(
+    turn: _Turn, *, child: Child, moving: Booking, date: datetime.date
+) -> str:
+    """`RESCHEDULE_NEEDS_OFFICE`: the session being moved and the day asked for, so Staff
+    reading the flagged thread move that session rather than booking a second one."""
+    return _say(
+        turn,
+        "RESCHEDULE_NEEDS_OFFICE",
+        child=child.name,
+        subject=_subject_name(moving.subject, turn.language),
+        old_date=bot_messages.format_date(moving.scheduled_date, turn.language),
+        old_time=bot_messages.format_time_range(moving.start_time, moving.end_time, turn.language),
+        date=bot_messages.format_date(date, turn.language),
+    )
 
 
 def _date_not_bookable(turn: _Turn) -> str:
@@ -1751,30 +1815,168 @@ def _iso_date(raw: str | None) -> datetime.date | None:
         return None
 
 
-def _ask_home(turn: _Turn) -> _Next:
-    """REQ-074.3: the home question is asked only when the child has more than one active home.
+# The option id of "At the office" at the Location step; a home option's id is the home's.
+OFFICE_OPTION_ID = BookingLocation.IN_OFFICE.value
+
+
+def _ask_location(turn: _Turn) -> _Next:
+    """The Location step (#132): which of the Child's homes, or the office, from the modes of
+    the day's ranges (`slot_service.allowed_locations`).
 
     The homes come from `child_homes` directly. The bot is not a client of
     `GET /api/clients/{id}` and issue #60's flat uncorrelated lists are not in its path (P7-M).
+    One possible Location is chosen without asking; none at all is an Office handoff, since
+    ranges exist but no Location fits them (answers.md 03.2). A reschedule presets the old
+    Location: kept silently while it is still among the options, dropped otherwise so the
+    normal rule runs over what the new day allows.
     """
-    homes = _homes(turn.db, child_id=uuid.UUID(turn.data["book_child_id"]))
-    preset = turn.data.get("book_home_id")
+    date = datetime.date.fromisoformat(turn.data["book_date"])
+    requested = turn.data["book_tutor_id"]
 
-    if not homes:
-        result = _stuck(turn)
-    elif preset in {str(home.id) for home in homes}:
-        result = _offer_slots(turn)
-    elif len(homes) == 1:
-        turn.data["book_home_id"] = str(homes[0].id)
-        result = _offer_slots(turn)
-    else:
-        options = [{"id": str(home.id), "label": home.label or home.address} for home in homes]
-        result = _Next(
-            reply=f"{_say(turn, 'ASK_WHICH_HOME')}\n{_offer(turn.state, options)}",
-            step=STEP_BOOK_HOME,
+    # A Location picked for an earlier date that had no slots must not reach this date's offer.
+    _clear_location(turn.data)
+
+    try:
+        allowed = slot_service.allowed_locations(
+            turn.db,
+            subject_id=uuid.UUID(turn.data["book_subject_id"]),
+            child_id=uuid.UUID(turn.data["book_child_id"]),
+            date=date,
+            tutor_id=uuid.UUID(requested) if requested else None,
+            now=turn.now,
+        )
+    except scheduling_service.DateOutOfWindow:
+        return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
+
+    if not allowed:
+        return _no_slots(turn, date)
+
+    options = _location_options(turn, allowed)
+
+    if not options:
+        return _needs_office_for_location(turn, date)
+
+    kept = [option for option in options if _is_preset_option(turn.data, option)]
+
+    if kept or len(options) == 1:
+        _choose_location(turn, (kept or options)[0])
+        return _offer_slots(turn)
+
+    return _Next(
+        reply=f"{_say(turn, 'ASK_WHERE')}\n{_offer(turn.state, options)}",
+        step=STEP_BOOK_HOME,
+    )
+
+
+def _location_options(turn: _Turn, allowed: frozenset[BookingLocation]) -> list[dict[str, Any]]:
+    """The Child's active homes, in their usual order, then "At the office" last."""
+    options: list[dict[str, Any]] = []
+
+    if BookingLocation.HOME in allowed:
+        homes = _homes(turn.db, child_id=uuid.UUID(turn.data["book_child_id"]))
+        options.extend(
+            {
+                "id": str(home.id),
+                "label": home.label or home.address,
+                "location": BookingLocation.HOME.value,
+            }
+            for home in homes
         )
 
-    return result
+    if BookingLocation.IN_OFFICE in allowed:
+        options.append(
+            {
+                "id": OFFICE_OPTION_ID,
+                "label": _say(turn, "OFFICE_OPTION"),
+                "location": BookingLocation.IN_OFFICE.value,
+            }
+        )
+
+    return options
+
+
+def _is_home_option(option: dict[str, Any]) -> bool:
+    # No `location` key: a flow saved at this step by an older build, whose options were homes.
+    return option.get("location", BookingLocation.HOME.value) == BookingLocation.HOME.value
+
+
+def _is_preset_option(data: dict[str, Any], option: dict[str, Any]) -> bool:
+    """Whether the option is the Location a reschedule carried in: the same home, or the
+    office when the old session was In office. A new booking presets nothing."""
+    preset = data.get("reschedule_location")
+
+    if preset is None:
+        return False
+
+    if _is_home_option(option):
+        return preset == BookingLocation.HOME.value and option["id"] == data.get(
+            "reschedule_home_id"
+        )
+
+    return preset == BookingLocation.IN_OFFICE.value
+
+
+def _clear_location(data: dict[str, Any]) -> None:
+    data.pop("book_location", None)
+    data.pop("book_home_id", None)
+
+
+def _choose_location(turn: _Turn, option: dict[str, Any]) -> None:
+    if _is_home_option(option):
+        turn.data["book_location"] = BookingLocation.HOME.value
+        turn.data["book_home_id"] = option["id"]
+    else:
+        turn.data["book_location"] = BookingLocation.IN_OFFICE.value
+        turn.data.pop("book_home_id", None)
+
+
+def _location_of(data: dict[str, Any]) -> BookingLocation:
+    """A flow saved before the Location step existed only ever booked a home."""
+    return BookingLocation(data.get("book_location", BookingLocation.HOME.value))
+
+
+def _needs_office_for_location(turn: _Turn, date: datetime.date) -> _Next:
+    """Ranges exist that day but the Child has no active home and none allows In office: the
+    same Office handoff as a subject the bot cannot book. On a reschedule the new day is
+    already known, so the handoff names the session being moved straight away (answers.md
+    03.8); nothing is written or cancelled."""
+    child = turn.db.get(Child, uuid.UUID(turn.data["book_child_id"]))
+    subject = turn.db.get(Subject, uuid.UUID(turn.data["book_subject_id"]))
+
+    if child is None or subject is None:
+        return _stuck(turn)
+
+    moving = _booking_to_move(turn)
+
+    if moving is not None:
+        reply = _reschedule_handoff_reply(turn, child=child, moving=moving, date=date)
+    else:
+        reply = _say(
+            turn,
+            "SUBJECT_NEEDS_OFFICE",
+            name=child.name,
+            subject=_subject_name(subject, turn.language),
+        )
+
+    return _Next(reply=reply, step=None, flag_reason=FlagReason.BOOKING_REQUEST)
+
+
+def _no_slots(turn: _Turn, date: datetime.date) -> _Next:
+    no_slots = _say(turn, "NO_SLOTS", date=bot_messages.format_date(date, turn.language))
+
+    return _Next(reply=f"{no_slots} {_say(turn, 'ASK_DATE')}", step=STEP_BOOK_DATE)
+
+
+def _place(turn: _Turn) -> str:
+    """The Location phrase for the session being built ("at the office", "at Dad's")."""
+    location = _location_of(turn.data)
+    home_id = turn.data.get("book_home_id")
+    home = None
+
+    if location is BookingLocation.HOME and home_id is not None:
+        home = turn.db.get(Home, uuid.UUID(home_id))
+
+    return bot_messages.format_location(location, home.label if home else None, turn.language)
 
 
 def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1783,7 +1985,7 @@ def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     if not isinstance(option, dict):
         result: _Outcome = option
     else:
-        turn.data["book_home_id"] = option["id"]
+        _choose_location(turn, option)
         result = _offer_slots(turn)
 
     return result
@@ -1808,20 +2010,22 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
             date=date,
             tutor_id=uuid.UUID(requested) if requested else None,
             now=turn.now,
+            location=_location_of(turn.data),
         )
     except scheduling_service.DateOutOfWindow:
         return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
 
     if not found.items:
-        no_slots = _say(turn, "NO_SLOTS", date=bot_messages.format_date(date, turn.language))
-        return _Next(reply=f"{no_slots} {_say(turn, 'ASK_DATE')}", step=STEP_BOOK_DATE)
+        return _no_slots(turn, date)
 
+    place = _place(turn)
     options = [
         {
             "id": str(slot.availability_id),
             "label": bot_messages.format_slot_label(
                 bot_messages.format_time_range(slot.start_time, slot.end_time, turn.language),
                 slot.tutor_name,
+                place,
                 turn.language,
             ),
             "tutor_id": str(slot.tutor_id),
@@ -1914,13 +2118,26 @@ def _write_booking(turn: _Turn) -> _Next:
     if replaced is not None and not _may_replace(turn, booking_id=uuid.UUID(replaced)):
         return _stuck(turn)
 
+    if replaced is not None and _replaced_changed(turn, booking_id=uuid.UUID(replaced)):
+        return _changed_meanwhile(turn)
+
     chosen = turn.data["chosen"]
+    location = _location_of(turn.data)
+    home_id = turn.data.get("book_home_id")
+
+    if location is BookingLocation.HOME and home_id is None:
+        return _stuck(turn)
+
+    # The slot was offered by profile; the booking names the person behind it (#130). The mode
+    # is not checked on the write: the bot enforced it by offering only matching slots (#132).
     request = booking_write_service.BookingRequest(
         child_id=uuid.UUID(turn.data["book_child_id"]),
-        tutor_id=uuid.UUID(chosen["tutor_id"]),
+        user_id=_profile_user_id(turn.db, tutor_id=uuid.UUID(chosen["tutor_id"])),
+        kind=BookingKind.REGULAR,
+        location=location,
         subject_id=uuid.UUID(turn.data["book_subject_id"]),
         availability_id=uuid.UUID(chosen["availability_id"]),
-        home_id=uuid.UUID(turn.data["book_home_id"]),
+        home_id=None if location is BookingLocation.IN_OFFICE else uuid.UUID(home_id),
         scheduled_date=datetime.date.fromisoformat(turn.data["book_date"]),
         start_time=datetime.time.fromisoformat(chosen["start_time"]),
         end_time=datetime.time.fromisoformat(chosen["end_time"]),
@@ -1941,6 +2158,9 @@ def _write_booking(turn: _Turn) -> _Next:
         return _offer_slots(turn, preamble=_say(turn, "SLOT_JUST_TAKEN"))
     except (booking_write_service.DateOutOfWindow, booking_write_service.LeadTimeNotMet):
         return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
+    except booking_status_service.BookingChanged:
+        # The savepoint undid the new booking: nothing landed.
+        return _changed_meanwhile(turn)
     except (booking_write_service.BookingWriteError, _ReplaceFailed):
         return _stuck(turn)
 
@@ -1952,6 +2172,42 @@ def _write_booking(turn: _Turn) -> _Next:
 
 class _ReplaceFailed(Exception):
     """The old session of a reschedule is still live and could not be cancelled."""
+
+
+def _profile_user_id(db: Session, *, tutor_id: uuid.UUID) -> uuid.UUID:
+    """The person behind a teaching profile the slot search offered (#130)."""
+    return db.scalars(select(Tutor.user_id).where(Tutor.id == tutor_id)).one()
+
+
+def _offerable_profile_id(db: Session, *, user_id: uuid.UUID) -> uuid.UUID | None:
+    """The teaching profile the bot may offer slots from for a booking's Staff member: an
+    active Tutor or Manager. None for an Admin, who keeps the profile they had as a Tutor but
+    is never offered (#130; the rule `slot_service._qualified_tutor_names` applies)."""
+    return db.scalars(
+        select(Tutor.id)
+        .join(User, User.id == Tutor.user_id)
+        .where(Tutor.user_id == user_id, User.is_active.is_(True), User.role.in_(PROFILE_ROLES))
+    ).first()
+
+
+def _replaced_changed(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
+    """#151: whether the office edited the old session since the pick. Only a still-live
+    session is guarded: one cancelled or removed meanwhile still counts as moved
+    (`_cancel_replaced`). Read fresh, as `change_status` does, since the bot may hold a cached
+    copy from the pick in the same Session."""
+    expected_updated_at = _stored_updated_at(turn.data.get("reschedule_updated_at"))
+
+    if expected_updated_at is None:
+        return False
+
+    old = turn.db.execute(
+        select(Booking).where(Booking.id == booking_id).execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+
+    if old is None or old.status not in LIVE_BOOKING_STATUSES:
+        return False
+
+    return old.updated_at != expected_updated_at
 
 
 def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
@@ -1968,9 +2224,15 @@ def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
 
 
 def _cancel_replaced(turn: _Turn, *, booking_id: uuid.UUID) -> None:
+    """Cancel the old session of a reschedule. `BookingChanged` (the race guard, #151) is left
+    to the caller; the legality check comes first inside, so an old session already cancelled
+    is reported as such even when its `updated_at` moved."""
     try:
         booking_status_service.change_status(
-            turn.db, booking_id=booking_id, target=BookingStatus.CANCELLED
+            turn.db,
+            booking_id=booking_id,
+            target=BookingStatus.CANCELLED,
+            expected_updated_at=_stored_updated_at(turn.data.get("reschedule_updated_at")),
         )
     except booking_status_service.BookingNotFound:
         # Removed since the pick: the parent already holds only the new session.
@@ -2126,8 +2388,9 @@ def _refuse_while_pending(turn: _Turn) -> _Next:
 def _recognise(db: Session, *, phone_number: str, guardian_id: uuid.UUID | None) -> Guardian | None:
     """REQ-075.1: recognition is by phone number alone, with no challenge.
 
-    The conversation's own `guardian_id` wins when the webhook has one, so a guardian whose
-    number was edited on the client record still resolves through the thread they are on.
+    The conversation's own `guardian_id` wins when the webhook has one. A thread follows the
+    guardian who owns it (a number change re-keys it, #126), so the guardian linked to the thread
+    at a number is the one holding that number, for every change made since that rule.
     `is_active` is deliberately not filtered: a deactivated client is recognised and then
     refused at the write path by `_resolve`, which is a clearer outcome than an intake that
     collides with their own row on `UNIQUE (phone_number)`.
@@ -2219,7 +2482,9 @@ def _homes(db: Session, *, child_id: uuid.UUID) -> list[Home]:
 def _upcoming_bookings(
     db: Session, *, guardian_id: uuid.UUID, on_or_after: datetime.date
 ) -> list[Booking]:
-    """Live, future bookings for the children this guardian is linked to.
+    """Live, future Regular bookings for the children this guardian is linked to.
+
+    Evaluations are the Office's to cancel or move, so they never appear in the bot's lists.
 
     `LIVE_BOOKING_STATUSES` is the one definition of a booking that counts, so a cancelled
     session never appears in a cancel or reschedule list.
@@ -2230,6 +2495,7 @@ def _upcoming_bookings(
             .join(ChildGuardian, ChildGuardian.child_id == Booking.child_id)
             .where(
                 ChildGuardian.guardian_id == guardian_id,
+                Booking.kind == BookingKind.REGULAR,
                 Booking.status.in_(LIVE_BOOKING_STATUSES),
                 Booking.scheduled_date >= on_or_after,
             )
@@ -2311,7 +2577,10 @@ def _booking_label(booking: Booking, language: str) -> str:
         bot_messages.format_time_range(booking.start_time, booking.end_time, language),
         _subject_name(booking.subject, language),
         booking.child.name,
-        booking.tutor.name,
+        booking.staff.name,
+        bot_messages.format_location(
+            booking.location, booking.home.label if booking.home else None, language
+        ),
         language,
     )
 

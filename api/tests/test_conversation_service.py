@@ -118,12 +118,9 @@ def test_the_number_is_stored_exactly_as_it_arrived(db: Session) -> None:
 
 
 def test_a_changed_number_opens_a_second_thread_for_the_same_guardian(db: Session) -> None:
-    """The keying invariant (#55, **D-L**, `erd.md:274-279`): a thread is never re-pointed.
-
-    Correcting a guardian's number moves `guardians.phone_number` and leaves the thread where
-    it is, because the archive would otherwise claim messages went to a number Twilio never
-    sent them to. The next inbound message from the new number opens a second conversation
-    carrying the same guardian.
+    """`resolve_or_create` keys on the number alone: a number with no thread opens one, even
+    for a guardian who already has a thread elsewhere. Writing the column directly skips the
+    clients route, which re-keys the thread instead (#126, `test_thread_follows_number.py`).
     """
     guardian = _make_guardian(db)
     old_number = _phone_number()
@@ -977,7 +974,7 @@ def _make_child(db: Session) -> Child:
 def _make_user(db: Session) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("conversation-service-password"),
         role=UserRole.ADMIN,
     )

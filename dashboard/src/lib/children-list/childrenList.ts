@@ -1,3 +1,4 @@
+import { EVALUATION_LABEL } from '@/lib/booking-presentation/bookingPresentation'
 import { formatIsoDate, formatTime } from '@/lib/dates/dates'
 import type { ChildListParams, ChildSummary } from '@/lib/queries/children'
 
@@ -31,12 +32,15 @@ export const guardianNames = (row: ChildSummary): string =>
 export const homeNames = (row: ChildSummary): string =>
   row.homes.length === 0 ? '—' : row.homes.map((home) => home.label ?? home.address).join(', ')
 
+// An Evaluation has no subject; the composed sentence names it in plain text (no `<em>`, no
+// dash).
 export const nextSessionLabel = (row: ChildSummary): string => {
   const session = row.next_session
+  if (session === null) return 'None scheduled'
 
-  return session === null
-    ? 'None scheduled'
-    : `${formatIsoDate(session.scheduled_date)} · ${formatTime(session.start_time)} · ${session.subject.name} with ${session.tutor.name}`
+  const what = session.subject === null ? EVALUATION_LABEL : session.subject.name
+
+  return `${formatIsoDate(session.scheduled_date)} · ${formatTime(session.start_time)} · ${what} with ${session.tutor.name}`
 }
 
 // P7C-O: `count` is `upcoming_session_count`, the same predicate the server cancels by.

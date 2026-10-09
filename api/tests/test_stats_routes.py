@@ -23,11 +23,11 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -58,19 +58,24 @@ ACTIVE_TUTOR_TOTAL = 21
 INACTIVE_TUTOR_TOTAL = 2
 ACTIVE_CLIENT_TOTAL = 23
 INACTIVE_CLIENT_TOTAL = 2
-LIVE_TODAY_TOTAL = ACTIVE_TUTOR_TOTAL
-LIVE_UPCOMING_TOTAL = ACTIVE_TUTOR_TOTAL + 1
+LIVE_TODAY_EVALUATION_TOTAL = 1
+LIVE_UPCOMING_EVALUATION_TOTAL = 2
+LIVE_TODAY_TOTAL = ACTIVE_TUTOR_TOTAL + LIVE_TODAY_EVALUATION_TOTAL
+LIVE_UPCOMING_TOTAL = ACTIVE_TUTOR_TOTAL + 1 + LIVE_UPCOMING_EVALUATION_TOTAL
 
 SUMMARY_FIELDS = {
     "id",
     "child",
-    "tutor",
+    "staff",
+    "kind",
+    "location",
     "subject",
     "scheduled_date",
     "start_time",
     "end_time",
     "status",
     "notes",
+    "updated_at",
 }
 
 
@@ -121,6 +126,12 @@ def landscape(db: Session, stage: Stage) -> Stage:
     _book(db, stage, on=WEDNESDAY, start=THIRTEEN, end=FOURTEEN, status=BookingStatus.COMPLETED)
     _book(db, stage, on=THURSDAY, start=TWELVE, end=THIRTEEN, status=BookingStatus.CANCELLED)
 
+    _evaluate(db, stage, on=WEDNESDAY, status=BookingStatus.PENDING)
+    _evaluate(db, stage, on=THURSDAY, status=BookingStatus.CONFIRMED)
+    _evaluate(db, stage, on=FRIDAY, status=BookingStatus.PENDING)
+    _evaluate(db, stage, on=WEDNESDAY, status=BookingStatus.CANCELLED)
+    _evaluate(db, stage, on=THURSDAY, status=BookingStatus.COMPLETED)
+
     return stage
 
 
@@ -129,7 +140,7 @@ def test_a_tutor_token_is_403(api: TestClient, db: Session, stage: Stage) -> Non
 
     response = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(tutor_user))
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_a_developer_token_is_200(api: TestClient, db: Session) -> None:
@@ -265,6 +276,48 @@ def test_the_session_counts_equal_the_booking_list_totals(
     assert body["upcoming_week_session_count"] == upcoming["total"]
 
 
+@pytest.mark.parametrize("on", [WEDNESDAY, SUNDAY], ids=["midweek", "sunday-inverts-the-range"])
+def test_the_evaluation_counts_equal_the_kind_filtered_booking_list_totals(
+    api: TestClient, db: Session, landscape: Stage, on: datetime.date
+) -> None:
+    admin = _make_user(db)
+    body = api.get(f"/api/stats/overview?date={on}", headers=_auth(admin)).json()
+    week_end = body["week_end"]
+    day_after = on + datetime.timedelta(days=1)
+    live = "status=pending&status=confirmed&kind=evaluation"
+
+    today = api.get(f"/api/bookings?{live}&from={on}&to={on}", headers=_auth(admin)).json()
+    upcoming = api.get(
+        f"/api/bookings?{live}&from={day_after}&to={week_end}", headers=_auth(admin)
+    ).json()
+
+    assert body["today_evaluation_count"] == today["total"]
+    assert body["upcoming_week_evaluation_count"] == upcoming["total"]
+
+
+def test_the_evaluation_counts_exclude_dead_evaluations_and_sessions_include_live_ones(
+    api: TestClient, db: Session, landscape: Stage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()
+
+    assert body["today_evaluation_count"] == LIVE_TODAY_EVALUATION_TOTAL
+    assert body["upcoming_week_evaluation_count"] == LIVE_UPCOMING_EVALUATION_TOTAL
+    assert body["today_session_count"] == LIVE_TODAY_TOTAL
+    assert body["upcoming_week_session_count"] == LIVE_UPCOMING_TOTAL
+
+
+def test_on_a_sunday_the_upcoming_evaluation_count_is_zero(
+    api: TestClient, db: Session, landscape: Stage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get(f"/api/stats/overview?date={SUNDAY}", headers=_auth(admin)).json()
+
+    assert body["upcoming_week_evaluation_count"] == 0
+
+
 def test_the_session_count_fixture_outgrows_one_page(
     api: TestClient, db: Session, landscape: Stage
 ) -> None:
@@ -304,7 +357,7 @@ def test_active_client_count_equals_the_client_list_total(
     assert deactivated["total"] == INACTIVE_CLIENT_TOTAL
 
 
-def test_the_response_carries_exactly_the_seven_documented_fields(
+def test_the_response_carries_exactly_the_nine_documented_fields(
     api: TestClient, db: Session, stage: Stage
 ) -> None:
     admin = _make_user(db)
@@ -316,6 +369,8 @@ def test_the_response_carries_exactly_the_seven_documented_fields(
         "week_end",
         "today_session_count",
         "upcoming_week_session_count",
+        "today_evaluation_count",
+        "upcoming_week_evaluation_count",
         "active_tutor_count",
         "active_client_count",
         "recent_bookings",
@@ -410,11 +465,20 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
     listed = api.get(f"/api/bookings?from={WEDNESDAY}&to={WEDNESDAY}", headers=_auth(admin)).json()
 
     assert set(item) == SUMMARY_FIELDS
-    assert set(item["child"]) == set(item["tutor"]) == set(item["subject"]) == {"id", "name"}
+    assert set(item["child"]) == set(item["subject"]) == {"id", "name"}
+    assert set(item["staff"]) == {"id", "name", "role"}
+    assert item == listed["items"][0]
+    assert datetime.datetime.fromisoformat(item.pop("updated_at")) == booking.updated_at
     assert item == {
         "id": str(booking.id),
         "child": {"id": str(stage.child.id), "name": stage.child.name},
-        "tutor": {"id": str(stage.cast.tutor.id), "name": stage.cast.tutor.name},
+        "staff": {
+            "id": str(stage.cast.tutor.user_id),
+            "name": stage.cast.tutor.user.name,
+            "role": "tutor",
+        },
+        "kind": "regular",
+        "location": "home",
         "subject": {"id": str(stage.subject.id), "name": stage.subject.name},
         "scheduled_date": str(WEDNESDAY),
         "start_time": "10:00:00",
@@ -422,7 +486,6 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         "status": "confirmed",
         "notes": None,
     }
-    assert item == listed["items"][0]
 
 
 def _book(
@@ -439,7 +502,9 @@ def _book(
     booked = cast or stage.cast
     booking = Booking(
         child_id=stage.child.id,
-        tutor_id=booked.tutor.id,
+        user_id=booked.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=stage.subject.id,
         availability_id=booked.availability_id,
         home_id=stage.home.id,
@@ -458,13 +523,39 @@ def _book(
     return booking
 
 
+def _evaluate(db: Session, stage: Stage, *, on: datetime.date, status: BookingStatus) -> Booking:
+    # Its own staff member: an Evaluation holds no slot, but the live-overlap exclusion is per staff.
+    staff = _make_user(db, role=UserRole.ADMIN)
+    # A Child holds at most one live Evaluation (`uq_bookings_one_live_evaluation_per_child`).
+    child = Child(name=f"Child {uuid.uuid4().hex[:12]}", grade_level=7, school_name="PS 1")
+    db.add(child)
+    db.flush()
+    booking = Booking(
+        child_id=child.id,
+        user_id=staff.id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=on,
+        start_time=TEN,
+        end_time=ELEVEN,
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+
+    return booking
+
+
 def _make_cast(db: Session, *, is_active: bool = True) -> Cast:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(
+            email=f"tutor-{suffix}@example.com",
+            name=f"Tutor {suffix}",
+            role=UserRole.TUTOR,
+            is_active=is_active,
+        ),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
-        is_active=is_active,
     )
     db.add(tutor)
     db.flush()
@@ -491,22 +582,28 @@ def _make_guardian(db: Session, *, is_active: bool = True) -> Guardian:
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("stats-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("stats-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("stats-password")
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 

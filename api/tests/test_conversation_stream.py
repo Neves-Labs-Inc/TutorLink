@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -60,7 +61,7 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus, MessageAuthor, MessageStatus, UserRole
 from app.models.message import Message
@@ -197,7 +198,7 @@ def test_a_valid_staff_token_gets_ready(sockets: TestClient, db: Session, role: 
 @pytest.mark.parametrize(
     ("principal", "expected_reason"),
     [
-        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), STAFF_REQUIRED_ERROR),
+        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), OFFICE_REQUIRED_ERROR),
         (lambda db: _token(_make_user(db, is_active=False)), CREDENTIALS_ERROR),
         (lambda db: _token(_make_user(db), lifetime=-_minutes(30)), CREDENTIALS_ERROR),
         (lambda db: "not.a.token", CREDENTIALS_ERROR),
@@ -283,7 +284,7 @@ def test_a_send_on_a_human_conversation_is_recorded_sent_and_echoed(
     assert frame["conversation_id"] == str(conversation.id)
     assert frame["client_message_id"] == "composer-1"
     assert frame["message"]["id"] == str(message.id)
-    assert frame["message"]["author"] == {"id": str(user.id), "display_name": user.display_name}
+    assert frame["message"]["author"] == {"id": str(user.id), "name": user.name}
     assert frame["message"]["status"] == MessageStatus.QUEUED.value
     assert twilio == [{"to": conversation.phone_number, "body": "on my way"}]
     assert (message.author_kind, message.status) == (MessageAuthor.ADMIN, MessageStatus.QUEUED)
@@ -303,7 +304,7 @@ def test_a_manager_sends_on_a_chat_they_hold(
         frame = _receive(socket)
 
     assert frame["type"] == "message.created"
-    assert frame["message"]["author"] == {"id": str(manager.id), "display_name": "Test User"}
+    assert frame["message"]["author"] == {"id": str(manager.id), "name": "Test User"}
     assert twilio == [{"to": conversation.phone_number, "body": "Hi, Maria here"}]
     assert _only_message(db, conversation.id).author_user_id == manager.id
 
@@ -609,22 +610,29 @@ def test_a_message_updated_notice_is_rebuilt_into_the_status_frame(
 
 
 def test_a_message_updated_notice_for_a_message_that_is_gone_is_skipped(
-    sockets: TestClient, db: Session
+    sockets: TestClient, db: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Retention can delete the row between the callback's commit and the pump's read; that
-    costs one frame and never the pump."""
+    costs one frame and never the pump, and the skip is logged so it is never silent."""
+    caplog.set_level(logging.INFO, logger=conversation_stream.__name__)
     user = _make_user(db)
     conversation = _make_conversation(db, status=ConversationStatus.HUMAN, holder=user)
+    gone_message_id = uuid.uuid4()
 
     with _authenticated(sockets, user) as socket:
         broadcast_service.publish(
-            MessageUpdated(conversation_id=conversation.id, message={"id": str(uuid.uuid4())})
+            MessageUpdated(conversation_id=conversation.id, message={"id": str(gone_message_id)})
         )
         broadcast_service.publish(ConversationUpdated(conversation={"id": str(conversation.id)}))
 
         frame = _receive(socket)
 
     assert frame["type"] == "conversation.updated"
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == conversation_stream.__name__ and record.levelno == logging.INFO
+    ] == [f"skipped a status broadcast for message {gone_message_id}, which no longer exists"]
 
 
 def test_one_socket_disconnecting_leaves_the_other_serving(
@@ -916,7 +924,7 @@ def _token(user: User, lifetime: datetime.timedelta | None = None) -> str:
     `access_token_expire_minutes`, whose granularity is a minute.
     """
     if lifetime is None:
-        return create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+        return create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     settings = get_settings()
     issued_at = datetime.datetime.now(tz=datetime.UTC)
@@ -936,7 +944,7 @@ def _token(user: User, lifetime: datetime.timedelta | None = None) -> str:
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("conversation-stream-password"),
         role=role,
         is_active=is_active,

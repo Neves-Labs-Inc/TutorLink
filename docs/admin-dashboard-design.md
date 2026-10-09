@@ -50,11 +50,12 @@ All routes are protected. Unauthenticated users are redirected to `/login`. Tuto
 TutorLink
 ─────────────
 Dashboard
+Bookings
 Tutors
 Children
 Guardians
 Chats
-Bookings
+Reminders
 Users
 Settings
 ─────────────

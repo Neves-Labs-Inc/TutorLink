@@ -7,10 +7,12 @@ import type { UserCreatePayload, UserUpdatePayload } from '@/lib/users/users'
 export type User = {
   id: string
   email: string
-  display_name: string
+  name: string
   role: Role
   tutor_id: string | null
   is_active: boolean
+  has_password: boolean
+  invite_expires_at: string | null
 }
 
 export type UserListParams = {
@@ -48,6 +50,12 @@ export const updateUser = async (userId: string, data: UserUpdatePayload): Promi
 
 export const deactivateUser = async (userId: string): Promise<User> => {
   const response = await api.delete<User>(`/api/users/${userId}`)
+
+  return response.data
+}
+
+export const sendInvite = async (userId: string): Promise<User> => {
+  const response = await api.post<User>(`/api/users/${userId}/invite`)
 
   return response.data
 }

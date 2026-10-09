@@ -76,7 +76,7 @@ class ChildUpdate(BaseModel):
 
 class StaffRef(BaseModel):
     id: uuid.UUID
-    display_name: str
+    name: str
 
 
 class EvaluatedRead(BaseModel):
@@ -114,8 +114,10 @@ class NextSession(BaseModel):
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
+    # The Staff member, as a user (#130); the field keeps its name until spec 02 reshapes it.
     tutor: NamedRef
-    subject: NamedRef
+    # None on an Evaluation.
+    subject: NamedRef | None
 
 
 class ChildSummary(BaseModel):

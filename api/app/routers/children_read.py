@@ -4,12 +4,13 @@ A thin HTTP shell over `child_read_service`. The writes on this same prefix live
 `children.py`, which is mounted first; the two never collide because Starlette matches on method
 as well as path, so `GET` reaches these routes and `POST`/`PATCH` reach those (P7C-D).
 
-Both routes take `StaffPrincipal` and neither takes the tutor scope (P7C-G, CONSTITUTION §15):
+Both routes take `OfficePrincipal` and neither takes the tutor scope (P7C-G, CONSTITUTION §15):
 tutors cannot call either route, and an unread scope would arm the guard that 500s the
 `bookings` read behind `next_session`.
 
 `?awaiting_evaluation=true` is the Awaiting evaluation tab: active Children not yet Evaluated,
-oldest `created_at` first.
+oldest `created_at` first. `?evaluable=true` is the same list minus Children with a live
+Evaluation: who the booking form may offer for an Evaluation.
 """
 
 import uuid
@@ -19,11 +20,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.schemas.booking import NamedRef
+from app.schemas.booking import NamedRef, subject_ref
 from app.schemas.child import (
     ChildDetail,
     ChildGuardianRead,
@@ -53,11 +54,12 @@ router = APIRouter(prefix="/api/children", tags=["children"])
 
 @router.get("", response_model=Page[ChildSummary])
 def list_all(
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     is_active: bool = True,
     q: str | None = None,
     awaiting_evaluation: bool = False,
+    evaluable: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ChildSummary]:
@@ -68,6 +70,7 @@ def list_all(
         limit=page_size,
         offset=(page - 1) * page_size,
         awaiting_evaluation=awaiting_evaluation,
+        evaluable=evaluable,
     )
 
     return Page[ChildSummary](
@@ -79,7 +82,7 @@ def list_all(
 
 
 @router.get("/{child_id}", response_model=ChildDetail)
-def read_one(child_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ChildDetail:
+def read_one(child_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> ChildDetail:
     try:
         found = get_child(db, child_id=child_id)
     except ChildNotFound as exc:
@@ -117,8 +120,8 @@ def _next_session(booking: Booking | None) -> NextSession | None:
             scheduled_date=booking.scheduled_date,
             start_time=booking.start_time,
             end_time=booking.end_time,
-            tutor=NamedRef(id=booking.tutor.id, name=booking.tutor.name),
-            subject=NamedRef(id=booking.subject.id, name=booking.subject.name),
+            tutor=NamedRef(id=booking.staff.id, name=booking.staff.name),
+            subject=subject_ref(booking.subject),
         )
     )
 
@@ -163,7 +166,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
         name=row.subject.name,
         is_active=row.subject.is_active,
         level=row.level,
-        set_by=StaffRef(id=row.set_by.id, display_name=row.set_by.display_name),
+        set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,
     )
 
@@ -174,7 +177,5 @@ def _evaluated(child: Child) -> EvaluatedRead | None:
     return (
         None
         if child.evaluated_at is None or by is None
-        else EvaluatedRead(
-            at=child.evaluated_at, by=StaffRef(id=by.id, display_name=by.display_name)
-        )
+        else EvaluatedRead(at=child.evaluated_at, by=StaffRef(id=by.id, name=by.name))
     )

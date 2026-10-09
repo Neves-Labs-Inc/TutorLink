@@ -5,12 +5,13 @@ talking before a guardian exists — intake collects the name several messages i
 that could not exist until intake succeeded would lose exactly the threads an admin most wants
 to read: the ones that stalled part-way through it.
 
-`phone_number` is never rewritten. Correcting a guardian's number on the client screen moves
-`guardians.phone_number` and leaves the thread where it is: a thread records what was said to
-one WhatsApp identity, and re-pointing it would make the archive claim messages went to a
-number Twilio never sent them to. The next inbound message from the new number opens a second
-conversation carrying the same `guardian_id`, which is why `ix_conversations_guardian_id` is
-deliberately **not** unique.
+A thread follows the guardian who owns it (#126, reversing D-L / #55). Changing a guardian's
+number on the client screen re-keys their thread to the new number, and a Staff-only
+`number_change_note` line records where the earlier messages went. Left at the old number, the
+thread's `guardian_id` would claim whoever holds that number next. A thread already at the new
+number is merged into the guardian's (its messages move, it is deleted).
+`ix_conversations_guardian_id` is still **not** unique: threads from before this rule can share a
+guardian.
 
 There is no `is_active`: a conversation is never soft-deleted. The retention job hard-deletes a
 thread once it has no surviving messages.

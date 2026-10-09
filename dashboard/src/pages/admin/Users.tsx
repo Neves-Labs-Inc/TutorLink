@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { Button } from '@/components/ui/button'
@@ -12,13 +12,22 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { errorDetail } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
-import { tutorQueries } from '@/lib/queries/tutors'
-import { createUser, deactivateUser, updateUser, userQueries, type User } from '@/lib/queries/users'
+import {
+  createUser,
+  deactivateUser,
+  sendInvite,
+  updateUser,
+  userQueries,
+  type User,
+} from '@/lib/queries/users'
 import {
   createUserPayload,
   displayNameError,
   editRoleOptions,
-  requiresTutorLink,
+  accessBadge,
+  inviteExpiryTooltip,
+  PHONE_REQUIRED_ERROR,
+  requiresProfile,
   roleLabel,
   roleOptions,
   updateUserPayload,
@@ -26,30 +35,38 @@ import {
   type UserDraft,
 } from '@/lib/users/users'
 import { cn } from '@/lib/utils'
+import { useToast } from '@/hooks/useToast'
 import { useAuthStore } from '@/stores/authStore'
 
 type FormState = UserDraft & { isActive: boolean }
 
-const EMPTY_NEW_TUTOR = { name: '', phoneNumber: '', bio: '' }
+const EMPTY_PROFILE = { phoneNumber: '', bio: '' }
 const EMPTY_FORM: FormState = {
   displayName: '',
   email: '',
-  password: '',
   role: 'admin',
-  tutorId: null,
-  tutorMode: 'link',
-  newTutor: EMPTY_NEW_TUTOR,
+  profile: EMPTY_PROFILE,
   isActive: true,
 }
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const DEACTIVATE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
+const INVITE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 // Every slide-over control is a 44px touch target on phones and the compact h-8 from md up.
 const CONTROL_HEIGHT_CLASSES = 'h-11 md:h-8'
 const TAP_ROW_CLASSES = 'min-h-11 md:min-h-0'
 
+const inviteRowKey = (user: User): string =>
+  `${user.is_active}|${user.has_password}|${user.invite_expires_at}`
+
+const omitKey = <T,>(record: Record<string, T>, key: string): Record<string, T> =>
+  Object.fromEntries(Object.entries(record).filter(([entryKey]) => entryKey !== key))
+
 export const Users = () => {
   const queryClient = useQueryClient()
+  const { toast } = useToast()
+  // The row's data when its invite was sent, so a failure can be tied to that exact state.
+  const inviteRowKeys = useRef<Record<string, string>>({})
   const viewerRole = useAuthStore((state) => state.role) ?? ''
 
   const [page, setPage] = useState(1)
@@ -59,13 +76,13 @@ export const Users = () => {
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [deactivateTarget, setDeactivateTarget] = useState<User | null>(null)
+  const [pendingInviteIds, setPendingInviteIds] = useState<ReadonlySet<string>>(new Set())
+  // Keyed by user id; `rowKey` ties each message to the row data it was raised against.
+  const [inviteErrors, setInviteErrors] = useState<Record<string, { message: string; rowKey: string }>>({})
 
   const usersQuery = useQuery(
     userQueries.list({ is_active: !showInactive, page, page_size: DEFAULT_PAGE_SIZE }),
   )
-  const tutorsQuery = useQuery(tutorQueries.list({ page_size: 100 }))
-
-  const tutorNames = new Map((tutorsQuery.data?.items ?? []).map((tutor) => [tutor.id, tutor.name]))
 
   const invalidateUsers = () => queryClient.invalidateQueries({ queryKey: ['users'] })
 
@@ -73,9 +90,8 @@ export const Users = () => {
     mutationFn: createUser,
     onSuccess: () => {
       invalidateUsers()
-      // A `tutor` payload creates a profile as well as an account, so the tutor list this page
-      // reads for `tutorNames` and the "Link existing tutor" options is stale too. Only `create`
-      // can do that: `PATCH` offers neither tutor field.
+      // A `tutor` payload creates a profile as well as an account, so the tutor list is stale
+      // too. Only `create` can do that: `PATCH` offers no profile fields.
       queryClient.invalidateQueries({ queryKey: ['tutors'] })
       closeForm()
     },
@@ -98,6 +114,37 @@ export const Users = () => {
     },
   })
 
+  const inviteMutation = useMutation({
+    mutationFn: sendInvite,
+    onSuccess: (invited, userId) => {
+      invalidateUsers()
+      setInviteErrors((current) => omitKey(current, userId))
+      toast(`Invite sent to ${invited.email}.`)
+    },
+    onError: (error, userId) => {
+      setInviteErrors((current) => ({
+        ...current,
+        [userId]: {
+          message: errorDetail(error) ?? INVITE_FALLBACK_ERROR,
+          rowKey: inviteRowKeys.current[userId] ?? '',
+        },
+      }))
+    },
+    onSettled: (_data, _error, userId) =>
+      setPendingInviteIds((current) => {
+        const next = new Set(current)
+        next.delete(userId)
+        return next
+      }),
+  })
+
+  const handleSendInvite = (user: User) => {
+    inviteRowKeys.current[user.id] = inviteRowKey(user)
+    setInviteErrors((current) => omitKey(current, user.id))
+    setPendingInviteIds((current) => new Set(current).add(user.id))
+    inviteMutation.mutate(user.id)
+  }
+
   const closeForm = () => {
     setFormMode(null)
     setEditingUser(null)
@@ -116,13 +163,10 @@ export const Users = () => {
 
   const openEditForm = (user: User) => {
     setForm({
-      displayName: user.display_name,
+      displayName: user.name,
       email: user.email,
-      password: '',
       role: user.role,
-      tutorId: null,
-      tutorMode: 'link',
-      newTutor: EMPTY_NEW_TUTOR,
+      profile: EMPTY_PROFILE,
       isActive: user.is_active,
     })
     setValidationErrors([])
@@ -130,10 +174,9 @@ export const Users = () => {
     setFormMode('edit')
   }
 
-  // Leaving the tutor role clears the whole tutor sub-form, not just `tutorId`. A half-typed new
-  // tutor that survived a detour through Admin would come back already filled in when the admin
-  // switches to Tutor again, and `createUserPayload` would post it — the stale name is submittable,
-  // not merely visible.
+  // Leaving a profile role clears the profile sub-form. A half-typed phone number that survived a
+  // detour through Admin would come back already filled in when the admin switches to Tutor or
+  // Manager again — stale, not merely visible.
   // Once a submit has failed, the alert list follows every edit, so a fixed field drops its
   // message at the same moment it drops `aria-invalid`. Before that, editing stays quiet.
   const handleFormChange = (next: FormState) => {
@@ -145,9 +188,7 @@ export const Users = () => {
 
   const handleRoleChange = (role: string) => {
     handleFormChange(
-      requiresTutorLink(role)
-        ? { ...form, role }
-        : { ...form, role, tutorId: null, tutorMode: 'link', newTutor: EMPTY_NEW_TUTOR },
+      requiresProfile(role) ? { ...form, role } : { ...form, role, profile: EMPTY_PROFILE },
     )
   }
 
@@ -169,21 +210,27 @@ export const Users = () => {
   }
 
   const columns: Column<User>[] = [
-    { id: 'displayName', header: 'Display name', primary: true, cell: (user) => user.display_name },
+    { id: 'displayName', header: 'Display name', primary: true, cell: (user) => user.name },
     { id: 'email', header: 'Email', cell: (user) => (
         // Cards at 375 must wrap a long email anywhere; the desktop table only when it has to.
         <span className="break-all md:break-normal md:[overflow-wrap:anywhere]">{user.email}</span>
       ), },
     { id: 'role', header: 'Role', cell: (user) => roleLabel(user.role) },
     {
-      id: 'tutor',
-      header: 'Linked tutor',
-      cell: (user) => (user.tutor_id === null ? '' : (tutorNames.get(user.tutor_id) ?? '')),
-    },
-    {
       id: 'status',
       header: 'Status',
-      cell: (user) => <StatusBadge status={user.is_active ? 'active' : 'inactive'} />,
+      cell: (user) => (
+        <div className="flex flex-wrap items-center justify-end gap-1.5 md:justify-start lg:flex-nowrap">
+          <StatusBadge status={user.is_active ? 'active' : 'inactive'} />
+          {accessBadge(user) === 'no_login' && <StatusBadge status="no_login" />}
+          {accessBadge(user) === 'invited' && (
+            <span className="inline-flex cursor-default" title={inviteExpiryTooltip(user)}>
+              <StatusBadge status="invited" />
+              <span className="sr-only">{inviteExpiryTooltip(user)}</span>
+            </span>
+          )}
+        </div>
+      ),
     },
     {
       id: 'actions',
@@ -191,9 +238,47 @@ export const Users = () => {
       align: 'end',
       cell: (user) =>
         user.is_active && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setDeactivateTarget(user)}>
-            Deactivate
-          </Button>
+          <div>
+            <div className="flex flex-wrap items-center justify-end gap-2 lg:flex-nowrap">
+              {accessBadge(user) !== null && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-11 md:h-7"
+                  disabled={pendingInviteIds.has(user.id)}
+                  aria-busy={pendingInviteIds.has(user.id)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    handleSendInvite(user)
+                  }}
+                >
+                  {pendingInviteIds.has(user.id)
+                    ? 'Sending…'
+                    : accessBadge(user) === 'invited'
+                      ? 'Resend'
+                      : 'Send invite'}
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-11 md:h-7"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setDeactivateTarget(user)
+                }}
+              >
+                Deactivate
+              </Button>
+            </div>
+            {inviteErrors[user.id]?.rowKey === inviteRowKey(user) && (
+              <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
+                {inviteErrors[user.id].message}
+              </p>
+            )}
+          </div>
         ),
     },
   ]
@@ -266,7 +351,6 @@ export const Users = () => {
           onRoleChange={handleRoleChange}
           viewerRole={viewerRole}
           editingRole={editingUser?.role ?? null}
-          tutorOptions={tutorsQuery.data?.items ?? []}
           validationErrors={validationErrors}
           saveErrorMessage={saveErrorMessage}
         />
@@ -284,7 +368,7 @@ export const Users = () => {
         body={
           deactivateTarget === null
             ? ''
-            : `Deactivate ${deactivateTarget.display_name} (${deactivateTarget.email})? They will no longer be able to sign in.`
+            : `Deactivate ${deactivateTarget.name} (${deactivateTarget.email})? They will no longer be able to sign in.`
         }
         confirmLabel="Deactivate"
         destructive
@@ -309,7 +393,6 @@ type UserFormProps = {
   onRoleChange: (role: string) => void
   viewerRole: string
   editingRole: string | null
-  tutorOptions: { id: string; name: string }[]
   validationErrors: string[]
   saveErrorMessage: string | null
 }
@@ -321,15 +404,15 @@ const UserForm = ({
   onRoleChange,
   viewerRole,
   editingRole,
-  tutorOptions,
   validationErrors,
   saveErrorMessage,
 }: UserFormProps) => {
-  const showTutorFields = mode === 'create' && requiresTutorLink(form.role)
+  const showProfileFields = mode === 'create' && requiresProfile(form.role)
   const roleSelectOptions =
     editingRole === null ? roleOptions(viewerRole) : editRoleOptions(viewerRole, editingRole)
   const nameError = displayNameError(form.displayName)
   const isDisplayNameInvalid = nameError !== null && validationErrors.includes(nameError)
+  const isPhoneInvalid = validationErrors.includes(PHONE_REQUIRED_ERROR)
   let content: ReactNode = null
 
   if (validationErrors.length > 0 || saveErrorMessage !== null) {
@@ -375,18 +458,6 @@ const UserForm = ({
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="user-password">{mode === 'edit' ? 'New password (optional)' : 'Temporary password'}</Label>
-        <Input
-          id="user-password"
-          className={CONTROL_HEIGHT_CLASSES}
-          type="password"
-          autoComplete="new-password"
-          value={form.password}
-          onChange={(event) => onChange({ ...form, password: event.target.value })}
-        />
-      </div>
-
-      <div className="space-y-1.5">
         <Label htmlFor="user-role">Role</Label>
         <Select
           id="user-role"
@@ -402,92 +473,36 @@ const UserForm = ({
         </Select>
       </div>
 
-      {showTutorFields && (
-        <div className="space-y-4">
+      {showProfileFields && (
+        <>
           <div className="space-y-1.5">
-            <Label>Tutor profile</Label>
-            <div className="flex gap-4 text-sm text-foreground">
-              <label className={cn('flex items-center gap-2', TAP_ROW_CLASSES)}>
-                <input
-                  type="radio"
-                  name="tutor-mode"
-                  checked={form.tutorMode === 'link'}
-                  onChange={() => onChange({ ...form, tutorMode: 'link' })}
-                />
-                Link existing tutor
-              </label>
-              <label className={cn('flex items-center gap-2', TAP_ROW_CLASSES)}>
-                <input
-                  type="radio"
-                  name="tutor-mode"
-                  checked={form.tutorMode === 'new'}
-                  onChange={() => onChange({ ...form, tutorMode: 'new' })}
-                />
-                Create new tutor
-              </label>
-            </div>
+            <Label htmlFor="user-phone">Phone number</Label>
+            <Input
+              id="user-phone"
+              className={CONTROL_HEIGHT_CLASSES}
+              type="tel"
+              inputMode="tel"
+              autoComplete="off"
+              value={form.profile.phoneNumber}
+              aria-invalid={isPhoneInvalid}
+              onChange={(event) =>
+                onChange({ ...form, profile: { ...form.profile, phoneNumber: event.target.value } })
+              }
+            />
           </div>
 
-          {form.tutorMode === 'link' ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="user-tutor">Linked tutor</Label>
-              <Select
-                id="user-tutor"
-                className={CONTROL_HEIGHT_CLASSES}
-                value={form.tutorId ?? ''}
-                onChange={(event) => onChange({ ...form, tutorId: event.target.value || null })}
-              >
-                <option value="">Select a tutor…</option>
-                {tutorOptions.map((tutor) => (
-                  <option key={tutor.id} value={tutor.id}>
-                    {tutor.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          ) : (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="user-tutor-name">Tutor name</Label>
-                <Input
-                  id="user-tutor-name"
-                  className={CONTROL_HEIGHT_CLASSES}
-                  value={form.newTutor.name}
-                  onChange={(event) =>
-                    onChange({ ...form, newTutor: { ...form.newTutor, name: event.target.value } })
-                  }
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="user-tutor-phone">Phone number</Label>
-                <Input
-                  id="user-tutor-phone"
-                  className={CONTROL_HEIGHT_CLASSES}
-                  value={form.newTutor.phoneNumber}
-                  onChange={(event) =>
-                    onChange({
-                      ...form,
-                      newTutor: { ...form.newTutor, phoneNumber: event.target.value },
-                    })
-                  }
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="user-tutor-bio">Bio (optional)</Label>
-                <Input
-                  id="user-tutor-bio"
-                  className={CONTROL_HEIGHT_CLASSES}
-                  value={form.newTutor.bio}
-                  onChange={(event) =>
-                    onChange({ ...form, newTutor: { ...form.newTutor, bio: event.target.value } })
-                  }
-                />
-              </div>
-            </>
-          )}
-        </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="user-bio">Bio (optional)</Label>
+            <Input
+              id="user-bio"
+              className={CONTROL_HEIGHT_CLASSES}
+              value={form.profile.bio}
+              onChange={(event) =>
+                onChange({ ...form, profile: { ...form.profile, bio: event.target.value } })
+              }
+            />
+          </div>
+        </>
       )}
 
       {mode === 'edit' && (

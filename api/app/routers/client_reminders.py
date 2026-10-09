@@ -1,7 +1,7 @@
 """`/api/clients/{id}/reminders`: a Guardian's weekly-reminder status, and Staff recording an
 opt-in or opt-out for them.
 
-`StaffPrincipal`, so a tutor is 403, and no `TutorScope`: the route reads no tutor-owned table.
+`OfficePrincipal`, so a tutor is 403, and no `TutorScope`: the route reads no tutor-owned table.
 Recording sends the Guardian nothing; it only appends a `staff` consent row naming the caller.
 An opt-in while the Guardian is blocked by WhatsApp on their current number (WhatsApp's
 `system` opt-out on it, and no Guardian row from it since; Staff rows don't count) is a 409:
@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.enums import ConsentSource
 from app.schemas.reminder import (
     ConsentHistoryRead,
@@ -53,7 +53,7 @@ router = APIRouter(prefix="/api/clients", tags=["reminders"])
 
 @router.get("/{client_id}/reminders", response_model=GuardianRemindersRead)
 def read_reminders(
-    client_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    client_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> GuardianRemindersRead:
     try:
         reminders = reminder_status(db, guardian_id=client_id)
@@ -69,7 +69,7 @@ def read_reminders(
     status_code=status.HTTP_201_CREATED,
 )
 def record_consent(
-    client_id: uuid.UUID, payload: ConsentRecord, user: StaffPrincipal, db: DbSession
+    client_id: uuid.UUID, payload: ConsentRecord, user: OfficePrincipal, db: DbSession
 ) -> GuardianRemindersRead:
     try:
         reminders = record_staff_consent(
@@ -126,6 +126,6 @@ def _who(entry: ConsentEntry) -> str:
     elif entry.set_by is None:
         author = UNKNOWN_STAFF_AUTHOR
     else:
-        author = entry.set_by.display_name
+        author = entry.set_by.name
 
     return author

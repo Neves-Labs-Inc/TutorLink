@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from app.models.enums import BookingLocation
 from app.services import bot_messages
 from app.services.bot_messages import MESSAGES, render
 
@@ -53,7 +54,12 @@ EXPECTED_IDS = {
     "ASK_TUTOR",
     "ANY_TUTOR_LABEL",
     "ASK_DATE",
-    "ASK_WHICH_HOME",
+    "ASK_WHERE",
+    "OFFICE_OPTION",
+    "AT_OFFICE",
+    "AT_HOME_LABELLED",
+    "AT_HOME",
+    "SESSION_CHANGED_MEANWHILE",
     "ASK_SLOT",
     "SHOWING_SOME",
     "CONFIRM_SLOT",
@@ -214,12 +220,29 @@ def test_format_time_range(
 def test_format_session_line() -> None:
     parts = ("Tuesday, October 14", "4:00-5:00 PM", "Math", "Ana", "Mr. Lee")
 
-    assert bot_messages.format_session_line(*parts, "en") == (
-        "Tuesday, October 14, 4:00-5:00 PM: Math for Ana with Mr. Lee"
+    assert bot_messages.format_session_line(*parts, "at the office", "en") == (
+        "Tuesday, October 14, 4:00-5:00 PM: Math for Ana with Mr. Lee at the office"
     )
-    assert bot_messages.format_session_line(*parts, "es") == (
-        "Tuesday, October 14, 4:00-5:00 PM: Math para Ana con Mr. Lee"
+    assert bot_messages.format_session_line(*parts, "en casa", "es") == (
+        "Tuesday, October 14, 4:00-5:00 PM: Math para Ana con Mr. Lee en casa"
     )
+
+
+@pytest.mark.parametrize(
+    ("location", "label", "language", "expected"),
+    [
+        (BookingLocation.IN_OFFICE, None, "en", "at the office"),
+        (BookingLocation.IN_OFFICE, None, "es", "en la oficina"),
+        (BookingLocation.HOME, "Dad's", "en", "at Dad's"),
+        (BookingLocation.HOME, "Dad's", "es", "en Dad's"),
+        (BookingLocation.HOME, None, "en", "at home"),
+        (BookingLocation.HOME, None, "es", "en casa"),
+    ],
+)
+def test_format_location_names_the_place_in_both_languages(
+    location: BookingLocation, label: str | None, language: str, expected: str
+) -> None:
+    assert bot_messages.format_location(location, label, language) == expected
 
 
 @pytest.mark.parametrize(
@@ -270,11 +293,11 @@ def test_spanish_word_lists_ignore_accents_and_case() -> None:
 
 
 def test_slot_label_names_the_tutor_in_both_languages() -> None:
-    assert bot_messages.format_slot_label("4:00-5:00 PM", "Mr. Lee", "en") == (
-        "4:00-5:00 PM with Mr. Lee"
+    assert bot_messages.format_slot_label("4:00-5:00 PM", "Mr. Lee", "at the office", "en") == (
+        "4:00-5:00 PM with Mr. Lee at the office"
     )
-    assert bot_messages.format_slot_label("4:00-5:00 p. m.", "Sr. Lee", "es") == (
-        "4:00-5:00 p. m. con Sr. Lee"
+    assert bot_messages.format_slot_label("4:00-5:00 p. m.", "Sr. Lee", "en casa", "es") == (
+        "4:00-5:00 p. m. con Sr. Lee en casa"
     )
 
 

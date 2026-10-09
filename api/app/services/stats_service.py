@@ -31,7 +31,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
-from app.models.enums import BookingStatus
+from app.models.enums import BookingKind, BookingStatus
 from app.services.booking_service import BookingFilters, apply_booking_filters
 from app.services.client_service import visible_clients
 from app.services.tutor_service import matching_tutors
@@ -46,6 +46,8 @@ class StatsOverviewData:
     week_end: datetime.date
     today_session_count: int
     upcoming_week_session_count: int
+    today_evaluation_count: int
+    upcoming_week_evaluation_count: int
     active_tutor_count: int
     active_client_count: int
     recent_bookings: list[Booking]
@@ -53,14 +55,21 @@ class StatsOverviewData:
 
 def overview(db: Session, *, on: datetime.date) -> StatsOverviewData:
     week_end = on + datetime.timedelta(days=6 - on.weekday())
+    tomorrow = on + datetime.timedelta(days=1)
 
     return StatsOverviewData(
         date=on,
         week_end=week_end,
         today_session_count=_count(db, _live_sessions(date_from=on, date_to=on)),
         upcoming_week_session_count=_count(
+            db, _live_sessions(date_from=tomorrow, date_to=week_end)
+        ),
+        today_evaluation_count=_count(
+            db, _live_sessions(date_from=on, date_to=on, kind=BookingKind.EVALUATION)
+        ),
+        upcoming_week_evaluation_count=_count(
             db,
-            _live_sessions(date_from=on + datetime.timedelta(days=1), date_to=week_end),
+            _live_sessions(date_from=tomorrow, date_to=week_end, kind=BookingKind.EVALUATION),
         ),
         active_tutor_count=_count(
             db,
@@ -71,10 +80,14 @@ def overview(db: Session, *, on: datetime.date) -> StatsOverviewData:
     )
 
 
-def _live_sessions(*, date_from: datetime.date, date_to: datetime.date) -> Select[tuple[Booking]]:
+def _live_sessions(
+    *, date_from: datetime.date, date_to: datetime.date, kind: BookingKind | None = None
+) -> Select[tuple[Booking]]:
     return apply_booking_filters(
         select(Booking),
-        BookingFilters(statuses=LIVE_SESSION_STATUSES, date_from=date_from, date_to=date_to),
+        BookingFilters(
+            statuses=LIVE_SESSION_STATUSES, date_from=date_from, date_to=date_to, kind=kind
+        ),
     )
 
 
@@ -87,7 +100,7 @@ def _recent_bookings(db: Session) -> list[Booking]:
             select(Booking)
             .options(
                 joinedload(Booking.child),
-                joinedload(Booking.tutor),
+                joinedload(Booking.staff),
                 joinedload(Booking.subject),
             )
             .order_by(Booking.created_at.desc(), Booking.id.desc())

@@ -3,7 +3,7 @@
 A thin HTTP shell over `household_service`, which does the grouping, the search and the paging;
 nothing here can fail past validation, so there is no exception to map and nothing to commit.
 
-`StaffPrincipal` and never `TutorScope` (P7C-G): tutors have no access to the guardian and
+`OfficePrincipal` and never `TutorScope` (P7C-G): tutors have no access to the guardian and
 child rows a household is built from, so there is no tutor filter to apply. Not a soft-delete
 list — there is no `is_active` parameter, and inactive members arrive carrying their flag.
 """
@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.household import HouseholdChild, HouseholdGuardian, HouseholdRead
 from app.services.household_service import Household, list_households
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/households", tags=["households"])
 
 @router.get("", response_model=Page[HouseholdRead])
 def list_all(
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     q: str | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,

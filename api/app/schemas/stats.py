@@ -14,6 +14,8 @@ class StatsOverview(BaseModel):
     week_end: datetime.date
     today_session_count: int
     upcoming_week_session_count: int
+    today_evaluation_count: int
+    upcoming_week_evaluation_count: int
     active_tutor_count: int
     active_client_count: int
     recent_bookings: list[BookingSummary]

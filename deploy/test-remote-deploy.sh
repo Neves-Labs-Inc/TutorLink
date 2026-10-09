@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the real deploy/remote-deploy.sh against stub aws and docker executables and checks how
-# it renders .env from Parameter Store: the WhatsApp bot parameters are all-or-nothing, and the
-# fixed production settings are always written. Needs bash 4+ (the deploy script does); on macOS,
+# it renders .env from Parameter Store: the WhatsApp bot and outbound mail parameters are each
+# all-or-nothing, and the fixed production settings are always written. Needs bash 4+ (the deploy script does); on macOS,
 # run it in a container:
 #
 #   docker run --rm -v "$PWD:/repo" -w /repo bash:5 deploy/test-remote-deploy.sh
@@ -22,6 +22,14 @@ REAL_BOT_VALUES=(
   "+15551234567"
   "sk-ant-test-secret-value"
 )
+MAIL_PARAMETERS=(SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_FROM)
+REAL_MAIL_VALUES=(
+  "smtp.gmail.com"
+  "587"
+  "office@example.com"
+  "smtp-app-password-secret-value"
+  "TutorLink <office@example.com>"
+)
 DATABASE_PASSWORD="database-password-secret-value"
 DATABASE_URL="postgresql+psycopg://tutorlink:$DATABASE_PASSWORD@db.example.internal:5432/tutorlink?sslmode=require"
 REQUIRED_PARAMETER_LINES=(
@@ -31,6 +39,7 @@ REQUIRED_PARAMETER_LINES=(
 )
 ALWAYS_WRITTEN_LINES=(
   "TWILIO_STATUS_CALLBACK_URL=https://$SITE_ADDRESS/webhook/whatsapp/status"
+  "PUBLIC_BASE_URL=https://$SITE_ADDRESS"
   "API_DOCS_ENABLED=false"
   "COOKIE_SECURE=true"
   "BUSINESS_TIMEZONE=America/New_York"
@@ -139,6 +148,17 @@ assert_bot_unconfigured() {
   pass "$label: writes the bot keys blank and logs that the bot is off"
 }
 
+# Mail off means the keys are absent, not blank: SMTP_PORT is an int in api/app/config.py and a
+# blank value would stop the API from booting.
+assert_mail_unconfigured() {
+  local label="$1" key
+  for key in "${MAIL_PARAMETERS[@]}"; do
+    ! grep -q "^$key=" "$ENV_FILE" || fail "$label: .env sets $key while mail is off"
+  done
+  grep -qF "Outbound mail not configured" "$OUTPUT_FILE" || fail "$label: no 'not configured' log line"
+  pass "$label: writes no mail key and logs that mail is off"
+}
+
 # Checks the some-set failure: non-zero exit, each given parameter named by full path, the old
 # .env untouched, and nothing pulled.
 assert_rejected() {
@@ -157,6 +177,13 @@ bot_assignments() {
   local values=("$@") index
   for index in "${!BOT_PARAMETERS[@]}"; do
     echo "${BOT_PARAMETERS[$index]}=${values[$index]}"
+  done
+}
+
+mail_assignments() {
+  local values=("$@") index
+  for index in "${!MAIL_PARAMETERS[@]}"; do
+    echo "${MAIL_PARAMETERS[$index]}=${values[$index]}"
   done
 }
 
@@ -194,6 +221,7 @@ prepare_case
 run_deploy
 assert_succeeded "all missing"
 assert_bot_unconfigured "all missing"
+assert_mail_unconfigured "all missing"
 
 echo "==> Bot parameters all set"
 mapfile -t assignments < <(bot_assignments "${REAL_BOT_VALUES[@]}")
@@ -219,5 +247,52 @@ echo "==> Only TWILIO_ACCOUNT_SID set"
 prepare_case "TWILIO_ACCOUNT_SID=${REAL_BOT_VALUES[0]}"
 run_deploy
 assert_rejected "three missing" TWILIO_AUTH_TOKEN TWILIO_WHATSAPP_NUMBER ANTHROPIC_API_KEY
+
+echo "==> Mail parameters all '$PLACEHOLDER'"
+mapfile -t assignments < <(mail_assignments "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER")
+prepare_case "${assignments[@]}"
+run_deploy
+assert_succeeded "mail placeholders"
+assert_mail_unconfigured "mail placeholders"
+
+echo "==> Mail parameters all set"
+mapfile -t assignments < <(mail_assignments "${REAL_MAIL_VALUES[@]}")
+prepare_case "${assignments[@]}"
+run_deploy
+assert_succeeded "mail set"
+for assignment in "${assignments[@]}"; do
+  assert_env_line "mail set" "$assignment"
+done
+pass "mail set: writes the five real values"
+! grep -qF -- "${REAL_MAIL_VALUES[3]}" "$OUTPUT_FILE" || fail "mail set: output contains the SMTP password"
+pass "mail set: prints no SMTP password"
+
+echo "==> SMTP_PASSWORD still '$PLACEHOLDER'"
+mapfile -t assignments < <(mail_assignments "${REAL_MAIL_VALUES[@]:0:3}" "$PLACEHOLDER" "${REAL_MAIL_VALUES[4]}")
+prepare_case "${assignments[@]}"
+run_deploy
+assert_rejected "mail one placeholder" SMTP_PASSWORD
+grep -qF "outbound mail parameters" "$OUTPUT_FILE" || fail "mail one placeholder: failure does not name the mail group"
+pass "mail one placeholder: names the mail group"
+
+echo "==> Only SMTP_HOST set"
+prepare_case "SMTP_HOST=${REAL_MAIL_VALUES[0]}"
+run_deploy
+assert_rejected "mail four missing" SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_FROM
+
+echo "==> SMTP_PORT not a number"
+mapfile -t assignments < <(mail_assignments "${REAL_MAIL_VALUES[0]}" "587 " "${REAL_MAIL_VALUES[@]:2}")
+prepare_case "${assignments[@]}"
+run_deploy
+assert_rejected "port not numeric" SMTP_PORT
+
+echo "==> SMTP_PASSWORD with a character .env cannot carry"
+UNSAFE_PASSWORD="hunter2 #trailing-comment"
+mapfile -t assignments < <(mail_assignments "${REAL_MAIL_VALUES[@]:0:3}" "$UNSAFE_PASSWORD" "${REAL_MAIL_VALUES[4]}")
+prepare_case "${assignments[@]}"
+run_deploy
+assert_rejected "unsafe value" SMTP_PASSWORD
+! grep -qF -- "$UNSAFE_PASSWORD" "$OUTPUT_FILE" || fail "unsafe value: output contains the password"
+pass "unsafe value: prints no password"
 
 echo "==> Deploy env rendering test passed"

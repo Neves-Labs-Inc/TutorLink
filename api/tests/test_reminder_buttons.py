@@ -25,6 +25,8 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
+    BookingKind,
+    BookingLocation,
     BookingStatus,
     ConsentAction,
     ConsentSource,
@@ -97,7 +99,9 @@ class Family:
         self.db.add(
             Booking(
                 child_id=child_id,
-                tutor_id=self.world.tutor.id,
+                user_id=self.world.tutor.user_id,
+                kind=BookingKind.REGULAR,
+                location=BookingLocation.HOME,
                 subject_id=self.world.subject.id,
                 availability_id=self.world.availability_id,
                 home_id=self.client.home_id,

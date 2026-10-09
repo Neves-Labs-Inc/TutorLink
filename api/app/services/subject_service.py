@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
+from app.models.user import User
 
 
 class Keep(enum.Enum):
@@ -48,7 +49,8 @@ def _count_expr() -> Select[tuple[int]]:
         select(func.count())
         .select_from(TutorSubject)
         .join(Tutor, Tutor.id == TutorSubject.tutor_id)
-        .where(TutorSubject.subject_id == Subject.id, Tutor.is_active.is_(True))
+        .join(User, User.id == Tutor.user_id)
+        .where(TutorSubject.subject_id == Subject.id, User.is_active.is_(True))
         .scalar_subquery()
     )
 

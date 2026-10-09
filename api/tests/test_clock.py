@@ -173,7 +173,7 @@ def _set_business_timezone(db: Session, value: str) -> None:
 def _make_admin(db: Session) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test Admin",
+        name="Test Admin",
         hashed_password="not-a-real-hash",
         role=UserRole.ADMIN,
     )
@@ -184,6 +184,6 @@ def _make_admin(db: Session) -> User:
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}

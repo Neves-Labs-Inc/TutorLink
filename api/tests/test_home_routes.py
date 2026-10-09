@@ -19,11 +19,11 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
@@ -427,7 +427,9 @@ def test_a_deactivated_home_is_refused_by_post_bookings_and_bookable_once_reacti
     availability = _make_availability(db, tutor=tutor, weekday=on.weekday())
     payload = {
         "child_id": str(child.id),
-        "tutor_id": str(tutor.id),
+        "user_id": str(tutor.user_id),
+        "kind": "regular",
+        "location": "home",
         "subject_id": str(subject.id),
         "availability_id": str(availability.id),
         "home_id": str(home.id),
@@ -462,7 +464,7 @@ def test_a_tutor_is_refused_with_403(api: TestClient, db: Session, route: str) -
     else:
         response = _patch(api, tutor_user, home.id, {"label": "X"})
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _home_count(db) == homes_before
     assert _reloaded(db, home).label == "Mum's"
 
@@ -566,15 +568,21 @@ def _next_monday() -> datetime.date:
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password(PASSWORD),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password(PASSWORD),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(PASSWORD)
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
@@ -583,9 +591,8 @@ def _make_user(
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -616,7 +623,7 @@ def _make_availability(db: Session, *, tutor: Tutor, weekday: int) -> TutorAvail
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -676,7 +683,9 @@ def _book(
     client = _make_client(db)
     booking = Booking(
         child_id=_make_child(db, guardians=[client], homes=[home]).id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=_make_subject(db).id,
         availability_id=_make_availability(db, tutor=tutor, weekday=on.weekday()).id,
         home_id=home.id,

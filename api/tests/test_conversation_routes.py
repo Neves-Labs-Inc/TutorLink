@@ -120,7 +120,7 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
         "flag_reason",
     }
     assert item["guardian"] == {"id": str(guardian.id), "name": guardian.name}
-    assert item["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
+    assert item["taken_over_by"] == {"id": str(admin.id), "name": admin.name}
     assert item["last_message_preview"] == "Could we move Tommy?"
     assert item["status"] == "human"
     assert item["flag_reason"] == "stuck"
@@ -391,7 +391,7 @@ def test_only_an_admins_message_carries_an_author(api: TestClient, db: Session) 
         "error_code",
         "reminder_child_names",
     }
-    assert items[0]["author"] == {"id": str(admin.id), "display_name": admin.display_name}
+    assert items[0]["author"] == {"id": str(admin.id), "name": admin.name}
     assert items[1]["author"] is None
     assert items[1]["author_kind"] == "client"
 
@@ -502,7 +502,7 @@ def test_a_takeover_claims_the_conversation_and_broadcasts_once(
 
     assert response.status_code == 200
     assert body["status"] == "human"
-    assert body["taken_over_by"] == {"id": str(admin.id), "display_name": admin.display_name}
+    assert body["taken_over_by"] == {"id": str(admin.id), "name": admin.name}
     assert body["taken_over_at"] is not None
     assert _row(db, conversation.id).taken_over_by_user_id == admin.id
     # The conversation, then the Takeover notice line (#109).
@@ -542,8 +542,8 @@ def test_a_takeover_of_a_conversation_another_admin_holds_is_409_naming_them(
 
     response = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(contender))
 
-    _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(display_name=holder.display_name))
-    assert holder.display_name in response.json()["detail"]
+    _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(name=holder.name))
+    assert holder.name in response.json()["detail"]
     assert _row(db, conversation.id).taken_over_by_user_id == holder.id
     assert broadcasts == []
 
@@ -637,7 +637,7 @@ def test_two_concurrent_takeovers_produce_one_200_and_one_409(
         loser = [row for row in responses if row.status_code == 409]
 
         assert sorted(row.status_code for row in responses) == [200, 409]
-        assert winner[0].json()["taken_over_by"]["display_name"] in loser[0].json()["detail"]
+        assert winner[0].json()["taken_over_by"]["name"] in loser[0].json()["detail"]
     finally:
         _delete_committed_conversation(committed_sessions, committed)
 
@@ -683,9 +683,7 @@ def test_a_takeover_waits_behind_a_held_row_lock_and_is_409(
         holder.join(timeout=5)
 
         assert elapsed >= hold_seconds * 0.8
-        _assert_detail(
-            response, 409, HELD_BY_ANOTHER_ERROR.format(display_name=committed.holder_display_name)
-        )
+        _assert_detail(response, 409, HELD_BY_ANOTHER_ERROR.format(name=committed.holder_name))
         with committed_sessions() as session:
             assert (
                 session.get_one(Conversation, committed.conversation_id).taken_over_by_user_id
@@ -807,7 +805,7 @@ def session_per_request_api(
 class _CommittedConversation:
     conversation_id: uuid.UUID
     holder_id: uuid.UUID
-    holder_display_name: str
+    holder_name: str
     contender_id: uuid.UUID
 
 
@@ -824,7 +822,7 @@ def _make_committed_conversation(
         return _CommittedConversation(
             conversation_id=conversation.id,
             holder_id=holder.id,
-            holder_display_name=holder.display_name,
+            holder_name=holder.name,
             contender_id=contender.id,
         )
 
@@ -845,7 +843,7 @@ def _assert_detail(response: Response, expected_status: int, expected_detail: st
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -971,15 +969,21 @@ def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
-    user = User(
-        email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password(PASSWORD),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password(PASSWORD),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(PASSWORD)
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
@@ -988,9 +992,8 @@ def _make_user(
 def _make_tutor_user(db: Session) -> User:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()

@@ -11,24 +11,26 @@ from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.availability import TutorAvailability, TutorAvailabilityException
-    from app.models.booking import Booking
     from app.models.subject import Subject
     from app.models.user import User
 
 
 class Tutor(HasID, HasTimestamps, HasActiveFlag, Base):
+    """A Tutor or Manager's teaching profile. The person — name, email, whether they are
+    active — is the `user`; `is_active` here is kept by 0030 but no read path consults it."""
+
     __tablename__ = "tutors"
 
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, unique=True
+    )
     phone_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    users: Mapped[list["User"]] = relationship(back_populates="tutor")
+    user: Mapped["User"] = relationship(back_populates="profile")
     tutor_subjects: Mapped[list["TutorSubject"]] = relationship(back_populates="tutor")
     availability: Mapped[list["TutorAvailability"]] = relationship(back_populates="tutor")
     exceptions: Mapped[list["TutorAvailabilityException"]] = relationship(back_populates="tutor")
-    bookings: Mapped[list["Booking"]] = relationship(back_populates="tutor")
 
 
 class TutorSubject(HasID, Base):

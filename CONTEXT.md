@@ -29,7 +29,7 @@ The grade a Child works at in one subject, set by an Admin or Manager. This is w
 _Avoid_: Grade level, subject grade
 
 **Evaluation session**:
-A Child's first session, arranged by the office, used to assess their Subject levels.
+A Child's first session, arranged by the office, used to assess their Subject levels. Completing it does not make the Child Evaluated; that is a separate mark.
 _Avoid_: Trial, first lesson, assessment
 
 **Evaluated**:
@@ -44,6 +44,10 @@ _Avoid_: Locale, preferred language
 A weekly message inviting a Guardian to book, sent only to Guardians with no session booked in the coming week.
 _Avoid_: Notification, nudge
 
+**Reschedule**:
+Changing a live Booking's date, time, Staff, Location or Subject; its kind never changes. Through the bot it replaces the Booking with a new one; from the dashboard it edits the Booking in place and the office tells the Guardian itself.
+_Avoid_: Move, edit (for the domain act)
+
 **Opt-out**:
 A Guardian's choice to stop receiving Booking reminders.
 _Avoid_: Unsubscribe, mute
@@ -53,20 +57,32 @@ The people a Booking can be with: Tutors, Admins, and Managers.
 _Avoid_: Employee, operator
 
 **Tutor**:
-A Staff member who teaches sessions. Sees only their own Bookings.
+A Staff member who teaches sessions. Sees only their own Bookings. Can exist before they can sign in.
 _Avoid_: Teacher, instructor
 
 **Location**:
-Where a Booking happens: one of the Guardian's homes, or In office. In office needs no address.
+Where a Booking happens: one of the Child's homes, or In office. In office needs no address.
 _Avoid_: Venue, place, home (for the general case)
 
+**Availability**:
+A Tutor's weekly slots in which Guardians can book them. Each slot says where it can be booked: Home visits (the Child's home only), Home or office, or Office only. This limits what the bot offers; the office can still book any Location.
+_Avoid_: Schedule (for the weekly pattern), shifts
+
 **Admin**:
-A Staff member with full dashboard access, including Users and Settings.
+A Staff member with full dashboard access, including Users and Settings. Can be booked, but is never offered to Guardians by the bot.
 _Avoid_: Superuser, owner
 
 **Manager**:
-A Staff member with the same dashboard access as an Admin except Users and Settings. Can use chat and evaluate Children.
+A Tutor with extra privileges: the same dashboard access as an Admin except Users and Settings. Teaches sessions and is offered by the bot like any Tutor; can also use chat and evaluate Children.
 _Avoid_: Supervisor, moderator
+
+**Office**:
+The Admins and Managers, who run TutorLink from the dashboard: bookings, chats, Children and Guardians. Every Office member is Staff, but not every Staff member is Office: Tutors are not.
+_Avoid_: Staff (for this group), back office, admins (for the group)
+
+**Invite**:
+An email an Admin sends a Staff member who can't sign in yet, letting them choose their first password. Admins never set Staff passwords themselves.
+_Avoid_: Activation, onboarding email
 
 **Display name**:
 The name an Admin or Manager goes by with Guardians, shown in the takeover message.

@@ -31,12 +31,19 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ExceptionStatus, UserRole
+from app.models.enums import (
+    AvailabilityMode,
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ExceptionStatus,
+    UserRole,
+)
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -44,11 +51,12 @@ from app.models.user import User
 from app.routers.booking_writes import REFERENCE_NOT_FOUND_ERROR
 from app.routers.slots import DATE_OUT_OF_WINDOW_ERROR
 from app.security import create_access_token, hash_password
-from app.services import clock
+from app.services import clock, slot_service
 from app.services.scheduling_service import (
     MAX_SLOTS_OFFERED_SETTING,
     MIN_BOOKING_LEAD_SETTING,
     SESSION_LENGTH_SETTING,
+    DateOutOfWindow,
 )
 
 type SetIntSetting = Callable[[str, int], None]
@@ -79,6 +87,7 @@ class SlotWorld:
     """One qualified tutor with one 09:00-12:00 range, and the rows a booking needs."""
 
     tutor_id: uuid.UUID
+    user_id: uuid.UUID
     tutor_name: str
     subject_id: uuid.UUID
     availability_id: uuid.UUID
@@ -496,12 +505,46 @@ def test_a_retired_subject_is_never_offered(
 def test_a_deactivated_tutor_is_never_offered(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
-    db.get_one(Tutor, world.tutor_id).is_active = False
-    db.flush()
+    """Through the Tutors page: deactivating the profile deactivates the person (#130)."""
+    deleted = api.delete(f"/api/tutors/{world.tutor_id}", headers=_bearer(admin))
 
     response = api.get(_url(world), headers=_bearer(admin))
 
+    assert deleted.status_code == 200
     assert _windows(response) == []
+
+
+def test_a_managers_profile_is_offered(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    """A Manager is a Tutor with extra privileges (#130): their profile is offered like any."""
+    person = db.get_one(Tutor, world.tutor_id).user
+    promoted = api.patch(
+        f"/api/users/{person.id}", headers=_bearer(admin), json={"role": "manager"}
+    )
+
+    response = api.get(_url(world), headers=_bearer(admin))
+
+    assert promoted.status_code == 200
+    assert _windows(response) == DEFAULT_GRID
+
+
+def test_a_promoted_admin_is_not_offered_until_demoted(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    """Promotion keeps the profile but takes the person off the offer surface; demotion back
+    to Tutor restores it, with nothing re-created."""
+    person = db.get_one(Tutor, world.tutor_id).user
+    path = f"/api/users/{person.id}"
+
+    promoted = api.patch(path, headers=_bearer(admin), json={"role": "admin"})
+    while_admin = api.get(_url(world), headers=_bearer(admin))
+    demoted = api.patch(path, headers=_bearer(admin), json={"role": "tutor"})
+    as_tutor_again = api.get(_url(world), headers=_bearer(admin))
+
+    assert (promoted.status_code, demoted.status_code) == (200, 200)
+    assert _windows(while_admin) == []
+    assert _windows(as_tutor_again) == DEFAULT_GRID
 
 
 # --- ordering, filtering and the cap ----------------------------------------------------------
@@ -633,7 +676,9 @@ def test_a_retired_subject_offered_by_neither_surface(
         "/api/bookings",
         json={
             "child_id": str(world.child_id),
-            "tutor_id": str(world.tutor_id),
+            "user_id": str(world.user_id),
+            "kind": "regular",
+            "location": "home",
             "subject_id": str(world.subject_id),
             "availability_id": str(world.availability_id),
             "home_id": str(world.home_id),
@@ -750,7 +795,7 @@ def test_a_tutor_token_is_403_and_never_500(api: TestClient, db: Session, world:
 
     response = api.get(_url(world), headers=_bearer(tutor_user))
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_an_unauthenticated_request_is_401(api: TestClient, world: SlotWorld) -> None:
@@ -787,7 +832,8 @@ def test_a_grade_level_below_kindergarten_is_400(
 
 
 @pytest.mark.parametrize(
-    ("parameter", "value"), [("date", "not-a-date"), ("subject_id", "not-a-uuid")]
+    ("parameter", "value"),
+    [("date", "not-a-date"), ("subject_id", "not-a-uuid"), ("location", "anything-else")],
 )
 def test_a_malformed_parameter_is_400_never_422(
     api: TestClient, world: SlotWorld, admin: User, parameter: str, value: str
@@ -812,6 +858,164 @@ def test_no_page_or_page_size_parameter_changes_the_answer(
     assert len(body["items"]) == 5
 
 
+# --- Location: the mode filter and the In office neighbour rule (spec 03) --------------------
+
+
+@pytest.mark.parametrize(
+    ("mode", "location", "offered"),
+    [
+        (AvailabilityMode.TRAVELER, "home", True),
+        (AvailabilityMode.TRAVELER, None, True),
+        (AvailabilityMode.TRAVELER, "in_office", False),
+        (AvailabilityMode.ONLY_OFFICE, "in_office", True),
+        (AvailabilityMode.ONLY_OFFICE, None, True),
+        (AvailabilityMode.ONLY_OFFICE, "home", False),
+        (AvailabilityMode.ANYWHERE, "home", True),
+        (AvailabilityMode.ANYWHERE, "in_office", True),
+        (AvailabilityMode.ANYWHERE, None, True),
+    ],
+)
+def test_a_range_is_offered_only_for_the_locations_its_mode_allows(
+    api: TestClient,
+    db: Session,
+    admin: User,
+    mode: AvailabilityMode,
+    location: str | None,
+    offered: bool,
+) -> None:
+    """Mode is a bot-only restriction: omitting `location` is the dashboard's call and reads
+    every range, as before the parameter existed."""
+    world = _make_world(db, date=DATE, mode=mode)
+
+    response = api.get(_url(world, location=location), headers=_bearer(admin))
+
+    assert response.status_code == 200
+    assert _windows(response) == (DEFAULT_GRID if offered else [])
+
+
+def test_location_narrows_the_tutor_set_to_those_with_a_range_allowing_it(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    office = _make_world(
+        db, date=DATE, subject_id=world.subject_id, mode=AvailabilityMode.ONLY_OFFICE
+    )
+
+    at_home = api.get(_url(world, location="home"), headers=_bearer(admin))
+    in_office = api.get(_url(world, location="in_office"), headers=_bearer(admin))
+    anywhere = api.get(_url(world), headers=_bearer(admin))
+
+    assert _tutors(at_home) == [world.tutor_id, world.tutor_id]
+    assert _tutors(in_office) == [office.tutor_id, office.tutor_id]
+    assert sorted(_tutors(anywhere)) == sorted([world.tutor_id, office.tutor_id] * 2)
+    assert _windows(anywhere) == [
+        DEFAULT_GRID[0],
+        DEFAULT_GRID[0],
+        DEFAULT_GRID[1],
+        DEFAULT_GRID[1],
+    ]
+
+
+def test_an_in_office_slot_may_abut_an_in_office_booking(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """The read side of `test_two_in_office_bookings_back_to_back_are_both_accepted`: two
+    office sessions involve no travel, so only bare overlap excludes. A home candidate, or no
+    Location at all, keeps the full gap and loses 10:30-11:30 to the 09:30-10:30 booking."""
+    world = _make_world(db, date=DATE, mode=AvailabilityMode.ANYWHERE)
+    _make_booking(db, world, start=NINE_THIRTY, end=TEN_THIRTY, location=BookingLocation.IN_OFFICE)
+
+    in_office = api.get(_url(world, location="in_office"), headers=_bearer(admin))
+    at_home = api.get(_url(world, location="home"), headers=_bearer(admin))
+    unspecified = api.get(_url(world), headers=_bearer(admin))
+
+    assert _windows(in_office) == [("10:30:00", "11:30:00")]
+    assert _windows(at_home) == []
+    assert _windows(unspecified) == []
+
+
+def test_a_home_booking_keeps_the_full_gap_before_an_in_office_slot(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """The read side of
+    `test_an_in_office_booking_inside_the_gap_of_a_home_booking_is_the_gap_warning`."""
+    world = _make_world(db, date=DATE, mode=AvailabilityMode.ANYWHERE)
+    _make_booking(db, world, start=NINE_THIRTY, end=TEN_THIRTY, location=BookingLocation.HOME)
+
+    response = api.get(_url(world, location="in_office"), headers=_bearer(admin))
+
+    assert _windows(response) == []
+
+
+# --- `allowed_locations`: which Locations the bot may ask about ------------------------------
+
+
+def _allowed(
+    db: Session,
+    world: SlotWorld,
+    *,
+    tutor_id: uuid.UUID | None = None,
+    date: datetime.date | None = None,
+) -> frozenset[BookingLocation]:
+    return slot_service.allowed_locations(
+        db,
+        subject_id=world.subject_id,
+        child_id=None,
+        date=date if date is not None else world.date,
+        tutor_id=tutor_id,
+        now=clock.business_now(),
+    )
+
+
+def test_no_range_on_the_weekday_allows_no_location(db: Session, world: SlotWorld) -> None:
+    assert _allowed(db, world, date=world.date + datetime.timedelta(days=1)) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (AvailabilityMode.TRAVELER, {BookingLocation.HOME}),
+        (AvailabilityMode.ANYWHERE, {BookingLocation.HOME, BookingLocation.IN_OFFICE}),
+        (AvailabilityMode.ONLY_OFFICE, {BookingLocation.IN_OFFICE}),
+    ],
+)
+def test_each_mode_allows_its_locations(
+    db: Session, mode: AvailabilityMode, expected: set[BookingLocation]
+) -> None:
+    world = _make_world(db, date=DATE, mode=mode)
+
+    assert _allowed(db, world) == frozenset(expected)
+
+
+def test_allowed_locations_is_the_union_over_every_qualified_tutor(
+    db: Session, world: SlotWorld
+) -> None:
+    office = _make_world(
+        db, date=DATE, subject_id=world.subject_id, mode=AvailabilityMode.ONLY_OFFICE
+    )
+
+    assert _allowed(db, world) == {BookingLocation.HOME, BookingLocation.IN_OFFICE}
+    assert _allowed(db, world, tutor_id=office.tutor_id) == {BookingLocation.IN_OFFICE}
+
+
+def test_an_inactive_range_allows_nothing(db: Session, world: SlotWorld) -> None:
+    db.get_one(TutorAvailability, world.availability_id).is_active = False
+    db.flush()
+
+    assert _allowed(db, world) == frozenset()
+
+
+def test_an_admins_ranges_allow_nothing(db: Session, world: SlotWorld) -> None:
+    db.get_one(Tutor, world.tutor_id).user.role = UserRole.ADMIN
+    db.flush()
+
+    assert _allowed(db, world) == frozenset()
+
+
+def test_allowed_locations_refuses_a_date_outside_the_window(db: Session, world: SlotWorld) -> None:
+    with pytest.raises(DateOutOfWindow):
+        _allowed(db, world, date=_today() - datetime.timedelta(days=1))
+
+
 def _url(
     world: SlotWorld | None,
     *,
@@ -820,6 +1024,7 @@ def _url(
     date: datetime.date | str | None = None,
     tutor_id: uuid.UUID | None = None,
     child_id: uuid.UUID | None = None,
+    location: str | None = None,
 ) -> str:
     query = {
         "subject_id": str(subject_id if subject_id is not None else world.subject_id),
@@ -831,6 +1036,8 @@ def _url(
         query["tutor_id"] = str(tutor_id)
     if child_id is not None:
         query["child_id"] = str(child_id)
+    if location is not None:
+        query["location"] = location
 
     return f"/api/slots/available?{urlencode(query)}"
 
@@ -843,6 +1050,10 @@ def _windows(response: Response) -> list[tuple[str, str]]:
     return [(item["start_time"], item["end_time"]) for item in response.json()["items"]]
 
 
+def _tutors(response: Response) -> list[uuid.UUID]:
+    return [uuid.UUID(item["tutor_id"]) for item in response.json()["items"]]
+
+
 def _make_world(
     db: Session,
     *,
@@ -851,6 +1062,7 @@ def _make_world(
     max_grade_level: int = 8,
     start: datetime.time = NINE,
     end: datetime.time = TWELVE,
+    mode: AvailabilityMode = AvailabilityMode.TRAVELER,
 ) -> SlotWorld:
     suffix = uuid.uuid4().hex[:12]
     tutor = _make_tutor(db)
@@ -864,9 +1076,12 @@ def _make_world(
 
     return SlotWorld(
         tutor_id=tutor.id,
-        tutor_name=tutor.name,
+        user_id=tutor.user_id,
+        tutor_name=tutor.user.name,
         subject_id=subject_id,
-        availability_id=_make_availability(db, tutor.id, date=date, start=start, end=end),
+        availability_id=_make_availability(
+            db, tutor.id, date=date, start=start, end=end, mode=mode
+        ),
         child_id=child.id,
         home_id=home.id,
         date=date,
@@ -888,9 +1103,8 @@ def _set_level(db: Session, setter: User, world: SlotWorld, *, level: int) -> No
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -920,11 +1134,12 @@ def _make_availability(
     date: datetime.date,
     start: datetime.time,
     end: datetime.time,
+    mode: AvailabilityMode = AvailabilityMode.TRAVELER,
 ) -> uuid.UUID:
     # The weekday is derived from the date under test rather than written down, so the two can
     # never disagree — and `weekday()` is the 0 = Monday encoding the column stores.
     row = TutorAvailability(
-        tutor_id=tutor_id, day_of_week=date.weekday(), start_time=start, end_time=end
+        tutor_id=tutor_id, day_of_week=date.weekday(), start_time=start, end_time=end, mode=mode
     )
     db.add(row)
     db.flush()
@@ -939,13 +1154,16 @@ def _make_booking(
     start: datetime.time,
     end: datetime.time,
     status: BookingStatus = BookingStatus.CONFIRMED,
+    location: BookingLocation = BookingLocation.HOME,
 ) -> Booking:
     booking = Booking(
         child_id=world.child_id,
-        tutor_id=world.tutor_id,
+        user_id=world.user_id,
+        kind=BookingKind.REGULAR,
+        location=location,
         subject_id=world.subject_id,
         availability_id=world.availability_id,
-        home_id=world.home_id,
+        home_id=world.home_id if location is BookingLocation.HOME else None,
         scheduled_date=world.date,
         start_time=start,
         end_time=end,
@@ -983,21 +1201,26 @@ def _make_exception(
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("slot-password"),
-        role=role,
-        tutor_id=tutor_id,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("slot-password"),
+            role=role,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("slot-password")
+        user.role = role
     db.flush()
 
     return user
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 

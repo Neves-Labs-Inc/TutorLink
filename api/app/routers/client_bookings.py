@@ -6,10 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
-from app.models.booking import Booking
+from app.dependencies import OfficePrincipal
 from app.models.enums import BookingStatus
-from app.schemas.booking import BookingSummary, NamedRef
+from app.schemas.booking import BookingSummary, booking_summary
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.booking_service import BookingFilters, ClientNotFound, list_client_bookings
 
@@ -23,7 +22,7 @@ router = APIRouter(prefix="/api/clients", tags=["bookings"])
 @router.get("/{client_id}/bookings", response_model=Page[BookingSummary])
 def list_bookings_for_client(
     client_id: uuid.UUID,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     tutor_id: uuid.UUID | None = None,
@@ -56,22 +55,8 @@ def list_bookings_for_client(
         raise HTTPException(status.HTTP_404_NOT_FOUND, CLIENT_NOT_FOUND_ERROR) from exc
 
     return Page[BookingSummary](
-        items=[_summary(row) for row in bookings],
+        items=[booking_summary(row) for row in bookings],
         total=total,
         page=page,
         page_size=page_size,
-    )
-
-
-def _summary(row: Booking) -> BookingSummary:
-    return BookingSummary(
-        id=row.id,
-        child=NamedRef(id=row.child.id, name=row.child.name),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.name),
-        subject=NamedRef(id=row.subject.id, name=row.subject.name),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
     )

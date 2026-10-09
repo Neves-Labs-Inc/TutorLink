@@ -6,7 +6,10 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import {
+  evaluationsSubLine,
   hasDateRolledOver,
   queriedDateLabel,
   tableStatus,
@@ -22,6 +25,7 @@ type StatWidgetProps = {
   label: string
   value: number
   detail: string
+  subLine?: string | null
 }
 
 const FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -37,6 +41,24 @@ const STATUS_COLUMN: Column<Booking> = {
   cell: (row) => <StatusBadge status={row.status} />,
 }
 
+const STAFF_COLUMN: Column<Booking> = {
+  id: 'staff',
+  header: 'Staff',
+  cell: (row) => row.staff.name,
+}
+
+const LOCATION_COLUMN: Column<Booking> = {
+  id: 'location',
+  header: 'Location',
+  cell: (row) => locationLabel(row),
+}
+
+const SUBJECT_COLUMN: Column<Booking> = {
+  id: 'subject',
+  header: 'Subject',
+  cell: (row) => <SubjectCell booking={row} emptyAs="dash" />,
+}
+
 const TODAY_COLUMNS: Column<Booking>[] = [
   {
     id: 'time',
@@ -45,15 +67,17 @@ const TODAY_COLUMNS: Column<Booking>[] = [
     cell: (row) => `${formatTime(row.start_time)} – ${formatTime(row.end_time)}`,
   },
   { id: 'child', header: 'Child', cell: (row) => row.child.name },
-  { id: 'tutor', header: 'Tutor', cell: (row) => row.tutor.name },
-  { id: 'subject', header: 'Subject', cell: (row) => row.subject.name },
+  STAFF_COLUMN,
+  LOCATION_COLUMN,
+  SUBJECT_COLUMN,
   STATUS_COLUMN,
 ]
 
 const RECENT_COLUMNS: Column<Booking>[] = [
   { id: 'child', header: 'Child', primary: true, cell: (row) => row.child.name },
-  { id: 'tutor', header: 'Tutor', cell: (row) => row.tutor.name },
-  { id: 'subject', header: 'Subject', cell: (row) => row.subject.name },
+  STAFF_COLUMN,
+  LOCATION_COLUMN,
+  SUBJECT_COLUMN,
   { id: 'date', header: 'Date', cell: (row) => formatIsoDate(row.scheduled_date) },
   STATUS_COLUMN,
 ]
@@ -109,11 +133,13 @@ export const Dashboard = () => {
           label="Today's sessions"
           value={stats.data.today_session_count}
           detail={`Live on ${formatIsoDate(stats.data.date)}`}
+          subLine={evaluationsSubLine(stats.data.today_evaluation_count)}
         />
         <StatWidget
           label="Upcoming this week"
           value={stats.data.upcoming_week_session_count}
           detail={upcomingWeekLabel(stats.data.date, stats.data.week_end)}
+          subLine={evaluationsSubLine(stats.data.upcoming_week_evaluation_count)}
         />
         {/* <StatWidget
           label="Active tutors"
@@ -168,14 +194,15 @@ export const Dashboard = () => {
   )
 }
 
-const StatWidget = ({ label, value, detail }: StatWidgetProps) => (
+const StatWidget = ({ label, value, detail, subLine }: StatWidgetProps) => (
   <Card>
     <CardHeader>
       <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
       <CardDescription>{detail}</CardDescription>
     </CardHeader>
-    <CardContent>
+    <CardContent className="space-y-1">
       <p className="font-heading text-3xl font-semibold tabular-nums text-foreground">{value}</p>
+      {subLine ? <p className="text-xs text-muted-foreground">{subLine}</p> : null}
     </CardContent>
   </Card>
 )

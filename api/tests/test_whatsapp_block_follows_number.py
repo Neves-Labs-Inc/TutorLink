@@ -122,7 +122,7 @@ class World:
         if self._staff is None:
             self._staff = User(
                 email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-                display_name="Test Staff",
+                name="Test Staff",
                 hashed_password="not-a-hash",
                 role=UserRole.ADMIN,
             )
@@ -283,7 +283,7 @@ def test_a_start_from_a_number_staff_swapped_in_does_not_lift_the_block(
 
 @pytest.mark.parametrize("code", OPT_OUT_CODES)
 def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
-    world: World, code: str
+    world: World, code: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     guardian = world.guardian()
     blocked_number = guardian.phone_number
@@ -293,8 +293,28 @@ def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
     world.say("START", from_number=staff_number)
     world.move(guardian, blocked_number)
 
+    # A thread still linked to the Guardian at the swapped-in number, as one from before threads
+    # followed their Guardian (#126) would be. Its START must not reach the Guardian at all: the
+    # number is a stranger's now, so it is parsed as an Intake opener.
+    world.db.add(
+        Conversation(
+            phone_number=staff_number,
+            guardian_id=guardian.id,
+            last_message_at=datetime.datetime.now(datetime.UTC),
+        )
+    )
+    world.db.flush()
+    consents_before = [row.id for row in world.consents(guardian)]
+
+    def read_hello(**kwargs: object) -> ParsedIntent:
+        return ParsedIntent(
+            intent=BotIntent.UNKNOWN, answer=None, fields={}, confidence_is_low=False
+        )
+
+    monkeypatch.setattr(parser_service, "parse_intent", read_hello)
     world.say("START", from_number=staff_number)
 
+    assert [row.id for row in world.consents(guardian)] == consents_before
     _assert_blocked(world, guardian)
 
 

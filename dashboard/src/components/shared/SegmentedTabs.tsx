@@ -11,6 +11,8 @@ type SegmentedTabsProps<T extends string> = {
   onChange: (value: T) => void
   ariaLabel: string
   panelId: string
+  // Locked: the selected pill still reads, nothing is clickable or in the Tab order.
+  disabled?: boolean
 }
 
 const tabClasses =
@@ -18,6 +20,7 @@ const tabClasses =
 const activeClasses = 'bg-primary text-primary-foreground'
 const ARROW_STEPS: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1 }
 const inactiveClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground'
+const lockedInactiveClasses = 'text-muted-foreground'
 
 // Roving tabindex: only the selected tab is in the Tab order; Arrow Left/Right move and select.
 // The caller renders the panel with `id={panelId}` and `role="tabpanel"`.
@@ -27,13 +30,14 @@ export const SegmentedTabs = <T extends string>({
   onChange,
   ariaLabel,
   panelId,
+  disabled = false,
 }: SegmentedTabsProps<T>) => {
   const buttons = useRef<(HTMLButtonElement | null)[]>([])
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const step = ARROW_STEPS[event.key]
 
-    if (step === undefined) return
+    if (step === undefined || disabled) return
 
     event.preventDefault()
     const next = (index + step + tabs.length) % tabs.length
@@ -46,10 +50,23 @@ export const SegmentedTabs = <T extends string>({
     <div
       role="tablist"
       aria-label={ariaLabel}
-      className="inline-flex flex-wrap gap-1 rounded-lg border border-border p-1"
+      aria-disabled={disabled || undefined}
+      className={cn(
+        'inline-flex flex-wrap gap-1 rounded-lg border border-border p-1',
+        disabled && 'pointer-events-none opacity-50',
+      )}
     >
       {tabs.map((tab, index) => {
         const isSelected = tab.value === value
+        let pillClasses: string
+
+        if (isSelected) {
+          pillClasses = activeClasses
+        } else if (disabled) {
+          pillClasses = lockedInactiveClasses
+        } else {
+          pillClasses = inactiveClasses
+        }
 
         return (
           <button
@@ -62,10 +79,11 @@ export const SegmentedTabs = <T extends string>({
             role="tab"
             aria-selected={isSelected}
             aria-controls={panelId}
-            tabIndex={isSelected ? 0 : -1}
+            disabled={disabled}
+            tabIndex={isSelected && !disabled ? 0 : -1}
             onClick={() => onChange(tab.value)}
             onKeyDown={(event) => handleKeyDown(event, index)}
-            className={cn(tabClasses, isSelected ? activeClasses : inactiveClasses)}
+            className={cn(tabClasses, pillClasses)}
           >
             {tab.label}
           </button>

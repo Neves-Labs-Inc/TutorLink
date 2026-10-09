@@ -1,7 +1,12 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
+import {
+  BookingCalendar,
+  type BookingCalendarStatus,
+} from '@/components/bookings/BookingCalendar'
+import ViewToggle from '@/components/bookings/ViewToggle'
 import { TutorLinkMissing } from '@/components/layout/TutorLinkMissing'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
@@ -12,12 +17,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/useAuth'
 import { errorDetail } from '@/lib/api'
+import {
+  bookingViewFromSearchParams,
+  withBookingView,
+  type BookingView,
+} from '@/lib/booking-calendar/booking-calendar'
 import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
 import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel } from '@/lib/bookings/bookings'
 import { formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
 import { bookingQueries, type Booking } from '@/lib/queries/bookings'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
+import { weekDaysIso, weekStartIso } from '@/lib/tutor-schedule/tutorSchedule'
 import {
   filterByChildName,
   searchHintLabel,
@@ -33,6 +44,14 @@ import { cn } from '@/lib/utils'
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const TAB_GROUP_LABEL_ID = 'session-tab-filter'
 const SEARCH_HINT = 'Filters the sessions on this page, not the whole history.'
+
+const SUNDAY_INDEX = 6
+
+// The incoming view fades in; there is no exit animation.
+const viewEnterClasses = 'animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none'
+
+const queryStatus = (query: { isPending: boolean; isError: boolean }): BookingCalendarStatus =>
+  query.isPending ? 'pending' : query.isError ? 'error' : 'ready'
 
 const TABS: { value: SessionTab; label: string }[] = [
   { value: 'upcoming', label: 'Upcoming' },
@@ -74,12 +93,12 @@ export const Sessions = () => {
   // A tutor account with no linked tutor row is a 403 data error server-side
   // (`dependencies.py:196-226`). It renders as an explained empty state and the list never mounts,
   // so no request is issued at all (OQ-21).
-  const content: ReactNode = tutorId === null ? <TutorLinkMissing /> : <SessionList />
+  if (tutorId !== null) return <SessionList />
 
   return (
     <div className="space-y-6">
       <h1 className="font-heading text-2xl font-semibold tracking-tight">My Sessions</h1>
-      {content}
+      <TutorLinkMissing />
     </div>
   )
 }
@@ -87,29 +106,46 @@ export const Sessions = () => {
 const SessionList = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const [page, setPage] = useState(1)
+  const [weekStart, setWeekStart] = useState(() => weekStartIso(todayLocalIso(new Date())))
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null)
 
   const filters = sessionFiltersFromSearchParams(searchParams)
+  const view = bookingViewFromSearchParams(searchParams)
+  const isCalendar = view === 'calendar'
   // No `tutor_id` is sent: `GET /api/bookings` takes `TutorScope` and scopes a tutor to themself
   // (decision P6-H). Sending an id the server derives anyway only creates somewhere for the wrong
   // id to come from.
   const params = sessionListParams(filters, todayLocalIso(new Date()))
-  const sessions = useQuery(bookingQueries.list({ ...params, page, page_size: DEFAULT_PAGE_SIZE }))
+  const sessions = useQuery({
+    ...bookingQueries.list({ ...params, page, page_size: DEFAULT_PAGE_SIZE }),
+    enabled: !isCalendar,
+  })
+  const weekDays = weekDaysIso(weekStart)
+  const week = useQuery({
+    ...bookingQueries.week({ from: weekDays[0], to: weekDays[SUNDAY_INDEX] }),
+    enabled: isCalendar,
+  })
 
   const held = sessions.data?.items ?? []
   const rows = filterByChildName(held, filters.q)
   const searching = filters.q.trim() !== ''
 
   const applyFilters = (next: SessionFilterState) => {
-    setSearchParams(sessionFilterSearchParams(next))
+    setSearchParams(withBookingView(sessionFilterSearchParams(next), view))
     setPage(1)
   }
 
   // The term is replaced rather than pushed: a keystroke is not a navigation step, and pushing one
   // per character buries the entry the tutor arrived on.
   const applySearch = (q: string) => {
-    setSearchParams(sessionFilterSearchParams({ ...filters, q }), { replace: true })
+    setSearchParams(withBookingView(sessionFilterSearchParams({ ...filters, q }), view), {
+      replace: true,
+    })
     setPage(1)
+  }
+
+  const handleViewChange = (next: BookingView) => {
+    setSearchParams(withBookingView(searchParams, next))
   }
 
   const emptyMessage = searching
@@ -118,102 +154,126 @@ const SessionList = () => {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1.5">
-        <span id={TAB_GROUP_LABEL_ID} className="block text-sm font-medium text-foreground">
-          Show
-        </span>
-        <div role="group" aria-labelledby={TAB_GROUP_LABEL_ID} className="flex flex-wrap gap-2">
-          {TABS.map((tab) => {
-            const selected = filters.tab === tab.value
-
-            return (
-              <button
-                key={tab.value}
-                type="button"
-                aria-pressed={selected}
-                // Switching tabs drops the dates so the new tab opens on its own default window,
-                // rather than inheriting a range that was widened for the other one.
-                onClick={() => applyFilters({ ...filters, tab: tab.value, from: '', to: '' })}
-                className={cn(chipClasses, selected ? chipSelectedClasses : chipIdleClasses)}
-              >
-                {tab.label}
-              </button>
-            )
-          })}
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="font-heading text-2xl font-semibold tracking-tight">My Sessions</h1>
+        <ViewToggle value={view} onChange={handleViewChange} />
       </div>
 
-      <Card>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="session-from">From</Label>
-              <Input
-                id="session-from"
-                type="date"
-                value={filters.from}
-                onChange={(event) => applyFilters({ ...filters, from: event.target.value })}
-              />
-            </div>
+      {isCalendar ? (
+        <div key="calendar" className={viewEnterClasses}>
+          <BookingCalendar
+            weekStart={weekStart}
+            onWeekChange={setWeekStart}
+            query={{
+              status: queryStatus(week),
+              bookings: week.data?.items ?? [],
+              error: week.error,
+              refetch: () => week.refetch(),
+            }}
+            filtersActive={false}
+            onSelect={setSelectedBookingId}
+          />
+        </div>
+      ) : (
+        <div key="list" className={cn('space-y-6', viewEnterClasses)}>
+          <div className="space-y-1.5">
+            <span id={TAB_GROUP_LABEL_ID} className="block text-sm font-medium text-foreground">
+              Show
+            </span>
+            <div role="group" aria-labelledby={TAB_GROUP_LABEL_ID} className="flex flex-wrap gap-2">
+              {TABS.map((tab) => {
+                const selected = filters.tab === tab.value
 
-            <div className="space-y-1.5">
-              <Label htmlFor="session-to">To</Label>
-              <Input
-                id="session-to"
-                type="date"
-                value={filters.to}
-                onChange={(event) => applyFilters({ ...filters, to: event.target.value })}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="session-search">Search this page by child name</Label>
-              <Input
-                id="session-search"
-                type="search"
-                value={filters.q}
-                placeholder="Child name"
-                aria-describedby="session-search-hint"
-                onChange={(event) => applySearch(event.target.value)}
-              />
-              <p id="session-search-hint" className="text-xs text-muted-foreground">
-                {SEARCH_HINT}
-              </p>
+                return (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    aria-pressed={selected}
+                    // Switching tabs drops the dates so the new tab opens on its own default window,
+                    // rather than inheriting a range that was widened for the other one.
+                    onClick={() => applyFilters({ ...filters, tab: tab.value, from: '', to: '' })}
+                    className={cn(chipClasses, selected ? chipSelectedClasses : chipIdleClasses)}
+                  >
+                    {tab.label}
+                  </button>
+                )
+              })}
             </div>
           </div>
-        </CardContent>
-      </Card>
 
-      <div className="space-y-1">
-        <p className="text-sm text-muted-foreground">{windowLabel(params)}</p>
-        {searching && sessions.data !== undefined && (
-          <p aria-live="polite" className="text-sm text-muted-foreground">
-            {searchHintLabel(rows.length, held.length)}
-          </p>
-        )}
-      </div>
+          <Card>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="session-from">From</Label>
+                  <Input
+                    id="session-from"
+                    type="date"
+                    value={filters.from}
+                    onChange={(event) => applyFilters({ ...filters, from: event.target.value })}
+                  />
+                </div>
 
-      <DataTable
-        caption="My sessions"
-        columns={columns}
-        rows={rows}
-        rowKey={(booking) => booking.id}
-        status={sessions.isPending ? 'pending' : sessions.isError ? 'error' : 'ready'}
-        errorMessage={errorDetail(sessions.error) ?? LOAD_FALLBACK_ERROR}
-        onRetry={() => sessions.refetch()}
-        emptyMessage={emptyMessage}
-        onRowSelect={(booking) => setSelectedBookingId(booking.id)}
-      />
+                <div className="space-y-1.5">
+                  <Label htmlFor="session-to">To</Label>
+                  <Input
+                    id="session-to"
+                    type="date"
+                    value={filters.to}
+                    onChange={(event) => applyFilters({ ...filters, to: event.target.value })}
+                  />
+                </div>
 
-      {/* The total is the server's count of the windowed query; the name search narrows the rows
-          on screen and leaves it alone, which is what `searchHintLabel` says out loud. */}
-      <Pager
-        page={page}
-        pageSize={DEFAULT_PAGE_SIZE}
-        total={sessions.data?.total ?? 0}
-        onPageChange={setPage}
-        disabled={sessions.isPending}
-      />
+                <div className="space-y-1.5">
+                  <Label htmlFor="session-search">Search this page by child name</Label>
+                  <Input
+                    id="session-search"
+                    type="search"
+                    value={filters.q}
+                    placeholder="Child name"
+                    aria-describedby="session-search-hint"
+                    onChange={(event) => applySearch(event.target.value)}
+                  />
+                  <p id="session-search-hint" className="text-xs text-muted-foreground">
+                    {SEARCH_HINT}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="space-y-1">
+            <p className="text-sm text-muted-foreground">{windowLabel(params)}</p>
+            {searching && sessions.data !== undefined && (
+              <p aria-live="polite" className="text-sm text-muted-foreground">
+                {searchHintLabel(rows.length, held.length)}
+              </p>
+            )}
+          </div>
+
+          <DataTable
+            caption="My sessions"
+            columns={columns}
+            rows={rows}
+            rowKey={(booking) => booking.id}
+            status={sessions.isPending ? 'pending' : sessions.isError ? 'error' : 'ready'}
+            errorMessage={errorDetail(sessions.error) ?? LOAD_FALLBACK_ERROR}
+            onRetry={() => sessions.refetch()}
+            emptyMessage={emptyMessage}
+            onRowSelect={(booking) => setSelectedBookingId(booking.id)}
+          />
+
+          {/* The total is the server's count of the windowed query; the name search narrows the rows
+              on screen and leaves it alone, which is what `searchHintLabel` says out loud. */}
+          <Pager
+            page={page}
+            pageSize={DEFAULT_PAGE_SIZE}
+            total={sessions.data?.total ?? 0}
+            onPageChange={setPage}
+            disabled={sessions.isPending}
+          />
+        </div>
+      )}
 
       <SessionDetailPanel
         bookingId={selectedBookingId}

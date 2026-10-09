@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  canMarkCompleted,
   defaultWindow,
   EMPTY_SESSION_FILTERS,
   filterByChildName,
@@ -12,6 +13,7 @@ import {
   type SessionTab,
   type SessionWindow,
 } from './tutorSessions'
+import { bookingViewFromSearchParams, withBookingView } from '../booking-calendar/booking-calendar'
 import type { Booking, BookingListParams } from '../queries/bookings'
 
 const TODAY = '2026-09-22'
@@ -321,5 +323,54 @@ describe('session filter URL round trip', () => {
     const parsed = sessionFiltersFromSearchParams(sessionFilterSearchParams(state))
 
     expect(sessionListParams(parsed, TODAY)).toEqual(sessionListParams(state, TODAY))
+  })
+})
+
+describe('session filters with the view param', () => {
+  it('keeps view=calendar beside the tab and dates through the URL', () => {
+    const state: SessionFilterState = {
+      tab: 'past',
+      from: '2026-09-01',
+      to: '2026-09-21',
+      q: '',
+    }
+
+    const search = withBookingView(sessionFilterSearchParams(state), 'calendar')
+
+    expect(search.toString()).toBe('tab=past&from=2026-09-01&to=2026-09-21&view=calendar')
+    expect(bookingViewFromSearchParams(search)).toBe('calendar')
+    expect(sessionFiltersFromSearchParams(search)).toEqual(state)
+  })
+})
+
+describe('canMarkCompleted', () => {
+  const session = (status: Booking['status']) => ({
+    status,
+    scheduled_date: '2026-09-22',
+    start_time: '09:00:00',
+  })
+
+  it('is true for a confirmed session that started a minute ago', () => {
+    expect(canMarkCompleted(session('confirmed'), new Date(2026, 8, 22, 9, 1, 0))).toBe(true)
+  })
+
+  it('is true exactly at the start', () => {
+    expect(canMarkCompleted(session('confirmed'), new Date(2026, 8, 22, 9, 0, 0))).toBe(true)
+  })
+
+  it('is false a minute before the start', () => {
+    expect(canMarkCompleted(session('confirmed'), new Date(2026, 8, 22, 8, 59, 0))).toBe(false)
+  })
+
+  it('is false on an earlier day than the session', () => {
+    expect(canMarkCompleted(session('confirmed'), new Date(2026, 8, 21, 23, 59, 0))).toBe(false)
+  })
+
+  it('is true on a later day than the session', () => {
+    expect(canMarkCompleted(session('confirmed'), new Date(2026, 8, 23, 0, 0, 0))).toBe(true)
+  })
+
+  it.each(['pending', 'completed', 'cancelled'] as const)('is false for a %s session', (status) => {
+    expect(canMarkCompleted(session(status), new Date(2026, 8, 22, 10, 0, 0))).toBe(false)
   })
 })

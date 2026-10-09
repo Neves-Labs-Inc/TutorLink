@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import NOTES_MAX_LENGTH, Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
@@ -82,7 +82,10 @@ def _phone() -> str:
 
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
-    tutor = Tutor(name=f"Tutor {suffix}", phone_number=_phone(), email=f"t-{suffix}@example.com")
+    tutor = Tutor(
+        user=User(email=f"t-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
+        phone_number=_phone(),
+    )
     db.add(tutor)
     db.flush()
     return tutor
@@ -91,15 +94,21 @@ def _make_tutor(db: Session) -> Tutor:
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password(PASSWORD),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password(PASSWORD),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(PASSWORD)
+        user.role = role
+        user.is_active = True
     db.flush()
     return user
 
@@ -119,7 +128,7 @@ def _make_home(db: Session) -> Home:
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -184,7 +193,9 @@ def _book(
     db.flush()
     booking = Booking(
         child_id=child_id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject.id,
         availability_id=availability.id,
         home_id=home_id,

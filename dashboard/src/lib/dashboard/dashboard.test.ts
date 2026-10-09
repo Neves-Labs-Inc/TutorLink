@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import {
+  evaluationsSubLine,
   hasDateRolledOver,
   queriedDateLabel,
   tableStatus,
@@ -178,4 +179,18 @@ describe('tableStatus', () => {
       expect(tableStatus(isPending, isError)).toBe(expected)
     },
   )
+})
+
+describe('evaluationsSubLine', () => {
+  it('is null for 0 so the card shows no line', () => {
+    expect(evaluationsSubLine(0)).toBeNull()
+  })
+
+  it('is singular for 1', () => {
+    expect(evaluationsSubLine(1)).toBe('incl. 1 Evaluation')
+  })
+
+  it('is plural for 2 or more', () => {
+    expect(evaluationsSubLine(2)).toBe('incl. 2 Evaluations')
+  })
 })

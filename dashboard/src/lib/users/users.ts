@@ -1,7 +1,8 @@
+import { formatLocalDateTime } from '@/lib/dates/dates'
+
 export type RoleOption = { value: string; label: string; disabled?: boolean }
 
-export type NewTutorDraft = {
-  name: string
+export type ProfileDraft = {
   phoneNumber: string
   bio: string
 }
@@ -9,34 +10,27 @@ export type NewTutorDraft = {
 export type UserDraft = {
   displayName: string
   email: string
-  password: string
   role: string
-  tutorId: string | null
-  tutorMode: 'link' | 'new'
-  newTutor: NewTutorDraft
+  profile: ProfileDraft
 }
 
-export type TutorCreatePayload = {
-  name: string
+export type ProfileCreatePayload = {
   phone_number: string
   bio?: string
 }
 
 export type UserCreatePayload = {
   email: string
-  display_name: string
-  password: string
+  name: string
   role: string
-  tutor_id?: string
-  tutor?: TutorCreatePayload
+  tutor?: ProfileCreatePayload
 }
 
 export type UserUpdatePayload = {
   email: string
-  display_name: string
+  name: string
   role: string
   is_active: boolean
-  password?: string
 }
 
 const BASE_ROLE_OPTIONS: RoleOption[] = [
@@ -49,9 +43,9 @@ const DEVELOPER_ROLE_OPTION: RoleOption = { value: 'developer', label: 'Develope
 
 const ALL_ROLE_OPTIONS: RoleOption[] = [...BASE_ROLE_OPTIONS, DEVELOPER_ROLE_OPTION]
 
-const MIN_PASSWORD_LENGTH = 8
+export const PHONE_REQUIRED_ERROR = 'Phone number is required.'
 
-// The `users.display_name` column is varchar(255); the server counts code points after a trim.
+// The `users.name` column is varchar(255); the server counts code points after a trim.
 const DISPLAY_NAME_MAX_LENGTH = 255
 
 // Mirrors the server's blank and length checks so the form can say so before a round trip. The
@@ -93,7 +87,8 @@ export const editRoleOptions = (viewerRole: string, currentRole: string): RoleOp
     : [...options, { ...knownOption, disabled: true }]
 }
 
-export const requiresTutorLink = (role: string): boolean => role === 'tutor'
+// Mirrors the API's PROFILE_ROLES: these roles are created together with their tutor profile.
+export const requiresProfile = (role: string): boolean => role === 'tutor' || role === 'manager'
 
 export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): string[] => {
   const errors: string[] = []
@@ -109,22 +104,8 @@ export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): strin
     errors.push('Email must be a valid address.')
   }
 
-  if (mode === 'create' && draft.password.length < MIN_PASSWORD_LENGTH) {
-    errors.push(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`)
-  }
-
-  if (mode === 'create' && requiresTutorLink(draft.role)) {
-    if (draft.tutorMode === 'link' && draft.tutorId === null) {
-      errors.push('A tutor account requires a linked tutor.')
-    } else if (draft.tutorMode === 'new') {
-      if (draft.newTutor.name.trim() === '') {
-        errors.push('New tutor name is required.')
-      }
-
-      if (draft.newTutor.phoneNumber.trim() === '') {
-        errors.push('New tutor phone number is required.')
-      }
-    }
+  if (mode === 'create' && requiresProfile(draft.role) && draft.profile.phoneNumber.trim() === '') {
+    errors.push(PHONE_REQUIRED_ERROR)
   }
 
   return errors
@@ -133,21 +114,15 @@ export const userFormErrors = (draft: UserDraft, mode: 'create' | 'edit'): strin
 export const createUserPayload = (draft: UserDraft): UserCreatePayload => {
   const payload: UserCreatePayload = {
     email: draft.email.trim(),
-    display_name: draft.displayName.trim(),
-    password: draft.password,
+    name: draft.displayName.trim(),
     role: draft.role,
   }
 
-  if (requiresTutorLink(draft.role) && draft.tutorMode === 'link' && draft.tutorId !== null) {
-    payload.tutor_id = draft.tutorId
-  } else if (requiresTutorLink(draft.role) && draft.tutorMode === 'new') {
-    const tutor: TutorCreatePayload = {
-      name: draft.newTutor.name.trim(),
-      phone_number: draft.newTutor.phoneNumber.trim(),
-    }
+  if (requiresProfile(draft.role)) {
+    const tutor: ProfileCreatePayload = { phone_number: draft.profile.phoneNumber.trim() }
 
-    if (draft.newTutor.bio.trim() !== '') {
-      tutor.bio = draft.newTutor.bio.trim()
+    if (draft.profile.bio.trim() !== '') {
+      tutor.bio = draft.profile.bio.trim()
     }
 
     payload.tutor = tutor
@@ -156,19 +131,29 @@ export const createUserPayload = (draft: UserDraft): UserCreatePayload => {
   return payload
 }
 
-export const updateUserPayload = (
-  draft: Omit<UserDraft, 'tutorId' | 'tutorMode' | 'newTutor'> & { isActive: boolean },
-): UserUpdatePayload => {
-  const payload: UserUpdatePayload = {
-    email: draft.email.trim(),
-    display_name: draft.displayName.trim(),
-    role: draft.role,
-    is_active: draft.isActive,
+export const updateUserPayload = (draft: UserDraft & { isActive: boolean }): UserUpdatePayload => ({
+  email: draft.email.trim(),
+  name: draft.displayName.trim(),
+  role: draft.role,
+  is_active: draft.isActive,
+})
+
+export type AccessBadge = 'no_login' | 'invited'
+
+export const accessBadge = (user: {
+  has_password: boolean
+  invite_expires_at: string | null
+}): AccessBadge | null => {
+  let badge: AccessBadge | null = null
+
+  if (user.invite_expires_at !== null) {
+    badge = 'invited'
+  } else if (!user.has_password) {
+    badge = 'no_login'
   }
 
-  if (draft.password.trim() !== '') {
-    payload.password = draft.password
-  }
-
-  return payload
+  return badge
 }
+
+export const inviteExpiryTooltip = (user: { invite_expires_at: string | null }): string =>
+  user.invite_expires_at === null ? '' : `Link expires ${formatLocalDateTime(user.invite_expires_at)}`

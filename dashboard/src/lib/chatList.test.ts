@@ -106,7 +106,7 @@ describe('conversationHolderLabel', () => {
       conversationHolderLabel({
         ...base,
         status: 'human',
-        taken_over_by: { id: 'u1', display_name: 'Maria Lopez' },
+        taken_over_by: { id: 'u1', name: 'Maria Lopez' },
       }),
     ).toBe('Maria Lopez')
   })

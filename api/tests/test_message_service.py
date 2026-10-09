@@ -388,7 +388,7 @@ def _make_message(
 def _make_user(db: Session) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("message-service-password"),
         role=UserRole.ADMIN,
     )

@@ -118,7 +118,7 @@ describe('reconcileLiveMessage', () => {
   it('labels an optimistic bubble with the sender Display name', () => {
     expect(optimisticMessage('temp-1', 'hi', 'admin-1', 'Maria Lopez').author).toEqual({
       id: 'admin-1',
-      display_name: 'Maria Lopez',
+      name: 'Maria Lopez',
     })
   })
 
@@ -249,7 +249,7 @@ describe('isHeldByAdmin / isHeldByOtherAdmin', () => {
   it('is held by the admin holding it', () => {
     const held = conversation({
       status: 'human',
-      taken_over_by: { id: 'admin-1', display_name: 'Ana' },
+      taken_over_by: { id: 'admin-1', name: 'Ana' },
     })
 
     expect(isHeldByAdmin(held, 'admin-1')).toBe(true)
@@ -259,7 +259,7 @@ describe('isHeldByAdmin / isHeldByOtherAdmin', () => {
   it('is held by another admin', () => {
     const held = conversation({
       status: 'human',
-      taken_over_by: { id: 'admin-2', display_name: 'Ben' },
+      taken_over_by: { id: 'admin-2', name: 'Ben' },
     })
 
     expect(isHeldByAdmin(held, 'admin-1')).toBe(false)
@@ -335,7 +335,7 @@ describe('oldestCreatedAt', () => {
 const systemMessage = (overrides: Partial<Message>): Message =>
   message({ id: 's1', author_kind: 'system', status: 'sent', ...overrides })
 
-const marta = { id: 'u1', display_name: 'Marta' }
+const marta = { id: 'u1', name: 'Marta' }
 
 describe('systemLineLabel', () => {
   it('drops Retry on a failed takeover or transfer notice while the window is closed', () => {

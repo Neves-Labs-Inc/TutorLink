@@ -9,6 +9,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { formatIsoDate, formatTime } from '@/lib/dates/dates'
 import type { Booking, BookingListParams } from '@/lib/queries/bookings'
 import { guardianQueries } from '@/lib/queries/guardians'
@@ -38,8 +40,13 @@ const COLUMNS: Column<Booking>[] = [
     cell: (booking) => `${formatTime(booking.start_time)} – ${formatTime(booking.end_time)}`,
   },
   { id: 'child', header: 'Child', cell: (booking) => booking.child.name },
-  { id: 'tutor', header: 'Tutor', cell: (booking) => booking.tutor.name },
-  { id: 'subject', header: 'Subject', cell: (booking) => booking.subject.name },
+  { id: 'staff', header: 'Staff', cell: (booking) => booking.staff.name },
+  { id: 'location', header: 'Location', cell: (booking) => locationLabel(booking) },
+  {
+    id: 'subject',
+    header: 'Subject',
+    cell: (booking) => <SubjectCell booking={booking} emptyAs="dash" />,
+  },
   { id: 'status', header: 'Status', cell: (booking) => <StatusBadge status={booking.status} /> },
 ]
 

@@ -370,7 +370,7 @@ def _follow_number_change(
             db,
             conversation=thread,
             body=NUMBER_CHANGE_NOTE.format(
-                previous=previous_number, current=phone_number, staff=staff.display_name
+                previous=previous_number, current=phone_number, staff=staff.name
             ),
             author_user_id=staff.id,
         )

@@ -4,7 +4,7 @@ A thin HTTP shell over `child_service`, matching `users.py`: the service raises 
 exceptions, this maps them to status codes and owns the commit.
 
 Children are reached through the client surface, which the RBAC table
-(`docs/api-design.md:270-299`) gives to admins alone, so both routes take `StaffPrincipal`.
+(`docs/api-design.md:270-299`) gives to admins alone, so both routes take `OfficePrincipal`.
 Nothing here queries a tutor-owned table and no route takes `TutorScope`. These are the two
 write routes; the reads of `/api/children` live in `children_read.py`.
 
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.child import Child
 from app.schemas.child import ChildCreate, ChildRead, ChildUpdate
 from app.services.child_service import (
@@ -53,7 +53,7 @@ router = APIRouter(prefix="/api/children", tags=["children"])
 
 
 @router.post("", response_model=ChildRead, status_code=status.HTTP_201_CREATED)
-def create(payload: ChildCreate, user: StaffPrincipal, db: DbSession) -> ChildRead:
+def create(payload: ChildCreate, user: OfficePrincipal, db: DbSession) -> ChildRead:
     try:
         created = create_child(
             db,
@@ -77,7 +77,7 @@ def create(payload: ChildCreate, user: StaffPrincipal, db: DbSession) -> ChildRe
 
 @router.patch("/{child_id}", response_model=ChildRead)
 def update(
-    child_id: uuid.UUID, payload: ChildUpdate, user: StaffPrincipal, db: DbSession
+    child_id: uuid.UUID, payload: ChildUpdate, user: OfficePrincipal, db: DbSession
 ) -> ChildRead:
     try:
         updated = update_child(

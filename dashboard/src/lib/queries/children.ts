@@ -20,12 +20,13 @@ export type NextSession = {
   start_time: string
   end_time: string
   tutor: NamedRef
-  subject: NamedRef
+  // Null on an Evaluation.
+  subject: NamedRef | null
 }
 
 export type StaffRef = {
   id: string
-  display_name: string
+  name: string
 }
 
 export type Evaluated = {
@@ -93,6 +94,8 @@ export type ChildListParams = {
   q?: string
   is_active?: boolean
   awaiting_evaluation?: boolean
+  // Only Children who are not yet Evaluated and have no live Evaluation.
+  evaluable?: boolean
   page?: number
   page_size?: number
 }

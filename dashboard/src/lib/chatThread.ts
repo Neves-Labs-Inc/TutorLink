@@ -258,7 +258,7 @@ export const optimisticMessage = (
 ): Message => ({
   id: clientMessageId,
   author_kind: 'admin',
-  author: { id: authorId, display_name: authorDisplayName },
+  author: { id: authorId, name: authorDisplayName },
   body,
   status: 'queued',
   created_at: new Date().toISOString(),
@@ -404,7 +404,7 @@ export const systemLineLabel = (
   const reason = failureReason(message.error_code)
   const progress = PROGRESS_WORDS[message.status] ?? 'sent'
   const names = joinNames(message.reminder_child_names ?? [])
-  const name = message.author === null ? NOTICE_NAME_FALLBACK : message.author.display_name
+  const name = message.author === null ? NOTICE_NAME_FALLBACK : message.author.name
   let text = message.body
   let canRetry = false
 

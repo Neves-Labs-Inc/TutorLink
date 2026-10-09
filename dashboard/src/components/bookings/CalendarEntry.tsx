@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
+import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel } from '@/lib/bookings/bookings'
 import type { Booking } from '@/lib/queries/bookings'
 import { cn } from '@/lib/utils'
@@ -22,6 +24,9 @@ const entryClasses = cn(
 )
 const compactClasses = 'space-y-1 p-2 text-xs'
 const rowClasses = 'min-h-11 space-y-1 px-3 py-2.5'
+// The dash survives the focus ring's colour change, so a focused entry still reads as an
+// Evaluation; the "Evaluation" text line means colour is never the only cue.
+const evaluationClasses = 'border-dashed border-calendar-evaluation'
 
 // The visible text is the accessible name; no `aria-label` on top of it.
 export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps) => {
@@ -33,8 +38,10 @@ export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps
       <>
         <p className="font-medium tabular-nums text-foreground">{time}</p>
         <p className="font-medium text-foreground break-words">{booking.child.name}</p>
-        <p className="text-muted-foreground break-words">{booking.tutor.name}</p>
-        <p className="text-muted-foreground break-words">{booking.subject.name}</p>
+        <p className="text-muted-foreground break-words">{booking.staff.name}</p>
+        <p className="text-muted-foreground break-words">
+          {locationLabel(booking)} · <SubjectCell booking={booking} emptyAs="em" />
+        </p>
         <StatusBadge status={booking.status} />
       </>
     )
@@ -47,7 +54,8 @@ export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps
         </div>
         <p className="text-sm text-foreground">{booking.child.name}</p>
         <p className="text-xs text-muted-foreground">
-          {booking.tutor.name} · {booking.subject.name}
+          {booking.staff.name} · {locationLabel(booking)} ·{' '}
+          <SubjectCell booking={booking} emptyAs="em" />
         </p>
       </>
     )
@@ -57,7 +65,11 @@ export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps
     <button
       type="button"
       aria-haspopup="dialog"
-      className={cn(entryClasses, variant === 'compact' ? compactClasses : rowClasses)}
+      className={cn(
+        entryClasses,
+        variant === 'compact' ? compactClasses : rowClasses,
+        booking.kind === 'evaluation' && evaluationClasses,
+      )}
       onClick={() => onSelect(booking.id)}
     >
       {content}

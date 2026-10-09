@@ -266,7 +266,7 @@ def test_the_thread_shows_the_notice_with_its_kind_reason_and_the_staff_member(
     ][0]
 
     assert item["author_kind"] == "system"
-    assert item["author"] == {"id": str(staff.id), "display_name": staff.display_name}
+    assert item["author"] == {"id": str(staff.id), "name": staff.name}
     assert (item["system_kind"], item["status"], item["error_code"]) == (
         "takeover_notice",
         "failed",
@@ -294,7 +294,7 @@ def test_a_nameless_holder_inside_the_window_sends_the_generic_notice(
 
     expected = MESSAGES["TAKEOVER_NOTICE_GENERIC"][code]
     assert [sent.body for sent in fake_twilio.sent] == [expected]
-    assert staff.display_name not in expected
+    assert staff.name not in expected
     assert _only(db, conversation.id, MessageAuthor.SYSTEM).body == expected
 
 
@@ -338,7 +338,7 @@ def test_a_transfer_moves_the_chat_to_the_caller_with_one_notice_and_a_broadcast
     assert response.status_code == 200
     assert response.json()["taken_over_by"] == {
         "id": str(staff.id),
-        "display_name": staff.display_name,
+        "name": staff.name,
     }
     assert (notice.system_kind, notice.author_user_id) == (
         SystemMessageKind.TRANSFER_NOTICE,
@@ -449,6 +449,8 @@ def test_a_transfer_waits_behind_a_held_row_lock_and_judges_the_committed_holder
         staff = _make_user(session)
         conversation = _make_conversation(session, client_wrote_ago=INSIDE_WINDOW, holder=previous)
         session.commit()
+        # Built while `staff` is still attached: the token reads the user's profile.
+        headers = _auth(staff)
     hold_seconds = 0.4
     locked = threading.Event()
 
@@ -468,7 +470,7 @@ def test_a_transfer_waits_behind_a_held_row_lock_and_judges_the_committed_holder
 
         started = time.monotonic()
         response = session_per_request_api.post(
-            f"/api/conversations/{conversation.id}/transfer", headers=_auth(staff)
+            f"/api/conversations/{conversation.id}/transfer", headers=headers
         )
         elapsed = time.monotonic() - started
         holder.join(timeout=5)
@@ -772,21 +774,19 @@ def test_a_reminder_line_lists_the_children_it_named(api: TestClient, db: Sessio
 def test_once_a_nameless_holder_is_named_the_next_takeover_notice_uses_the_name(
     api: TestClient, db: Session, fake_twilio: FakeTwilio, setter: str
 ) -> None:
-    """`PATCH /api/me` and the Users update both clear `display_name_is_default` (#109)."""
+    """`PATCH /api/me` and the Users update both clear `name_is_default` (#109)."""
     staff = _make_user(db, role=UserRole.MANAGER, is_nameless=True)
     if setter == "me":
-        renamed = api.patch("/api/me", headers=_auth(staff), json={"display_name": "Maria"})
+        renamed = api.patch("/api/me", headers=_auth(staff), json={"name": "Maria"})
     else:
         admin = _make_user(db)
-        renamed = api.patch(
-            f"/api/users/{staff.id}", headers=_auth(admin), json={"display_name": "Maria"}
-        )
+        renamed = api.patch(f"/api/users/{staff.id}", headers=_auth(admin), json={"name": "Maria"})
     conversation = _make_conversation(db, client_wrote_ago=INSIDE_WINDOW)
 
     taken = api.post(f"/api/conversations/{conversation.id}/takeover", headers=_auth(staff))
 
     assert (renamed.status_code, taken.status_code) == (200, 200)
-    assert taken.json()["taken_over_by"] == {"id": str(staff.id), "display_name": "Maria"}
+    assert taken.json()["taken_over_by"] == {"id": str(staff.id), "name": "Maria"}
     assert [sent.body for sent in fake_twilio.sent] == [
         MESSAGES["TAKEOVER_NOTICE"]["en"].format(staff="Maria")
     ]
@@ -809,7 +809,7 @@ def test_me_returns_the_staff_members_own_account(
         "id": str(staff.id),
         "email": staff.email,
         "role": role.value,
-        "display_name": STAFF_NAME,
+        "name": STAFF_NAME,
     }
 
 
@@ -823,7 +823,7 @@ def test_me_is_open_to_a_tutor(api: TestClient, db: Session) -> None:
         "id": str(tutor.id),
         "email": tutor.email,
         "role": "tutor",
-        "display_name": STAFF_NAME,
+        "name": STAFF_NAME,
     }
 
 
@@ -903,7 +903,7 @@ def _age_client_messages(
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -923,16 +923,22 @@ def _make_user(
     tutor_id: uuid.UUID | None = None,
 ) -> User:
     local_part = f"jane.doe.{uuid.uuid4().hex[:12]}"
-    user = User(
-        email=f"{local_part}@example.com",
-        display_name=local_part if is_nameless else STAFF_NAME,
-        display_name_is_default=is_nameless,
-        hashed_password=hash_password("conversation-notice-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"{local_part}@example.com",
+            name=local_part if is_nameless else STAFF_NAME,
+            name_is_default=is_nameless,
+            hashed_password=hash_password("conversation-notice-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("conversation-notice-password")
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
@@ -940,7 +946,10 @@ def _make_user(
 
 def _make_tutor_user(db: Session) -> User:
     suffix = uuid.uuid4().hex[:12]
-    tutor = Tutor(name=STAFF_NAME, phone_number=_phone_number(), email=f"t-{suffix}@example.com")
+    tutor = Tutor(
+        user=User(email=f"t-{suffix}@example.com", name=STAFF_NAME, role=UserRole.TUTOR),
+        phone_number=_phone_number(),
+    )
     db.add(tutor)
     db.flush()
 

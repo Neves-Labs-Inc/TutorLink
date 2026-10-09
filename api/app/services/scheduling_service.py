@@ -33,8 +33,9 @@ very next request. A missing row raises `SettingNotFound` and is deliberately no
 it means the database did not finish migrating, not that the caller did anything wrong.
 
 This module knows nothing about FastAPI, and nothing about `Booking`, `TutorAvailability` or any
-other model. It takes and returns `date`, `time`, `int` and its own frozen dataclass; only
-`load_scheduling_settings` takes a `Session`. Nothing here writes or commits.
+other model. It takes and returns `date`, `time`, `int`, the `BookingLocation` value and its own
+frozen dataclass; only `load_scheduling_settings` takes a `Session`. Nothing here writes or
+commits.
 """
 
 import datetime
@@ -42,6 +43,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.models.enums import BookingLocation
 from app.services.settings_service import get_int_setting
 
 SESSION_LENGTH_SETTING = "session_length_minutes"
@@ -143,6 +145,20 @@ def overlaps_within_gap(
     gap = datetime.timedelta(minutes=gap_minutes)
 
     return _combine(a_start) < _combine(b_end) + gap and _combine(a_end) + gap > _combine(b_start)
+
+
+def travel_gap_minutes(a: BookingLocation, b: BookingLocation, *, gap_minutes: int) -> int:
+    """The gap two bookings of one Staff member need between them: none when both are In office,
+    the full `session_gap_minutes` when either is at a home (#132).
+
+    The gap is travel time, and two office sessions involve none. Rule 3 of `POST /api/bookings`
+    and the In office slot search (spec 03) both ask this rather than each deciding, so the offer
+    surface and the write path cannot disagree about when back-to-back is allowed.
+    """
+    if a is BookingLocation.IN_OFFICE and b is BookingLocation.IN_OFFICE:
+        return 0
+
+    return gap_minutes
 
 
 def assert_date_in_window(

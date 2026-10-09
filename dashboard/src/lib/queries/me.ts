@@ -6,7 +6,7 @@ export type Me = {
   id: string
   email: string
   role: Role
-  display_name: string
+  name: string
 }
 
 export const meQueries = {
@@ -22,7 +22,7 @@ export const meQueries = {
 }
 
 export type MeUpdatePayload = {
-  display_name: string
+  name: string
 }
 
 export const updateMe = async (data: MeUpdatePayload): Promise<Me> => {

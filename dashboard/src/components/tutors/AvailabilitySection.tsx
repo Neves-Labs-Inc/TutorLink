@@ -17,13 +17,23 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { errorDetail } from '@/lib/api'
-import { byDayOfWeek, isTimeRangeOrdered, slotRangeLabel, timeInputValue } from '@/lib/availability/availability'
+import {
+  byDayOfWeek,
+  DEFAULT_MODE,
+  isTimeRangeOrdered,
+  MODE_OPTIONS,
+  modeHint,
+  modeLabel,
+  slotRangeLabel,
+  timeInputValue,
+} from '@/lib/availability/availability'
 import { DAY_LABELS } from '@/lib/dates/dates'
 import {
   availabilityQueries,
   createSlot,
   deleteSlot,
   updateSlot,
+  type AvailabilityMode,
   type AvailabilitySlot,
 } from '@/lib/queries/availability'
 import { cn } from '@/lib/utils'
@@ -35,6 +45,7 @@ type SlotDraft = {
   dayOfWeek: number
   start: string
   end: string
+  mode: AvailabilityMode
 }
 
 type SlotFormPanelProps = {
@@ -79,8 +90,13 @@ export const AvailabilitySection = ({ tutorId }: AvailabilitySectionProps) => {
             day_of_week: input.dayOfWeek,
             start_time: input.start,
             end_time: input.end,
+            mode: input.mode,
           })
-        : updateSlot(input.slot.id, { start_time: input.start, end_time: input.end }),
+        : updateSlot(input.slot.id, {
+            start_time: input.start,
+            end_time: input.end,
+            mode: input.mode,
+          }),
     onSuccess: async () => {
       setDraft(null)
       await invalidate()
@@ -106,7 +122,7 @@ export const AvailabilitySection = ({ tutorId }: AvailabilitySectionProps) => {
 
   const handleAdd = () => {
     save.reset()
-    setDraft({ slot: null, dayOfWeek: 0, start: '09:00', end: '17:00' })
+    setDraft({ slot: null, dayOfWeek: 0, start: '09:00', end: '17:00', mode: DEFAULT_MODE })
   }
 
   const handleEdit = (slot: AvailabilitySlot) => {
@@ -116,6 +132,7 @@ export const AvailabilitySection = ({ tutorId }: AvailabilitySectionProps) => {
       dayOfWeek: slot.day_of_week,
       start: timeInputValue(slot.start_time),
       end: timeInputValue(slot.end_time),
+      mode: slot.mode,
     })
   }
 
@@ -263,6 +280,7 @@ const SlotChip = ({ slot, label, busy, onEdit, onRemove, onRestore }: SlotChipPr
       <p className={slot.is_active ? 'font-medium text-foreground' : 'text-muted-foreground'}>
         {range}
       </p>
+      <p className="text-muted-foreground">{modeLabel(slot.mode)}</p>
       {!slot.is_active && <p className="text-muted-foreground">Inactive</p>}
       <div className="flex flex-wrap gap-1 pt-1">
         <Button
@@ -376,6 +394,22 @@ const SlotFormPanel = ({
               onChange={(event) => onChange({ ...draft, end: event.target.value })}
             />
           </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="availability-mode">Where</Label>
+          <Select
+            id="availability-mode"
+            className="h-11 md:h-8"
+            value={draft.mode}
+            onChange={(event) => onChange({ ...draft, mode: event.target.value as AvailabilityMode })}
+          >
+            {MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+          <p className="text-xs text-muted-foreground">{modeHint(draft.mode)}</p>
         </div>
         {!isTimeRangeOrdered(draft.start, draft.end) && (
           <p className="text-xs text-muted-foreground">The end time must be after the start time.</p>

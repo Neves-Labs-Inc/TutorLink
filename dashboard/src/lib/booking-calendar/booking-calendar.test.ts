@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { EMPTY_FILTERS } from '../bookings/bookings'
+import { EMPTY_FILTERS, type BookingFilterState } from '../bookings/bookings'
 import type { Booking } from '../queries/bookings'
 import {
   bookingViewFromSearchParams,
@@ -13,13 +13,16 @@ import {
 const booking = (overrides: Partial<Booking> = {}): Booking => ({
   id: 'booking-1',
   child: { id: 'child-1', name: 'Ana Souza' },
-  tutor: { id: 'tutor-1', name: 'Maria Lima' },
+  staff: { id: 'user-1', name: 'Maria Lima', role: 'tutor' },
+  kind: 'regular',
+  location: 'home',
   subject: { id: 'subject-1', name: 'Maths' },
   scheduled_date: '2026-09-21',
   start_time: '16:00:00',
   end_time: '17:00:00',
   status: 'confirmed',
   notes: null,
+  updated_at: '2026-09-21T10:00:00Z',
   ...overrides,
 })
 
@@ -38,12 +41,12 @@ describe('bookingViewFromSearchParams', () => {
 
 describe('withBookingView', () => {
   it('adds view=calendar and keeps every other param, including repeated status', () => {
-    const search = new URLSearchParams('status=pending&status=confirmed&tutor_id=tutor-1')
+    const search = new URLSearchParams('status=pending&status=confirmed&user_id=user-1')
 
     const result = withBookingView(search, 'calendar')
 
     expect(result.getAll('status')).toEqual(['pending', 'confirmed'])
-    expect(result.get('tutor_id')).toBe('tutor-1')
+    expect(result.get('user_id')).toBe('user-1')
     expect(result.get('view')).toBe('calendar')
   })
 
@@ -75,26 +78,39 @@ describe('calendarListParams', () => {
     })
   })
 
-  it('keeps tutor, subject, child and status filters', () => {
-    const filters = {
-      statuses: ['pending', 'confirmed'] as const,
-      tutorId: 'tutor-1',
+  it('keeps staff, location, subject, child and status filters', () => {
+    const filters: BookingFilterState = {
+      statuses: ['pending', 'confirmed'],
+      kind: '',
+      staffId: 'user-1',
+      location: 'in_office',
       subjectId: 'subject-1',
       childId: 'child-1',
       from: '',
       to: '',
     }
 
-    expect(
-      calendarListParams({ ...filters, statuses: [...filters.statuses] }, '2026-12-28'),
-    ).toEqual({
+    expect(calendarListParams(filters, '2026-12-28')).toEqual({
       status: ['pending', 'confirmed'],
-      tutor_id: 'tutor-1',
+      user_id: 'user-1',
+      location: 'in_office',
       subject_id: 'subject-1',
       child_id: 'child-1',
       from: '2026-12-28',
       to: '2027-01-03',
     })
+  })
+
+  it('carries the kind tab into the week request', () => {
+    expect(calendarListParams({ ...EMPTY_FILTERS, kind: 'evaluation' }, '2026-09-21')).toEqual({
+      kind: 'evaluation',
+      from: '2026-09-21',
+      to: '2026-09-27',
+    })
+  })
+
+  it('omits kind on the All tab', () => {
+    expect(calendarListParams(EMPTY_FILTERS, '2026-09-21')).not.toHaveProperty('kind')
   })
 })
 

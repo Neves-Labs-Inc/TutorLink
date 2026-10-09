@@ -14,6 +14,11 @@ TRUSTED_PROXIES_REMEDY = "give the proxy's own IP address or a CIDR block, e.g. 
 
 BUSINESS_TIMEZONE_REMEDY = "give an IANA zone name, e.g. America/New_York"
 
+PUBLIC_BASE_URL_SCHEMES = ("http", "https")
+PUBLIC_BASE_URL_REMEDY = (
+    "give the public origin with its scheme, e.g. https://tutorlink.example.com"
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(hide_input_in_errors=True)
@@ -46,6 +51,21 @@ class Settings(BaseSettings):
     # run without this rather than failing lazily at request time. Read from the environment
     # only — never from a file, so Phase 8 can supply it from Secret Manager as an env var.
     anthropic_api_key: str | None = None
+
+    # Outbound email, plain SMTP so the provider is a config-only switch (a mailbox's app
+    # password today, SES over SMTP later). Nullable and defaulted like the `twilio_*` block:
+    # dev, CI and tests boot with none of it, and `mail_service` refuses to send until both
+    # `smtp_host` and `mail_from` are set.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    # The From header, e.g. `TutorLink <office@example.com>`.
+    mail_from: str | None = None
+    # The public origin every emailed link is built from, e.g. `https://tutorlink.example.com`.
+    # Never derived from a request's Host header: an attacker controls that on the
+    # unauthenticated routes (forgot-password) that send links, and would redirect the token.
+    public_base_url: str | None = None
 
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
@@ -135,6 +155,30 @@ class Settings(BaseSettings):
             ) from error
 
         return value
+
+    @field_validator("public_base_url")
+    @classmethod
+    def _normalise_public_base_url(cls, value: str | None) -> str | None:
+        """Strip a trailing slash and refuse a value with no `http(s)://` scheme.
+
+        Links are built by plain concatenation, so a trailing slash would double up and a bare
+        host would produce `tutorlink.example.com/set-password?...`, which a mail client renders
+        as text rather than a link. Empty means unset: `docker-compose.yml` passes `${VAR}` as
+        `""` when the operator left it out. The message names the value: like
+        `TRUSTED_PROXIES`, it is operator configuration rather than a credential.
+        """
+        if value is None or value == "":
+            return None
+
+        stripped = value.rstrip("/")
+        scheme, separator, host = stripped.partition("://")
+        if scheme not in PUBLIC_BASE_URL_SCHEMES or not separator or not host:
+            raise ValueError(
+                f"PUBLIC_BASE_URL {value!r} is not an http:// or https:// origin; "
+                f"{PUBLIC_BASE_URL_REMEDY}"
+            )
+
+        return stripped
 
     @property
     def business_zone(self) -> ZoneInfo:

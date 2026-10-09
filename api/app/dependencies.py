@@ -4,7 +4,7 @@ Application-level wiring, alongside `db.py` and `config.py` — not a router, no
 A router's whole auth surface is meant to be an import from here:
 
 ```python
-from app.dependencies import Principal, StaffPrincipal, AdminPrincipal, TutorScope
+from app.dependencies import Principal, OfficePrincipal, AdminPrincipal, TutorScope
 
 @router.get("/api/bookings")
 def list_bookings(scope: TutorScope, db: DbSession):
@@ -26,16 +26,15 @@ Five properties this module exists to guarantee, all of which Phase 3 onwards de
 - **The `users` row is read on every request** (D-023). One primary-key lookup buys the
   property that setting `is_active = false` takes effect on the caller's *next* request rather
   than up to fifteen minutes later when their access token expires — which is the entire point
-  of `is_active` soft delete. `role` and `tutor_id` are taken from that row, not from the
-  token's claims, for the same reason. Do not "optimise" this into a claims-only path and do
-  not cache it.
+  of `is_active` soft delete. `role` and `tutor_id` (the user's profile id, read through
+  `tutors.user_id`) are taken from that row, not from the token's claims, for the same reason.
+  Do not "optimise" this into a claims-only path and do not cache it.
 
 - **A tutor cannot opt out of scoping.** The scope carries the caller's own `tutor_id` when a
   tutor asks for nothing in particular. Carrying `None` there would mean "no filter" and would
-  silently widen a list endpoint to every tutor's rows. A tutor account whose `users.tutor_id`
-  is `NULL` is rejected with 403 rather than treated as an admin or scoped to `NULL`: that
-  column is nullable because admins have no tutor profile, so a tutor row in that state is a
-  data error and must fail loudly.
+  silently widen a list endpoint to every tutor's rows. A tutor account with no profile is
+  rejected with 403 rather than treated as an admin or scoped to `None`: only admins have no
+  profile, so a tutor in that state is a data error and must fail loudly.
 
 - **A route cannot forget to apply the scope.** The scope is an object, not a bare
   `uuid.UUID | None`, and for as long as it goes unread the request's `Session` refuses to run
@@ -53,8 +52,9 @@ Five properties this module exists to guarantee, all of which Phase 3 onwards de
 
 Two route shapes, and they do not mix. A route that *lists* takes `TutorScope` and passes
 `scope.tutor_id` into the service call. A route that *loads one row by id* takes `Principal`,
-loads the row, and calls `assert_can_access_tutor` on its owner — that pattern queries before
-it can know the owner, so it deliberately does not arm the guard above.
+loads the row, and calls `assert_can_access_tutor` (or `assert_can_access_booking`, for a row
+keyed on the Staff member's user) on its owner — that pattern queries before it can know the
+owner, so it deliberately does not arm the guard above.
 """
 
 import uuid
@@ -65,9 +65,10 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import event
-from sqlalchemy.orm import Mapper, ORMExecuteState, Session
+from sqlalchemy.orm import Mapper, ORMExecuteState, Session, joinedload
 
 from app.db import get_db
+from app.models.booking import Booking
 from app.models.enums import UserRole
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -75,17 +76,17 @@ from app.security import ACCESS_TOKEN_TYPE, TokenError, decode_token
 
 CREDENTIALS_ERROR = "Could not validate credentials"
 ADMIN_REQUIRED_ERROR = "Admin privileges required"
-STAFF_REQUIRED_ERROR = "Staff privileges required"
+OFFICE_REQUIRED_ERROR = "Office access required"
 TUTOR_SCOPE_ERROR = "Not permitted to access this tutor's data"
 
 # Every gate below asks for a role set, never "is admin". `developer` is a superset of `admin`
 # — it reaches everything an admin reaches, plus developer-only system settings — so comparing
 # against `UserRole.ADMIN` by identity would refuse it everywhere.
 #
-# Two sets (#108). Staff run the office: everything but Users and Settings, chat included, and
+# Two sets (#108). Office runs the dashboard: everything but Users and Settings, chat included, and
 # never tutor-scoped. Admin roles additionally manage Users and Settings, which a Manager may
 # not reach.
-STAFF_ROLES = frozenset({UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER})
+OFFICE_ROLES = frozenset({UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER})
 ADMIN_ROLES = frozenset({UserRole.ADMIN, UserRole.DEVELOPER})
 
 # `auto_error=False` so this module owns the failure: FastAPI's built-in error omits the
@@ -130,7 +131,7 @@ def get_current_user(
     except TokenError as exc:
         raise _unauthorized() from exc
 
-    user = db.get(User, claims.subject)
+    user = db.get(User, claims.subject, options=[joinedload(User.profile)])
     if user is None or not user.is_active:
         raise _unauthorized()
 
@@ -138,7 +139,7 @@ def get_current_user(
         id=user.id,
         email=user.email,
         role=user.role,
-        tutor_id=user.tutor_id,
+        tutor_id=user.profile_id,
     )
 
 
@@ -156,14 +157,14 @@ def require_admin(user: Principal) -> CurrentUser:
 AdminPrincipal = Annotated[CurrentUser, Depends(require_admin)]
 
 
-def require_staff(user: Principal) -> CurrentUser:
+def require_office(user: Principal) -> CurrentUser:
     # Same 401-before-403 ordering as `require_admin`.
-    if user.role not in STAFF_ROLES:
-        raise _forbidden(STAFF_REQUIRED_ERROR)
+    if user.role not in OFFICE_ROLES:
+        raise _forbidden(OFFICE_REQUIRED_ERROR)
     return user
 
 
-StaffPrincipal = Annotated[CurrentUser, Depends(require_staff)]
+OfficePrincipal = Annotated[CurrentUser, Depends(require_office)]
 
 
 class TutorScopeNotApplied(RuntimeError):
@@ -213,20 +214,20 @@ def _decide_tutor_scope(
 ) -> uuid.UUID | None:
     """The scoping decision table. Kept separate from the dependency so it stays readable.
 
-    | principal                  | requested        | result           |
-    |----------------------------|------------------|------------------|
-    | staff (admin, manager, dev)| `None`           | `None`           |
-    | staff (admin, manager, dev)| any UUID         | that UUID        |
-    | tutor with `tutor_id`      | `None`           | own `tutor_id`   |
-    | tutor with `tutor_id`      | own              | own `tutor_id`   |
-    | tutor with `tutor_id`      | another tutor's  | **403**          |
+    | principal                   | requested        | result           |
+    |-----------------------------|------------------|------------------|
+    | office (admin, manager, dev) | `None`           | `None`           |
+    | office (admin, manager, dev) | any UUID         | that UUID        |
+    | tutor with `tutor_id`       | `None`           | own `tutor_id`   |
+    | tutor with `tutor_id`       | own              | own `tutor_id`   |
+    | tutor with `tutor_id`       | another tutor's  | **403**          |
     | tutor with `tutor_id` None | anything         | **403**          |
 
     A developer has no tutor profile, so treating them as anything but unscoped would send
     them down the tutor branch and 403 on `tutor_id is None` — the most confusing possible
     failure for the one role that is meant to see everything.
     """
-    if user.role in STAFF_ROLES:
+    if user.role in OFFICE_ROLES:
         scoped_tutor_id = requested_tutor_id
     else:
         if user.tutor_id is None:
@@ -245,8 +246,13 @@ def _is_tutor_owned(mapper: Mapper[Any]) -> bool:
     # Fail closed by shape, not by a list someone has to remember to extend: anything mapped
     # onto a table with a `tutor_id`, plus `tutors` itself, whose own primary key is what a
     # tutor's scope filters on. A table added in a later phase is guarded the day it gains
-    # the column.
-    return "tutor_id" in mapper.columns or mapper.local_table is Tutor.__table__
+    # the column. `bookings` is named explicitly: it keys its Staff member on `user_id` (#130)
+    # and is still a tutor's own data, scoped through their profile.
+    return (
+        "tutor_id" in mapper.columns
+        or mapper.local_table is Tutor.__table__
+        or mapper.local_table is Booking.__table__
+    )
 
 
 def _guard_unapplied_scope(scope: ResolvedTutorScope) -> Callable[[ORMExecuteState], None]:
@@ -301,7 +307,7 @@ TutorScope = Annotated[ResolvedTutorScope, Depends(get_tutor_scope)]
 def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None) -> None:
     """Row-level companion to `TutorScope`, for "load by id, then check the owner".
 
-    Staff (admins, managers, developers) always pass. A tutor passes only when the row belongs
+    Office (admins, managers, developers) always pass. A tutor passes only when the row belongs
     to them; an unowned row (`owner_tutor_id is None`) belongs to no tutor and so is not
     theirs. Raises 403 — never 404, never a silent empty response.
 
@@ -309,5 +315,15 @@ def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None)
     before it can know the owner, so there is no filter to apply up front and nothing for the
     unapplied-scope guard to check.
     """
-    if user.role not in STAFF_ROLES and (user.tutor_id is None or owner_tutor_id != user.tutor_id):
+    if user.role not in OFFICE_ROLES and (user.tutor_id is None or owner_tutor_id != user.tutor_id):
+        raise _forbidden(TUTOR_SCOPE_ERROR)
+
+
+def assert_can_access_booking(user: CurrentUser, owner_user_id: uuid.UUID) -> None:
+    """`assert_can_access_tutor` for a Booking, whose owner is a user, not a profile (#130).
+
+    Office always passes. A tutor passes only when the Booking's Staff member is them. Raises
+    403 — never 404, never a silent empty response (`CONSTITUTION.md` §15).
+    """
+    if user.role not in OFFICE_ROLES and owner_user_id != user.id:
         raise _forbidden(TUTOR_SCOPE_ERROR)

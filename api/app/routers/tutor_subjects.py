@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.schemas.tutor_subject import TutorSubjectAssignmentRead, TutorSubjectCreate
 from app.services.tutor_subject_service import (
     AssignmentExists,
@@ -42,7 +42,7 @@ router = APIRouter(prefix="/api/tutors", tags=["tutor-subjects"])
     status_code=status.HTTP_201_CREATED,
 )
 def assign(
-    tutor_id: uuid.UUID, payload: TutorSubjectCreate, user: StaffPrincipal, db: DbSession
+    tutor_id: uuid.UUID, payload: TutorSubjectCreate, user: OfficePrincipal, db: DbSession
 ) -> TutorSubjectAssignmentRead:
     try:
         assignment = assign_subject(
@@ -74,7 +74,9 @@ def assign(
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
 )
-def remove(tutor_id: uuid.UUID, subject_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> None:
+def remove(
+    tutor_id: uuid.UUID, subject_id: uuid.UUID, user: OfficePrincipal, db: DbSession
+) -> None:
     try:
         remove_subject(db, tutor_id=tutor_id, subject_id=subject_id)
     except TutorNotFound as exc:

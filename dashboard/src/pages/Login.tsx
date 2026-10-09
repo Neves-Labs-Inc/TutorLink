@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -120,6 +120,16 @@ export const Login = () => {
                       {errors.password}
                     </p>
                   )}
+                  <div className="flex justify-end">
+                    <Button
+                      asChild
+                      variant="link"
+                      size="sm"
+                      className="h-auto min-h-11 px-0 md:min-h-0"
+                    >
+                      <Link to="/forgot-password">Forgot password?</Link>
+                    </Button>
+                  </div>
                 </div>
 
                 {formError && (

@@ -92,7 +92,7 @@ const ProfileContent = ({ onClose, onCloseAutoFocus }: ProfileContentProps) => {
     me.refetch()
   }
 
-  const savedName = me.data?.display_name ?? ''
+  const savedName = me.data?.name ?? ''
   const value = draft ?? savedName
   const validationError = draft === null ? null : displayNameError(draft)
   const isUnchanged = value.trim() === savedName
@@ -102,7 +102,7 @@ const ProfileContent = ({ onClose, onCloseAutoFocus }: ProfileContentProps) => {
     event.preventDefault()
     if (!canSave) return
 
-    save.mutate({ display_name: value.trim() }, { onSuccess: onClose })
+    save.mutate({ name: value.trim() }, { onSuccess: onClose })
   }
 
   const focusField = (event: Event) => {

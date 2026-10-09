@@ -1,12 +1,29 @@
+import logging
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Cookie,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.schemas.auth import RefreshRequest, TokenPair
+from app.schemas.auth import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    RefreshRequest,
+    SetPasswordRequest,
+    TokenPair,
+)
 from app.services.auth_service import (
     InvalidCredentials,
     InvalidRefreshToken,
@@ -17,11 +34,22 @@ from app.services.auth_service import (
     revoke_family_for_token,
     rotate_refresh_token,
 )
+from app.services.password_link_service import (
+    InvalidLink,
+    InvalidPassword,
+    request_reset,
+    send_reset_email,
+    set_password_with_link,
+)
 from app.services.rate_limit_service import (
+    load_forgot_password_policies,
     load_login_policies,
     release_login_attempt,
+    reserve_forgot_password_attempt,
     reserve_login_attempt,
 )
+
+logger = logging.getLogger(__name__)
 
 REFRESH_COOKIE_NAME = "refresh_token"
 REFRESH_COOKIE_PATH = "/auth"
@@ -33,6 +61,14 @@ INVALID_REFRESH_ERROR = "Invalid refresh token"
 # message that appeared only for real accounts would turn the 429 into the account-enumeration
 # oracle the shared 401 exists to prevent.
 RATE_LIMITED_ERROR = "Too many login attempts. Try again later."
+# One message for every refusal of a link, so the endpoint never says whether a token exists.
+INVALID_LINK_ERROR = "This link is invalid or has expired"
+INVALID_PASSWORD_ERROR = "Password must be between 8 characters and 72 bytes"
+# The one body `/password/forgot` ever answers with: a hit, a miss, a throttled request and a
+# failed send all read the same, so the endpoint never says whether an account exists.
+FORGOT_PASSWORD_RESPONSE = ForgotPasswordResponse(
+    detail="If an account exists for that email, we sent a link to reset the password."
+)
 SECONDS_PER_DAY = 24 * 60 * 60
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -113,6 +149,77 @@ def refresh(
     _set_refresh_cookie(response, issued.refresh_token)
 
     return _token_pair(issued)
+
+
+@router.post("/password/set", response_model=TokenPair)
+def set_password(payload: SetPasswordRequest, response: Response, db: DbSession) -> TokenPair:
+    """Spend an Invite or reset link, store the password, and sign the user in.
+
+    Beside `/token` so the refresh cookie's `Path=/auth` covers it unchanged. Not rate limited:
+    the token is 32 random bytes, so guessing one is not a feasible attack, and the link is
+    single-use.
+    """
+    try:
+        user = set_password_with_link(
+            db, token=payload.token, password=payload.password, now=datetime.now(UTC)
+        )
+    except InvalidPassword as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=INVALID_PASSWORD_ERROR
+        ) from exc
+    except InvalidLink as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_LINK_ERROR
+        ) from exc
+
+    issued = issue_token_pair(db, user=user)
+    db.commit()
+    _set_refresh_cookie(response, issued.refresh_token)
+
+    return _token_pair(issued)
+
+
+@router.post(
+    "/password/forgot",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ForgotPasswordResponse,
+)
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+) -> ForgotPasswordResponse:
+    """Email a reset link to the account at `payload.email`, if there is one to send to.
+
+    Always 202 with `FORGOT_PASSWORD_RESPONSE`. The email goes out from a background task after
+    the response, so a hit and a miss take the same time, and a throttled request answers the
+    same way without `Retry-After`: telling a caller they are throttled tells them the address
+    was worth throttling.
+    """
+    policies = load_forgot_password_policies(db)
+
+    # Reserved and committed first, as `login` does: every request counts, there is no success
+    # to release, and the commit ends the transaction holding the bucket's advisory lock.
+    reservation = reserve_forgot_password_attempt(
+        db, client_ip=_client_ip(request), email=payload.email, policies=policies
+    )
+    db.commit()
+
+    if not reservation.allowed:
+        logger.info("auth.forgot_password: request throttled")
+        return FORGOT_PASSWORD_RESPONSE
+
+    issued = request_reset(db, email=payload.email, now=datetime.now(UTC))
+    db.commit()
+
+    if issued is not None:
+        user, token = issued
+        # Only strings cross into the task: it runs after the response, when `db` is closed,
+        # and it builds the link itself so a missing `PUBLIC_BASE_URL` fails there, not here.
+        background_tasks.add_task(send_reset_email, to=user.email, name=user.name, token=token)
+
+    return FORGOT_PASSWORD_RESPONSE
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)

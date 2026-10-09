@@ -175,6 +175,28 @@ class ReminderSkipReason(str, enum.Enum):
     TEMPLATE_NOT_APPROVED = "template_not_approved"
 
 
+class BookingKind(str, enum.Enum):
+    """Regular is a teaching session with a Subject; an Evaluation has none and no slot."""
+
+    REGULAR = "regular"
+    EVALUATION = "evaluation"
+
+
+class BookingLocation(str, enum.Enum):
+    """Where a session happens: one of the Child's homes (`home_id` set) or the office."""
+
+    HOME = "home"
+    IN_OFFICE = "in_office"
+
+
+class AvailabilityMode(str, enum.Enum):
+    """Where a range's sessions may happen: home visits only, either, or office only."""
+
+    TRAVELER = "traveler"
+    ANYWHERE = "anywhere"
+    ONLY_OFFICE = "only_office"
+
+
 class SystemMessageKind(str, enum.Enum):
     TAKEOVER_NOTICE = "takeover_notice"
     TRANSFER_NOTICE = "transfer_notice"

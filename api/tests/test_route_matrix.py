@@ -56,6 +56,10 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/auth/token"): Access.PUBLIC,
     ("POST", "/auth/refresh"): Access.PUBLIC,
     ("POST", "/auth/logout"): Access.PUBLIC,
+    # Authenticated by the single-use link token in the body, not by a user token.
+    ("POST", "/auth/password/set"): Access.PUBLIC,
+    # Anyone may ask for a reset link; the answer never says whether the account exists.
+    ("POST", "/auth/password/forgot"): Access.PUBLIC,
     # Authenticated by Twilio's signature, not by a user token.
     ("POST", "/webhook/whatsapp"): Access.PUBLIC,
     ("POST", "/webhook/whatsapp/status"): Access.PUBLIC,
@@ -104,7 +108,10 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("DELETE", "/api/availability/{availability_id}"): Access.STAFF,
     ("GET", "/api/slots/available"): Access.STAFF,
     ("POST", "/api/bookings"): Access.STAFF,
-    ("PATCH", "/api/bookings/{booking_id}"): Access.STAFF,
+    ("PUT", "/api/bookings/{booking_id}"): Access.STAFF,
+    # A Tutor may Mark completed their own booking (#152); every other move is Office only.
+    ("PATCH", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
+    ("GET", "/api/staff"): Access.STAFF,
     ("GET", "/api/stats/overview"): Access.STAFF,
     ("GET", "/api/reminders/week"): Access.STAFF,
     ("GET", "/api/conversations"): Access.STAFF,
@@ -125,6 +132,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/users"): Access.ADMIN,
     ("PATCH", "/api/users/{user_id}"): Access.ADMIN,
     ("DELETE", "/api/users/{user_id}"): Access.ADMIN,
+    ("POST", "/api/users/{user_id}/invite"): Access.ADMIN,
     ("GET", "/api/settings"): Access.ADMIN,
     ("PATCH", "/api/settings"): Access.ADMIN,
 }
@@ -182,20 +190,29 @@ def gate_client(db: Session) -> Generator[TestClient, None, None]:
 @pytest.fixture
 def callers(db: Session) -> dict[UserRole, Caller]:
     suffix = uuid.uuid4().hex[:10]
-    tutor = Tutor(name="Matrix Tutor", phone_number=f"+1{suffix}", email=f"t-{suffix}@x.com")
+    tutor = Tutor(
+        user=User(email=f"t-{suffix}@x.com", name="Matrix Tutor", role=UserRole.TUTOR),
+        phone_number=f"+1{suffix}",
+    )
     db.add(tutor)
     db.flush()
 
     def make(role: UserRole, tutor_id: uuid.UUID | None) -> Caller:
-        user = User(
-            email=f"{role.value}-{uuid.uuid4().hex[:10]}@x.com",
-            display_name=f"Matrix {role.value}",
-            hashed_password="not-a-real-hash",
-            role=role,
-            tutor_id=tutor_id,
-            is_active=True,
-        )
-        db.add(user)
+        if tutor_id is None:
+            user = User(
+                email=f"{role.value}-{uuid.uuid4().hex[:10]}@x.com",
+                name=f"Matrix {role.value}",
+                hashed_password="not-a-real-hash",
+                role=role,
+                is_active=True,
+            )
+            db.add(user)
+        else:
+            # The profile's own user is the login: one record per person.
+            user = db.get_one(Tutor, tutor_id).user
+            user.hashed_password = "not-a-real-hash"
+            user.role = role
+            user.is_active = True
         db.flush()
         token = create_access_token(user_id=user.id, role=role, tutor_id=tutor_id)
         return Caller(role=role, headers={"Authorization": f"Bearer {token}"}, tutor_id=tutor_id)

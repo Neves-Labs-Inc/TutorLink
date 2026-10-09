@@ -1,6 +1,6 @@
 """`/api/me`: the signed-in user's own account, for every role, Tutors included.
 
-`Principal` rather than `StaffPrincipal`: any signed-in user may read and rename their own row,
+`Principal` rather than `OfficePrincipal`: any signed-in user may read and rename their own row,
 and only their own, because the id comes from the token and never from the request. The chat
 uses it for "Take it over as {me}" and My profile pre-fills from it (#109).
 """
@@ -14,7 +14,8 @@ from app.db import get_db
 from app.dependencies import Principal
 from app.models.user import User
 from app.schemas.user import MeRead, MeUpdate
-from app.services.user_service import InvalidDisplayName, get_user, rename_user
+from app.services.name_rules import InvalidName
+from app.services.user_service import get_user, rename_user
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -30,8 +31,8 @@ def read_me(user: Principal, db: DbSession) -> MeRead:
 @router.patch("", response_model=MeRead)
 def update_me(payload: MeUpdate, user: Principal, db: DbSession) -> MeRead:
     try:
-        account = rename_user(db, user_id=user.id, display_name=payload.display_name)
-    except InvalidDisplayName as exc:
+        account = rename_user(db, user_id=user.id, name=payload.name)
+    except InvalidName as exc:
         # The service's message says which rule the name broke.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
@@ -45,5 +46,5 @@ def _me(account: User) -> MeRead:
         id=account.id,
         email=account.email,
         role=account.role,
-        display_name=account.display_name,
+        name=account.name,
     )

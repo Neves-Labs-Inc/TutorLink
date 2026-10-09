@@ -12,9 +12,9 @@ suggests:
 - `POST` looks like it should take `TutorScope` too, because its path also carries
   `{tutor_id}`, and it must not: the route is admin-only per the RBAC table
   (`docs/api-design.md:271-278`), so there is nobody for the scope to narrow, and
-  `CONSTITUTION.md` §15 forbids a `StaffPrincipal` route also taking `TutorScope`. It takes a
+  `CONSTITUTION.md` §15 forbids a `OfficePrincipal` route also taking `TutorScope`. It takes a
   plain `tutor_id: uuid.UUID` path parameter instead.
-- `PATCH`/`DELETE` load one row by id and are staff-only too, so both take `StaffPrincipal` and
+- `PATCH`/`DELETE` load one row by id and are staff-only too, so both take `OfficePrincipal` and
   neither takes `TutorScope`.
 """
 
@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal, TutorScope
+from app.dependencies import OfficePrincipal, TutorScope
 from app.models.availability import TutorAvailability
 from app.schemas.availability import AvailabilityCreate, AvailabilityRead, AvailabilityUpdate
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
@@ -81,7 +81,7 @@ def list_tutor_availability(
 def create_tutor_availability(
     tutor_id: uuid.UUID,
     payload: AvailabilityCreate,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
 ) -> AvailabilityRead:
     try:
@@ -91,6 +91,7 @@ def create_tutor_availability(
             day_of_week=payload.day_of_week,
             start_time=payload.start_time,
             end_time=payload.end_time,
+            mode=payload.mode,
         )
     except TutorNotFound as exc:
         raise HTTPException(
@@ -112,7 +113,7 @@ def create_tutor_availability(
 def update_tutor_availability(
     availability_id: uuid.UUID,
     payload: AvailabilityUpdate,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
 ) -> AvailabilityRead:
     try:
@@ -122,6 +123,7 @@ def update_tutor_availability(
             start_time=payload.start_time,
             end_time=payload.end_time,
             is_active=payload.is_active,
+            mode=payload.mode,
         )
     except AvailabilityNotFound as exc:
         raise HTTPException(
@@ -141,7 +143,7 @@ def update_tutor_availability(
 
 @router.delete("/availability/{availability_id}", response_model=AvailabilityRead)
 def delete_tutor_availability(
-    availability_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    availability_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> AvailabilityRead:
     try:
         row = deactivate_availability(db, availability_id=availability_id)
@@ -163,4 +165,5 @@ def _read(row: TutorAvailability) -> AvailabilityRead:
         start_time=row.start_time,
         end_time=row.end_time,
         is_active=row.is_active,
+        mode=row.mode,
     )

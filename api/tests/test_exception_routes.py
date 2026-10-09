@@ -19,7 +19,7 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.tutor import Tutor
@@ -227,7 +227,7 @@ def test_tutor_cannot_decide_their_own_pending_request(api: TestClient, db: Sess
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -241,7 +241,7 @@ def test_tutor_cannot_decide_another_tutors_exception(api: TestClient, db: Sessi
         f"/api/exceptions/{row.id}", json={"status": "rejected"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -763,8 +763,8 @@ def test_unauthenticated_decide_is_401(api: TestClient, db: Session) -> None:
 
 
 def test_tutor_with_null_tutor_id_cannot_create(api: TestClient, db: Session) -> None:
-    """`users.tutor_id` is nullable because admins have no tutor profile, so a tutor row in
-    that state is a data error and must fail loudly rather than be treated as unscoped."""
+    """Only admins have no profile, so a `tutor` user with none is a data error and must fail
+    loudly rather than be treated as unscoped."""
     tutor = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
 
@@ -824,7 +824,7 @@ def test_tutor_with_null_tutor_id_cannot_decide(api: TestClient, db: Session) ->
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -861,9 +861,8 @@ def _payload(**overrides: object) -> dict[str, object]:
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -871,14 +870,19 @@ def _make_tutor(db: Session) -> Tutor:
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("exception-password"),
-        role=role,
-        tutor_id=tutor_id,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("exception-password"),
+            role=role,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("exception-password")
+        user.role = role
     db.flush()
     return user
 
@@ -916,7 +920,7 @@ def _count_for(db: Session, tutor_id: uuid.UUID) -> int:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 

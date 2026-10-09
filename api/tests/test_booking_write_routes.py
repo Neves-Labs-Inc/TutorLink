@@ -1,10 +1,16 @@
-"""`POST /api/bookings` — the seven validation rules, the window gates and the conflict.
+"""`POST /api/bookings` — the rules by kind and Staff role, the warning contract, the window
+gates and the conflicts.
 
-Every negative case asserts the exact status **and** the exact `{"detail": "..."}` body, as in
-`test_exception_routes.py`: `status_code != 201` would pass on a 500 or on a 404 from a route
-that never mounted, and the three status classes here are the contract's most amended surface.
-Rules 5, 6 and 7 are **422** on purpose (`docs/api-design.md:1141-1144`) and a test asserting
-merely "not 201" would let someone quietly fold them into 400.
+Every negative case asserts the exact status **and** the exact body — `{"detail": "..."}`, or
+`{"detail": ..., "warnings": [...]}` for the warning contract — as in `test_exception_routes.py`:
+`status_code != 201` would pass on a 500 or on a 404 from a route that never mounted, and the
+three status classes here are the contract's most amended surface. The 422s are 422 on purpose
+(`docs/api-design.md`, `POST /api/bookings`) and a test asserting merely "not 201" would let
+someone quietly fold them into 400.
+
+The first half keeps the Tutor/Manager Regular booking's rules, with rules 1, 3, 4 and 5 now
+the `outside_slot`, `gap`, `time_off` and `grade_ceiling` warnings the Office can confirm
+(#151); the second half is the Evaluation, the Admin and In office (#130, #132, #133).
 
 Two of these tests carry more weight than the rest:
 
@@ -31,32 +37,42 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
-from app.models.booking import Booking
+from app.models.booking import NOTES_MAX_LENGTH, Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ExceptionStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.routers.booking_writes import (
-    BLOCKED_BY_EXCEPTION_ERROR,
     BOOKING_OVERLAPS_ERROR,
     DATE_OUT_OF_WINDOW_ERROR,
-    GAP_NOT_RESPECTED_ERROR,
-    GRADE_CEILING_ERROR,
     GUARDIAN_NOT_LINKED_ERROR,
     HOME_NOT_LINKED_ERROR,
     LEAD_TIME_NOT_MET_ERROR,
+    BOOKING_SHAPE_INVALID_ERROR,
+    CHILD_ALREADY_EVALUATED_ERROR,
+    LIVE_EVALUATION_EXISTS_ERROR,
     OUTSIDE_AVAILABILITY_ERROR,
     REFERENCE_NOT_FOUND_ERROR,
+    STAFF_ROLE_NOT_ALLOWED_ERROR,
+    UNCONFIRMED_WARNINGS_ERROR,
+    WARNING_MESSAGES,
 )
 from app.security import create_access_token, hash_password
 from app.services import booking_write_service, clock
+from app.services.booking_write_service import WarningCode
 from app.services.scheduling_service import MIN_BOOKING_LEAD_SETTING
+from tests.fake_twilio import FakeTwilio
+
+OUTSIDE_SLOT = WarningCode.OUTSIDE_SLOT.value
+GAP = WarningCode.GAP.value
+TIME_OFF = WarningCode.TIME_OFF.value
+GRADE_CEILING = WarningCode.GRADE_CEILING.value
 
 STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
@@ -125,6 +141,28 @@ def family(db: Session) -> Family:
 # --- the happy path and RBAC ----------------------------------------------------------------
 
 
+def test_notes_at_the_limit_are_accepted(api: TestClient, db: Session, family: Family) -> None:
+    user = _make_user(db)
+
+    response = _post(api, user, family, notes="x" * NOTES_MAX_LENGTH)
+
+    assert response.status_code == 201
+    assert _row(db, uuid.UUID(response.json()["id"])).notes == "x" * NOTES_MAX_LENGTH
+
+
+def test_notes_over_the_limit_are_400_and_write_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    before = db.scalar(select(func.count()).select_from(Booking))
+
+    response = _post(api, user, family, notes="x" * (NOTES_MAX_LENGTH + 1))
+
+    assert response.status_code == 400
+    assert "notes" in response.json()["detail"]
+    assert db.scalar(select(func.count()).select_from(Booking)) == before
+
+
 @pytest.mark.parametrize("role", STAFF_ROLE_CASES)
 def test_an_admin_creates_a_confirmed_booking(
     api: TestClient, db: Session, family: Family, role: UserRole
@@ -163,7 +201,7 @@ def test_a_tutor_token_is_403_and_writes_nothing(
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _count(db) == 0
 
 
@@ -174,21 +212,23 @@ def test_no_token_is_401_and_writes_nothing(api: TestClient, db: Session, family
     assert _count(db) == 0
 
 
-# --- rule 1: the named availability range, 400 ----------------------------------------------
+# --- rule 1: the named availability range — 400 for the wrong range, a warning for the time --
 
 
 @pytest.mark.parametrize(
     ("start_time", "end_time"),
     [("08:00:00", NINE), (ELEVEN_THIRTY, "12:30:00"), ("08:30:00", "12:30:00")],
 )
-def test_a_range_outside_the_named_availability_is_400(
+def test_a_range_outside_the_named_availability_is_the_outside_slot_warning(
     api: TestClient, db: Session, family: Family, start_time: str, end_time: str
 ) -> None:
+    """The slot stays required and must be this Staff member's; only the time falling outside
+    it is confirmable (#151)."""
     user = _make_user(db)
 
     response = _post(api, user, family, start_time=start_time, end_time=end_time)
 
-    _assert_detail(response, 400, OUTSIDE_AVAILABILITY_ERROR)
+    _assert_warnings(response, [OUTSIDE_SLOT])
     assert _count(db) == 0
 
 
@@ -224,12 +264,25 @@ def test_an_inactive_availability_range_is_400(
     assert _count(db) == 0
 
 
-def test_the_right_times_on_the_wrong_weekday_is_400(
+def test_the_right_times_on_the_wrong_weekday_is_the_outside_slot_warning(
     api: TestClient, db: Session, family: Family
 ) -> None:
     user = _make_user(db)
 
     response = _post(api, user, family, scheduled_date=TUESDAY.isoformat())
+
+    _assert_warnings(response, [OUTSIDE_SLOT])
+    assert _count(db) == 0
+
+
+def test_a_manager_without_a_profile_cannot_take_a_regular_booking(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A migrated Manager has no teaching profile, so no range can be theirs: rule 1's hard
+    half refuses whichever range is named (spec 01, "Existing Managers")."""
+    user = _make_user(db, role=UserRole.MANAGER)
+
+    response = _post(api, user, family, user_id=str(user.id))
 
     _assert_detail(response, 400, OUTSIDE_AVAILABILITY_ERROR)
     assert _count(db) == 0
@@ -293,18 +346,20 @@ def test_a_cancelled_booking_frees_its_range(api: TestClient, db: Session, famil
     assert response.status_code == 201
 
 
-# --- rule 3: the gap, 409 -------------------------------------------------------------------
+# --- rule 3: the gap, the `gap` warning ------------------------------------------------------
 
 
-def test_a_booking_abutting_another_is_409(api: TestClient, db: Session, family: Family) -> None:
-    """It overlaps nothing, so this is rule 3 and not rule 2 — the messages are what tell them
-    apart, and both are 409."""
+def test_a_booking_abutting_another_is_the_gap_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """It overlaps nothing, so this is rule 3 and not rule 2 — overlap is a hard 409 whatever is
+    confirmed; the gap is a warning the Office may confirm."""
     _book(db, family)
     user = _make_user(db)
 
     response = _post(api, user, family, start_time=TEN, end_time=ELEVEN)
 
-    _assert_detail(response, 409, GAP_NOT_RESPECTED_ERROR)
+    _assert_warnings(response, [GAP])
     assert _count(db) == 1
 
 
@@ -321,20 +376,22 @@ def test_clearance_of_exactly_one_gap_is_accepted(
     assert response.status_code == 201
 
 
-def test_one_minute_short_of_the_gap_is_409(api: TestClient, db: Session, family: Family) -> None:
+def test_one_minute_short_of_the_gap_is_the_gap_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
     _book(db, family)
     user = _make_user(db)
 
     response = _post(api, user, family, start_time=TEN_TWENTY_NINE, end_time=ELEVEN_TWENTY_NINE)
 
-    _assert_detail(response, 409, GAP_NOT_RESPECTED_ERROR)
+    _assert_warnings(response, [GAP])
     assert _count(db) == 1
 
 
-# --- rule 4: approved exceptions, 409 -------------------------------------------------------
+# --- rule 4: approved exceptions, the `time_off` warning --------------------------------------
 
 
-def test_an_approved_whole_day_exception_is_409(
+def test_an_approved_whole_day_exception_is_the_time_off_warning(
     api: TestClient, db: Session, family: Family
 ) -> None:
     _make_exception(db, family, status=ExceptionStatus.APPROVED)
@@ -342,7 +399,7 @@ def test_an_approved_whole_day_exception_is_409(
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 409, BLOCKED_BY_EXCEPTION_ERROR)
+    _assert_warnings(response, [TIME_OFF])
     assert _count(db) == 0
 
 
@@ -377,7 +434,7 @@ def test_a_partial_day_exception_elsewhere_in_the_day_blocks_nothing(
     assert response.status_code == 201
 
 
-def test_a_partial_day_exception_overlapping_the_booking_is_409(
+def test_a_partial_day_exception_overlapping_the_booking_is_the_time_off_warning(
     api: TestClient, db: Session, family: Family
 ) -> None:
     """Bare overlap, not gap-expanded: an exception ending at 09:00 would leave 09:00-10:00
@@ -393,18 +450,17 @@ def test_a_partial_day_exception_overlapping_the_booking_is_409(
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 409, BLOCKED_BY_EXCEPTION_ERROR)
+    _assert_warnings(response, [TIME_OFF])
     assert _count(db) == 0
 
 
-# --- rule 5: the per-subject ceiling against the Child's Subject level, 422 ------------------
+# --- rule 5: the per-subject ceiling against the Child's Subject level, the `grade_ceiling`
+# warning ------------------------------------------------------------------------------------
 
 
-def test_a_ceiling_below_the_childs_subject_level_is_422(
+def test_a_ceiling_below_the_childs_subject_level_is_the_grade_ceiling_warning(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """422, not 400: the request is well-formed and conflicts with nothing, it names a
-    combination that is not permitted — `CONSTITUTION.md` §10's own parenthetical."""
     _set_level(db, family, family.subject, level=6)
     family.assignment.max_grade_level = 5
     db.flush()
@@ -412,7 +468,7 @@ def test_a_ceiling_below_the_childs_subject_level_is_422(
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 422, GRADE_CEILING_ERROR)
+    _assert_warnings(response, [GRADE_CEILING])
     assert _count(db) == 0
 
 
@@ -482,7 +538,7 @@ def test_a_tutor_with_no_assignment_for_the_subject_is_refused(
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 422, GRADE_CEILING_ERROR)
+    _assert_warnings(response, [GRADE_CEILING])
     assert _count(db) == 0
 
 
@@ -494,7 +550,7 @@ def test_a_tutor_qualified_in_a_different_subject_is_refused_for_this_one(
 
     response = _post(api, user, family, subject_id=str(family.other_subject.id))
 
-    _assert_detail(response, 422, GRADE_CEILING_ERROR)
+    _assert_warnings(response, [GRADE_CEILING])
     assert _count(db) == 0
 
 
@@ -509,7 +565,7 @@ def test_a_child_with_a_level_is_still_refused_a_tutor_who_does_not_teach_the_su
 
     response = _post(api, user, family)
 
-    _assert_detail(response, 422, GRADE_CEILING_ERROR)
+    _assert_warnings(response, [GRADE_CEILING])
     assert _count(db) == 0
 
 
@@ -696,7 +752,7 @@ def test_a_start_inside_the_minimum_lead_time_is_400(
     "field",
     [
         "child_id",
-        "tutor_id",
+        "user_id",
         "subject_id",
         "availability_id",
         "home_id",
@@ -731,7 +787,7 @@ def test_a_reference_an_admin_has_retired_is_400(
     `child` is a case from migration 0016 on (P7C-1, REQ-114): an inactive child is refused with
     the same `detail` as a missing one.
     """
-    getattr(family, reference).is_active = False
+    _retire(getattr(family, reference))
     db.flush()
     user = _make_user(db)
 
@@ -769,7 +825,7 @@ def test_a_booking_naming_only_active_references_is_accepted(
     """The retirement check reads the five ids the request names and no others — retiring every
     unnamed tutor, subject, home, client and child in the fixture leaves this booking untouched."""
     for name in ("other_tutor", "other_subject", "stranger_home", "stranger_guardian", "sibling"):
-        getattr(family, name).is_active = False
+        _retire(getattr(family, name))
     db.flush()
     user = _make_user(db)
 
@@ -794,18 +850,557 @@ def test_an_end_time_at_or_before_the_start_is_400(
     assert _count(db) == 0
 
 
-def test_a_body_without_home_id_is_400(api: TestClient, db: Session, family: Family) -> None:
+def test_a_body_without_home_id_is_refused(api: TestClient, db: Session, family: Family) -> None:
     """`home_id` is absent from the documented example body and required by the prose rules,
-    which are the contract (amendment P4-1). This pins the prose."""
+    which are the contract (amendment P4-1). It is optional in the schema since #130 (an office
+    session has none), so the refusal is the service's: a home Location names a home."""
     user = _make_user(db)
     body = _payload(family)
     del body["home_id"]
 
     response = api.post("/api/bookings", json=body, headers=_auth(user))
 
-    assert response.status_code == 400
-    assert "home_id" in response.json()["detail"]
+    _assert_detail(response, 422, BOOKING_SHAPE_INVALID_ERROR)
     assert _count(db) == 0
+
+
+# --- the Evaluation: an Admin's or a Manager's, no Subject, no slot (#130, #133) -------------
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.MANAGER])
+@pytest.mark.parametrize("location", ["home", "in_office"])
+def test_an_evaluation_with_an_admin_or_manager_lands_confirmed(
+    api: TestClient, db: Session, family: Family, role: UserRole, location: str
+) -> None:
+    staff = _make_user(db, role=role)
+    user = _make_user(db)
+
+    response = _post_evaluation(api, user, family, staff, location=location)
+    body = response.json()
+
+    assert response.status_code == 201
+    assert body["status"] == "confirmed"
+    row = _row(db, uuid.UUID(body["id"]))
+    assert row.kind is BookingKind.EVALUATION
+    assert row.location.value == location
+    assert row.user_id == staff.id
+    assert row.subject_id is None
+    assert row.availability_id is None
+    assert row.home_id == (family.home.id if location == "home" else None)
+
+
+def test_an_evaluation_with_a_tutor_is_422(api: TestClient, db: Session, family: Family) -> None:
+    user = _make_user(db)
+
+    response = _post_evaluation(api, user, family, family.tutor.user)
+
+    _assert_detail(response, 422, STAFF_ROLE_NOT_ALLOWED_ERROR)
+    assert _count(db) == 0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param(lambda f: {"subject_id": str(f.subject.id)}, id="subject"),
+        pytest.param(lambda f: {"availability_id": str(f.availability_id)}, id="slot"),
+        pytest.param(
+            lambda f: {"location": "in_office", "home_id": str(f.home.id)}, id="home_in_office"
+        ),
+        pytest.param(lambda f: {"home_id": None}, id="no_home_at_home"),
+    ],
+)
+def test_an_evaluation_of_the_wrong_shape_is_422(
+    api: TestClient, db: Session, family: Family, overrides: Callable[[Family], dict[str, Any]]
+) -> None:
+    """Refused before any read, for what it is: a Subject on an Evaluation is a shape error
+    even when the Subject exists."""
+    staff = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    response = _post_evaluation(api, user, family, staff, **overrides(family))
+
+    _assert_detail(response, 422, BOOKING_SHAPE_INVALID_ERROR)
+    assert _count(db) == 0
+
+
+def test_an_evaluation_for_an_evaluated_child_is_422(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    staff = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+    _mark_evaluated(db, family.child, by=staff)
+
+    response = _post_evaluation(api, user, family, staff)
+
+    _assert_detail(response, 422, CHILD_ALREADY_EVALUATED_ERROR)
+    assert _count(db) == 0
+
+
+def test_a_second_live_evaluation_for_the_child_is_409(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Another Staff member at another time, so only rule 9 can refuse it."""
+    first, second = _make_user(db, role=UserRole.ADMIN), _make_user(db, role=UserRole.MANAGER)
+    user = _make_user(db)
+    assert _post_evaluation(api, user, family, first).status_code == 201
+
+    response = _post_evaluation(api, user, family, second, start_time=ELEVEN, end_time=TWELVE)
+
+    _assert_detail(response, 409, LIVE_EVALUATION_EXISTS_ERROR)
+    assert _count(db) == 1
+
+
+@pytest.mark.parametrize("ended", [BookingStatus.COMPLETED, BookingStatus.CANCELLED])
+def test_a_completed_or_cancelled_evaluation_does_not_count(
+    api: TestClient, db: Session, family: Family, ended: BookingStatus
+) -> None:
+    staff = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+    earlier = _row(db, uuid.UUID(_post_evaluation(api, user, family, staff).json()["id"]))
+    earlier.status = ended
+    db.flush()
+
+    response = _post_evaluation(api, user, family, staff, start_time=ELEVEN, end_time=TWELVE)
+
+    assert response.status_code == 201
+    assert _count(db) == 2
+
+
+def test_the_index_refuses_a_second_live_evaluation_the_pre_check_missed(
+    api: TestClient, db: Session, family: Family, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`uq_bookings_one_live_evaluation_per_child` standing in for two creates racing on a
+    Child read only `FOR SHARE` (#133). Told apart from the overlap EXCLUDE by SQLSTATE, so the
+    second Evaluation is with another Staff member at another time, where only the index can
+    fire. The follow-up proves the `Session` survived the savepoint rollback."""
+    first, second = _make_user(db, role=UserRole.ADMIN), _make_user(db, role=UserRole.MANAGER)
+    user = _make_user(db)
+    assert _post_evaluation(api, user, family, first).status_code == 201
+    monkeypatch.setitem(
+        booking_write_service._HARD_RULES,
+        BookingKind.EVALUATION,
+        tuple(
+            rule
+            for rule in booking_write_service._HARD_RULES[BookingKind.EVALUATION]
+            if rule is not booking_write_service._rule_9_no_live_evaluation
+        ),
+    )
+
+    refused = _post_evaluation(api, user, family, second, start_time=ELEVEN, end_time=TWELVE)
+    follow_up = _post_evaluation(
+        api,
+        user,
+        family,
+        second,
+        child_id=str(family.sibling.id),
+        start_time=ELEVEN,
+        end_time=TWELVE,
+    )
+
+    _assert_detail(refused, 409, LIVE_EVALUATION_EXISTS_ERROR)
+    assert follow_up.status_code == 201
+    assert _count(db) == 2
+
+
+def test_an_evaluation_overlapping_the_staff_members_booking_is_409(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Rule 2 is every kind's and every role's: a Manager's teaching session and their
+    Evaluation cannot share a minute."""
+    manager = _make_user(db, role=UserRole.MANAGER, tutor_id=family.tutor.id)
+    _book(db, family)
+    user = _make_user(db)
+
+    response = _post_evaluation(
+        api, user, family, manager, start_time="09:30:00", end_time=TEN_THIRTY
+    )
+
+    _assert_detail(response, 409, BOOKING_OVERLAPS_ERROR)
+    assert _count(db) == 1
+
+
+def test_an_evaluation_at_a_home_not_the_childs_is_422(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    staff = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    response = _post_evaluation(api, user, family, staff, home_id=str(family.stranger_home.id))
+
+    _assert_detail(response, 422, HOME_NOT_LINKED_ERROR)
+    assert _count(db) == 0
+
+
+@pytest.mark.parametrize("days", [-1, 120])
+def test_an_evaluation_outside_the_booking_window_is_400(
+    api: TestClient, db: Session, family: Family, days: int
+) -> None:
+    """The window is a hard block for every kind (answers.md 01.9)."""
+    staff = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+    date = _today() + datetime.timedelta(days=days)
+
+    response = _post_evaluation(api, user, family, staff, scheduled_date=date.isoformat())
+
+    _assert_detail(response, 400, DATE_OUT_OF_WINDOW_ERROR)
+    assert _count(db) == 0
+
+
+def test_an_evaluation_inside_the_minimum_lead_time_is_400(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    set_int_setting: Callable[[str, int], None],
+) -> None:
+    set_int_setting(MIN_BOOKING_LEAD_SETTING, 24 * 30)
+    staff = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    response = _post_evaluation(api, user, family, staff)
+
+    _assert_detail(response, 400, LEAD_TIME_NOT_MET_ERROR)
+    assert _count(db) == 0
+
+
+# --- a Regular booking with an Admin: overlap only (#130) ------------------------------------
+
+
+def test_a_regular_booking_with_an_admin_lands_with_no_slot(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(admin.id), availability_id=None)
+
+    assert response.status_code == 201
+    row = _row(db, uuid.UUID(response.json()["id"]))
+    assert row.kind is BookingKind.REGULAR
+    assert row.user_id == admin.id
+    assert row.availability_id is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param(lambda f: {"subject_id": None, "availability_id": None}, id="no_subject"),
+        pytest.param(lambda f: {"availability_id": str(f.availability_id)}, id="slot"),
+    ],
+)
+def test_a_regular_booking_with_an_admin_of_the_wrong_shape_is_422(
+    api: TestClient, db: Session, family: Family, overrides: Callable[[Family], dict[str, Any]]
+) -> None:
+    """An Admin has no profile to offer a range, so naming one is a shape error, not a slot
+    that happens not to be theirs."""
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(admin.id), **overrides(family))
+
+    _assert_detail(response, 422, BOOKING_SHAPE_INVALID_ERROR)
+    assert _count(db) == 0
+
+
+def test_a_regular_booking_overlapping_the_admins_evaluation_is_409(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+    assert _post_evaluation(api, user, family, admin).status_code == 201
+
+    response = _post(
+        api,
+        user,
+        family,
+        user_id=str(admin.id),
+        availability_id=None,
+        child_id=str(family.sibling.id),
+        start_time="09:30:00",
+        end_time=TEN_THIRTY,
+    )
+
+    _assert_detail(response, 409, BOOKING_OVERLAPS_ERROR)
+    assert _count(db) == 1
+
+
+def test_a_regular_booking_adjacent_to_the_admins_evaluation_needs_no_gap(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """No gap, no time off, no ceiling: an Admin is checked for overlap and the Location only."""
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+    assert _post_evaluation(api, user, family, admin).status_code == 201
+
+    response = _post(
+        api,
+        user,
+        family,
+        user_id=str(admin.id),
+        availability_id=None,
+        child_id=str(family.sibling.id),
+        start_time=TEN,
+        end_time=ELEVEN,
+    )
+
+    assert response.status_code == 201
+    assert _count(db) == 2
+
+
+def test_an_admins_approved_time_off_does_not_block_a_regular_booking(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A Tutor promoted to Admin keeps their profile and its time off (spec 01); as an Admin
+    neither is consulted."""
+    _make_exception(db, family, status=ExceptionStatus.APPROVED)
+    promoted = _make_user(db, role=UserRole.ADMIN, tutor_id=family.tutor.id)
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(promoted.id), availability_id=None)
+
+    assert response.status_code == 201
+
+
+# --- a Manager with a profile is a Tutor for a Regular booking (#130) ------------------------
+
+
+def test_a_manager_with_a_profile_is_checked_like_a_tutor(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    _make_user(db, role=UserRole.MANAGER, tutor_id=family.tutor.id)
+    _book(db, family)
+    user = _make_user(db)
+
+    warned = _post(api, user, family, start_time=TEN, end_time=ELEVEN)
+    accepted = _post(api, user, family, start_time=TEN_THIRTY, end_time=ELEVEN_THIRTY)
+
+    _assert_warnings(warned, [GAP])
+    assert accepted.status_code == 201
+    assert _row(db, uuid.UUID(accepted.json()["id"])).availability_id == family.availability_id
+
+
+# --- who is bookable as Staff, and the Location shape (#130) ---------------------------------
+
+
+def test_a_developer_as_staff_is_400(api: TestClient, db: Session, family: Family) -> None:
+    """Not bookable (answers.md 01.6): refused like an unknown id, not as a role against a
+    kind, since no kind takes a Developer."""
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(developer.id), availability_id=None)
+
+    _assert_detail(response, 400, REFERENCE_NOT_FOUND_ERROR)
+    assert _count(db) == 0
+
+
+def test_an_inactive_admin_as_staff_is_400(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    admin.is_active = False
+    db.flush()
+    user = _make_user(db)
+
+    response = _post_evaluation(api, user, family, admin)
+
+    _assert_detail(response, 400, REFERENCE_NOT_FOUND_ERROR)
+    assert _count(db) == 0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"location": "in_office"}, id="home_in_office"),
+        pytest.param({"location": "home", "home_id": None}, id="no_home_at_home"),
+    ],
+)
+def test_a_home_against_the_location_is_422(
+    api: TestClient, db: Session, family: Family, overrides: dict[str, Any]
+) -> None:
+    user = _make_user(db)
+
+    response = _post(api, user, family, **overrides)
+
+    _assert_detail(response, 422, BOOKING_SHAPE_INVALID_ERROR)
+    assert _count(db) == 0
+
+
+# --- In office: no travel gap between two office sessions (#132) ----------------------------
+
+
+def test_two_in_office_bookings_back_to_back_are_both_accepted(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+
+    first = _post(api, user, family, location="in_office", home_id=None)
+    second = _post(
+        api,
+        user,
+        family,
+        location="in_office",
+        home_id=None,
+        child_id=str(family.sibling.id),
+        start_time=TEN,
+        end_time=ELEVEN,
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    row = _row(db, uuid.UUID(second.json()["id"]))
+    assert row.location is BookingLocation.IN_OFFICE
+    assert row.home_id is None
+
+
+def test_an_in_office_booking_inside_the_gap_of_a_home_booking_is_the_gap_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """The gap is travel: a home visit on either side needs the full `session_gap_minutes`."""
+    _book(db, family)
+    user = _make_user(db)
+
+    response = _post(
+        api, user, family, location="in_office", home_id=None, start_time=TEN, end_time=ELEVEN
+    )
+
+    _assert_warnings(response, [GAP])
+    assert _count(db) == 1
+
+
+def test_an_in_office_booking_inside_the_gap_of_an_admins_home_booking_is_accepted(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+    assert _post_evaluation(api, user, family, admin).status_code == 201
+
+    response = _post(
+        api,
+        user,
+        family,
+        user_id=str(admin.id),
+        availability_id=None,
+        location="in_office",
+        home_id=None,
+        child_id=str(family.sibling.id),
+        start_time=TEN,
+        end_time=ELEVEN,
+    )
+
+    assert response.status_code == 201
+
+
+def test_a_home_booking_inside_the_gap_of_an_in_office_booking_is_the_gap_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    assert _post(api, user, family, location="in_office", home_id=None).status_code == 201
+
+    response = _post(
+        api, user, family, child_id=str(family.sibling.id), start_time=TEN, end_time=ELEVEN
+    )
+
+    _assert_warnings(response, [GAP])
+    assert _count(db) == 1
+
+
+# --- the warning contract (#151) ------------------------------------------------------------
+
+
+def _warn_three_ways(db: Session, family: Family) -> dict[str, Any]:
+    """A booking that is outside its range, inside another's gap and under approved time off:
+    08:00-09:00 against a 09:00-12:00 range, a 09:00 booking and a whole-day exception."""
+    _book(db, family)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED)
+
+    return {"start_time": "08:00:00", "end_time": NINE}
+
+
+def test_every_failing_warning_is_reported_at_once(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    overrides = _warn_three_ways(db, family)
+
+    response = _post(api, user, family, **overrides)
+
+    _assert_warnings(response, [OUTSIDE_SLOT, GAP, TIME_OFF])
+    assert _count(db) == 1
+
+
+def test_confirming_every_warning_lands_the_booking(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    overrides = _warn_three_ways(db, family)
+
+    response = _post(api, user, family, confirm_warnings=[OUTSIDE_SLOT, GAP, TIME_OFF], **overrides)
+
+    assert response.status_code == 201
+    assert _count(db) == 2
+
+
+def test_confirming_some_warnings_refuses_again_listing_the_rest(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A warning the client did not confirm — a new one, or one it left out — refuses again
+    with a fresh `warnings[]` naming exactly what is still unconfirmed."""
+    user = _make_user(db)
+    overrides = _warn_three_ways(db, family)
+
+    response = _post(api, user, family, confirm_warnings=[OUTSIDE_SLOT, GAP], **overrides)
+
+    _assert_warnings(response, [TIME_OFF])
+    assert _count(db) == 1
+
+
+def test_a_hard_block_refuses_whatever_is_confirmed(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Overlap is never a warning: confirmed codes do not reach it, and the body has no
+    `warnings[]`."""
+    _book(db, family)
+    user = _make_user(db)
+
+    response = _post(
+        api, user, family, confirm_warnings=[OUTSIDE_SLOT, GAP, TIME_OFF, GRADE_CEILING]
+    )
+
+    _assert_detail(response, 409, BOOKING_OVERLAPS_ERROR)
+    assert _count(db) == 1
+
+
+def test_an_unknown_warning_code_is_400(api: TestClient, db: Session, family: Family) -> None:
+    user = _make_user(db)
+
+    response = _post(api, user, family, confirm_warnings=["overlap"])
+
+    assert response.status_code == 400
+    assert "confirm_warnings" in response.json()["detail"]
+    assert _count(db) == 0
+
+
+# --- no WhatsApp on a dashboard create (map decision) ---------------------------------------
+
+
+def test_no_message_is_sent_on_a_dashboard_create_of_either_kind(
+    api: TestClient, db: Session, family: Family, fake_twilio: FakeTwilio
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    regular = _post(api, user, family, booked_by_guardian_id=str(family.guardian.id))
+    evaluation = _post_evaluation(
+        api,
+        user,
+        family,
+        admin,
+        child_id=str(family.sibling.id),
+        start_time=ELEVEN,
+        end_time=TWELVE,
+    )
+
+    assert regular.status_code == 201
+    assert evaluation.status_code == 201
+    assert fake_twilio.sent == []
 
 
 # --- helpers --------------------------------------------------------------------------------
@@ -814,7 +1409,9 @@ def test_a_body_without_home_id_is_400(api: TestClient, db: Session, family: Fam
 def _payload(family: Family, **overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "child_id": str(family.child.id),
-        "tutor_id": str(family.tutor.id),
+        "user_id": str(family.tutor.user_id),
+        "kind": "regular",
+        "location": "home",
         "subject_id": str(family.subject.id),
         "availability_id": str(family.availability_id),
         "home_id": str(family.home.id),
@@ -831,6 +1428,26 @@ def _payload(family: Family, **overrides: Any) -> dict[str, Any]:
 
 def _post(api: TestClient, user: User, family: Family, **overrides: Any) -> Response:
     return api.post("/api/bookings", json=_payload(family, **overrides), headers=_auth(user))
+
+
+def _post_evaluation(
+    api: TestClient, user: User, family: Family, staff: User, **overrides: Any
+) -> Response:
+    """An Evaluation at the child's home with `staff`: no Subject, no slot."""
+    body = _payload(
+        family, user_id=str(staff.id), kind="evaluation", subject_id=None, availability_id=None
+    )
+    body.update(overrides)
+    if body["location"] == "in_office" and "home_id" not in overrides:
+        body["home_id"] = None
+
+    return api.post("/api/bookings", json=body, headers=_auth(user))
+
+
+def _mark_evaluated(db: Session, child: Child, *, by: User) -> None:
+    child.evaluated_at = datetime.datetime.now(tz=datetime.UTC)
+    child.evaluated_by_user_id = by.id
+    db.flush()
 
 
 def _make_family(db: Session) -> Family:
@@ -926,9 +1543,8 @@ def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) ->
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -999,7 +1615,9 @@ def _book(
 ) -> Booking:
     booking = Booking(
         child_id=family.child.id,
-        tutor_id=family.tutor.id,
+        user_id=family.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=family.subject.id,
         availability_id=family.availability_id,
         home_id=family.home.id,
@@ -1017,22 +1635,28 @@ def _book(
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("booking-write-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("booking-write-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("booking-write-password")
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -1041,6 +1665,13 @@ def _row(db: Session, booking_id: uuid.UUID) -> Booking:
     db.expire_all()
 
     return db.execute(select(Booking).where(Booking.id == booking_id)).scalar_one()
+
+
+def _retire(row: object) -> None:
+    """Soft-delete a reference. A Tutor is retired through their user: `tutors.is_active` decides
+    nothing (#130)."""
+    target = row.user if isinstance(row, Tutor) else row
+    target.is_active = False  # type: ignore[attr-defined]
 
 
 def _count(db: Session) -> int:
@@ -1054,3 +1685,15 @@ def _assert_detail(response: Response, expected_status: int, expected_detail: st
     body = response.json()
     assert body == {"detail": expected_detail}
     assert isinstance(body["detail"], str)
+
+
+def _assert_warnings(response: Response, codes: list[str]) -> None:
+    """The warning contract's 409: `detail` plus `warnings[]` with exactly these codes, in rule
+    order, each carrying the same message its hard refusal would."""
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": UNCONFIRMED_WARNINGS_ERROR,
+        "warnings": [
+            {"code": code, "message": WARNING_MESSAGES[WarningCode(code)]} for code in codes
+        ],
+    }

@@ -1,6 +1,6 @@
 """`/api/reminders/week`: the Staff view of one week's Booking reminders. Read-only.
 
-`StaffPrincipal`, so a tutor is 403. No `TutorScope`:
+`OfficePrincipal`, so a tutor is 403. No `TutorScope`:
 the reminders are whole-system and the route reads no tutor-owned table.
 
 `status` is a comma-separated worklist filter (`undeliverable,failed,skipped`). An unknown
@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.enums import ReminderStatus
 from app.schemas.reminder import ReminderPreviewItem, ReminderRowRead, ReminderWeekRead
 from app.services import clock
@@ -53,7 +53,7 @@ StatusFilter = Annotated[frozenset[ReminderStatus] | None, Depends(parse_statuse
 
 @router.get("/week", response_model=ReminderWeekRead)
 def read_week(
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     statuses: StatusFilter,
     week_start: datetime.date | None = None,

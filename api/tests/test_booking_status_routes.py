@@ -10,27 +10,46 @@ import datetime
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
-from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR, ILLEGAL_TRANSITION_ERROR
+from app.routers.booking_status import (
+    BOOKING_CHANGED_ERROR,
+    BOOKING_NOT_FOUND_ERROR,
+    BOOKING_NOT_YOURS_ERROR,
+    CHILD_ALREADY_EVALUATED_ERROR,
+    ILLEGAL_TRANSITION_ERROR,
+    LIVE_EVALUATION_EXISTS_ERROR,
+    OFFICE_ONLY_TRANSITION_ERROR,
+    REVERT_OVERLAPS_ERROR,
+    TOO_EARLY_TO_COMPLETE_ERROR,
+)
+from tests.support import profile_id_of
 from app.security import create_access_token, hash_password
-from app.services.booking_status_service import IllegalTransition, change_status
+from app.services import booking_status_service
+from app.services.booking_status_service import (
+    BookingChanged,
+    IllegalTransition,
+    LiveEvaluationExists,
+    change_status,
+)
 
 STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
@@ -39,12 +58,14 @@ NINE = datetime.time(9, 0)
 TEN = datetime.time(10, 0)
 ELEVEN = datetime.time(11, 0)
 TWELVE = datetime.time(12, 0)
+LONG_AGO = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
 
 LEGAL_TRANSITIONS = [
     (BookingStatus.PENDING, BookingStatus.CONFIRMED),
     (BookingStatus.PENDING, BookingStatus.CANCELLED),
     (BookingStatus.CONFIRMED, BookingStatus.CANCELLED),
     (BookingStatus.CONFIRMED, BookingStatus.COMPLETED),
+    (BookingStatus.COMPLETED, BookingStatus.CONFIRMED),
 ]
 
 ILLEGAL_TRANSITIONS = [
@@ -52,7 +73,6 @@ ILLEGAL_TRANSITIONS = [
     (BookingStatus.CANCELLED, BookingStatus.PENDING),
     (BookingStatus.CANCELLED, BookingStatus.CANCELLED),
     (BookingStatus.COMPLETED, BookingStatus.CANCELLED),
-    (BookingStatus.COMPLETED, BookingStatus.CONFIRMED),
     (BookingStatus.COMPLETED, BookingStatus.COMPLETED),
     (BookingStatus.CONFIRMED, BookingStatus.CONFIRMED),
     (BookingStatus.CONFIRMED, BookingStatus.PENDING),
@@ -98,21 +118,271 @@ def test_cancelling_a_booking_frees_its_range(api: TestClient, db: Session) -> N
     )
     assert response.status_code == 200
 
-    overlapping = Booking(
-        child_id=booking.child_id,
-        tutor_id=booking.tutor_id,
-        subject_id=booking.subject_id,
-        availability_id=booking.availability_id,
-        home_id=booking.home_id,
-        scheduled_date=booking.scheduled_date,
-        start_time=booking.start_time,
-        end_time=booking.end_time,
-        status=BookingStatus.PENDING,
-    )
+    overlapping = _overlapping(booking)
     db.add(overlapping)
     db.flush()
 
     assert _row(db, overlapping.id).status is BookingStatus.PENDING
+
+
+def test_every_successful_change_bumps_updated_at(api: TestClient, db: Session) -> None:
+    booking = _make_booking(db, status=BookingStatus.PENDING)
+    booking.updated_at = LONG_AGO
+    db.flush()
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    assert response.status_code == 200
+    row = _row(db, booking.id)
+    assert row.updated_at > LONG_AGO
+    assert response.json()["updated_at"] == row.updated_at.isoformat().replace("+00:00", "Z")
+
+
+# --- Completed -> Confirmed revert (#152) -------------------------------------------------------
+
+
+def test_a_reverted_booking_is_live_again(api: TestClient, db: Session) -> None:
+    """Mirror of `test_cancelling_a_booking_frees_its_range`: once reverted, the booking is back
+    under the overlap constraint, so an overlapping insert for the same Staff member is refused."""
+    booking = _make_booking(db, status=BookingStatus.COMPLETED)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+    assert response.status_code == 200
+    assert _row(db, booking.id).status is BookingStatus.CONFIRMED
+
+    with pytest.raises(IntegrityError):
+        with db.begin_nested():
+            db.add(_overlapping(booking))
+            db.flush()
+
+
+def test_a_revert_that_would_overlap_is_409(api: TestClient, db: Session) -> None:
+    """Reaches the EXCLUDE itself: the overlapping live booking exists before the revert, and
+    the savepoint turns the constraint's refusal into the 409 without poisoning the session."""
+    booking = _make_booking(db, status=BookingStatus.COMPLETED)
+    db.add(_overlapping(booking))
+    db.flush()
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, REVERT_OVERLAPS_ERROR)
+    assert _row(db, booking.id).status is BookingStatus.COMPLETED
+
+    other = _make_booking(db, status=BookingStatus.COMPLETED)
+    accepted = api.patch(
+        f"/api/bookings/{other.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+    assert accepted.status_code == 200
+
+
+def test_reverting_an_evaluation_lands_for_a_child_not_yet_evaluated(
+    api: TestClient, db: Session
+) -> None:
+    evaluation = _make_evaluation(db, status=BookingStatus.COMPLETED)
+    user = _make_user(db, role=UserRole.MANAGER)
+
+    response = api.patch(
+        f"/api/bookings/{evaluation.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    assert response.status_code == 200
+    assert _row(db, evaluation.id).status is BookingStatus.CONFIRMED
+
+
+def test_reverting_an_evaluation_is_409_when_the_child_is_now_evaluated(
+    api: TestClient, db: Session
+) -> None:
+    evaluation = _make_evaluation(db, status=BookingStatus.COMPLETED)
+    user = _make_user(db, role=UserRole.ADMIN)
+    child = db.get_one(Child, evaluation.child_id)
+    child.evaluated_at = datetime.datetime(2026, 9, 8, 12, 0, tzinfo=datetime.UTC)
+    child.evaluated_by_user_id = user.id
+    db.flush()
+
+    response = api.patch(
+        f"/api/bookings/{evaluation.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, CHILD_ALREADY_EVALUATED_ERROR)
+    assert _row(db, evaluation.id).status is BookingStatus.COMPLETED
+
+
+def test_reverting_an_evaluation_is_409_when_another_live_evaluation_exists(
+    api: TestClient, db: Session
+) -> None:
+    evaluation = _make_evaluation(db, status=BookingStatus.COMPLETED)
+    _make_evaluation(
+        db,
+        status=BookingStatus.CONFIRMED,
+        child_id=evaluation.child_id,
+        start_time=ELEVEN,
+        end_time=TWELVE,
+    )
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{evaluation.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, LIVE_EVALUATION_EXISTS_ERROR)
+    assert _row(db, evaluation.id).status is BookingStatus.COMPLETED
+
+
+def test_confirming_a_pending_evaluation_is_unchanged_once_the_child_is_evaluated(
+    api: TestClient, db: Session
+) -> None:
+    """The Evaluation pre-checks belong to the revert alone: marking a Child Evaluated leaves a
+    live Evaluation untouched (#133), so confirming it afterwards still lands."""
+    evaluation = _make_evaluation(db, status=BookingStatus.PENDING)
+    user = _make_user(db, role=UserRole.ADMIN)
+    child = db.get_one(Child, evaluation.child_id)
+    child.evaluated_at = datetime.datetime(2026, 9, 8, 12, 0, tzinfo=datetime.UTC)
+    child.evaluated_by_user_id = user.id
+    db.flush()
+
+    response = api.patch(
+        f"/api/bookings/{evaluation.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    assert response.status_code == 200
+    assert _row(db, evaluation.id).status is BookingStatus.CONFIRMED
+
+
+def test_the_partial_unique_index_backs_the_live_evaluation_refusal(db: Session) -> None:
+    """The pre-check can be raced past (the Child is not locked); the index cannot. Reached by
+    inserting the second live Evaluation after the service's pre-read would have run."""
+    evaluation = _make_evaluation(db, status=BookingStatus.COMPLETED)
+    rival = _make_evaluation(
+        db,
+        status=BookingStatus.CANCELLED,
+        child_id=evaluation.child_id,
+        start_time=ELEVEN,
+        end_time=TWELVE,
+    )
+    original = booking_status_service._assert_evaluation_may_go_live
+
+    def go_live_then_race(session: Session, row: Booking) -> None:
+        original(session, row)
+        session.execute(
+            update(Booking).where(Booking.id == rival.id).values(status=BookingStatus.CONFIRMED)
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(booking_status_service, "_assert_evaluation_may_go_live", go_live_then_race)
+        with pytest.raises(LiveEvaluationExists):
+            change_status(db, booking_id=evaluation.id, target=BookingStatus.CONFIRMED)
+
+    assert _row(db, evaluation.id).status is BookingStatus.COMPLETED
+
+
+# --- stale-booking refusal (#151) ---------------------------------------------------------------
+
+
+def test_a_matching_expected_updated_at_lets_the_change_land(api: TestClient, db: Session) -> None:
+    booking = _make_booking(db, status=BookingStatus.PENDING)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}",
+        json={"status": "confirmed", "expected_updated_at": booking.updated_at.isoformat()},
+        headers=_bearer(user),
+    )
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).status is BookingStatus.CONFIRMED
+
+
+def test_a_stale_expected_updated_at_is_409_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.PENDING)
+    user = _make_user(db, role=UserRole.ADMIN)
+    stale = booking.updated_at - datetime.timedelta(minutes=1)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}",
+        json={"status": "confirmed", "expected_updated_at": stale.isoformat()},
+        headers=_bearer(user),
+    )
+
+    _assert_detail(response, 409, BOOKING_CHANGED_ERROR)
+    assert _row(db, booking.id).status is BookingStatus.PENDING
+
+
+def test_a_stale_expected_updated_at_refuses_the_replace_path_too(db: Session) -> None:
+    """The bot's reschedule cancels the replaced booking through `change_status` directly; the
+    keyword refuses there the same way, until spec 03 drives it through the bot."""
+    booking = _make_booking(db, status=BookingStatus.CONFIRMED)
+    stale = booking.updated_at - datetime.timedelta(minutes=1)
+
+    with pytest.raises(BookingChanged):
+        change_status(
+            db, booking_id=booking.id, target=BookingStatus.CANCELLED, expected_updated_at=stale
+        )
+
+    assert _row(db, booking.id).status is BookingStatus.CONFIRMED
+
+
+def test_a_naive_expected_updated_at_is_refused_as_invalid(api: TestClient, db: Session) -> None:
+    booking = _make_booking(db, status=BookingStatus.PENDING)
+    user = _make_user(db, role=UserRole.ADMIN)
+    naive = booking.updated_at.replace(tzinfo=None).isoformat()
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}",
+        json={"status": "confirmed", "expected_updated_at": naive},
+        headers=_bearer(user),
+    )
+
+    _assert_detail_shape(response, 400)
+    assert _row(db, booking.id).status is BookingStatus.PENDING
+
+
+def test_the_stale_check_reads_the_locked_row_not_the_session_cache(
+    committed_sessions: sessionmaker[Session],
+) -> None:
+    """The bot loads the booking into its session before calling `change_status`. If the
+    `FOR UPDATE` read handed back that cached row, a change committed in between would compare
+    equal to the value the caller picked and the guard would never fire."""
+    committed = _make_committed_booking(committed_sessions, status=BookingStatus.CONFIRMED)
+    try:
+        with committed_sessions() as caller:
+            # Held for the whole test: the identity map is weak, so an unreferenced row would
+            # drop out of it and the `FOR UPDATE` read would load a fresh one regardless.
+            cached = caller.get_one(Booking, committed.booking_id)
+            picked = cached.updated_at
+
+            with committed_sessions() as office:
+                office.execute(
+                    update(Booking)
+                    .where(Booking.id == committed.booking_id)
+                    .values(updated_at=picked + datetime.timedelta(minutes=1))
+                )
+                office.commit()
+
+            with pytest.raises(BookingChanged):
+                change_status(
+                    caller,
+                    booking_id=committed.booking_id,
+                    target=BookingStatus.CANCELLED,
+                    expected_updated_at=picked,
+                )
+            caller.rollback()
+            assert cached.status is BookingStatus.CONFIRMED
+
+        with committed_sessions() as session:
+            assert session.get_one(Booking, committed.booking_id).status is BookingStatus.CONFIRMED
+    finally:
+        _delete_committed_booking(committed_sessions, committed)
 
 
 # --- illegal transitions ----------------------------------------------------------------------
@@ -261,16 +531,90 @@ def test_a_body_carrying_other_fields_ignores_them(api: TestClient, db: Session)
 # --- RBAC and auth -----------------------------------------------------------------------------
 
 
-def test_tutor_token_is_403(api: TestClient, db: Session) -> None:
-    booking = _make_booking(db, status=BookingStatus.PENDING)
-    user = _make_user(db, role=UserRole.TUTOR, tutor_id=booking.tutor_id)
+def test_a_tutor_completes_their_own_booking_once_it_has_started(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.CONFIRMED)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, booking.user_id))
+    freeze_business_clock(datetime.datetime.combine(DATE, NINE) + datetime.timedelta(minutes=1))
 
     response = api.patch(
-        f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
+        f"/api/bookings/{booking.id}", json={"status": "completed"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert _row(db, booking.id).status is BookingStatus.COMPLETED
+
+
+def test_a_tutor_cannot_complete_before_the_start_time(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.CONFIRMED)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, booking.user_id))
+    freeze_business_clock(datetime.datetime.combine(DATE, NINE) - datetime.timedelta(minutes=1))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "completed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, TOO_EARLY_TO_COMPLETE_ERROR)
+    assert _row(db, booking.id).status is BookingStatus.CONFIRMED
+
+
+def test_a_tutor_cannot_complete_their_own_pending_booking(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.PENDING)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, booking.user_id))
+    freeze_business_clock(datetime.datetime.combine(DATE, TWELVE))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "completed"}, headers=_bearer(user)
+    )
+
+    expected = ILLEGAL_TRANSITION_ERROR.format(current="pending", target="completed")
+    _assert_detail(response, 409, expected)
     assert _row(db, booking.id).status is BookingStatus.PENDING
+
+
+def test_a_tutor_cannot_complete_another_tutors_booking(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.CONFIRMED)
+    other = _make_booking(db, status=BookingStatus.CONFIRMED)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, other.user_id))
+    freeze_business_clock(datetime.datetime.combine(DATE, TWELVE))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "completed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 403, BOOKING_NOT_YOURS_ERROR)
+    assert _row(db, booking.id).status is BookingStatus.CONFIRMED
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        (BookingStatus.PENDING, BookingStatus.CONFIRMED),
+        (BookingStatus.PENDING, BookingStatus.CANCELLED),
+        (BookingStatus.CONFIRMED, BookingStatus.CANCELLED),
+        (BookingStatus.COMPLETED, BookingStatus.CONFIRMED),
+    ],
+)
+def test_a_tutor_may_not_make_an_office_only_move(
+    api: TestClient, db: Session, current: BookingStatus, target: BookingStatus
+) -> None:
+    booking = _make_booking(db, status=current)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, booking.user_id))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": target.value}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 403, OFFICE_ONLY_TRANSITION_ERROR)
+    assert _row(db, booking.id).status is current
 
 
 def test_unauthenticated_is_401(api: TestClient, db: Session) -> None:
@@ -314,7 +658,7 @@ def _make_committed_booking(
         session.commit()
         return _CommittedBooking(
             booking_id=booking.id,
-            tutor_id=booking.tutor_id,
+            tutor_id=profile_id_of(session, booking.user_id),
             child_id=booking.child_id,
             subject_id=booking.subject_id,
             home_id=booking.home_id,
@@ -323,9 +667,11 @@ def _make_committed_booking(
 
 def _delete_committed_booking(sessions: sessionmaker[Session], row: _CommittedBooking) -> None:
     with sessions() as session:
+        tutor_user_id = session.scalar(select(Tutor.user_id).where(Tutor.id == row.tutor_id))
         session.execute(delete(Booking).where(Booking.id == row.booking_id))
         session.execute(delete(TutorAvailability).where(TutorAvailability.tutor_id == row.tutor_id))
         session.execute(delete(Tutor).where(Tutor.id == row.tutor_id))
+        session.execute(delete(User).where(User.id == tutor_user_id))
         session.execute(delete(Child).where(Child.id == row.child_id))
         session.execute(delete(Subject).where(Subject.id == row.subject_id))
         session.execute(delete(Home).where(Home.id == row.home_id))
@@ -335,9 +681,8 @@ def _delete_committed_booking(sessions: sessionmaker[Session], row: _CommittedBo
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -345,14 +690,19 @@ def _make_tutor(db: Session) -> Tutor:
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("booking-status-password"),
-        role=role,
-        tutor_id=tutor_id,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("booking-status-password"),
+            role=role,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("booking-status-password")
+        user.role = role
     db.flush()
     return user
 
@@ -374,7 +724,9 @@ def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
 
     booking = Booking(
         child_id=child.id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject.id,
         availability_id=availability.id,
         home_id=home.id,
@@ -388,13 +740,62 @@ def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
     return booking
 
 
+def _make_evaluation(
+    db: Session,
+    *,
+    status: BookingStatus,
+    child_id: uuid.UUID | None = None,
+    start_time: datetime.time = NINE,
+    end_time: datetime.time = TEN,
+) -> Booking:
+    """An In office Evaluation with a Manager as its Staff member: no Subject, slot or home."""
+    suffix = uuid.uuid4().hex[:12]
+    staff = _make_user(db, role=UserRole.MANAGER)
+    if child_id is None:
+        child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
+        db.add(child)
+        db.flush()
+        child_id = child.id
+
+    booking = Booking(
+        child_id=child_id,
+        user_id=staff.id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=DATE,
+        start_time=start_time,
+        end_time=end_time,
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+    return booking
+
+
+def _overlapping(booking: Booking) -> Booking:
+    """A pending booking for the same Staff member over the same window."""
+    return Booking(
+        child_id=booking.child_id,
+        user_id=booking.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
+        subject_id=booking.subject_id,
+        availability_id=booking.availability_id,
+        home_id=booking.home_id,
+        scheduled_date=booking.scheduled_date,
+        start_time=booking.start_time,
+        end_time=booking.end_time,
+        status=BookingStatus.PENDING,
+    )
+
+
 def _row(db: Session, booking_id: uuid.UUID) -> Booking:
     db.expire_all()
     return db.get_one(Booking, booking_id)
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 

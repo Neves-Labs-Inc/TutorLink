@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
@@ -207,7 +207,7 @@ def test_tutor_q_composes_with_the_is_active_filter(
     api: TestClient, db: Session, roster: Roster
 ) -> None:
     admin = _make_user(db)
-    roster.brook.is_active = False
+    roster.brook.user.is_active = False
     db.flush()
 
     body = api.get("/api/tutors", params={"q": "nadia"}, headers=_auth(admin)).json()
@@ -483,7 +483,13 @@ def test_an_unknown_booking_subject_id_is_an_empty_page_not_an_error(
     )
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 20,
+        "counts_by_kind": {"regular": 0, "evaluation": 0},
+    }
 
 
 def test_a_malformed_booking_subject_id_is_400_not_422(
@@ -500,10 +506,9 @@ def test_a_malformed_booking_subject_id_is_400_not_422(
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        tutor_id=None,
         is_active=True,
     )
     db.add(user)
@@ -513,7 +518,7 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -529,9 +534,10 @@ def _make_subject(db: Session, *, name: str | None = None) -> Subject:
 def _make_tutor(db: Session, *, name: str | None = None) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=name or f"Tutor {suffix}",
+        user=User(
+            email=f"tutor-{suffix}@example.com", name=name or f"Tutor {suffix}", role=UserRole.TUTOR
+        ),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -600,7 +606,9 @@ def _book(
     ).one()
     booking = Booking(
         child_id=child.id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject.id,
         availability_id=availability_id,
         home_id=home.id,

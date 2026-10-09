@@ -34,11 +34,13 @@ names below. They never use raw hex, `oklch()`, or Tailwind palette colours (`re
 | Border / input / ring | `border-border`, `border-input`, `ring-ring/50` | Dividers, field outlines, focus rings |
 | Sidebar | `bg-sidebar`, `bg-sidebar-primary`, `bg-sidebar-accent`, `border-sidebar-border` | Admin sidebar, tutor nav, mobile headers |
 | Chart 1-5 | `chart-*` | Charts only |
+| Calendar: Evaluation | `border-calendar-evaluation` (with `border-dashed`) | Border of an Evaluation entry in the booking calendar. Only through `CalendarEntry`. |
 
 ### Status tones (badges)
 
 There are four tone pairs, each a `-bg` fill with a matching text colour. They are used **only**
-through `StatusBadge`.
+through `StatusBadge`, and as the colour of the Toaster's success `Check` icon. The `pending`
+pair is also used by the booking form's confirmable-warnings block.
 
 | Tone | Classes | Meaning |
 |---|---|---|
@@ -78,8 +80,8 @@ The palette comment in `index.css` records the contrast floor: the lowest pair i
   - `rounded-xl` (14px): cards.
   - `rounded-full`: badges and the unread dot.
   - `rounded-md`: tab pills.
-- Shadow is rare. Cards use `ring-1 ring-foreground/10`, not a shadow. The two shadows in use
-  are `shadow-md` on the picker listbox and `shadow-xl` on the mobile nav drawer.
+- Shadow is rare. Cards use `ring-1 ring-foreground/10`, not a shadow. The shadows in use
+  are `shadow-md` on the picker listbox and the toast, and `shadow-xl` on the mobile nav drawer.
 
 ## 5. Component inventory (owners)
 
@@ -99,10 +101,13 @@ Reuse these before writing anything new. A new primitive is a decision for Frank
 | Async search select | `components/pickers/SearchPicker.tsx` (label + muted `description` line per option) |
 | Chat bubbles | `components/chat/MessageThread.tsx` |
 | App chrome | `components/layout/AppShell.tsx`, `AdminSidebar.tsx`, `TutorNav.tsx` |
+| Transient feedback | `components/shared/Toaster.tsx` (mounted once in `AppShell`) via `useToast()` from `hooks/useToast.ts`; tones `neutral`, `success`; text only, no actions |
 
-There is no toast primitive. Feedback is inline: errors render as `role="alert"` text next to
-the action that failed, and success shows as the updated UI (the slide-over closes, the row
-changes).
+A toast is for a success the user must act on somewhere else ("Booking updated. Let the
+Guardian know.") or an action whose effect is not visible on the current screen ("Invite sent
+to ana@example.com."). When the result is visible in place (a row changes, a slide-over
+closes), there is no toast. Errors are never toasts; they render inline as `role="alert"` text
+next to the action that failed.
 
 ### StatusBadge
 
@@ -117,9 +122,9 @@ Current mapping:
 | Tone | Keys |
 |---|---|
 | confirmed | `confirmed`, `approved`, `active`, `bot` |
-| pending | `pending`, `guardian_link_request`, `reactivation_request` |
+| pending | `pending`, `guardian_link_request`, `reactivation_request`, `no_login` |
 | cancelled | `cancelled`, `rejected`, `inactive`, `stuck`, `parse_error` |
-| completed | `completed`, `human` |
+| completed | `completed`, `human`, `invited` |
 
 **Flag-reason rule.** The tone depends on whether the reason is a bot failure:
 - A **bot failure** (`stuck`, `parse_error`) uses the `cancelled` tone, and `isErrorFlag` returns true.
@@ -168,6 +173,8 @@ Inline empty lists inside a card use the bare phrase "No children" (no full stop
   - the SearchPicker description ("Grade not set · inactive").
 
   No italics, no badge, no extra colour.
+- Exception: a mixed-kind booking list (Bookings, My Sessions, the calendar) marks an
+  Evaluation's missing Subject as `<em>Evaluation</em>`; every other surface shows the dash.
 - Optional form fields say so in the label: `Notes (optional)`. A field that becomes optional
   follows the same pattern, for example `Grade level (optional)`.
 
@@ -182,8 +189,8 @@ Inline empty lists inside a card use the bare phrase "No children" (no full stop
 - Failed chat message: `ring-2 ring-destructive` on the bubble plus a destructive status label.
 
 ### Success
-The UI updates in place (query invalidation). Slide-overs close on success, and there is no
-toast. A multi-view slide-over (Manage subjects) returns to its list view on success instead of
+The UI updates in place (query invalidation). Slide-overs close on success. A toast is added
+only under the §5 rule. A multi-view slide-over (Manage subjects) returns to its list view on success instead of
 closing.
 
 ## 7. Interaction and motion
@@ -200,7 +207,10 @@ closing.
 - **Colour changes.** `transition-colors` at the Tailwind default (150ms).
 - **Overlays.** Dialogs and slide-overs use `tw-animate-css` enter/exit on Radix
   `data-[state]`. The overlay fades. ConfirmDialog fades and zooms 95%. SlideOver fades and
-  slides in from the right. All of them set `motion-reduce:animate-none`.
+  slides in from the right. All of them set `motion-reduce:animate-none`. The Toaster enters
+  with `fade-in-0 slide-in-from-bottom-2` over 200ms `ease-out` and exits with `fade-out-0` over
+  150ms; swipe uses the Radix `--radix-toast-swipe-move-x` var. It sits at `z-[60]`, above
+  dialogs and slide-overs.
 - **Mobile nav drawer.** `transition-transform duration-200 ease-out`, with the backdrop on
   `transition-opacity duration-200 ease-out` and `motion-reduce:transition-none`.
 - **Rules for new work.** Motion is CSS only. Animate `transform` and `opacity`. Durations

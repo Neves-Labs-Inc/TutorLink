@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR
 from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
 from app.models.enums import ConsentAction, Language, ReminderStatus, UserRole
@@ -56,14 +56,14 @@ def at(freeze_business_clock: Callable[[datetime.datetime], None]) -> Callable[.
 def _staff(db: Session, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password="not-a-hash",
         role=role,
         is_active=True,
     )
     db.add(user)
     db.flush()
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -363,4 +363,4 @@ def test_a_tutor_is_refused(api: TestClient, db: Session, at: Callable[..., None
     response = api.get(PATH, headers=_staff(db, UserRole.TUTOR))
 
     assert response.status_code == 403
-    assert response.json() == {"detail": STAFF_REQUIRED_ERROR}
+    assert response.json() == {"detail": OFFICE_REQUIRED_ERROR}

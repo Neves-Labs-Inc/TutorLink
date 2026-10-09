@@ -1,8 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -10,25 +9,33 @@ from app.models.enums import UserRole, user_role_enum
 from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
+    from app.models.booking import Booking
     from app.models.tutor import Tutor
 
 
 class User(HasID, HasTimestamps, HasActiveFlag, Base):
+    """The one record of a person. A Tutor or Manager's teaching profile hangs off it through
+    `profile`; an Admin or Developer has none."""
+
     __tablename__ = "users"
     __table_args__ = (Index("ix_users_email_role", "email", "role"),)
 
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    # Independent of `tutors.name` once set: nothing derives or syncs it.
-    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # True while `display_name` is the email's local part rather than a chosen name, so a
-    # Guardian is never shown it (#109). Setting a name clears it.
-    display_name_is_default: Mapped[bool] = mapped_column(
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # True while `name` is the email's local part rather than a chosen name, so a Guardian is
+    # never shown it (#109). Setting a name clears it.
+    name_is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL means the person cannot sign in: a Tutor the office created without a login.
+    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(user_role_enum, nullable=False)
-    tutor_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tutors.id"), nullable=True
-    )
 
-    tutor: Mapped["Tutor | None"] = relationship(back_populates="users")
+    profile: Mapped["Tutor | None"] = relationship(back_populates="user", uselist=False)
+    # The sessions this person is the Staff member of (#130).
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="staff")
+
+    @property
+    def profile_id(self) -> uuid.UUID | None:
+        """The teaching profile's id — what tutor scoping and the access token key on."""
+        return None if self.profile is None else self.profile.id

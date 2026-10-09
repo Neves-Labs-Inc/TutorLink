@@ -32,6 +32,8 @@ from app.models.message import Message
 from app.models.system_setting import SystemSetting
 from app.services.rate_limit_service import (
     EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_IP_WINDOW_SECONDS_SETTING,
     IP_WINDOW_SECONDS_SETTING,
 )
 from app.services import retention_scheduler
@@ -127,6 +129,24 @@ def test_login_attempts_are_reaped_only_past_the_larger_of_the_two_windows(db: S
 
     assert deleted == 1
     assert _login_attempt_ids(db) >= {inside_larger_window, fresh}
+    assert stale not in _login_attempt_ids(db)
+
+
+def test_login_attempts_are_reaped_only_past_the_largest_forgot_window(db: Session) -> None:
+    # Both login windows at 15 minutes and the forgot email window at an hour: a row 30 minutes
+    # old is past every login window and survives only if the reaper counts the forgot ones.
+    _set_int_setting(db, IP_WINDOW_SECONDS_SETTING, 15 * 60)
+    _set_int_setting(db, EMAIL_WINDOW_SECONDS_SETTING, 15 * 60)
+    _set_int_setting(db, FORGOT_IP_WINDOW_SECONDS_SETTING, 15 * 60)
+    _set_int_setting(db, FORGOT_EMAIL_WINDOW_SECONDS_SETTING, 60 * 60)
+    now = datetime.datetime.now(datetime.UTC)
+    stale = _add_login_attempt(db, attempted_at=now - datetime.timedelta(hours=2))
+    inside_forgot_window = _add_login_attempt(db, attempted_at=now - datetime.timedelta(minutes=30))
+
+    deleted = reap_expired_login_attempts(db)
+
+    assert deleted == 1
+    assert inside_forgot_window in _login_attempt_ids(db)
     assert stale not in _login_attempt_ids(db)
 
 

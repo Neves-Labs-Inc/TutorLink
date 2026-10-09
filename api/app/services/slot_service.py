@@ -35,9 +35,11 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import ExceptionStatus
+from app.models.enums import AvailabilityMode, BookingLocation, ExceptionStatus
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
+from app.models.user import User
+from app.services.tutor_service import PROFILE_ROLES
 from app.services.scheduling_service import (
     LeadTimeNotMet,
     SchedulingSettings,
@@ -47,9 +49,20 @@ from app.services.scheduling_service import (
     load_scheduling_settings,
     overlaps,
     overlaps_within_gap,
+    travel_gap_minutes,
 )
 
 type TimeWindow = tuple[datetime.time, datetime.time]
+type BookingWindow = tuple[datetime.time, datetime.time, BookingLocation]
+
+# Which Locations a range's `mode` lets the bot offer it for (#132). A bot-only restriction:
+# `booking_write_service` does not check it, so the office can book any Location from the
+# dashboard, and `find_available_slots` with `location=None` reads every range the same way.
+MODE_LOCATIONS: dict[AvailabilityMode, frozenset[BookingLocation]] = {
+    AvailabilityMode.TRAVELER: frozenset({BookingLocation.HOME}),
+    AvailabilityMode.ANYWHERE: frozenset({BookingLocation.HOME, BookingLocation.IN_OFFICE}),
+    AvailabilityMode.ONLY_OFFICE: frozenset({BookingLocation.IN_OFFICE}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +98,15 @@ def find_available_slots(
     date: datetime.date,
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
+    location: BookingLocation | None = None,
 ) -> SlotSearchResult:
     """The cap is applied last, after every subtraction and after the sort, so `total` is the
     number that matched and `items` is the earliest few of them.
+
+    `location` is the bot's chosen Location: only ranges whose `mode` allows it produce slots,
+    and the neighbour test against an In office booking relaxes to bare overlap for an In
+    office candidate (`travel_gap_minutes`). `None` is the dashboard's call: every range, and
+    the full gap against every booking, as before the parameter existed.
     """
     settings = load_scheduling_settings(db)
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
@@ -99,9 +118,12 @@ def find_available_slots(
     # `date.weekday()` is 0 = Monday … 6 = Sunday, which is the encoding `tutor_availability`
     # stores (`models/availability.py:32`). Never `isoweekday()`, which makes Monday 1, and
     # never PostgreSQL's `EXTRACT(DOW)`, which makes Sunday 0.
-    ranges = _active_ranges(db, tutor_ids=tutor_ids, day_of_week=date.weekday())
+    ranges = _active_ranges(db, tutor_ids=tutor_ids, day_of_week=date.weekday(), location=location)
     whole_day_off, exception_windows = _approved_exceptions(db, tutor_ids=tutor_ids, date=date)
     booking_windows = _live_booking_windows(db, tutor_ids=tutor_ids, date=date)
+    # With no Location chosen the candidate is treated as a home visit, which keeps the full
+    # gap against every neighbour: today's answer, and the stricter of the two.
+    candidate_location = location if location is not None else BookingLocation.HOME
 
     open_slots: list[OpenSlot] = []
     for row in ranges:
@@ -130,6 +152,7 @@ def find_available_slots(
                 date=date,
                 now=now,
                 settings=settings,
+                location=candidate_location,
                 exceptions=exception_windows.get(row.tutor_id, ()),
                 bookings=booking_windows.get(row.tutor_id, ()),
             )
@@ -144,6 +167,32 @@ def find_available_slots(
     )
 
 
+def allowed_locations(
+    db: Session,
+    *,
+    subject_id: uuid.UUID,
+    child_id: uuid.UUID | None,
+    date: datetime.date,
+    tutor_id: uuid.UUID | None,
+    now: datetime.datetime,
+) -> frozenset[BookingLocation]:
+    """The Locations the bot may ask about on `date`: the union over the active ranges, on that
+    weekday, of the qualified Tutors (`tutor_id=None` is every one of them).
+
+    Ranges only. Approved exceptions and live bookings are the slot search's business: a Tutor
+    on a whole-day exception still allows the Location, and the bot then finds no slots and
+    says so. The window gate is the same one `find_available_slots` applies, so a date it would
+    refuse is refused here too.
+    """
+    settings = load_scheduling_settings(db)
+    assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
+
+    names = _qualified_tutor_names(db, subject_id=subject_id, child_id=child_id, tutor_id=tutor_id)
+    ranges = _active_ranges(db, tutor_ids=list(names), day_of_week=date.weekday(), location=None)
+
+    return frozenset().union(*(MODE_LOCATIONS[row.mode] for row in ranges))
+
+
 def _qualified_tutor_names(
     db: Session,
     *,
@@ -152,7 +201,12 @@ def _qualified_tutor_names(
     grade_level: int | None = None,
     tutor_id: uuid.UUID | None,
 ) -> dict[uuid.UUID, str]:
-    """Active tutors who teach `subject_id`, at a ceiling that reaches the Child or the grade.
+    """Active Tutors and Managers who teach `subject_id`, at a ceiling that reaches the Child
+    or the grade.
+
+    Active is the person's `users.is_active`, and the role is checked too: an Admin keeps the
+    profile they had as a Tutor (`user_service`) but is no longer offered (#130). Names are the
+    person's.
 
     The ceiling is matched one of three ways:
 
@@ -176,11 +230,13 @@ def _qualified_tutor_names(
     unsatisfiable filter.
     """
     statement = (
-        select(Tutor.id, Tutor.name)
+        select(Tutor.id, User.name)
+        .join(User, User.id == Tutor.user_id)
         .join(TutorSubject, TutorSubject.tutor_id == Tutor.id)
         .join(Subject, Subject.id == TutorSubject.subject_id)
         .where(
-            Tutor.is_active.is_(True),
+            User.is_active.is_(True),
+            User.role.in_(PROFILE_ROLES),
             Subject.id == subject_id,
             Subject.is_active.is_(True),
         )
@@ -199,22 +255,30 @@ def _qualified_tutor_names(
 
 
 def _active_ranges(
-    db: Session, *, tutor_ids: list[uuid.UUID], day_of_week: int
+    db: Session,
+    *,
+    tutor_ids: list[uuid.UUID],
+    day_of_week: int,
+    location: BookingLocation | None,
 ) -> list[TutorAvailability]:
     """Step 1's raw material. `is_active = false` is a withdrawn slot and is never offered.
 
     Without that filter the endpoint keeps offering a soft-deleted range that rule 1 of
     `POST /api/bookings` then refuses with a 400 — #44 item 3.
+
+    `location` keeps only the ranges whose `mode` allows it (`MODE_LOCATIONS`); `None` keeps
+    every mode.
     """
-    return list(
-        db.scalars(
-            select(TutorAvailability).where(
-                TutorAvailability.tutor_id.in_(tutor_ids),
-                TutorAvailability.is_active.is_(True),
-                TutorAvailability.day_of_week == day_of_week,
-            )
-        ).all()
+    statement = select(TutorAvailability).where(
+        TutorAvailability.tutor_id.in_(tutor_ids),
+        TutorAvailability.is_active.is_(True),
+        TutorAvailability.day_of_week == day_of_week,
     )
+    if location is not None:
+        allowing_modes = [mode for mode, allowed in MODE_LOCATIONS.items() if location in allowed]
+        statement = statement.where(TutorAvailability.mode.in_(allowing_modes))
+
+    return list(db.scalars(statement).all())
 
 
 def _approved_exceptions(
@@ -256,19 +320,24 @@ def _approved_exceptions(
 
 def _live_booking_windows(
     db: Session, *, tutor_ids: list[uuid.UUID], date: datetime.date
-) -> dict[uuid.UUID, list[TimeWindow]]:
-    """Step 3's rows. `LIVE_BOOKING_STATUSES` is the one definition of a booking that counts."""
+) -> dict[uuid.UUID, list[BookingWindow]]:
+    """Step 3's rows, keyed by profile. `LIVE_BOOKING_STATUSES` is the one definition of a
+    booking that counts. A booking names its Staff member as a user (#130), so the profile is
+    reached through `tutors.user_id`. Each window carries the booking's Location, which decides
+    the travel gap a candidate needs from it."""
     rows = db.execute(
-        select(Booking.tutor_id, Booking.start_time, Booking.end_time).where(
-            Booking.tutor_id.in_(tutor_ids),
+        select(Tutor.id, Booking.start_time, Booking.end_time, Booking.location)
+        .join(Booking, Booking.user_id == Tutor.user_id)
+        .where(
+            Tutor.id.in_(tutor_ids),
             Booking.scheduled_date == date,
             Booking.status.in_(LIVE_BOOKING_STATUSES),
         )
     ).all()
 
-    windows: dict[uuid.UUID, list[TimeWindow]] = {}
-    for tutor, start_time, end_time in rows:
-        windows.setdefault(tutor, []).append((start_time, end_time))
+    windows: dict[uuid.UUID, list[BookingWindow]] = {}
+    for tutor, start_time, end_time, location in rows:
+        windows.setdefault(tutor, []).append((start_time, end_time, location))
 
     return windows
 
@@ -280,23 +349,32 @@ def _is_offerable(
     date: datetime.date,
     now: datetime.datetime,
     settings: SchedulingSettings,
+    location: BookingLocation,
     exceptions: Iterable[TimeWindow],
-    bookings: Iterable[TimeWindow],
+    bookings: Iterable[BookingWindow],
 ) -> bool:
     # Step 2 subtracts exceptions by BARE overlap and step 3 subtracts bookings by
     # GAP-EXPANDED overlap. The two comparisons differ on purpose and are not to be reconciled:
     # rule 4 of `POST /api/bookings` blocks on bare overlap with an approved exception while
-    # rule 3 refuses anything less than `session_gap_minutes` clear of a live booking, and this
+    # rule 3 refuses anything less than the travel gap clear of a live booking, and this
     # endpoint has to read the same rows the same way the write path does or it offers slots
     # the write path rejects (#44 item 1). Both inequalities inside those helpers are strict,
-    # so a slot with exactly one gap of clearance is still offered.
+    # so a slot with exactly one gap of clearance is still offered. The travel gap is
+    # `travel_gap_minutes`, the helper rule 3 (`_gap_encroached`) asks too: none between two In
+    # office sessions, the full `session_gap_minutes` whenever either side is a home (#132).
     blocked = any(
         overlaps(start, end, window_start, window_end) for window_start, window_end in exceptions
     ) or any(
         overlaps_within_gap(
-            start, end, window_start, window_end, gap_minutes=settings.session_gap_minutes
+            start,
+            end,
+            window_start,
+            window_end,
+            gap_minutes=travel_gap_minutes(
+                location, window_location, gap_minutes=settings.session_gap_minutes
+            ),
         )
-        for window_start, window_end in bookings
+        for window_start, window_end, window_location in bookings
     )
 
     return not blocked and _lead_time_met(

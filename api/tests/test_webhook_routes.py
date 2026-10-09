@@ -976,7 +976,7 @@ def _published(events: list[BroadcastEvent]) -> list[tuple[str, str, str]]:
 def _taken_over_conversation(db: Session) -> Conversation:
     holder = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("webhook-password"),
         role=UserRole.ADMIN,
     )
@@ -1005,7 +1005,7 @@ def _admin_message(db: Session) -> Message:
     db.flush()
     holder = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("webhook-password"),
         role=UserRole.ADMIN,
     )

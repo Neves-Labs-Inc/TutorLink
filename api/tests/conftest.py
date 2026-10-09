@@ -10,12 +10,17 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
-# Imported, not `pytest_plugins`: only the rootdir conftest may declare plugins.
+# Imported, not `pytest_plugins`: only the rootdir conftest may declare plugins. `fake_mail` is
+# autouse: no test may reach a real SMTP server, and a send from a background task would not
+# show up in a test that forgot to request the fixture.
+from tests.fake_mail import fake_mail  # noqa: F401
 from tests.fake_twilio import fake_twilio  # noqa: F401
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
 os.environ.setdefault("COOKIE_SECURE", "false")
+# Emailed links can be built (`mail_service.public_url`) without configuring SMTP.
+os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 
 
 @pytest.fixture
@@ -139,6 +144,10 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
     from app.services.rate_limit_service import (
         EMAIL_MAX_ATTEMPTS_SETTING,
         EMAIL_WINDOW_SECONDS_SETTING,
+        FORGOT_EMAIL_MAX_ATTEMPTS_SETTING,
+        FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
+        FORGOT_IP_MAX_ATTEMPTS_SETTING,
+        FORGOT_IP_WINDOW_SECONDS_SETTING,
         IP_MAX_ATTEMPTS_SETTING,
         IP_WINDOW_SECONDS_SETTING,
     )
@@ -157,6 +166,10 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         IP_WINDOW_SECONDS_SETTING: "900",
         EMAIL_MAX_ATTEMPTS_SETTING: "5",
         EMAIL_WINDOW_SECONDS_SETTING: "900",
+        FORGOT_IP_MAX_ATTEMPTS_SETTING: "10",
+        FORGOT_IP_WINDOW_SECONDS_SETTING: "900",
+        FORGOT_EMAIL_MAX_ATTEMPTS_SETTING: "3",
+        FORGOT_EMAIL_WINDOW_SECONDS_SETTING: "3600",
         DEFAULT_COUNTRY_CODE_SETTING: "1",
         SESSION_LENGTH_SETTING: "60",
         SESSION_GAP_SETTING: "30",

@@ -24,7 +24,15 @@ from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import BookingStatus, FlagReason, Language, UserRole
+from app.models.enums import (
+    AvailabilityMode,
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    FlagReason,
+    Language,
+    UserRole,
+)
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -273,7 +281,7 @@ def test_a_spanish_name_staff_set_through_the_api_is_the_one_the_bot_shows(
     world = _make_world(db, name_es=None)
     manager = User(
         email=f"manager-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Mia Manager",
+        name="Mia Manager",
         hashed_password="unused",
         role=UserRole.MANAGER,
         is_active=True,
@@ -519,8 +527,8 @@ def test_hola_at_the_webhook_stores_spanish_on_the_conversation(
 def test_a_spanish_guardian_books_a_session_in_spanish(
     whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
 ) -> None:
-    tutor = spanish.tutor.name
-    slot = format_slot_label(format_time_range(NINE, TEN, "es"), tutor, "es")
+    tutor = spanish.tutor.user.name
+    slot = format_slot_label(format_time_range(NINE, TEN, "es"), tutor, "en Home", "es")
     date = format_date(DATE, "es")
 
     replies = [
@@ -547,10 +555,46 @@ def test_a_spanish_guardian_books_a_session_in_spanish(
     assert booking.child_id == spanish.client.child_id
     assert booking.home_id == spanish.client.home_id
     assert booking.subject_id == spanish.subject.id
-    assert booking.tutor_id == spanish.tutor.id
+    assert booking.user_id == spanish.tutor.user_id
     assert booking.booked_by_guardian_id == spanish.client.guardian_id
     assert (booking.scheduled_date, booking.start_time) == (DATE, NINE)
     assert whatsapp.conversation().language is Language.ES
+
+
+def test_a_spanish_guardian_is_asked_where_and_books_at_the_office_in_spanish(
+    whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
+) -> None:
+    """One home and a Home or office range: the Location question, its office option and the
+    booked reply all in Spanish (#132)."""
+    db.get_one(TutorAvailability, spanish.availability_id).mode = AvailabilityMode.ANYWHERE
+    db.flush()
+    tutor = spanish.tutor.user.name
+    slot = format_slot_label(
+        format_time_range(NINE, TEN, "es"), tutor, render("AT_OFFICE", "es"), "es"
+    )
+    date = format_date(DATE, "es")
+
+    replies = [
+        whatsapp.say("Hola"),
+        whatsapp.say("quiero reservar una sesión", intent=BotIntent.BOOK, language="es"),
+        whatsapp.say("1", value="1"),
+        whatsapp.say("1", value="1", language="es"),
+        whatsapp.say("el miércoles", value=DATE.isoformat(), language="es"),
+        whatsapp.say("2", value="2", language="es"),
+        whatsapp.say("1", value="1"),
+        whatsapp.say("sí", value="yes", language="es"),
+    ]
+
+    assert replies[4:] == [
+        f"{render('ASK_WHERE', 'es')}\n1. Home\n2. {render('OFFICE_OPTION', 'es')}",
+        f"{render('ASK_SLOT', 'es', date=date)}\n1. {slot}",
+        render("CONFIRM_SLOT", "es", label=slot, date=date),
+        render("BOOKING_CONFIRMED", "es", label=slot, date=date),
+    ]
+    assert "en la oficina" in replies[-1]
+    booking = db.execute(select(Booking)).scalar_one()
+    assert booking.location is BookingLocation.IN_OFFICE
+    assert booking.home_id is None
 
 
 def test_a_spanish_guardian_cancels_a_session_in_spanish(
@@ -586,7 +630,9 @@ def test_a_spanish_guardian_moves_a_session_in_spanish(
 ) -> None:
     original = _make_booking(db, spanish, start=FOUR_PM)
     line = _session_line(spanish, start=FOUR_PM, end=FIVE_PM)
-    slot = format_slot_label(format_time_range(NINE, TEN, "es"), spanish.tutor.name, "es")
+    slot = format_slot_label(
+        format_time_range(NINE, TEN, "es"), spanish.tutor.user.name, "en Home", "es"
+    )
     date = format_date(DATE, "es")
 
     replies = [
@@ -635,9 +681,10 @@ def _make_world(db: Session, *, name_es: str | None) -> _World:
     suffix = uuid.uuid4().hex[:12]
     subject = Subject(name=f"Math {suffix}", name_es=name_es)
     tutor = Tutor(
-        name=f"Mr. Lee {suffix[:4]}",
+        user=User(
+            email=f"tutor-{suffix}@example.com", name=f"Mr. Lee {suffix[:4]}", role=UserRole.TUTOR
+        ),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add_all([subject, tutor])
     db.flush()
@@ -661,7 +708,9 @@ def _make_booking(db: Session, world: SpanishWorld, *, start: datetime.time) -> 
     end = (datetime.datetime.combine(DATE, start) + datetime.timedelta(hours=1)).time()
     booking = Booking(
         child_id=world.client.child_id,
-        tutor_id=world.tutor.id,
+        user_id=world.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject.id,
         availability_id=world.availability_id,
         home_id=world.client.home_id,
@@ -683,6 +732,7 @@ def _session_line(world: SpanishWorld, *, start: datetime.time, end: datetime.ti
         format_time_range(start, end, "es"),
         SPANISH_SUBJECT,
         CHILD_NAME,
-        world.tutor.name,
+        world.tutor.user.name,
+        "en Home",
         "es",
     )

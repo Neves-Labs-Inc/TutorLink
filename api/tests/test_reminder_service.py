@@ -26,6 +26,8 @@ from app.models.booking_reminder import BookingReminder
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
+    BookingKind,
+    BookingLocation,
     BookingStatus,
     ConsentAction,
     ConsentSource,
@@ -132,7 +134,9 @@ class World:
         self.db.add(
             Booking(
                 child_id=child.id,
-                tutor_id=self._tutor.id,
+                user_id=self._tutor.user_id,
+                kind=BookingKind.REGULAR,
+                location=BookingLocation.HOME,
                 subject_id=self._subject.id,
                 availability_id=self._availability.id,
                 home_id=self._home.id,
@@ -191,7 +195,7 @@ class World:
         if self._staff is None:
             self._staff = User(
                 email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-                display_name="Test Staff",
+                name="Test Staff",
                 hashed_password="not-a-hash",
                 role=UserRole.ADMIN,
             )
@@ -206,7 +210,8 @@ class World:
         suffix = uuid.uuid4().hex[:12]
         self._home = Home(label="Home", address="1 Test Street", access_code="1234")
         self._tutor = Tutor(
-            name=f"Tutor {suffix}", phone_number=f"+1{suffix[:10]}", email=f"t-{suffix}@x.com"
+            user=User(email=f"t-{suffix}@x.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
+            phone_number=f"+1{suffix[:10]}",
         )
         self._subject = Subject(name=f"Subject {suffix}")
         self.db.add_all([self._home, self._tutor, self._subject])
@@ -350,6 +355,28 @@ def test_a_live_booking_that_week_makes_the_child_ineligible(
     guardian = world.guardian()
     child = world.child(guardian)
     world.booking(child, on=WEEK_START + datetime.timedelta(days=offset), status=status)
+
+    assert candidate_for(db, guardian) is None
+
+
+def test_a_live_evaluation_that_week_makes_the_child_ineligible(world: World, db: Session) -> None:
+    """An Evaluation is a booked session like any other: the reminder is for a Child with
+    nothing booked, and one already coming in for an Evaluation has something."""
+    guardian = world.guardian()
+    child = world.child(guardian)
+    db.add(
+        Booking(
+            child_id=child.id,
+            user_id=world.staff().id,
+            kind=BookingKind.EVALUATION,
+            location=BookingLocation.IN_OFFICE,
+            scheduled_date=WEEK_START,
+            start_time=datetime.time(16, 0),
+            end_time=datetime.time(17, 0),
+            status=BookingStatus.CONFIRMED,
+        )
+    )
+    db.flush()
 
     assert candidate_for(db, guardian) is None
 

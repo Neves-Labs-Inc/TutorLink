@@ -75,7 +75,7 @@ def committed(committed_sessions: sessionmaker[Session]) -> Generator[Committed,
             new_number = _fresh_number(session)
         staff = User(
             email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-            display_name="Test Staff",
+            name="Test Staff",
             hashed_password="not-a-hash",
             role=UserRole.ADMIN,
         )

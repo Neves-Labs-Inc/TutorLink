@@ -3,7 +3,7 @@
 A thin HTTP shell over `client_service`, matching `users.py`: the service raises domain
 exceptions, this maps them to status codes and owns the commit.
 
-`StaffPrincipal` everywhere and `TutorScope` nowhere. The RBAC table
+`OfficePrincipal` everywhere and `TutorScope` nowhere. The RBAC table
 (`docs/api-design.md:283`) gives tutors no access to any client route, so there is no tutor
 filter to apply — and arming the unapplied-scope guard on a route that has nothing to pass it
 turns every query here into a 500.
@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.schemas.client import (
     ChildRead,
     ClientCreate,
@@ -57,7 +57,7 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 @router.get("", response_model=Page[ClientSummary])
 def list_all(
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     is_active: bool = True,
     phone_number: str | None = None,
@@ -86,7 +86,7 @@ def list_all(
 
 
 @router.get("/{client_id}", response_model=ClientRead)
-def read_one(client_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ClientRead:
+def read_one(client_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> ClientRead:
     try:
         found = get_client(db, client_id=client_id)
     except ClientNotFound as exc:
@@ -96,7 +96,7 @@ def read_one(client_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> Clien
 
 
 @router.post("", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
-def create(payload: ClientCreate, user: StaffPrincipal, db: DbSession) -> ClientRead:
+def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> ClientRead:
     try:
         created = create_client(
             db,
@@ -116,7 +116,7 @@ def create(payload: ClientCreate, user: StaffPrincipal, db: DbSession) -> Client
 
 @router.patch("/{client_id}", response_model=ClientRead)
 def update(
-    client_id: uuid.UUID, payload: ClientUpdate, user: StaffPrincipal, db: DbSession
+    client_id: uuid.UUID, payload: ClientUpdate, user: OfficePrincipal, db: DbSession
 ) -> ClientRead:
     try:
         updated = update_client(

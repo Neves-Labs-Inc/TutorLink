@@ -20,7 +20,7 @@ import {
 import type { ChildDetail, ChildLevel, ChildSummary, Evaluated } from '@/lib/queries/children'
 import type { Subject } from '@/lib/queries/subjects'
 
-const STAFF = { id: 'staff-1', display_name: 'Maria Lopez' }
+const STAFF = { id: 'staff-1', name: 'Maria Lopez' }
 const EVALUATED: Evaluated = { at: '2026-10-02T12:00:00Z', by: STAFF }
 
 const level = (overrides: Partial<ChildLevel> = {}): ChildLevel => ({

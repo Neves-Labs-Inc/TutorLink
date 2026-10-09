@@ -133,6 +133,22 @@ describe('nextSessionLabel', () => {
     expect(nextSessionLabel(row)).toBe('5 Oct 2026 · 9:00 AM · Math with Sarah Miller')
   })
 
+  it('reads "Evaluation with {tutor}" when the next session is an Evaluation', () => {
+    const row: ChildSummary = {
+      ...BASE_ROW,
+      next_session: {
+        id: 'b1',
+        scheduled_date: '2026-10-05',
+        start_time: '09:00:00',
+        end_time: '10:00:00',
+        tutor: { id: 't1', name: 'Sarah Miller' },
+        subject: null,
+      },
+    }
+
+    expect(nextSessionLabel(row)).toBe('5 Oct 2026 · 9:00 AM · Evaluation with Sarah Miller')
+  })
+
   it('falls back to "None scheduled" when there is none', () => {
     expect(nextSessionLabel(BASE_ROW)).toBe('None scheduled')
   })

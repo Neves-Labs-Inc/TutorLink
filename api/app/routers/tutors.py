@@ -9,28 +9,34 @@ would otherwise 500 the request (`dependencies.py:237-255`).
 row's owner is its own id, so the check is exact — and doing it first is what makes a tutor
 asking for an id that does not exist get 403 rather than a 404 that discloses non-existence.
 
-The write routes take `StaffPrincipal` and deliberately **not** `TutorScope`: they are
-admin-only, they have no filter to apply, and an unread scope would turn every one of them into
-a 500 the moment it touched `tutors`.
+The write routes take `OfficePrincipal` and deliberately **not** `TutorScope`: they are
+Office-only, they have no filter to apply, and an unread scope would turn every one of them into
+a 500 the moment it touched `tutors`. A profile edit is an account edit (one record per person),
+so `PATCH` and `DELETE` also apply `tutor_service.assert_may_write_person`: a Manager may write
+Tutors only, and a Developer's account is a Developer's to write. A login email is narrower
+still: only an Admin or Developer may change one, so a Manager's `PATCH` carrying `email` is 403.
 
 `POST /{tutor_id}/subjects` and its `DELETE` live in `routers/tutor_subjects.py`, which mounts
 them on this same prefix.
 """
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal, Principal, TutorScope, assert_can_access_tutor
+from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.models.tutor import Tutor
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.tutor import TutorCreate, TutorRead, TutorSubjectRead, TutorUpdate
+from app.services.name_rules import InvalidName
 from app.services.phone_service import InvalidPhoneNumber
 from app.services.tutor_service import (
+    TutorAccountForbidden,
     TutorEmailTaken,
     TutorNotFound,
     TutorPhoneNumberTaken,
@@ -47,6 +53,7 @@ EMAIL_TAKEN_ERROR = "A tutor with that email already exists"
 PHONE_NUMBER_TAKEN_ERROR = "A tutor with that phone number already exists"
 UNIQUE_VIOLATION_ERROR = "A tutor with that email or phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
+ACCOUNT_FORBIDDEN_ERROR = "Not permitted to change that person's account"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -56,11 +63,12 @@ router = APIRouter(prefix="/api/tutors", tags=["tutors"])
 def _read(tutor: Tutor) -> TutorRead:
     return TutorRead(
         id=tutor.id,
-        name=tutor.name,
-        email=tutor.email,
+        user_id=tutor.user_id,
+        name=tutor.user.name,
+        email=tutor.user.email,
         phone_number=tutor.phone_number,
         bio=tutor.bio,
-        is_active=tutor.is_active,
+        is_active=tutor.user.is_active,
         subjects=[
             TutorSubjectRead(
                 subject_id=assignment.subject_id,
@@ -120,7 +128,7 @@ def read_one(tutor_id: uuid.UUID, user: Principal, db: DbSession) -> TutorRead:
 
 
 @router.post("", response_model=TutorRead, status_code=status.HTTP_201_CREATED)
-def create(payload: TutorCreate, user: StaffPrincipal, db: DbSession) -> TutorRead:
+def create(payload: TutorCreate, user: OfficePrincipal, db: DbSession) -> TutorRead:
     try:
         created = create_tutor(
             db,
@@ -129,6 +137,9 @@ def create(payload: TutorCreate, user: StaffPrincipal, db: DbSession) -> TutorRe
             phone_number=payload.phone_number,
             bio=payload.bio,
         )
+    except InvalidName as exc:
+        # The service's message says which rule the name broke.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except InvalidPhoneNumber as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
     except TutorEmailTaken as exc:
@@ -145,20 +156,26 @@ def create(payload: TutorCreate, user: StaffPrincipal, db: DbSession) -> TutorRe
 
 @router.patch("/{tutor_id}", response_model=TutorRead)
 def update(
-    tutor_id: uuid.UUID, payload: TutorUpdate, user: StaffPrincipal, db: DbSession
+    tutor_id: uuid.UUID, payload: TutorUpdate, user: OfficePrincipal, db: DbSession
 ) -> TutorRead:
     try:
         updated = update_tutor(
             db,
+            actor_role=user.role,
             tutor_id=tutor_id,
             name=payload.name,
             email=payload.email,
             phone_number=payload.phone_number,
             bio=payload.bio,
             is_active=payload.is_active,
+            now=datetime.now(UTC),
         )
     except TutorNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
+    except TutorAccountForbidden as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, ACCOUNT_FORBIDDEN_ERROR) from exc
+    except InvalidName as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except InvalidPhoneNumber as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
     except TutorEmailTaken as exc:
@@ -174,11 +191,13 @@ def update(
 
 
 @router.delete("/{tutor_id}", response_model=TutorRead)
-def soft_delete(tutor_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> TutorRead:
+def soft_delete(tutor_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> TutorRead:
     try:
-        deactivated = deactivate_tutor(db, tutor_id=tutor_id)
+        deactivated = deactivate_tutor(db, actor_role=user.role, tutor_id=tutor_id)
     except TutorNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
+    except TutorAccountForbidden as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, ACCOUNT_FORBIDDEN_ERROR) from exc
 
     db.commit()
 

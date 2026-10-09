@@ -26,6 +26,7 @@ from app.services.auth_service import (
     RefreshTokenReused,
     authenticate_user,
     issue_token_pair,
+    revoke_all_refresh_tokens_for_user,
     revoke_family_for_token,
     rotate_refresh_token,
 )
@@ -35,9 +36,8 @@ PASSWORD = "correct horse battery staple"
 
 def _make_tutor(db: Session, *, suffix: str = "a") -> Tutor:
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1555000{suffix}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -53,15 +53,21 @@ def _make_user(
     tutor_id: uuid.UUID | None = None,
     is_active: bool = True,
 ) -> User:
-    user = User(
-        email=email,
-        display_name="Test User",
-        hashed_password=hash_password(password),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=is_active,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=email,
+            name="Test User",
+            hashed_password=hash_password(password),
+            role=role,
+            is_active=is_active,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(password)
+        user.role = role
+        user.is_active = is_active
     db.flush()
     return user
 
@@ -115,6 +121,15 @@ def test_wrong_password_unknown_email_and_inactive_user_raise_the_identical_type
 
     # One type for all three, so a caller cannot accidentally render three different responses.
     assert raised == [InvalidCredentials, InvalidCredentials, InvalidCredentials]
+
+
+def test_a_user_with_no_password_cannot_sign_in_with_any_password(db: Session) -> None:
+    user = _make_user(db, email="invited@x.com")
+    user.hashed_password = None
+    db.flush()
+
+    with pytest.raises(InvalidCredentials):
+        authenticate_user(db, email="invited@x.com", password=PASSWORD)
 
 
 def test_email_lookup_ignores_case_and_surrounding_whitespace(db: Session) -> None:
@@ -354,6 +369,26 @@ def test_revoke_family_for_token_is_a_silent_no_op_for_an_unknown_jti(db: Sessio
     db.flush()
 
     assert revoke_family_for_token(db, presented=issued.refresh_token) is None
+
+
+def test_revoke_all_refresh_tokens_for_user_revokes_every_live_row_of_that_user_only(
+    db: Session,
+) -> None:
+    user = _make_user(db)
+    bystander = _make_user(db, email="other@x.com")
+    first = issue_token_pair(db, user=user)
+    second = issue_token_pair(db, user=user)
+    rotated = rotate_refresh_token(db, presented=second.refresh_token)
+    untouched = issue_token_pair(db, user=bystander)
+
+    revoke_all_refresh_tokens_for_user(db, user_id=user.id)
+
+    assert _count_rows(db, _family_of(first.refresh_token), live_only=True) == 0
+    assert _count_rows(db, _family_of(second.refresh_token), live_only=True) == 0
+    assert _count_rows(db, _family_of(untouched.refresh_token), live_only=True) == 1
+    with pytest.raises(InvalidRefreshToken):
+        rotate_refresh_token(db, presented=rotated.refresh_token)
+    assert rotate_refresh_token(db, presented=untouched.refresh_token).access_token
 
 
 def test_revoke_family_for_token_revokes_every_live_row_and_is_idempotent(

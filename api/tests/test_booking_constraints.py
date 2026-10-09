@@ -1,4 +1,5 @@
-"""`excl_bookings_live_overlap`, `ck_bookings_time_order`, and
+"""`excl_bookings_live_overlap`, `ck_bookings_time_order`, the kind/location CHECKs, the one
+live Evaluation per Child index, `ck_tutor_availability_mode` and
 `ck_tutor_availability_exceptions_date_order`, against a real PostgreSQL.
 
 Metadata assertions prove the constraints are declared, not that the database rejects
@@ -20,17 +21,18 @@ import uuid
 from dataclasses import dataclass
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus
+from app.models.enums import AvailabilityMode, BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
+from app.models.user import User
 
 DATE = datetime.date(2026, 9, 7)
 NEXT_DATE = datetime.date(2026, 9, 8)
@@ -45,6 +47,11 @@ TWELVE = datetime.time(12, 0)
 
 OVERLAP_CONSTRAINT = "excl_bookings_live_overlap"
 TIME_ORDER_CONSTRAINT = "ck_bookings_time_order"
+HOME_LOCATION_CONSTRAINT = "ck_bookings_home_matches_location"
+SUBJECT_KIND_CONSTRAINT = "ck_bookings_subject_matches_kind"
+EVALUATION_SLOT_CONSTRAINT = "ck_bookings_evaluation_has_no_slot"
+ONE_LIVE_EVALUATION_INDEX = "uq_bookings_one_live_evaluation_per_child"
+MODE_CONSTRAINT = "ck_tutor_availability_mode"
 DATE_ORDER_CONSTRAINT = "ck_tutor_availability_exceptions_date_order"
 
 OVERLAPPING_WINDOWS = [
@@ -62,8 +69,10 @@ class BookingParents:
     subject_id: uuid.UUID
     home_id: uuid.UUID
     tutor_id: uuid.UUID
+    user_id: uuid.UUID
     availability_id: uuid.UUID
     other_tutor_id: uuid.UUID
+    other_user_id: uuid.UUID
     other_availability_id: uuid.UUID
 
 
@@ -85,8 +94,10 @@ def parents(db: Session) -> BookingParents:
         subject_id=subject.id,
         home_id=home.id,
         tutor_id=tutor.id,
+        user_id=tutor.user_id,
         availability_id=_make_availability(db, tutor.id),
         other_tutor_id=other_tutor.id,
+        other_user_id=other_tutor.user_id,
         other_availability_id=_make_availability(db, other_tutor.id),
     )
 
@@ -126,7 +137,7 @@ def test_overlapping_bookings_for_different_tutors_are_accepted(
             parents,
             start=TEN_THIRTY,
             end=ELEVEN_THIRTY,
-            tutor_id=parents.other_tutor_id,
+            user_id=parents.other_user_id,
             availability_id=parents.other_availability_id,
         )
     )
@@ -208,6 +219,172 @@ def test_two_zero_length_bookings_cannot_both_land(db: Session, parents: Booking
     assert _live_count(db) == 0
 
 
+# --- kind, location and the per-user overlap ---------------------------------------------------
+
+
+def test_a_live_evaluation_overlapping_a_regular_booking_of_the_same_user_is_rejected(
+    db: Session, parents: BookingParents
+) -> None:
+    """The EXCLUDE keys on the Staff member's user, so a Regular session and an Evaluation of
+    the same person collide even though one names a slot and the other does not."""
+    db.add(_booking(parents, start=TEN, end=ELEVEN))
+    db.flush()
+
+    with pytest.raises(IntegrityError, match=OVERLAP_CONSTRAINT), db.begin_nested():
+        db.add(_evaluation(parents, start=TEN_THIRTY, end=ELEVEN_THIRTY))
+        db.flush()
+
+
+def test_an_evaluation_adjacent_to_a_regular_booking_of_the_same_user_is_accepted(
+    db: Session, parents: BookingParents
+) -> None:
+    db.add(_booking(parents, start=TEN, end=ELEVEN))
+    db.add(_evaluation(parents, start=ELEVEN, end=TWELVE))
+    db.flush()
+
+    assert _live_count(db) == 2
+
+
+def test_a_home_booking_without_a_home_is_rejected(db: Session, parents: BookingParents) -> None:
+    with pytest.raises(IntegrityError, match=HOME_LOCATION_CONSTRAINT), db.begin_nested():
+        booking = _booking(parents, start=TEN, end=ELEVEN)
+        booking.home_id = None
+        db.add(booking)
+        db.flush()
+
+
+def test_an_office_booking_with_a_home_is_rejected(db: Session, parents: BookingParents) -> None:
+    with pytest.raises(IntegrityError, match=HOME_LOCATION_CONSTRAINT), db.begin_nested():
+        booking = _booking(parents, start=TEN, end=ELEVEN)
+        booking.location = BookingLocation.IN_OFFICE
+        db.add(booking)
+        db.flush()
+
+
+def test_a_regular_booking_at_the_office_is_accepted(db: Session, parents: BookingParents) -> None:
+    booking = _booking(parents, start=TEN, end=ELEVEN)
+    booking.location = BookingLocation.IN_OFFICE
+    booking.home_id = None
+    db.add(booking)
+    db.flush()
+
+    assert _live_count(db) == 1
+
+
+def test_a_regular_booking_without_a_subject_is_rejected(
+    db: Session, parents: BookingParents
+) -> None:
+    with pytest.raises(IntegrityError, match=SUBJECT_KIND_CONSTRAINT), db.begin_nested():
+        booking = _booking(parents, start=TEN, end=ELEVEN)
+        booking.subject_id = None
+        db.add(booking)
+        db.flush()
+
+
+def test_an_evaluation_with_a_subject_is_rejected(db: Session, parents: BookingParents) -> None:
+    with pytest.raises(IntegrityError, match=SUBJECT_KIND_CONSTRAINT), db.begin_nested():
+        booking = _evaluation(parents, start=TEN, end=ELEVEN)
+        booking.subject_id = parents.subject_id
+        db.add(booking)
+        db.flush()
+
+
+def test_an_evaluation_with_a_slot_is_rejected(db: Session, parents: BookingParents) -> None:
+    with pytest.raises(IntegrityError, match=EVALUATION_SLOT_CONSTRAINT), db.begin_nested():
+        booking = _evaluation(parents, start=TEN, end=ELEVEN)
+        booking.availability_id = parents.availability_id
+        db.add(booking)
+        db.flush()
+
+
+def test_a_regular_booking_without_a_slot_is_accepted(db: Session, parents: BookingParents) -> None:
+    """An Admin's Regular booking names no range (spec 01); only an Evaluation is slotless by
+    constraint."""
+    booking = _booking(parents, start=TEN, end=ELEVEN)
+    booking.availability_id = None
+    db.add(booking)
+    db.flush()
+
+    assert _live_count(db) == 1
+
+
+def test_an_evaluation_at_the_office_without_subject_or_slot_is_accepted(
+    db: Session, parents: BookingParents
+) -> None:
+    db.add(_evaluation(parents, start=TEN, end=ELEVEN))
+    db.flush()
+
+    assert _live_count(db) == 1
+
+
+# --- one live Evaluation per Child -------------------------------------------------------------
+
+
+def test_a_second_live_evaluation_for_a_child_is_rejected(
+    db: Session, parents: BookingParents
+) -> None:
+    """Another Staff member on another day, so only the partial unique index can refuse it."""
+    db.add(_evaluation(parents, start=TEN, end=ELEVEN))
+    db.flush()
+
+    with pytest.raises(IntegrityError, match=ONE_LIVE_EVALUATION_INDEX), db.begin_nested():
+        second = _evaluation(parents, start=TEN, end=ELEVEN, user_id=parents.other_user_id)
+        second.scheduled_date = NEXT_DATE
+        db.add(second)
+        db.flush()
+
+
+@pytest.mark.parametrize("status", [BookingStatus.CANCELLED, BookingStatus.COMPLETED])
+def test_a_child_may_have_another_evaluation_once_the_first_leaves_the_live_set(
+    db: Session, parents: BookingParents, status: BookingStatus
+) -> None:
+    first = _evaluation(parents, start=TEN, end=ELEVEN)
+    db.add(first)
+    db.flush()
+
+    first.status = status
+    db.flush()
+    second = _evaluation(parents, start=TEN, end=ELEVEN, user_id=parents.other_user_id)
+    second.scheduled_date = NEXT_DATE
+    db.add(second)
+    db.flush()
+
+    assert _live_count(db) == 1
+
+
+# --- availability mode -------------------------------------------------------------------------
+
+
+def test_an_availability_range_with_an_unknown_mode_is_rejected(db: Session) -> None:
+    """Raw SQL, because the ORM's enum type refuses the value before it reaches PostgreSQL."""
+    tutor = _make_tutor(db)
+
+    with pytest.raises(IntegrityError, match=MODE_CONSTRAINT), db.begin_nested():
+        db.execute(
+            text(
+                "INSERT INTO tutor_availability"
+                " (tutor_id, day_of_week, start_time, end_time, mode)"
+                " VALUES (:tutor_id, 0, '09:00', '12:00', 'teleport')"
+            ),
+            {"tutor_id": tutor.id},
+        )
+
+
+def test_an_availability_range_defaults_to_traveler(db: Session) -> None:
+    tutor = _make_tutor(db)
+
+    db.execute(
+        text(
+            "INSERT INTO tutor_availability (tutor_id, day_of_week, start_time, end_time)"
+            " VALUES (:tutor_id, 0, '09:00', '12:00')"
+        ),
+        {"tutor_id": tutor.id},
+    )
+    mode = db.scalar(select(TutorAvailability.mode).where(TutorAvailability.tutor_id == tutor.id))
+
+    assert mode == AvailabilityMode.TRAVELER
+
+
 def test_an_exception_with_end_date_before_start_date_is_rejected(db: Session) -> None:
     tutor = _make_tutor(db)
 
@@ -236,16 +413,39 @@ def _booking(
     end: datetime.time,
     scheduled_date: datetime.date = DATE,
     status: BookingStatus = BookingStatus.PENDING,
-    tutor_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
     availability_id: uuid.UUID | None = None,
 ) -> Booking:
     return Booking(
         child_id=parents.child_id,
-        tutor_id=tutor_id or parents.tutor_id,
+        user_id=user_id or parents.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=parents.subject_id,
         availability_id=availability_id or parents.availability_id,
         home_id=parents.home_id,
         scheduled_date=scheduled_date,
+        start_time=start,
+        end_time=end,
+        status=status,
+    )
+
+
+def _evaluation(
+    parents: BookingParents,
+    *,
+    start: datetime.time,
+    end: datetime.time,
+    status: BookingStatus = BookingStatus.PENDING,
+    user_id: uuid.UUID | None = None,
+) -> Booking:
+    """An Evaluation at the office: no Subject, no slot, no home."""
+    return Booking(
+        child_id=parents.child_id,
+        user_id=user_id or parents.user_id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=DATE,
         start_time=start,
         end_time=end,
         status=status,
@@ -263,9 +463,8 @@ def _exception(
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()

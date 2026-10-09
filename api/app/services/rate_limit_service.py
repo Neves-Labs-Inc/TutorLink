@@ -1,6 +1,7 @@
-"""Brute-force throttling for `POST /auth/token` (#3, OQ-7).
+"""Brute-force throttling for `POST /auth/token` (#3, OQ-7) and `POST /auth/password/forgot`
+(spec 04).
 
-`POST /auth/token` is the only unauthenticated write surface in the system, and until this
+`POST /auth/token` was the only unauthenticated write surface in the system, and until this
 module existed an attacker could spend passwords against it as fast as bcrypt would answer.
 Two independent buckets throttle it, each with its own thresholds in `system_settings`:
 
@@ -81,6 +82,16 @@ survive by admitting everyone: if the database is unreachable, login is down reg
 
 This module knows nothing about FastAPI: the `Session` arrives as an argument and the router
 turns a refused attempt into a 429.
+
+**The forgot-password surface reuses all of the above with its own buckets.** `POST
+/auth/password/forgot` costs an email per hit rather than a bcrypt round, so it has its own
+four thresholds (`forgot_password_rate_limit_*`) and its own key prefixes (`ratelimit:forgot:`),
+so that throttling one surface never spends the other's budget: a throttled forgot does not
+lock an account out of login, and a login spray does not stop its victim resetting. The
+mechanics — reserve under the advisory lock, commit straight away — are the same, and the two
+surfaces differ only in what the router does with a refusal: login answers 429, forgot answers
+the same 202 as a hit, because a forgot that says "throttled" says "this address is worth
+throttling". There is no release either: every forgot request counts, hit or miss.
 """
 
 import uuid
@@ -97,11 +108,17 @@ from app.services.settings_service import get_int_setting
 
 IP_BUCKET_PREFIX = "ratelimit:login:ip:"
 EMAIL_BUCKET_PREFIX = "ratelimit:login:email:"
+FORGOT_IP_BUCKET_PREFIX = "ratelimit:forgot:ip:"
+FORGOT_EMAIL_BUCKET_PREFIX = "ratelimit:forgot:email:"
 
 IP_MAX_ATTEMPTS_SETTING = "login_rate_limit_ip_max_attempts"
 IP_WINDOW_SECONDS_SETTING = "login_rate_limit_ip_window_seconds"
 EMAIL_MAX_ATTEMPTS_SETTING = "login_rate_limit_email_max_attempts"
 EMAIL_WINDOW_SECONDS_SETTING = "login_rate_limit_email_window_seconds"
+FORGOT_IP_MAX_ATTEMPTS_SETTING = "forgot_password_rate_limit_ip_max_attempts"
+FORGOT_IP_WINDOW_SECONDS_SETTING = "forgot_password_rate_limit_ip_window_seconds"
+FORGOT_EMAIL_MAX_ATTEMPTS_SETTING = "forgot_password_rate_limit_email_max_attempts"
+FORGOT_EMAIL_WINDOW_SECONDS_SETTING = "forgot_password_rate_limit_email_window_seconds"
 
 # The first key of the two-key `pg_advisory_xact_lock(int, int)` form, so a bucket's lock
 # cannot collide with an advisory lock another part of the system takes on its own namespace.
@@ -125,13 +142,19 @@ class RateLimitPolicy:
 
 
 @dataclass(frozen=True)
-class LoginRateLimitPolicies:
+class RateLimitPolicies:
+    """One surface's pair of buckets: the wide per-IP net and the tight per-email one."""
+
     ip: RateLimitPolicy
     email: RateLimitPolicy
 
 
+# The names the login surface and its tests were written against.
+LoginRateLimitPolicies = RateLimitPolicies
+
+
 @dataclass(frozen=True)
-class LoginReservation:
+class Reservation:
     """A reservation, and what it costs to give back.
 
     `attempt_id` and `reserved_keys` are how `release_login_attempt` removes precisely the rows
@@ -146,22 +169,30 @@ class LoginReservation:
     reserved_keys: tuple[str, ...]
 
 
-UNTHROTTLED = LoginReservation(
-    allowed=True, retry_after_seconds=0, attempt_id=None, reserved_keys=()
-)
+LoginReservation = Reservation
+
+UNTHROTTLED = Reservation(allowed=True, retry_after_seconds=0, attempt_id=None, reserved_keys=())
 
 
-def load_login_policies(db: Session) -> LoginRateLimitPolicies:
-    """Read all four thresholds. Raises `SettingNotFound` if the rows are missing."""
-    return LoginRateLimitPolicies(
-        ip=RateLimitPolicy(
-            max_attempts=get_int_setting(db, key=IP_MAX_ATTEMPTS_SETTING),
-            window_seconds=get_int_setting(db, key=IP_WINDOW_SECONDS_SETTING),
-        ),
-        email=RateLimitPolicy(
-            max_attempts=get_int_setting(db, key=EMAIL_MAX_ATTEMPTS_SETTING),
-            window_seconds=get_int_setting(db, key=EMAIL_WINDOW_SECONDS_SETTING),
-        ),
+def load_login_policies(db: Session) -> RateLimitPolicies:
+    """Read login's four thresholds. Raises `SettingNotFound` if the rows are missing."""
+    return _load_policies(
+        db,
+        ip_max_attempts=IP_MAX_ATTEMPTS_SETTING,
+        ip_window_seconds=IP_WINDOW_SECONDS_SETTING,
+        email_max_attempts=EMAIL_MAX_ATTEMPTS_SETTING,
+        email_window_seconds=EMAIL_WINDOW_SECONDS_SETTING,
+    )
+
+
+def load_forgot_password_policies(db: Session) -> RateLimitPolicies:
+    """Read forgot-password's four thresholds. Raises `SettingNotFound` if the rows are missing."""
+    return _load_policies(
+        db,
+        ip_max_attempts=FORGOT_IP_MAX_ATTEMPTS_SETTING,
+        ip_window_seconds=FORGOT_IP_WINDOW_SECONDS_SETTING,
+        email_max_attempts=FORGOT_EMAIL_MAX_ATTEMPTS_SETTING,
+        email_window_seconds=FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
     )
 
 
@@ -170,9 +201,53 @@ def reserve_login_attempt(
     *,
     client_ip: str | None,
     email: str,
-    policies: LoginRateLimitPolicies,
-) -> LoginReservation:
-    """Take a slot in every armed bucket, or refuse and take none.
+    policies: RateLimitPolicies,
+) -> Reservation:
+    """Take a slot in every armed login bucket, or refuse and take none.
+
+    Does not commit. See the module docstring for why the caller must, straight away.
+    """
+    return reserve_attempt(
+        db,
+        client_ip=client_ip,
+        email=email,
+        policies=policies,
+        ip_prefix=IP_BUCKET_PREFIX,
+        email_prefix=EMAIL_BUCKET_PREFIX,
+    )
+
+
+def reserve_forgot_password_attempt(
+    db: Session,
+    *,
+    client_ip: str | None,
+    email: str,
+    policies: RateLimitPolicies,
+) -> Reservation:
+    """Take a slot in every armed forgot-password bucket, or refuse and take none.
+
+    Does not commit. Nothing releases a forgot reservation: hit or miss, the request counts.
+    """
+    return reserve_attempt(
+        db,
+        client_ip=client_ip,
+        email=email,
+        policies=policies,
+        ip_prefix=FORGOT_IP_BUCKET_PREFIX,
+        email_prefix=FORGOT_EMAIL_BUCKET_PREFIX,
+    )
+
+
+def reserve_attempt(
+    db: Session,
+    *,
+    client_ip: str | None,
+    email: str,
+    policies: RateLimitPolicies,
+    ip_prefix: str,
+    email_prefix: str,
+) -> Reservation:
+    """Take a slot in every armed bucket under the given prefixes, or refuse and take none.
 
     One answer covering both buckets, deliberately: the caller must not be able to tell the
     client which limit tripped, because "your email is throttled" answers a question an
@@ -180,7 +255,13 @@ def reserve_login_attempt(
 
     Does not commit. See the module docstring for why the caller must, straight away.
     """
-    buckets = _buckets(client_ip=client_ip, email=email, policies=policies)
+    buckets = _buckets(
+        client_ip=client_ip,
+        email=email,
+        policies=policies,
+        ip_prefix=ip_prefix,
+        email_prefix=email_prefix,
+    )
 
     if buckets:
         reservation = _reserve_every_bucket(db, buckets=buckets)
@@ -192,7 +273,7 @@ def reserve_login_attempt(
     return reservation
 
 
-def release_login_attempt(db: Session, *, reservation: LoginReservation) -> None:
+def release_login_attempt(db: Session, *, reservation: Reservation) -> None:
     """Give back the rows this attempt reserved, after it turns out not to be a failure.
 
     Scoped to this request's `attempt_id`, never the whole bucket: see the module docstring —
@@ -208,9 +289,29 @@ def release_login_attempt(db: Session, *, reservation: LoginReservation) -> None
         )
 
 
+def _load_policies(
+    db: Session,
+    *,
+    ip_max_attempts: str,
+    ip_window_seconds: str,
+    email_max_attempts: str,
+    email_window_seconds: str,
+) -> RateLimitPolicies:
+    return RateLimitPolicies(
+        ip=RateLimitPolicy(
+            max_attempts=get_int_setting(db, key=ip_max_attempts),
+            window_seconds=get_int_setting(db, key=ip_window_seconds),
+        ),
+        email=RateLimitPolicy(
+            max_attempts=get_int_setting(db, key=email_max_attempts),
+            window_seconds=get_int_setting(db, key=email_window_seconds),
+        ),
+    )
+
+
 def _reserve_every_bucket(
     db: Session, *, buckets: list[tuple[str, RateLimitPolicy]]
-) -> LoginReservation:
+) -> Reservation:
     keys = [key for key, _policy in buckets]
     _lock_buckets(db, keys=keys)
 
@@ -229,7 +330,7 @@ def _reserve_every_bucket(
         # Without this, hammering one throttled account would drain the shared IP budget and
         # lock out everyone else behind that address — the limiter turning into the denial of
         # service it exists to prevent.
-        reservation = LoginReservation(
+        reservation = Reservation(
             allowed=False,
             retry_after_seconds=retry_after_seconds,
             attempt_id=None,
@@ -245,7 +346,7 @@ def _reserve_every_bucket(
                 for key in reserved_keys
             ],
         )
-        reservation = LoginReservation(
+        reservation = Reservation(
             allowed=True,
             retry_after_seconds=0,
             attempt_id=attempt_id,
@@ -301,22 +402,23 @@ def _seconds_until_room(db: Session, *, key: str, policy: RateLimitPolicy, now: 
 
 
 def _buckets(
-    *, client_ip: str | None, email: str, policies: LoginRateLimitPolicies
+    *,
+    client_ip: str | None,
+    email: str,
+    policies: RateLimitPolicies,
+    ip_prefix: str,
+    email_prefix: str,
 ) -> list[tuple[str, RateLimitPolicy]]:
-    buckets = [(_email_bucket_key(email), policies.email)]
+    # Normalised exactly as `authenticate_user` normalises it, via the same function, so the
+    # bucket and the account lookup can never disagree about which address was tried. If
+    # "Admin@x" and "admin@x" hashed to different buckets, varying the casing would multiply an
+    # attacker's per-account budget by however many spellings they cared to type.
+    buckets = [(email_prefix + normalise_email(email), policies.email)]
 
     if client_ip is not None:
         # `client_ip` is None when the ASGI server reports no peer address. There is nothing to
         # key an IP bucket on, so that bucket is skipped rather than collapsed onto a shared
         # "unknown" key, which would throttle every such caller as if they were one attacker.
-        buckets.append((IP_BUCKET_PREFIX + client_ip, policies.ip))
+        buckets.append((ip_prefix + client_ip, policies.ip))
 
     return [(key, policy) for key, policy in buckets if policy.enabled]
-
-
-def _email_bucket_key(email: str) -> str:
-    # Normalised exactly as `authenticate_user` normalises it, via the same function, so the
-    # bucket and the account lookup can never disagree about which address was tried. If
-    # "Admin@x" and "admin@x" hashed to different buckets, varying the casing would multiply an
-    # attacker's per-account budget by however many spellings they cared to type.
-    return EMAIL_BUCKET_PREFIX + normalise_email(email)

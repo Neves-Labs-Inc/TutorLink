@@ -22,7 +22,7 @@ PASSWORD = "correct horse battery staple"
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
         is_active=True,
@@ -33,16 +33,15 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()

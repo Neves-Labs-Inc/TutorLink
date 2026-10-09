@@ -11,3 +11,16 @@ class TokenPair(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str | None = None
+
+
+class SetPasswordRequest(BaseModel):
+    token: str
+    password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    detail: str

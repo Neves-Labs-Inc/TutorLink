@@ -17,11 +17,17 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import (
+    AvailabilityMode,
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    UserRole,
+)
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
@@ -33,6 +39,7 @@ from app.routers.availability import (
 )
 from app.security import create_access_token, hash_password
 from app.services import availability_service
+from tests.support import user_id_of
 
 STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
@@ -188,7 +195,7 @@ def test_tutor_cannot_create_a_slot(api: TestClient, db: Session) -> None:
         f"/api/tutors/{tutor.id}/availability", json=_payload(), headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_admin_creating_for_an_unknown_tutor_is_404(api: TestClient, db: Session) -> None:
@@ -389,7 +396,7 @@ def test_tutor_cannot_update_a_slot(api: TestClient, db: Session) -> None:
         f"/api/availability/{row.id}", json={"end_time": "11:00:00"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_updating_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
@@ -409,6 +416,113 @@ def test_unauthenticated_update_is_401(api: TestClient, db: Session) -> None:
     response = api.patch(f"/api/availability/{row.id}", json={"end_time": "11:00:00"})
 
     _assert_detail(response, 401, CREDENTIALS_ERROR)
+
+
+# --- mode: where the bot may offer the slot --------------------------------------------------
+
+
+def test_a_listed_slot_carries_its_mode(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    _make_slot(
+        db,
+        tutor_id=tutor.id,
+        day_of_week=0,
+        start_time=datetime.time(9, 0),
+        mode=AvailabilityMode.ONLY_OFFICE,
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.get(f"/api/tutors/{tutor.id}/availability", headers=_bearer(user))
+
+    assert response.json()["items"][0]["mode"] == "only_office"
+
+
+def test_a_slot_created_without_mode_reads_back_anywhere(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.post(
+        f"/api/tutors/{tutor.id}/availability", json=_payload(), headers=_bearer(user)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["mode"] == "anywhere"
+
+
+def test_a_slot_created_with_a_mode_reads_back_that_mode(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.post(
+        f"/api/tutors/{tutor.id}/availability",
+        json=_payload(mode="only_office"),
+        headers=_bearer(user),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["mode"] == "only_office"
+
+
+def test_an_unknown_mode_is_400(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.post(
+        f"/api/tutors/{tutor.id}/availability",
+        json=_payload(mode="teleport"),
+        headers=_bearer(user),
+    )
+
+    _assert_detail_shape(response, 400)
+    assert _count_for(db, tutor.id) == 0
+
+
+def test_patching_mode_changes_only_the_mode_and_leaves_bookings_alone(
+    api: TestClient, db: Session
+) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(
+        db,
+        tutor_id=tutor.id,
+        day_of_week=0,
+        start_time=datetime.time(9, 0),
+        mode=AvailabilityMode.ONLY_OFFICE,
+    )
+    booking = _make_booking(db, tutor_id=tutor.id, availability_id=row.id)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/availability/{row.id}", json={"mode": "traveler"}, headers=_bearer(user)
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["mode"] == "traveler"
+    assert body["start_time"] == "09:00:00"
+    assert body["end_time"] == "18:00:00"
+    assert body["is_active"] is True
+    db.expire_all()
+    kept = db.get_one(Booking, booking.id)
+    assert kept.availability_id == row.id
+    assert kept.status == BookingStatus.CONFIRMED
+
+
+def test_a_patch_without_mode_leaves_it_as_it_was(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(
+        db,
+        tutor_id=tutor.id,
+        day_of_week=0,
+        start_time=datetime.time(9, 0),
+        mode=AvailabilityMode.ONLY_OFFICE,
+    )
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/availability/{row.id}", json={"end_time": "11:00:00"}, headers=_bearer(user)
+    )
+
+    assert response.json()["mode"] == "only_office"
 
 
 # --- delete: a soft delete only --------------------------------------------------------------
@@ -459,7 +573,7 @@ def test_tutor_cannot_delete_a_slot(api: TestClient, db: Session) -> None:
 
     response = api.delete(f"/api/availability/{row.id}", headers=_bearer(user))
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_deleting_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
@@ -515,9 +629,8 @@ def _payload(**overrides: object) -> dict[str, object]:
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -525,14 +638,19 @@ def _make_tutor(db: Session) -> Tutor:
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("availability-password"),
-        role=role,
-        tutor_id=tutor_id,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("availability-password"),
+            role=role,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("availability-password")
+        user.role = role
     db.flush()
     return user
 
@@ -545,6 +663,7 @@ def _make_slot(
     start_time: datetime.time,
     end_time: datetime.time = datetime.time(18, 0),
     is_active: bool = True,
+    mode: AvailabilityMode = AvailabilityMode.TRAVELER,
 ) -> TutorAvailability:
     row = TutorAvailability(
         tutor_id=tutor_id,
@@ -552,6 +671,7 @@ def _make_slot(
         start_time=start_time,
         end_time=end_time,
         is_active=is_active,
+        mode=mode,
     )
     db.add(row)
     db.flush()
@@ -566,7 +686,9 @@ def _make_booking(db: Session, *, tutor_id: uuid.UUID, availability_id: uuid.UUI
     db.flush()
 
     booking = Booking(
-        tutor_id=tutor_id,
+        user_id=user_id_of(db, tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         child_id=child.id,
         availability_id=availability_id,
         home_id=home.id,
@@ -597,7 +719,7 @@ def _count_for(db: Session, tutor_id: uuid.UUID) -> int:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 

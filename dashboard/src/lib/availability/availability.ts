@@ -1,5 +1,5 @@
 import { addDaysIso, DAY_LABELS, formatIsoDate, formatTime } from '@/lib/dates/dates'
-import type { AvailabilitySlot } from '@/lib/queries/availability'
+import type { AvailabilityMode, AvailabilitySlot } from '@/lib/queries/availability'
 import type { ExceptionReason, TutorException } from '@/lib/queries/exceptions'
 
 export type ExceptionWindow = Pick<
@@ -15,6 +15,24 @@ export const EXCEPTION_REASONS: { value: ExceptionReason; label: string }[] = [
   { value: 'sick', label: 'Sick' },
   { value: 'other', label: 'Other' },
 ]
+
+export const MODE_OPTIONS: { value: AvailabilityMode; label: string; hint: string }[] = [
+  { value: 'traveler', label: 'Home visits', hint: "The bot offers this slot only at the Child's home." },
+  {
+    value: 'anywhere',
+    label: 'Home or office',
+    hint: "The bot offers this slot at the Child's home or at the office.",
+  },
+  { value: 'only_office', label: 'Office only', hint: 'The bot offers this slot only at the office.' },
+]
+
+export const DEFAULT_MODE: AvailabilityMode = 'anywhere'
+
+const optionFor = (mode: AvailabilityMode) => MODE_OPTIONS.find((option) => option.value === mode)
+
+export const modeLabel = (mode: AvailabilityMode): string => optionFor(mode)?.label ?? mode
+
+export const modeHint = (mode: AvailabilityMode): string => optionFor(mode)?.hint ?? ''
 
 export const byDayOfWeek = (slots: AvailabilitySlot[]): AvailabilitySlot[][] => {
   const days: AvailabilitySlot[][] = Array.from({ length: DAYS_IN_WEEK }, () => [])

@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
+from app.models.enums import BookingLocation
 from app.schemas.common import DEFAULT_PAGE, Page
 from app.schemas.slot import SlotRead
 from app.services import clock
@@ -59,6 +60,9 @@ def list_available_slots(
     # Matches on the Child's Subject level for `subject_id` (no level, no tutor), the way the
     # bot does. Prefer it to `grade_level` whenever a Child is known.
     child_id: uuid.UUID | None = None,
+    # The bot's chosen Location: only ranges whose mode allows it, and no travel gap between
+    # two In office sessions. Omitted, every range is read with the full gap, as before.
+    location: BookingLocation | None = None,
 ) -> Page[SlotRead]:
     try:
         result = find_available_slots(
@@ -69,6 +73,7 @@ def list_available_slots(
             date=date,
             tutor_id=tutor_id,
             now=clock.business_now(),
+            location=location,
         )
     except DateOutOfWindow as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, DATE_OUT_OF_WINDOW_ERROR) from exc

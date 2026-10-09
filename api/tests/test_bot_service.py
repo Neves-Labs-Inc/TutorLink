@@ -733,23 +733,79 @@ def test_a_child_with_only_an_evaluation_has_nothing_to_cancel_or_reschedule(
     assert turn.reply == f"{render('NO_UPCOMING', 'en')} {render('ASK_MENU', 'en')}"
 
 
-def test_rescheduling_a_regular_session_with_no_teaching_profile_behind_it_is_stuck(
+def _assert_reschedule_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, booking: Booking
+) -> None:
+    """The pick asks for the day as any handoff does; the day is then passed to the office with
+    the session named, and nothing is written or cancelled."""
+    chat.say("hi")
+    chat.say("move it", intent=BotIntent.RESCHEDULE)
+    day_question = chat.say(value="1")
+
+    turn = chat.say(value=DATE.isoformat())
+
+    assert day_question.reply == render("ASK_NEW_DATE", "en")
+    assert turn.reply == render(
+        "RESCHEDULE_NEEDS_OFFICE",
+        "en",
+        child="Sam Guardian",
+        subject=world.subject_name,
+        old_date=US_DATE,
+        old_time="2:00-3:00 PM",
+        date=US_DATE,
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert chat.state is None
+    assert db.get_one(Booking, booking.id).status is BookingStatus.CONFIRMED
+    assert _count(db, Booking) == 1
+
+
+def test_rescheduling_a_session_with_an_admin_behind_it_is_handed_to_the_office(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
 ) -> None:
-    """An Admin has no availability to offer slots from; the bot flags rather than guessing."""
+    """An Admin has no availability to offer slots from, so the office moves the session."""
     cutoff(1)
     booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
     booking.user_id = _make_admin(db).id
     booking.availability_id = None
     db.flush()
+
+    _assert_reschedule_handed_to_the_office(chat, db, world, booking)
+
+
+def test_rescheduling_a_session_with_a_tutor_since_promoted_to_admin_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """The profile and its availability still exist, but the bot no longer offers them (#130)."""
+    cutoff(1)
+    booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    db.get_one(User, booking.user_id).role = UserRole.ADMIN
+    db.flush()
+
+    _assert_reschedule_handed_to_the_office(chat, db, world, booking)
+
+
+def test_a_managers_session_is_moved_like_a_tutors(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    cutoff(1)
+    manager = _make_tutor_for(db, world, name="Manager")
+    manager.user.role = UserRole.MANAGER
+    booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    booking.user_id = manager.user_id
+    db.flush()
     chat.say("hi")
     chat.say("move it", intent=BotIntent.RESCHEDULE)
+    chat.say(value="1")
+    chat.say(value=DATE.isoformat())
+    chat.say(value="1")
 
-    turn = chat.say(value="1")
+    turn = chat.say(value="yes")
 
-    assert turn.reply == render("CANNOT_CONTINUE", "en")
-    assert turn.flag_reason is FlagReason.STUCK
-    assert db.get_one(Booking, booking.id).status is BookingStatus.CONFIRMED
+    live = _live_bookings(db)
+    assert turn.reply.startswith(_text_before_placeholder("BOOKING_MOVED"))
+    assert db.get_one(Booking, booking.id).status is BookingStatus.CANCELLED
+    assert [live_booking.user_id for live_booking in live] == [manager.user_id]
 
 
 def test_the_booking_flow_lands_a_confirmed_regular_home_booking_for_the_chosen_tutor(
@@ -2065,6 +2121,56 @@ def test_a_reschedule_whose_old_session_was_removed_meanwhile_is_still_moved(
     assert len(_live_bookings(db)) == 1
     assert turn.reply.startswith(_text_before_placeholder("BOOKING_MOVED"))
     assert turn.flag_reason is None
+
+
+def _bump_updated_at(db: Session, booking_id: uuid.UUID) -> None:
+    """An office edit of the session since the pick. `onupdate=func.now()` is the transaction's
+    start time, so an ORM edit inside one test transaction would not move the column."""
+    booking = db.get_one(Booking, booking_id)
+    booking.updated_at = booking.updated_at + datetime.timedelta(seconds=1)
+    db.flush()
+
+
+def _changed_meanwhile_reply() -> str:
+    return f"{render('SESSION_CHANGED_MEANWHILE', 'en')} {render('ASK_MENU', 'en')}"
+
+
+def test_a_reschedule_whose_old_session_was_edited_meanwhile_changes_nothing(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """#151: the office moved the session while the parent was choosing; the parent picked a
+    session that no longer exists as they saw it, so the bot writes nothing and says so."""
+    original = _reach_reschedule_confirm(chat, db, world, client)
+    _bump_updated_at(db, original.id)
+
+    turn = chat.say(value="yes")
+
+    old = db.get_one(Booking, original.id)
+    assert turn.reply == _changed_meanwhile_reply()
+    assert chat.step == bot_service.STEP_MENU
+    assert turn.flag_reason is None
+    assert [booking.id for booking in _live_bookings(db)] == [original.id]
+    assert old.status is BookingStatus.CONFIRMED
+    assert (old.scheduled_date, old.start_time) == (DATE, datetime.time(14, 0))
+    assert "reschedule_booking_id" not in chat.state.collected_data
+
+
+def test_a_cancel_whose_session_was_edited_meanwhile_cancels_nothing(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    booking = _make_booking(db, world, client, date=DATE)
+    chat.say("hi")
+    chat.say("cancel please", intent=BotIntent.CANCEL)
+    chat.say(value="1")
+    _bump_updated_at(db, booking.id)
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == _changed_meanwhile_reply()
+    assert chat.step == bot_service.STEP_MENU
+    assert turn.flag_reason is None
+    assert db.get_one(Booking, booking.id).status is BookingStatus.CONFIRMED
+    assert "cancel_booking_id" not in chat.state.collected_data
 
 
 # --- a reschedule keeps the Location when it still works, else asks (#132) ------------------

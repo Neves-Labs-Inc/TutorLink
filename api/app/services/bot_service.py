@@ -97,6 +97,7 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
+from app.models.user import User
 from app.schemas.bot import (
     AnswerKind,
     BotIntent,
@@ -120,6 +121,7 @@ from app.services import (
     scheduling_service,
     slot_service,
 )
+from app.services.tutor_service import PROFILE_ROLES
 from app.services.bot_state import FlowState, clear_state, load_state, save_state
 from app.services.name_matching import exact_matches, named_children, typo_matches
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
@@ -329,7 +331,11 @@ _BOOKING_KEYS = (
     "reschedule_home_id",
     "chosen",
     "reschedule_booking_id",
+    # The picked Booking's `updated_at`, ISO, for the race guard (#151). Absent from a flow an
+    # older build saved, which then runs unguarded.
+    "reschedule_updated_at",
     "cancel_booking_id",
+    "cancel_updated_at",
 )
 
 # What each step's handler reads out of `collected_data` before it writes anything of its own —
@@ -1432,6 +1438,7 @@ def _cancel_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
     turn.data["cancel_booking_id"] = str(booking.id)
+    turn.data["cancel_updated_at"] = booking.updated_at.isoformat()
 
     return _Next(
         reply=_say(
@@ -1455,6 +1462,7 @@ def _cancel_confirm(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return None
 
     booking_id = uuid.UUID(turn.data.pop("cancel_booking_id"))
+    expected_updated_at = _stored_updated_at(turn.data.pop("cancel_updated_at", None))
 
     if not answer:
         return _Next(reply=f"{_say(turn, 'CANCEL_KEPT')} {_say(turn, 'ASK_MENU')}", step=STEP_MENU)
@@ -1473,17 +1481,34 @@ def _cancel_confirm(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
     try:
-        # `expected_updated_at` is the stale-booking guard; spec 03 stores the picked value.
         booking_status_service.change_status(
             turn.db,
             booking_id=booking.id,
             target=BookingStatus.CANCELLED,
-            expected_updated_at=None,
+            expected_updated_at=expected_updated_at,
         )
+    except booking_status_service.BookingChanged:
+        return _changed_meanwhile(turn)
     except booking_status_service.BookingStatusError:
         return _stuck(turn)
 
     return _Next(reply=_say(turn, "CANCELLED"), step=None)
+
+
+def _stored_updated_at(raw: object) -> datetime.datetime | None:
+    """The `updated_at` a pick stored, or None for a flow an older build saved."""
+    return datetime.datetime.fromisoformat(raw) if isinstance(raw, str) else None
+
+
+def _changed_meanwhile(turn: _Turn) -> _Next:
+    """#151: the office edited the session between the pick and the "yes". Nothing was
+    written; the parent starts over from the menu. Not a `_stuck`: the bot did its job."""
+    _reset_booking(turn.data)
+
+    return _Next(
+        reply=f"{_say(turn, 'SESSION_CHANGED_MEANWHILE')} {_say(turn, 'ASK_MENU')}",
+        step=STEP_MENU,
+    )
 
 
 def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1504,11 +1529,9 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     if _inside_cutoff(turn.db, booking=booking, now=turn.now):
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
-    # A session the bot could not have booked — an Evaluation (no Subject), or one whose Staff
-    # member has no profile to offer slots from — is not on the list it offers (ticket 07);
-    # reaching here with one is a bug worth a flag, not a reply.
-    profile_id = _profile_id(turn.db, user_id=booking.user_id)
-    if booking.subject_id is None or profile_id is None:
+    # An Evaluation (no Subject) is not on the list the bot offers (ticket 07); reaching here
+    # with one is a bug worth a flag, not a reply.
+    if booking.subject_id is None:
         return _stuck(turn)
 
     _reset_booking(turn.data)
@@ -1516,10 +1539,16 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     turn.data["book_subject_id"] = str(booking.subject_id)
 
     turn.data["reschedule_booking_id"] = str(booking.id)
+    turn.data["reschedule_updated_at"] = booking.updated_at.isoformat()
 
     # The bot moves only a session it could have booked; the rest go to the office, and the
-    # old session stays until Staff move it. Nothing on that path writes or cancels.
-    if _needs_office(turn.db, child=booking.child, subject_id=booking.subject_id):
+    # old session stays until Staff move it. Nothing on that path writes or cancels. A Staff
+    # member the bot cannot offer — an Admin, or a Tutor since promoted — has no slots to move
+    # the session to (#130).
+    profile_id = _offerable_profile_id(turn.db, user_id=booking.user_id)
+    if profile_id is None or _needs_office(
+        turn.db, child=booking.child, subject_id=booking.subject_id
+    ):
         return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_FIRST_SESSION_DATE)
 
     turn.data["book_tutor_id"] = str(profile_id)
@@ -2089,6 +2118,9 @@ def _write_booking(turn: _Turn) -> _Next:
     if replaced is not None and not _may_replace(turn, booking_id=uuid.UUID(replaced)):
         return _stuck(turn)
 
+    if replaced is not None and _replaced_changed(turn, booking_id=uuid.UUID(replaced)):
+        return _changed_meanwhile(turn)
+
     chosen = turn.data["chosen"]
     location = _location_of(turn.data)
     home_id = turn.data.get("book_home_id")
@@ -2126,6 +2158,9 @@ def _write_booking(turn: _Turn) -> _Next:
         return _offer_slots(turn, preamble=_say(turn, "SLOT_JUST_TAKEN"))
     except (booking_write_service.DateOutOfWindow, booking_write_service.LeadTimeNotMet):
         return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
+    except booking_status_service.BookingChanged:
+        # The savepoint undid the new booking: nothing landed.
+        return _changed_meanwhile(turn)
     except (booking_write_service.BookingWriteError, _ReplaceFailed):
         return _stuck(turn)
 
@@ -2144,9 +2179,35 @@ def _profile_user_id(db: Session, *, tutor_id: uuid.UUID) -> uuid.UUID:
     return db.scalars(select(Tutor.user_id).where(Tutor.id == tutor_id)).one()
 
 
-def _profile_id(db: Session, *, user_id: uuid.UUID) -> uuid.UUID | None:
-    """The teaching profile of a booking's Staff member, or None for an Admin."""
-    return db.scalars(select(Tutor.id).where(Tutor.user_id == user_id)).first()
+def _offerable_profile_id(db: Session, *, user_id: uuid.UUID) -> uuid.UUID | None:
+    """The teaching profile the bot may offer slots from for a booking's Staff member: an
+    active Tutor or Manager. None for an Admin, who keeps the profile they had as a Tutor but
+    is never offered (#130; the rule `slot_service._qualified_tutor_names` applies)."""
+    return db.scalars(
+        select(Tutor.id)
+        .join(User, User.id == Tutor.user_id)
+        .where(Tutor.user_id == user_id, User.is_active.is_(True), User.role.in_(PROFILE_ROLES))
+    ).first()
+
+
+def _replaced_changed(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
+    """#151: whether the office edited the old session since the pick. Only a still-live
+    session is guarded: one cancelled or removed meanwhile still counts as moved
+    (`_cancel_replaced`). Read fresh, as `change_status` does, since the bot may hold a cached
+    copy from the pick in the same Session."""
+    expected_updated_at = _stored_updated_at(turn.data.get("reschedule_updated_at"))
+
+    if expected_updated_at is None:
+        return False
+
+    old = turn.db.execute(
+        select(Booking).where(Booking.id == booking_id).execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+
+    if old is None or old.status not in LIVE_BOOKING_STATUSES:
+        return False
+
+    return old.updated_at != expected_updated_at
 
 
 def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
@@ -2163,13 +2224,15 @@ def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
 
 
 def _cancel_replaced(turn: _Turn, *, booking_id: uuid.UUID) -> None:
+    """Cancel the old session of a reschedule. `BookingChanged` (the race guard, #151) is left
+    to the caller; the legality check comes first inside, so an old session already cancelled
+    is reported as such even when its `updated_at` moved."""
     try:
-        # `expected_updated_at` is the stale-booking guard; spec 03 stores the picked value.
         booking_status_service.change_status(
             turn.db,
             booking_id=booking_id,
             target=BookingStatus.CANCELLED,
-            expected_updated_at=None,
+            expected_updated_at=_stored_updated_at(turn.data.get("reschedule_updated_at")),
         )
     except booking_status_service.BookingNotFound:
         # Removed since the pick: the parent already holds only the new session.

@@ -1760,19 +1760,24 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
   "week_end": "2026-08-30",
   "today_session_count": 12,
   "upcoming_week_session_count": 35,
+  "today_evaluation_count": 1,
+  "upcoming_week_evaluation_count": 3,
   "active_tutor_count": 8,
   "active_client_count": 63,
   "recent_bookings": [
     {
       "id": "uuid",
       "child": { "id": "uuid", "name": "Tommy Doe" },
-      "tutor": { "id": "uuid", "name": "Sarah Miller" },
+      "staff": { "id": "uuid", "name": "Sarah Miller", "role": "tutor" },
+      "kind": "regular",
+      "location": "home",
       "subject": { "id": "uuid", "name": "Math" },
       "scheduled_date": "2026-08-27",
       "start_time": "09:00:00",
       "end_time": "10:00:00",
       "status": "confirmed",
-      "notes": null
+      "notes": null,
+      "updated_at": "2026-08-01T12:00:00"
     }
   ]
 }
@@ -1784,6 +1789,8 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
 | `week_end` | The Sunday of the ISO week containing `date` |
 | `today_session_count` | Live sessions on `date` |
 | `upcoming_week_session_count` | Live sessions from the day after `date` through `week_end`, inclusive |
+| `today_evaluation_count` | Of `today_session_count`, the live Evaluations (`kind = evaluation`) |
+| `upcoming_week_evaluation_count` | Of `upcoming_week_session_count`, the live Evaluations |
 | `active_tutor_count` | `tutors` rows with `is_active = true` |
 | `active_client_count` | `guardians` rows with `is_active = true` |
 | `recent_bookings` | The five most recently created bookings, newest first |
@@ -1803,6 +1810,7 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
 
 - `today_session_count` is the number of live bookings on `date`. **For an admin-or-above caller it equals the `total` of `GET /api/bookings?status=pending&status=confirmed&from=<date>&to=<date>`** — the same status set, the same inclusive bounds on the same column. That call is exactly the list a dashboard renders beneath this number, so the count and the rows agree by construction rather than by luck.
 - `upcoming_week_session_count` equals the `total` of that same call with `from=<date + 1 day>&to=<week_end>`. **The equality holds on a Sunday as well**, where that call's `from` is a day later than its `to`: an inverted range returns an empty page, so both sides are `0` and the assertion needs no Sunday case.
+- `today_evaluation_count` equals the `total` of `GET /api/bookings?status=pending&status=confirmed&kind=evaluation&from=<date>&to=<date>`, and `upcoming_week_evaluation_count` the `total` of the same call with `from=<date + 1 day>&to=<week_end>` (0 on a Sunday). They are subsets of the session counts, which keep counting every kind; the dashboard shows them as an "incl. N Evaluations" line.
 - `active_tutor_count` is the number of `tutors` rows with `is_active = true`. **For an admin-or-above caller it equals the `total` of `GET /api/tutors?is_active=true`** — same column, same predicate, same treatment of the deactivated set.
 - `active_client_count` is the number of `guardians` rows with `is_active = true`, equal to the `total` of `GET /api/clients?is_active=true` on the same terms and under the same role qualifier. A *client* is a `guardian`: neither `children` nor `homes` enters this count.
 - **The role qualifier is load-bearing.** `GET /api/tutors` is scoped to "own profile only" for a tutor, so its `total` on a tutor token is 1, and `GET /api/bookings` is scoped to "own bookings only", so its `total` on that token counts that tutor's sessions rather than the system's. Only `admin` and `developer` can observe both sides of any of these equalities, and only they can call this endpoint at all — which is what makes the equality statable without a caveat rather than in spite of one.
@@ -1817,7 +1825,7 @@ Unlike `GET /api/slots/available`, **`date` here carries no past or future bound
 - **Ordering is `created_at` descending, tie-broken by `id` descending.** This is a feed of what was just booked, not of what happens next; the two session counts above already answer what happens next. `created_at` is an absolute instant, so ordering by it needs no zone this system does not have, unlike `scheduled_date + start_time`, which is a bare date beside a bare time and has no offset to order by. The `id` tie-break is there because ids are `gen_random_uuid()` and carry no insertion order — without it, two bookings created in the same transaction have no defined order and the endpoint is not deterministic.
 - **Every status appears, `cancelled` and `completed` included.** That deliberately differs from the session counts above: the counts answer what is live, the feed answers what just happened, and a booking cancelled ten minutes ago is exactly the recent activity an admin opened the page to see. Each row's `status` field reports which it is.
 - **Five is fixed and there is no parameter.** The widget is "last 5". A caller wanting more wants paging over an ordered `GET /api/bookings`, which is a change to that endpoint and not to this one.
-- **Each object is identical to a [`GET /api/bookings`](#get-apibookings) item** — the same nine fields, the same nesting, the same names. That is deliberate: a second booking-summary shape is a second thing to keep in step.
+- **Each object is identical to a [`GET /api/bookings`](#get-apibookings) item** — the same twelve fields, the same nesting, the same names. That is deliberate: a second booking-summary shape is a second thing to keep in step.
 
 **What this endpoint deliberately does not carry.** The dashboard's today's-sessions widget is a count *and a list*; only the count is here. The list is `GET /api/bookings?status=pending&status=confirmed&from=<date>&to=<date>`, which already exists in this contract, already pages and already returns the envelope. **The status filter is not optional decoration:** without it the list returns that day's cancellations too, and the widget renders a count above a list of different rows. Scoped this way the two agree, and the equality above says so. An aggregate endpoint returns aggregates: a second unbounded copy of a booking list inside this one would be a second path to the same rows, which is what this endpoint exists to remove rather than to add.
 

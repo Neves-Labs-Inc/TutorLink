@@ -58,8 +58,10 @@ ACTIVE_TUTOR_TOTAL = 21
 INACTIVE_TUTOR_TOTAL = 2
 ACTIVE_CLIENT_TOTAL = 23
 INACTIVE_CLIENT_TOTAL = 2
-LIVE_TODAY_TOTAL = ACTIVE_TUTOR_TOTAL
-LIVE_UPCOMING_TOTAL = ACTIVE_TUTOR_TOTAL + 1
+LIVE_TODAY_EVALUATION_TOTAL = 1
+LIVE_UPCOMING_EVALUATION_TOTAL = 2
+LIVE_TODAY_TOTAL = ACTIVE_TUTOR_TOTAL + LIVE_TODAY_EVALUATION_TOTAL
+LIVE_UPCOMING_TOTAL = ACTIVE_TUTOR_TOTAL + 1 + LIVE_UPCOMING_EVALUATION_TOTAL
 
 SUMMARY_FIELDS = {
     "id",
@@ -123,6 +125,12 @@ def landscape(db: Session, stage: Stage) -> Stage:
     _book(db, stage, on=WEDNESDAY, start=TWELVE, end=THIRTEEN, status=BookingStatus.CANCELLED)
     _book(db, stage, on=WEDNESDAY, start=THIRTEEN, end=FOURTEEN, status=BookingStatus.COMPLETED)
     _book(db, stage, on=THURSDAY, start=TWELVE, end=THIRTEEN, status=BookingStatus.CANCELLED)
+
+    _evaluate(db, stage, on=WEDNESDAY, status=BookingStatus.PENDING)
+    _evaluate(db, stage, on=THURSDAY, status=BookingStatus.CONFIRMED)
+    _evaluate(db, stage, on=FRIDAY, status=BookingStatus.PENDING)
+    _evaluate(db, stage, on=WEDNESDAY, status=BookingStatus.CANCELLED)
+    _evaluate(db, stage, on=THURSDAY, status=BookingStatus.COMPLETED)
 
     return stage
 
@@ -268,6 +276,48 @@ def test_the_session_counts_equal_the_booking_list_totals(
     assert body["upcoming_week_session_count"] == upcoming["total"]
 
 
+@pytest.mark.parametrize("on", [WEDNESDAY, SUNDAY], ids=["midweek", "sunday-inverts-the-range"])
+def test_the_evaluation_counts_equal_the_kind_filtered_booking_list_totals(
+    api: TestClient, db: Session, landscape: Stage, on: datetime.date
+) -> None:
+    admin = _make_user(db)
+    body = api.get(f"/api/stats/overview?date={on}", headers=_auth(admin)).json()
+    week_end = body["week_end"]
+    day_after = on + datetime.timedelta(days=1)
+    live = "status=pending&status=confirmed&kind=evaluation"
+
+    today = api.get(f"/api/bookings?{live}&from={on}&to={on}", headers=_auth(admin)).json()
+    upcoming = api.get(
+        f"/api/bookings?{live}&from={day_after}&to={week_end}", headers=_auth(admin)
+    ).json()
+
+    assert body["today_evaluation_count"] == today["total"]
+    assert body["upcoming_week_evaluation_count"] == upcoming["total"]
+
+
+def test_the_evaluation_counts_exclude_dead_evaluations_and_sessions_include_live_ones(
+    api: TestClient, db: Session, landscape: Stage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()
+
+    assert body["today_evaluation_count"] == LIVE_TODAY_EVALUATION_TOTAL
+    assert body["upcoming_week_evaluation_count"] == LIVE_UPCOMING_EVALUATION_TOTAL
+    assert body["today_session_count"] == LIVE_TODAY_TOTAL
+    assert body["upcoming_week_session_count"] == LIVE_UPCOMING_TOTAL
+
+
+def test_on_a_sunday_the_upcoming_evaluation_count_is_zero(
+    api: TestClient, db: Session, landscape: Stage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get(f"/api/stats/overview?date={SUNDAY}", headers=_auth(admin)).json()
+
+    assert body["upcoming_week_evaluation_count"] == 0
+
+
 def test_the_session_count_fixture_outgrows_one_page(
     api: TestClient, db: Session, landscape: Stage
 ) -> None:
@@ -307,7 +357,7 @@ def test_active_client_count_equals_the_client_list_total(
     assert deactivated["total"] == INACTIVE_CLIENT_TOTAL
 
 
-def test_the_response_carries_exactly_the_seven_documented_fields(
+def test_the_response_carries_exactly_the_nine_documented_fields(
     api: TestClient, db: Session, stage: Stage
 ) -> None:
     admin = _make_user(db)
@@ -319,6 +369,8 @@ def test_the_response_carries_exactly_the_seven_documented_fields(
         "week_end",
         "today_session_count",
         "upcoming_week_session_count",
+        "today_evaluation_count",
+        "upcoming_week_evaluation_count",
         "active_tutor_count",
         "active_client_count",
         "recent_bookings",
@@ -465,6 +517,29 @@ def _book(
     if created_at is not None:
         booking.created_at = created_at
         booking.updated_at = created_at
+    db.add(booking)
+    db.flush()
+
+    return booking
+
+
+def _evaluate(db: Session, stage: Stage, *, on: datetime.date, status: BookingStatus) -> Booking:
+    # Its own staff member: an Evaluation holds no slot, but the live-overlap exclusion is per staff.
+    staff = _make_user(db, role=UserRole.ADMIN)
+    # A Child holds at most one live Evaluation (`uq_bookings_one_live_evaluation_per_child`).
+    child = Child(name=f"Child {uuid.uuid4().hex[:12]}", grade_level=7, school_name="PS 1")
+    db.add(child)
+    db.flush()
+    booking = Booking(
+        child_id=child.id,
+        user_id=staff.id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=on,
+        start_time=TEN,
+        end_time=ELEVEN,
+        status=status,
+    )
     db.add(booking)
     db.flush()
 

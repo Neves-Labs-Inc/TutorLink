@@ -9,6 +9,7 @@ import { errorDetail } from '@/lib/api'
 import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
 import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import {
+  evaluationsSubLine,
   hasDateRolledOver,
   queriedDateLabel,
   tableStatus,
@@ -24,6 +25,7 @@ type StatWidgetProps = {
   label: string
   value: number
   detail: string
+  subLine?: string | null
 }
 
 const FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -131,11 +133,13 @@ export const Dashboard = () => {
           label="Today's sessions"
           value={stats.data.today_session_count}
           detail={`Live on ${formatIsoDate(stats.data.date)}`}
+          subLine={evaluationsSubLine(stats.data.today_evaluation_count)}
         />
         <StatWidget
           label="Upcoming this week"
           value={stats.data.upcoming_week_session_count}
           detail={upcomingWeekLabel(stats.data.date, stats.data.week_end)}
+          subLine={evaluationsSubLine(stats.data.upcoming_week_evaluation_count)}
         />
         {/* <StatWidget
           label="Active tutors"
@@ -190,14 +194,15 @@ export const Dashboard = () => {
   )
 }
 
-const StatWidget = ({ label, value, detail }: StatWidgetProps) => (
+const StatWidget = ({ label, value, detail, subLine }: StatWidgetProps) => (
   <Card>
     <CardHeader>
       <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
       <CardDescription>{detail}</CardDescription>
     </CardHeader>
-    <CardContent>
+    <CardContent className="space-y-1">
       <p className="font-heading text-3xl font-semibold tabular-nums text-foreground">{value}</p>
+      {subLine ? <p className="text-xs text-muted-foreground">{subLine}</p> : null}
     </CardContent>
   </Card>
 )

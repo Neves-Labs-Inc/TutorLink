@@ -7,6 +7,8 @@ export type StatsOverview = {
   week_end: string
   today_session_count: number
   upcoming_week_session_count: number
+  today_evaluation_count: number
+  upcoming_week_evaluation_count: number
   active_tutor_count: number
   active_client_count: number
   recent_bookings: Booking[]

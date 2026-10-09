@@ -66,3 +66,15 @@ export const tableStatus = (isPending: boolean, isError: boolean): TableStatus =
 
   return status
 }
+
+export const evaluationsSubLine = (count: number): string | null => {
+  let line: string | null = null
+
+  if (count === 1) {
+    line = 'incl. 1 Evaluation'
+  } else if (count > 1) {
+    line = `incl. ${count} Evaluations`
+  }
+
+  return line
+}

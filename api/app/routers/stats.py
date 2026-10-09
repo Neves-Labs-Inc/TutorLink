@@ -44,6 +44,8 @@ def read_overview(user: OfficePrincipal, db: DbSession, date: datetime.date) -> 
         week_end=data.week_end,
         today_session_count=data.today_session_count,
         upcoming_week_session_count=data.upcoming_week_session_count,
+        today_evaluation_count=data.today_evaluation_count,
+        upcoming_week_evaluation_count=data.upcoming_week_evaluation_count,
         active_tutor_count=data.active_tutor_count,
         active_client_count=data.active_client_count,
         recent_bookings=[booking_summary(row) for row in data.recent_bookings],

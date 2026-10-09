@@ -1,5 +1,6 @@
 import type { Role } from '@/lib/auth/auth'
 import { WEEKDAY_NAMES } from '@/lib/reminders/reminders'
+import { isEmailTemplateKey } from '@/lib/settings/emailTemplates'
 import type { Setting, SettingUpdate } from '@/lib/settings/settings'
 
 export const REMINDER_KEYS: readonly string[] = [
@@ -54,7 +55,7 @@ export const isRemindersPaused = (flag: boolean | undefined): boolean => flag ==
 export const isReminderKey = (key: string): boolean => REMINDER_KEYS.includes(key)
 
 export const generalSettings = (settings: Setting[]): Setting[] =>
-  settings.filter((setting) => !isReminderKey(setting.key))
+  settings.filter((setting) => !isReminderKey(setting.key) && !isEmailTemplateKey(setting.key))
 
 export const reminderSettings = (settings: Setting[]): Setting[] =>
   settings.filter((setting) => isReminderKey(setting.key))

@@ -1787,7 +1787,13 @@ def test_an_unexpected_failure_cancelling_the_old_session_undoes_the_new_one(
     worse than the move not happening."""
     original = _reach_reschedule_confirm(chat, db, world, client)
 
-    def refuse(db: Session, *, booking_id: uuid.UUID, target: BookingStatus) -> Booking:
+    def refuse(
+        db: Session,
+        *,
+        booking_id: uuid.UUID,
+        target: BookingStatus,
+        expected_updated_at: datetime.datetime | None = None,
+    ) -> Booking:
         raise booking_status_service.IllegalTransition(
             current=BookingStatus.CONFIRMED, target=target
         )

@@ -1469,8 +1469,12 @@ def _cancel_confirm(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
     try:
+        # `expected_updated_at` is the stale-booking guard; spec 03 stores the picked value.
         booking_status_service.change_status(
-            turn.db, booking_id=booking.id, target=BookingStatus.CANCELLED
+            turn.db,
+            booking_id=booking.id,
+            target=BookingStatus.CANCELLED,
+            expected_updated_at=None,
         )
     except booking_status_service.BookingStatusError:
         return _stuck(turn)
@@ -1998,8 +2002,12 @@ def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
 
 def _cancel_replaced(turn: _Turn, *, booking_id: uuid.UUID) -> None:
     try:
+        # `expected_updated_at` is the stale-booking guard; spec 03 stores the picked value.
         booking_status_service.change_status(
-            turn.db, booking_id=booking_id, target=BookingStatus.CANCELLED
+            turn.db,
+            booking_id=booking_id,
+            target=BookingStatus.CANCELLED,
+            expected_updated_at=None,
         )
     except booking_status_service.BookingNotFound:
         # Removed since the pick: the parent already holds only the new session.

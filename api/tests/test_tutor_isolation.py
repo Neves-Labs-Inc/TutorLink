@@ -49,6 +49,7 @@ from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
+from app.routers.booking_status import OFFICE_ONLY_TRANSITION_ERROR
 from app.routers.exceptions import EXCEPTION_NOT_DELETABLE_ERROR
 from app.security import create_access_token, hash_password
 from tests.support import user_id_of
@@ -439,7 +440,12 @@ def test_a_tutor_deleting_another_tutors_pending_request_is_403(
             OFFICE_REQUIRED_ERROR,
         ),
         ("DELETE", "/api/availability/{slot_id}", None, OFFICE_REQUIRED_ERROR),
-        ("PATCH", "/api/bookings/{booking_id}", {"status": "cancelled"}, OFFICE_REQUIRED_ERROR),
+        (
+            "PATCH",
+            "/api/bookings/{booking_id}",
+            {"status": "cancelled"},
+            OFFICE_ONLY_TRANSITION_ERROR,
+        ),
     ],
     ids=[
         "decide-own-pending",

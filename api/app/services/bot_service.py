@@ -325,6 +325,8 @@ _BOOKING_KEYS = (
     "book_date",
     "book_location",
     "book_home_id",
+    "reschedule_location",
+    "reschedule_home_id",
     "chosen",
     "reschedule_booking_id",
     "cancel_booking_id",
@@ -1506,7 +1508,7 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     # member has no profile to offer slots from — is not on the list it offers (ticket 07);
     # reaching here with one is a bug worth a flag, not a reply.
     profile_id = _profile_id(turn.db, user_id=booking.user_id)
-    if booking.subject_id is None or booking.home_id is None or profile_id is None:
+    if booking.subject_id is None or profile_id is None:
         return _stuck(turn)
 
     _reset_booking(turn.data)
@@ -1521,7 +1523,13 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
         return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_FIRST_SESSION_DATE)
 
     turn.data["book_tutor_id"] = str(profile_id)
-    turn.data["book_home_id"] = str(booking.home_id)
+
+    # The old Location rides along as the Location step's preset, in keys of its own so a
+    # Location picked for a day that turned out to have no slots is never mistaken for it:
+    # kept silently when the new day still allows it, ignored otherwise (`_ask_location`).
+    turn.data["reschedule_location"] = booking.location.value
+    if booking.home_id is not None:
+        turn.data["reschedule_home_id"] = str(booking.home_id)
 
     return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_BOOK_DATE)
 
@@ -1709,17 +1717,7 @@ def _first_session_date(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     moving = _booking_to_move(turn)
 
     if moving is not None:
-        reply = _say(
-            turn,
-            "RESCHEDULE_NEEDS_OFFICE",
-            child=child.name,
-            subject=_subject_name(moving.subject, turn.language),
-            old_date=bot_messages.format_date(moving.scheduled_date, turn.language),
-            old_time=bot_messages.format_time_range(
-                moving.start_time, moving.end_time, turn.language
-            ),
-            date=bot_messages.format_date(date, turn.language),
-        )
+        reply = _reschedule_handoff_reply(turn, child=child, moving=moving, date=date)
     elif child.evaluated_at is None:
         reply = _say(turn, "FIRST_SESSION_HANDOFF", name=child.name)
     else:
@@ -1738,6 +1736,22 @@ def _booking_to_move(turn: _Turn) -> Booking | None:
     raw = turn.data.get("reschedule_booking_id")
 
     return None if not raw else turn.db.get(Booking, uuid.UUID(raw))
+
+
+def _reschedule_handoff_reply(
+    turn: _Turn, *, child: Child, moving: Booking, date: datetime.date
+) -> str:
+    """`RESCHEDULE_NEEDS_OFFICE`: the session being moved and the day asked for, so Staff
+    reading the flagged thread move that session rather than booking a second one."""
+    return _say(
+        turn,
+        "RESCHEDULE_NEEDS_OFFICE",
+        child=child.name,
+        subject=_subject_name(moving.subject, turn.language),
+        old_date=bot_messages.format_date(moving.scheduled_date, turn.language),
+        old_time=bot_messages.format_time_range(moving.start_time, moving.end_time, turn.language),
+        date=bot_messages.format_date(date, turn.language),
+    )
 
 
 def _date_not_bookable(turn: _Turn) -> str:
@@ -1783,11 +1797,15 @@ def _ask_location(turn: _Turn) -> _Next:
     The homes come from `child_homes` directly. The bot is not a client of
     `GET /api/clients/{id}` and issue #60's flat uncorrelated lists are not in its path (P7-M).
     One possible Location is chosen without asking; none at all is an Office handoff, since
-    ranges exist but no Location fits them (answers.md 03.2). A reschedule's preset home is
-    kept silently while it is still offered.
+    ranges exist but no Location fits them (answers.md 03.2). A reschedule presets the old
+    Location: kept silently while it is still among the options, dropped otherwise so the
+    normal rule runs over what the new day allows.
     """
     date = datetime.date.fromisoformat(turn.data["book_date"])
     requested = turn.data["book_tutor_id"]
+
+    # A Location picked for an earlier date that had no slots must not reach this date's offer.
+    _clear_location(turn.data)
 
     try:
         allowed = slot_service.allowed_locations(
@@ -1807,10 +1825,9 @@ def _ask_location(turn: _Turn) -> _Next:
     options = _location_options(turn, allowed)
 
     if not options:
-        return _needs_office_for_location(turn)
+        return _needs_office_for_location(turn, date)
 
-    preset = turn.data.get("book_home_id")
-    kept = [option for option in options if _is_home_option(option) and option["id"] == preset]
+    kept = [option for option in options if _is_preset_option(turn.data, option)]
 
     if kept or len(options) == 1:
         _choose_location(turn, (kept or options)[0])
@@ -1854,6 +1871,27 @@ def _is_home_option(option: dict[str, Any]) -> bool:
     return option.get("location", BookingLocation.HOME.value) == BookingLocation.HOME.value
 
 
+def _is_preset_option(data: dict[str, Any], option: dict[str, Any]) -> bool:
+    """Whether the option is the Location a reschedule carried in: the same home, or the
+    office when the old session was In office. A new booking presets nothing."""
+    preset = data.get("reschedule_location")
+
+    if preset is None:
+        return False
+
+    if _is_home_option(option):
+        return preset == BookingLocation.HOME.value and option["id"] == data.get(
+            "reschedule_home_id"
+        )
+
+    return preset == BookingLocation.IN_OFFICE.value
+
+
+def _clear_location(data: dict[str, Any]) -> None:
+    data.pop("book_location", None)
+    data.pop("book_home_id", None)
+
+
 def _choose_location(turn: _Turn, option: dict[str, Any]) -> None:
     if _is_home_option(option):
         turn.data["book_location"] = BookingLocation.HOME.value
@@ -1868,18 +1906,28 @@ def _location_of(data: dict[str, Any]) -> BookingLocation:
     return BookingLocation(data.get("book_location", BookingLocation.HOME.value))
 
 
-def _needs_office_for_location(turn: _Turn) -> _Next:
+def _needs_office_for_location(turn: _Turn, date: datetime.date) -> _Next:
     """Ranges exist that day but the Child has no active home and none allows In office: the
-    same Office handoff as a subject the bot cannot book."""
+    same Office handoff as a subject the bot cannot book. On a reschedule the new day is
+    already known, so the handoff names the session being moved straight away (answers.md
+    03.8); nothing is written or cancelled."""
     child = turn.db.get(Child, uuid.UUID(turn.data["book_child_id"]))
     subject = turn.db.get(Subject, uuid.UUID(turn.data["book_subject_id"]))
 
     if child is None or subject is None:
         return _stuck(turn)
 
-    reply = _say(
-        turn, "SUBJECT_NEEDS_OFFICE", name=child.name, subject=_subject_name(subject, turn.language)
-    )
+    moving = _booking_to_move(turn)
+
+    if moving is not None:
+        reply = _reschedule_handoff_reply(turn, child=child, moving=moving, date=date)
+    else:
+        reply = _say(
+            turn,
+            "SUBJECT_NEEDS_OFFICE",
+            name=child.name,
+            subject=_subject_name(subject, turn.language),
+        )
 
     return _Next(reply=reply, step=None, flag_reason=FlagReason.BOOKING_REQUEST)
 

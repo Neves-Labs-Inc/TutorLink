@@ -2067,6 +2067,221 @@ def test_a_reschedule_whose_old_session_was_removed_meanwhile_is_still_moved(
     assert turn.flag_reason is None
 
 
+# --- a reschedule keeps the Location when it still works, else asks (#132) ------------------
+
+
+def _start_reschedule(chat: Chat) -> BotTurn:
+    """Through the pick and the date; the reply is the Location step's, whatever it says."""
+    chat.say("hi")
+    chat.say("move it", intent=BotIntent.RESCHEDULE)
+    chat.say(value="1")
+
+    return chat.say(value=DATE.isoformat())
+
+
+@pytest.mark.parametrize("mode", [AvailabilityMode.ANYWHERE, AvailabilityMode.ONLY_OFFICE])
+def test_moving_an_in_office_session_keeps_the_office_when_the_tutor_still_allows_it(
+    chat: Chat,
+    db: Session,
+    world: BotWorld,
+    client: ClientWorld,
+    cutoff: Callable[[int], None],
+    mode: AvailabilityMode,
+) -> None:
+    cutoff(1)
+    original = _make_booking(
+        db,
+        world,
+        client,
+        date=DATE,
+        start=datetime.time(14, 0),
+        location=BookingLocation.IN_OFFICE,
+        home_id=None,
+    )
+    _set_mode(db, world.first_availability_id, mode)
+
+    offered = _start_reschedule(chat)
+    chat.say(value="1")
+    moved = chat.say(value="yes")
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    assert "at the office" in offered.reply
+    assert _text_before_placeholder("BOOKING_MOVED") in moved.reply
+    assert "at the office on" in moved.reply
+    assert db.get_one(Booking, original.id).status is BookingStatus.CANCELLED
+    (live,) = _live_bookings(db)
+    assert live.location is BookingLocation.IN_OFFICE
+    assert live.home_id is None
+
+
+@pytest.mark.parametrize("mode", [AvailabilityMode.TRAVELER, AvailabilityMode.ANYWHERE])
+def test_moving_a_home_session_keeps_the_home_while_it_is_still_offered(
+    chat: Chat,
+    db: Session,
+    world: BotWorld,
+    client: ClientWorld,
+    cutoff: Callable[[int], None],
+    mode: AvailabilityMode,
+) -> None:
+    cutoff(1)
+    _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _set_mode(db, world.first_availability_id, mode)
+
+    offered = _start_reschedule(chat)
+    chat.say(value="1")
+    chat.say(value="yes")
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    (live,) = _live_bookings(db)
+    assert live.location is BookingLocation.HOME
+    assert live.home_id == client.home_id
+
+
+def test_moving_a_home_session_to_an_office_only_day_moves_it_to_the_office_without_asking(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    cutoff(1)
+    _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ONLY_OFFICE)
+
+    offered = _start_reschedule(chat)
+    confirm = chat.say(value="1")
+    moved = chat.say(value="yes")
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    assert "at the office" in confirm.reply
+    assert "at the office on" in moved.reply
+    (live,) = _live_bookings(db)
+    assert live.location is BookingLocation.IN_OFFICE
+    assert live.home_id is None
+
+
+def test_moving_a_home_session_whose_home_was_deactivated_asks_where_among_what_is_left(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    cutoff(1)
+    _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _add_home(db, client, label="Dad's", address="2 Other Street")
+    db.get_one(Home, client.home_id).is_active = False
+    db.flush()
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
+
+    turn = _start_reschedule(chat)
+
+    assert turn.reply == f"{render('ASK_WHERE', 'en')}\n1. Dad's\n2. At the office"
+    assert chat.step == bot_service.STEP_BOOK_HOME
+
+
+def test_moving_a_home_session_with_nowhere_left_to_hold_it_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """The new date is already known, so the handoff replies at once (answers.md 03.8); the
+    old session stays until Staff move it."""
+    cutoff(1)
+    original = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    db.get_one(Home, client.home_id).is_active = False
+    db.flush()
+
+    turn = _start_reschedule(chat)
+
+    assert turn.reply == (
+        f"Thank you. Our office will help you move Sam Guardian's {world.subject_name} session "
+        f"on {US_DATE}, 2:00-3:00 PM to {US_DATE}, and will be in touch shortly. "
+        "The session stays booked until then."
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert chat.state is None
+    assert db.get_one(Booking, original.id).status is BookingStatus.CONFIRMED
+    assert _count(db, Booking) == 1
+
+
+def test_moving_an_in_office_session_to_a_home_visits_day_moves_it_to_the_one_home(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    cutoff(1)
+    _make_booking(
+        db,
+        world,
+        client,
+        date=DATE,
+        start=datetime.time(14, 0),
+        location=BookingLocation.IN_OFFICE,
+        home_id=None,
+    )
+
+    offered = _start_reschedule(chat)
+    chat.say(value="1")
+    chat.say(value="yes")
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    assert "at Home" in offered.reply
+    (live,) = _live_bookings(db)
+    assert live.location is BookingLocation.HOME
+    assert live.home_id == client.home_id
+
+
+def _fill_a_home_visits_day(
+    db: Session, world: BotWorld, client: ClientWorld, *, mode: AvailabilityMode
+) -> datetime.date:
+    """A day after `DATE` with one short range of the given mode and its only slot taken."""
+    day = DATE + datetime.timedelta(days=1)
+    _make_availability(
+        db, world.first_tutor_id, date=day, start=NINE, end=datetime.time(10, 0), mode=mode
+    )
+    _make_booking(db, world, client, date=day, start=NINE)
+
+    return day
+
+
+def test_a_no_slots_day_does_not_turn_its_auto_picked_home_into_the_kept_location(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """Moving an In office session: the first day only allows the one home, which is picked
+    silently but has no slot; the next day allows both, and the office is what is kept."""
+    cutoff(1)
+    _make_booking(
+        db,
+        world,
+        client,
+        date=DATE,
+        start=datetime.time(14, 0),
+        location=BookingLocation.IN_OFFICE,
+        home_id=None,
+    )
+    full_day = _fill_a_home_visits_day(db, world, client, mode=AvailabilityMode.TRAVELER)
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
+    chat.say("hi")
+    chat.say("move it", intent=BotIntent.RESCHEDULE)
+    chat.say(value="1")
+
+    no_slots = chat.say(value=full_day.isoformat())
+    offered = chat.say(value=DATE.isoformat())
+
+    assert _text_before_placeholder("NO_SLOTS") in no_slots.reply
+    assert render("ASK_WHERE", "en") not in offered.reply
+    assert "at the office" in offered.reply
+    assert "at Home" not in offered.reply
+
+
+def test_a_no_slots_day_does_not_make_a_new_booking_keep_its_auto_picked_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """The first day is office only, so the office is picked silently but has no slot; the
+    next day allows both, and a new booking is asked where like any other."""
+    full_day = _fill_a_home_visits_day(db, world, client, mode=AvailabilityMode.ONLY_OFFICE)
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value=world.subject_name)
+    chat.say(value=world.first_tutor_name)
+
+    no_slots = chat.say(value=full_day.isoformat())
+    asked = chat.say(value=DATE.isoformat())
+
+    assert _text_before_placeholder("NO_SLOTS") in no_slots.reply
+    assert asked.reply == f"{render('ASK_WHERE', 'en')}\n1. Home\n2. At the office"
+
+
 def test_an_unexpected_failure_cancelling_the_old_session_undoes_the_new_one(
     chat: Chat,
     db: Session,

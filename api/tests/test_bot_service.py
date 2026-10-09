@@ -645,6 +645,92 @@ def test_the_cancel_list_labels_a_booking_with_a_human_date_and_time(
     assert expected in turn.reply
 
 
+@pytest.mark.parametrize("intent", [BotIntent.CANCEL, BotIntent.RESCHEDULE])
+def test_an_evaluation_is_on_neither_the_cancel_list_nor_the_reschedule_list(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, intent: BotIntent
+) -> None:
+    """The office alone moves an Evaluation; the bot lists only the Regular session."""
+    _make_evaluation(db, client, date=DATE, start=datetime.time(10, 0))
+    _make_booking(db, world, client, date=DATE, start=datetime.time(16, 0))
+    chat.say("hi")
+
+    turn = chat.say("please", intent=intent)
+
+    assert "4:00-5:00 PM" in turn.reply
+    assert "10:00-11:00 AM" not in turn.reply
+
+
+@pytest.mark.parametrize("intent", [BotIntent.CANCEL, BotIntent.RESCHEDULE])
+def test_a_child_with_only_an_evaluation_has_nothing_to_cancel_or_reschedule(
+    chat: Chat, db: Session, client: ClientWorld, intent: BotIntent
+) -> None:
+    _make_evaluation(db, client, date=DATE, start=datetime.time(10, 0))
+    chat.say("hi")
+
+    turn = chat.say("please", intent=intent)
+
+    assert turn.reply == f"{render('NO_UPCOMING', 'en')} {render('ASK_MENU', 'en')}"
+
+
+def test_rescheduling_a_regular_session_with_no_teaching_profile_behind_it_is_stuck(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """An Admin has no availability to offer slots from; the bot flags rather than guessing."""
+    cutoff(1)
+    booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    booking.user_id = _make_admin(db).id
+    booking.availability_id = None
+    db.flush()
+    chat.say("hi")
+    chat.say("move it", intent=BotIntent.RESCHEDULE)
+
+    turn = chat.say(value="1")
+
+    assert turn.reply == render("CANNOT_CONTINUE", "en")
+    assert turn.flag_reason is FlagReason.STUCK
+    assert db.get_one(Booking, booking.id).status is BookingStatus.CONFIRMED
+
+
+def test_the_booking_flow_lands_a_confirmed_regular_home_booking_for_the_chosen_tutor(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _book(chat, world, tutor=world.second_tutor_name)
+
+    booking = db.execute(select(Booking)).scalar_one()
+
+    assert booking.kind is BookingKind.REGULAR
+    assert booking.location is BookingLocation.HOME
+    assert booking.user_id == user_id_of(db, world.second_tutor_id)
+    assert booking.status is BookingStatus.CONFIRMED
+    assert booking.booked_by_guardian_id == client.guardian_id
+
+
+def test_a_tutor_promoted_to_admin_is_no_longer_offered_and_returns_when_demoted(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    user = db.get_one(User, user_id_of(db, world.first_tutor_id))
+
+    def offered() -> tuple[str, str]:
+        chat.say("hi")
+        chat.say("book", intent=BotIntent.BOOK)
+        menu = chat.say(value=world.subject_name)
+        offer = chat.say(value=render("ANY_TUTOR_LABEL", "en"))
+        offer = chat.say(value=DATE.isoformat())
+        _expire_flow_state(db, phone_number=chat.phone_number)
+
+        return menu.reply, offer.reply
+
+    user.role = UserRole.ADMIN
+    db.flush()
+    as_admin = offered()
+    user.role = UserRole.TUTOR
+    db.flush()
+    as_tutor = offered()
+
+    assert all(world.first_tutor_name not in reply for reply in as_admin)
+    assert all(world.first_tutor_name in reply for reply in as_tutor)
+
+
 def test_the_date_of_birth_and_notes_are_never_sent_to_the_parser_again(chat: Chat) -> None:
     """A-55. Neither is needed to understand any later step, and notes can be health
     information; both would otherwise ride along to a third-party model on every message.
@@ -3424,6 +3510,36 @@ def _make_booking(
     db.flush()
 
     return booking
+
+
+def _make_evaluation(
+    db: Session, client: ClientWorld, *, date: datetime.date, start: datetime.time
+) -> Booking:
+    """A live Evaluation session at the office, booked by Staff (no Subject, Home or slot)."""
+    booking = Booking(
+        child_id=client.child_id,
+        user_id=_make_admin(db).id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=date,
+        start_time=start,
+        end_time=(datetime.datetime.combine(date, start) + datetime.timedelta(hours=1)).time(),
+        status=BookingStatus.CONFIRMED,
+    )
+    db.add(booking)
+    db.flush()
+
+    return booking
+
+
+def _make_admin(db: Session) -> User:
+    admin = User(
+        email=f"admin-{uuid.uuid4().hex[:12]}@example.com", name="Office Admin", role=UserRole.ADMIN
+    )
+    db.add(admin)
+    db.flush()
+
+    return admin
 
 
 def _count(db: Session, model: type) -> int:

@@ -2249,7 +2249,9 @@ def _homes(db: Session, *, child_id: uuid.UUID) -> list[Home]:
 def _upcoming_bookings(
     db: Session, *, guardian_id: uuid.UUID, on_or_after: datetime.date
 ) -> list[Booking]:
-    """Live, future bookings for the children this guardian is linked to.
+    """Live, future Regular bookings for the children this guardian is linked to.
+
+    Evaluations are the Office's to cancel or move, so they never appear in the bot's lists.
 
     `LIVE_BOOKING_STATUSES` is the one definition of a booking that counts, so a cancelled
     session never appears in a cancel or reschedule list.
@@ -2260,6 +2262,7 @@ def _upcoming_bookings(
             .join(ChildGuardian, ChildGuardian.child_id == Booking.child_id)
             .where(
                 ChildGuardian.guardian_id == guardian_id,
+                Booking.kind == BookingKind.REGULAR,
                 Booking.status.in_(LIVE_BOOKING_STATUSES),
                 Booking.scheduled_date >= on_or_after,
             )

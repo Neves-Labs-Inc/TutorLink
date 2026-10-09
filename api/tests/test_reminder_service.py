@@ -359,6 +359,28 @@ def test_a_live_booking_that_week_makes_the_child_ineligible(
     assert candidate_for(db, guardian) is None
 
 
+def test_a_live_evaluation_that_week_makes_the_child_ineligible(world: World, db: Session) -> None:
+    """An Evaluation is a booked session like any other: the reminder is for a Child with
+    nothing booked, and one already coming in for an Evaluation has something."""
+    guardian = world.guardian()
+    child = world.child(guardian)
+    db.add(
+        Booking(
+            child_id=child.id,
+            user_id=world.staff().id,
+            kind=BookingKind.EVALUATION,
+            location=BookingLocation.IN_OFFICE,
+            scheduled_date=WEEK_START,
+            start_time=datetime.time(16, 0),
+            end_time=datetime.time(17, 0),
+            status=BookingStatus.CONFIRMED,
+        )
+    )
+    db.flush()
+
+    assert candidate_for(db, guardian) is None
+
+
 @pytest.mark.parametrize("status", [BookingStatus.CANCELLED, BookingStatus.COMPLETED])
 def test_a_cancelled_or_completed_booking_that_week_does_not_count(
     world: World, db: Session, status: BookingStatus

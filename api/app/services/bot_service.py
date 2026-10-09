@@ -323,6 +323,7 @@ _BOOKING_KEYS = (
     "book_subject_id",
     "book_tutor_id",
     "book_date",
+    "book_location",
     "book_home_id",
     "chosen",
     "reschedule_booking_id",
@@ -349,12 +350,13 @@ _REQUIRED_KEYS: dict[str, frozenset[str]] = {
     STEP_BOOK_SLOT: frozenset({"book_date"}),
     STEP_REACTIVATION_CONFIRM: frozenset({"reactivation_child_id", "reactivation_child_name"}),
     STEP_CANCEL_CONFIRM: frozenset({"cancel_booking_id"}),
+    # No `book_home_id`: an In office booking has none. `book_location` is optional too — a
+    # flow saved by a build before the Location step only ever booked a home (`_location_of`).
     STEP_BOOK_CONFIRM: frozenset(
         {
             "chosen",
             "book_child_id",
             "book_subject_id",
-            "book_home_id",
             "book_date",
             "book_tutor_id",
         }
@@ -1659,7 +1661,7 @@ def _book_date(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
 
     turn.data["book_date"] = date.isoformat()
 
-    return _ask_home(turn)
+    return _ask_location(turn)
 
 
 def _first_session_subject(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1770,39 +1772,134 @@ def _iso_date(raw: str | None) -> datetime.date | None:
         return None
 
 
-def _ask_home(turn: _Turn) -> _Next:
-    """REQ-074.3: the home question is asked only when the child has more than one active home.
+# The option id of "At the office" at the Location step; a home option's id is the home's.
+OFFICE_OPTION_ID = BookingLocation.IN_OFFICE.value
+
+
+def _ask_location(turn: _Turn) -> _Next:
+    """The Location step (#132): which of the Child's homes, or the office, from the modes of
+    the day's ranges (`slot_service.allowed_locations`).
 
     The homes come from `child_homes` directly. The bot is not a client of
     `GET /api/clients/{id}` and issue #60's flat uncorrelated lists are not in its path (P7-M).
+    One possible Location is chosen without asking; none at all is an Office handoff, since
+    ranges exist but no Location fits them (answers.md 03.2). A reschedule's preset home is
+    kept silently while it is still offered.
     """
-    homes = _homes(turn.db, child_id=uuid.UUID(turn.data["book_child_id"]))
-    preset = turn.data.get("book_home_id")
+    date = datetime.date.fromisoformat(turn.data["book_date"])
+    requested = turn.data["book_tutor_id"]
 
-    if not homes:
-        result = _stuck(turn)
-    elif preset in {str(home.id) for home in homes}:
-        result = _offer_slots(turn)
-    elif len(homes) == 1:
-        turn.data["book_home_id"] = str(homes[0].id)
-        result = _offer_slots(turn)
-    else:
-        options = [{"id": str(home.id), "label": home.label or home.address} for home in homes]
-        result = _Next(
-            reply=f"{_say(turn, 'ASK_WHERE')}\n{_offer(turn.state, options)}",
-            step=STEP_BOOK_HOME,
+    try:
+        allowed = slot_service.allowed_locations(
+            turn.db,
+            subject_id=uuid.UUID(turn.data["book_subject_id"]),
+            child_id=uuid.UUID(turn.data["book_child_id"]),
+            date=date,
+            tutor_id=uuid.UUID(requested) if requested else None,
+            now=turn.now,
+        )
+    except scheduling_service.DateOutOfWindow:
+        return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
+
+    if not allowed:
+        return _no_slots(turn, date)
+
+    options = _location_options(turn, allowed)
+
+    if not options:
+        return _needs_office_for_location(turn)
+
+    preset = turn.data.get("book_home_id")
+    kept = [option for option in options if _is_home_option(option) and option["id"] == preset]
+
+    if kept or len(options) == 1:
+        _choose_location(turn, (kept or options)[0])
+        return _offer_slots(turn)
+
+    return _Next(
+        reply=f"{_say(turn, 'ASK_WHERE')}\n{_offer(turn.state, options)}",
+        step=STEP_BOOK_HOME,
+    )
+
+
+def _location_options(turn: _Turn, allowed: frozenset[BookingLocation]) -> list[dict[str, Any]]:
+    """The Child's active homes, in their usual order, then "At the office" last."""
+    options: list[dict[str, Any]] = []
+
+    if BookingLocation.HOME in allowed:
+        homes = _homes(turn.db, child_id=uuid.UUID(turn.data["book_child_id"]))
+        options.extend(
+            {
+                "id": str(home.id),
+                "label": home.label or home.address,
+                "location": BookingLocation.HOME.value,
+            }
+            for home in homes
         )
 
-    return result
+    if BookingLocation.IN_OFFICE in allowed:
+        options.append(
+            {
+                "id": OFFICE_OPTION_ID,
+                "label": _say(turn, "OFFICE_OPTION"),
+                "location": BookingLocation.IN_OFFICE.value,
+            }
+        )
+
+    return options
+
+
+def _is_home_option(option: dict[str, Any]) -> bool:
+    # No `location` key: a flow saved at this step by an older build, whose options were homes.
+    return option.get("location", BookingLocation.HOME.value) == BookingLocation.HOME.value
+
+
+def _choose_location(turn: _Turn, option: dict[str, Any]) -> None:
+    if _is_home_option(option):
+        turn.data["book_location"] = BookingLocation.HOME.value
+        turn.data["book_home_id"] = option["id"]
+    else:
+        turn.data["book_location"] = BookingLocation.IN_OFFICE.value
+        turn.data.pop("book_home_id", None)
+
+
+def _location_of(data: dict[str, Any]) -> BookingLocation:
+    """A flow saved before the Location step existed only ever booked a home."""
+    return BookingLocation(data.get("book_location", BookingLocation.HOME.value))
+
+
+def _needs_office_for_location(turn: _Turn) -> _Next:
+    """Ranges exist that day but the Child has no active home and none allows In office: the
+    same Office handoff as a subject the bot cannot book."""
+    child = turn.db.get(Child, uuid.UUID(turn.data["book_child_id"]))
+    subject = turn.db.get(Subject, uuid.UUID(turn.data["book_subject_id"]))
+
+    if child is None or subject is None:
+        return _stuck(turn)
+
+    reply = _say(
+        turn, "SUBJECT_NEEDS_OFFICE", name=child.name, subject=_subject_name(subject, turn.language)
+    )
+
+    return _Next(reply=reply, step=None, flag_reason=FlagReason.BOOKING_REQUEST)
+
+
+def _no_slots(turn: _Turn, date: datetime.date) -> _Next:
+    no_slots = _say(turn, "NO_SLOTS", date=bot_messages.format_date(date, turn.language))
+
+    return _Next(reply=f"{no_slots} {_say(turn, 'ASK_DATE')}", step=STEP_BOOK_DATE)
 
 
 def _place(turn: _Turn) -> str:
-    """The Location phrase for the session being built ("at Dad's", "at home")."""
-    home = turn.db.get(Home, uuid.UUID(turn.data["book_home_id"]))
+    """The Location phrase for the session being built ("at the office", "at Dad's")."""
+    location = _location_of(turn.data)
+    home_id = turn.data.get("book_home_id")
+    home = None
 
-    return bot_messages.format_location(
-        BookingLocation.HOME, home.label if home else None, turn.language
-    )
+    if location is BookingLocation.HOME and home_id is not None:
+        home = turn.db.get(Home, uuid.UUID(home_id))
+
+    return bot_messages.format_location(location, home.label if home else None, turn.language)
 
 
 def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
@@ -1811,7 +1908,7 @@ def _book_home(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     if not isinstance(option, dict):
         result: _Outcome = option
     else:
-        turn.data["book_home_id"] = option["id"]
+        _choose_location(turn, option)
         result = _offer_slots(turn)
 
     return result
@@ -1836,13 +1933,13 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
             date=date,
             tutor_id=uuid.UUID(requested) if requested else None,
             now=turn.now,
+            location=_location_of(turn.data),
         )
     except scheduling_service.DateOutOfWindow:
         return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
 
     if not found.items:
-        no_slots = _say(turn, "NO_SLOTS", date=bot_messages.format_date(date, turn.language))
-        return _Next(reply=f"{no_slots} {_say(turn, 'ASK_DATE')}", step=STEP_BOOK_DATE)
+        return _no_slots(turn, date)
 
     place = _place(turn)
     options = [
@@ -1945,16 +2042,22 @@ def _write_booking(turn: _Turn) -> _Next:
         return _stuck(turn)
 
     chosen = turn.data["chosen"]
-    # The slot was offered by profile; the booking names the person behind it (#130). Home
-    # visits only until spec 03 adds In office.
+    location = _location_of(turn.data)
+    home_id = turn.data.get("book_home_id")
+
+    if location is BookingLocation.HOME and home_id is None:
+        return _stuck(turn)
+
+    # The slot was offered by profile; the booking names the person behind it (#130). The mode
+    # is not checked on the write: the bot enforced it by offering only matching slots (#132).
     request = booking_write_service.BookingRequest(
         child_id=uuid.UUID(turn.data["book_child_id"]),
         user_id=_profile_user_id(turn.db, tutor_id=uuid.UUID(chosen["tutor_id"])),
         kind=BookingKind.REGULAR,
-        location=BookingLocation.HOME,
+        location=location,
         subject_id=uuid.UUID(turn.data["book_subject_id"]),
         availability_id=uuid.UUID(chosen["availability_id"]),
-        home_id=uuid.UUID(turn.data["book_home_id"]),
+        home_id=None if location is BookingLocation.IN_OFFICE else uuid.UUID(home_id),
         scheduled_date=datetime.date.fromisoformat(turn.data["book_date"]),
         start_time=datetime.time.fromisoformat(chosen["start_time"]),
         end_time=datetime.time.fromisoformat(chosen["end_time"]),

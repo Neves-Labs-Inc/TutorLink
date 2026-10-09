@@ -25,6 +25,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
+    AvailabilityMode,
     BookingKind,
     BookingLocation,
     BookingStatus,
@@ -558,6 +559,42 @@ def test_a_spanish_guardian_books_a_session_in_spanish(
     assert booking.booked_by_guardian_id == spanish.client.guardian_id
     assert (booking.scheduled_date, booking.start_time) == (DATE, NINE)
     assert whatsapp.conversation().language is Language.ES
+
+
+def test_a_spanish_guardian_is_asked_where_and_books_at_the_office_in_spanish(
+    whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
+) -> None:
+    """One home and a Home or office range: the Location question, its office option and the
+    booked reply all in Spanish (#132)."""
+    db.get_one(TutorAvailability, spanish.availability_id).mode = AvailabilityMode.ANYWHERE
+    db.flush()
+    tutor = spanish.tutor.user.name
+    slot = format_slot_label(
+        format_time_range(NINE, TEN, "es"), tutor, render("AT_OFFICE", "es"), "es"
+    )
+    date = format_date(DATE, "es")
+
+    replies = [
+        whatsapp.say("Hola"),
+        whatsapp.say("quiero reservar una sesión", intent=BotIntent.BOOK, language="es"),
+        whatsapp.say("1", value="1"),
+        whatsapp.say("1", value="1", language="es"),
+        whatsapp.say("el miércoles", value=DATE.isoformat(), language="es"),
+        whatsapp.say("2", value="2", language="es"),
+        whatsapp.say("1", value="1"),
+        whatsapp.say("sí", value="yes", language="es"),
+    ]
+
+    assert replies[4:] == [
+        f"{render('ASK_WHERE', 'es')}\n1. Home\n2. {render('OFFICE_OPTION', 'es')}",
+        f"{render('ASK_SLOT', 'es', date=date)}\n1. {slot}",
+        render("CONFIRM_SLOT", "es", label=slot, date=date),
+        render("BOOKING_CONFIRMED", "es", label=slot, date=date),
+    ]
+    assert "en la oficina" in replies[-1]
+    booking = db.execute(select(Booking)).scalar_one()
+    assert booking.location is BookingLocation.IN_OFFICE
+    assert booking.home_id is None
 
 
 def test_a_spanish_guardian_cancels_a_session_in_spanish(

@@ -49,6 +49,7 @@ from app.models.child import NOTES_MAX_LENGTH, Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
+    AvailabilityMode,
     BookingKind,
     BookingLocation,
     BookingStatus,
@@ -72,6 +73,7 @@ from app.services import (
     clock,
     conversation_service,
     parser_service,
+    scheduling_service,
 )
 from app.services.bot_messages import render
 from app.services.bot_state import FlowState, load_state, save_state
@@ -1016,7 +1018,223 @@ def test_more_than_one_active_home_asks_which_one(
 
     assert render("ASK_WHERE", "en") in turn.reply
     assert "Dad's" in turn.reply
+    assert render("OFFICE_OPTION", "en") not in turn.reply
     assert chat.step == bot_service.STEP_BOOK_HOME
+
+
+# --- the Location step: homes and "At the office" from the day's Availability modes (#132) ------
+
+
+def test_one_home_and_a_home_or_office_tutor_is_asked_where_and_can_pick_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """Office is listed whenever a range allows it, single-home families included, and the
+    office pick is carried into the slot label, the confirmation, the booked reply and the row."""
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
+    asked = _book(chat, world, tutor=world.first_tutor_name, stop_after_date=True)
+
+    offered = chat.say(value="2")
+    confirm = chat.say(value="1")
+    booked = chat.say(value="yes")
+
+    assert asked.reply == f"{render('ASK_WHERE', 'en')}\n1. Home\n2. At the office"
+    assert asked.flag_reason is None
+    assert "at the office" in offered.reply
+    assert "at Home" not in offered.reply
+    assert "at the office" in confirm.reply
+    assert _text_before_placeholder("BOOKING_CONFIRMED") in booked.reply
+    assert "at the office on" in booked.reply
+    booking = db.execute(select(Booking)).scalar_one()
+    assert booking.location is BookingLocation.IN_OFFICE
+    assert booking.home_id is None
+    assert booking.kind is BookingKind.REGULAR
+    assert booking.availability_id == world.first_availability_id
+
+
+def test_an_office_only_tutor_books_in_office_without_asking(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ONLY_OFFICE)
+    offered = _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
+
+    confirm = chat.say(value="1")
+    booked = chat.say(value="yes")
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    assert offered.reply.startswith(render("ASK_SLOT", "en", date=US_DATE))
+    assert "at the office" in confirm.reply
+    assert "at the office" in booked.reply
+    assert db.execute(select(Booking)).scalar_one().location is BookingLocation.IN_OFFICE
+
+
+def test_a_child_with_no_home_books_in_office_when_the_tutor_can_do_it(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    db.get_one(Home, client.home_id).is_active = False
+    db.flush()
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
+
+    offered = _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
+    chat.say(value="1")
+    chat.say(value="yes")
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    booking = db.execute(select(Booking)).scalar_one()
+    assert booking.location is BookingLocation.IN_OFFICE
+    assert booking.home_id is None
+
+
+def test_a_child_with_no_home_and_a_home_visits_tutor_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """Ranges exist but none fits: an Office handoff, not `CANNOT_CONTINUE`."""
+    db.get_one(Home, client.home_id).is_active = False
+    db.flush()
+
+    turn = _book(chat, world, tutor=world.first_tutor_name, stop_after_date=True)
+
+    assert turn.reply == render(
+        "SUBJECT_NEEDS_OFFICE", "en", name="Sam Guardian", subject=world.subject_name
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert chat.step is None
+    assert _count(db, Booking) == 0
+
+
+def test_a_day_with_no_range_asks_for_another_date_from_the_location_step(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    free_day = DATE + datetime.timedelta(days=1)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value=world.subject_name)
+    chat.say(value=world.first_tutor_name)
+
+    turn = chat.say(value=free_day.isoformat())
+
+    no_slots = render("NO_SLOTS", "en", date=bot_messages.format_date(free_day, "en"))
+    assert turn.reply == f"{no_slots} {render('ASK_DATE', 'en')}"
+    assert chat.step == bot_service.STEP_BOOK_DATE
+
+
+def test_any_tutor_offers_the_union_of_locations_and_only_matching_tutors_slots(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _set_mode(db, world.second_availability_id, AvailabilityMode.ONLY_OFFICE)
+    asked = _book(chat, world, stop_after_date=True)
+    location_options = _data(chat)["options"]
+
+    office = chat.say(value="2")
+    _back_to_location_step(chat, prompt=asked.reply, options=location_options)
+    home = chat.say(value="1")
+
+    assert asked.reply == f"{render('ASK_WHERE', 'en')}\n1. Home\n2. At the office"
+    assert world.second_tutor_name in office.reply
+    assert world.first_tutor_name not in office.reply
+    assert world.first_tutor_name in home.reply
+    assert world.second_tutor_name not in home.reply
+
+
+def test_an_in_office_neighbour_needs_no_travel_gap_from_an_in_office_slot(
+    chat: Chat,
+    db: Session,
+    world: BotWorld,
+    client: ClientWorld,
+    set_int_setting: Callable[[str, int], None],
+) -> None:
+    """The read side of the write rule: 09:30-10:30 at the office leaves 10:30-11:30 open for
+    another office session, but not for a home visit, which keeps the full gap."""
+    set_int_setting(scheduling_service.SESSION_GAP_SETTING, 30)
+    _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
+    _make_booking(
+        db,
+        world,
+        client,
+        date=DATE,
+        start=datetime.time(9, 30),
+        location=BookingLocation.IN_OFFICE,
+        home_id=None,
+    )
+    asked = _book(chat, world, tutor=world.first_tutor_name, stop_after_date=True)
+    location_options = _data(chat)["options"]
+
+    office = chat.say(value="2")
+    _back_to_location_step(chat, prompt=asked.reply, options=location_options)
+    home = chat.say(value="1")
+
+    assert office.reply == (
+        f"{render('ASK_SLOT', 'en', date=US_DATE)}\n"
+        f"1. 10:30-11:30 AM with {world.first_tutor_name} at the office"
+    )
+    assert _text_before_placeholder("NO_SLOTS") in home.reply
+    assert chat.step == bot_service.STEP_BOOK_DATE
+
+
+def test_a_flow_parked_at_the_home_step_by_an_older_build_books_at_that_home(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """An older build's options were homes and carried no `location`."""
+    _park_at(
+        chat,
+        bot_service.STEP_BOOK_HOME,
+        prompt=f"{render('ASK_WHERE', 'en')}\n1. Home",
+        collected_data={
+            "book_child_id": str(client.child_id),
+            "book_subject_id": str(world.subject_id),
+            "book_tutor_id": "",
+            "book_date": DATE.isoformat(),
+            "options": [{"id": str(client.home_id), "label": "Home"}],
+        },
+    )
+
+    offered = chat.say(value="1")
+    chat.say(value="1")
+    booked = chat.say(value="yes")
+
+    assert offered.reply.startswith(render("ASK_SLOT", "en", date=US_DATE))
+    assert _text_before_placeholder("BOOKING_CONFIRMED") in booked.reply
+    booking = db.execute(select(Booking)).scalar_one()
+    assert booking.location is BookingLocation.HOME
+    assert booking.home_id == client.home_id
+
+
+def test_a_second_booking_after_an_in_office_one_starts_from_a_clean_location(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    office_tutor = _make_tutor(db, name="Carl Gauss")
+    db.add(TutorSubject(tutor_id=office_tutor.id, subject_id=world.subject_id, max_grade_level=12))
+    _make_availability(
+        db, office_tutor.id, date=DATE, start=NINE, end=TWELVE, mode=AvailabilityMode.ONLY_OFFICE
+    )
+    _book(chat, world, tutor=office_tutor.user.name)
+    first = db.execute(select(Booking)).scalar_one()
+
+    _book(chat, world, tutor=world.first_tutor_name)
+
+    second = db.execute(select(Booking).where(Booking.id != first.id)).scalar_one()
+    assert first.location is BookingLocation.IN_OFFICE
+    assert second.location is BookingLocation.HOME
+    assert second.home_id == client.home_id
+
+
+def _set_mode(db: Session, availability_id: uuid.UUID, mode: AvailabilityMode) -> None:
+    db.get_one(TutorAvailability, availability_id).mode = mode
+    db.flush()
+
+
+def _data(chat: Chat) -> dict[str, object]:
+    return dict(chat.state.collected_data)
+
+
+def _back_to_location_step(chat: Chat, *, prompt: str, options: object) -> None:
+    """Park the flow back at the Location question it was asked, keeping everything collected
+    since, so the other option can be picked in the same conversation."""
+    _park_at(
+        chat,
+        bot_service.STEP_BOOK_HOME,
+        prompt=prompt,
+        collected_data={**_data(chat), "options": options},
+    )
 
 
 def test_exactly_one_active_home_is_not_asked_about(
@@ -3473,11 +3691,12 @@ def _make_availability(
     date: datetime.date,
     start: datetime.time,
     end: datetime.time,
+    mode: AvailabilityMode = AvailabilityMode.TRAVELER,
 ) -> uuid.UUID:
     # `weekday()` is the 0 = Monday encoding the column stores, derived from the date under
     # test so the two can never disagree.
     row = TutorAvailability(
-        tutor_id=tutor_id, day_of_week=date.weekday(), start_time=start, end_time=end
+        tutor_id=tutor_id, day_of_week=date.weekday(), start_time=start, end_time=end, mode=mode
     )
     db.add(row)
     db.flush()

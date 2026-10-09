@@ -6,6 +6,8 @@ export type TutorSubject = { subject_id: string; name: string; max_grade_level: 
 
 export type Tutor = {
   id: string
+  // The account behind the profile: what `POST /api/bookings.user_id` takes.
+  user_id: string
   name: string
   email: string
   phone_number: string

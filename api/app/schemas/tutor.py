@@ -25,6 +25,8 @@ class TutorSubjectRead(BaseModel):
 
 class TutorRead(BaseModel):
     id: uuid.UUID
+    # The account behind the profile: what `POST /api/bookings.user_id` takes.
+    user_id: uuid.UUID
     name: str
     email: str
     phone_number: str

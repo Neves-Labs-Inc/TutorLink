@@ -61,6 +61,7 @@ router = APIRouter(prefix="/api/tutors", tags=["tutors"])
 def _read(tutor: Tutor) -> TutorRead:
     return TutorRead(
         id=tutor.id,
+        user_id=tutor.user_id,
         name=tutor.user.name,
         email=tutor.user.email,
         phone_number=tutor.phone_number,

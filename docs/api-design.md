@@ -301,6 +301,7 @@ Because an admin cannot create one, the system cannot bootstrap itself over HTTP
 | `WS /api/conversations/stream` | ✓ | ✓ | ✗ |
 | `GET /api/subjects` | ✓ | ✓ | ✓ |
 | `POST/PATCH/DELETE /api/subjects` | ✓ | ✓ | ✗ |
+| `GET /api/staff` | ✓ | ✓ | ✗ |
 | `GET /api/users` | ✓ | ✓ | ✗ |
 | `POST/PATCH/DELETE /api/users` | ✓ | ✓ (not `developer`) | ✗ |
 | `GET /api/settings` | All fields | Admin-visible fields only | ✗ |
@@ -462,6 +463,38 @@ Update email, password, role, or active status.
 ### `DELETE /api/users/{id}`
 
 Soft delete — sets `is_active = false`.
+
+---
+
+## Staff
+
+```
+GET    /api/staff
+```
+
+Office only (Admin, Manager, Developer); a Tutor is **403** `Office access required`. The one list of everyone a Booking can be with, read by the booking form and the Bookings Staff filter. Read-only and reference-shaped: it carries no email and no `is_active`, so it widens nothing `/api/users` keeps Admin-only.
+
+### `GET /api/staff`
+
+Returns the **active** users whose role is `tutor`, `manager` or `admin`, ordered by `name` then `id`. Paged like every list (`page`, `page_size`, default and maximum sizes apply); there is no other filter.
+
+- A **Developer is never listed**, whatever the caller's role.
+- Only `users.is_active` decides who is active — `tutors.is_active` is not consulted, the same rule `POST /api/bookings` applies.
+- `id` is the `users.id` that `POST /api/bookings.user_id` takes.
+- `tutor_id` is the teaching profile's `tutors.id` — what `GET /api/tutors/{id}/availability` takes — and `null` for a person with none: an Admin, or a Manager migrated without a profile.
+
+**Response**
+```json
+{
+  "items": [
+    { "id": "uuid", "name": "Sarah Miller", "role": "tutor", "tutor_id": "uuid" },
+    { "id": "uuid", "name": "Olivia Park", "role": "admin", "tutor_id": null }
+  ],
+  "total": 12,
+  "page": 1,
+  "page_size": 20
+}
+```
 
 ---
 
@@ -1087,6 +1120,7 @@ Returns tutors, active by default. See [Soft deletes and the `is_active` filter]
   "items": [
     {
       "id": "uuid",
+      "user_id": "uuid",
       "name": "Sarah Miller",
       "email": "sarah@example.com",
       "phone_number": "+1987654321",
@@ -1106,6 +1140,8 @@ Returns tutors, active by default. See [Soft deletes and the `is_active` filter]
   "page_size": 20
 }
 ```
+
+`id` is the teaching profile; `user_id` is the account behind it — what `POST /api/bookings.user_id` takes, and the `id` the same person has in `GET /api/staff`.
 
 ### `GET /api/tutors/{id}`
 

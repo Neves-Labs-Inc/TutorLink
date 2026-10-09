@@ -628,7 +628,28 @@ def test_read_one_does_not_embed_availability(api: TestClient, db: Session) -> N
 
     body = api.get(f"/api/tutors/{tutor.id}", headers=_auth(admin)).json()
 
-    assert set(body) == {"id", "name", "email", "phone_number", "bio", "is_active", "subjects"}
+    assert set(body) == {
+        "id",
+        "user_id",
+        "name",
+        "email",
+        "phone_number",
+        "bio",
+        "is_active",
+        "subjects",
+    }
+
+
+def test_a_tutor_item_carries_the_user_id_a_booking_takes(api: TestClient, db: Session) -> None:
+    """`id` is the profile; `user_id` is what `POST /api/bookings.user_id` names."""
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+
+    listed = api.get("/api/tutors", headers=_auth(admin)).json()["items"]
+    item = next(row for row in listed if row["id"] == str(tutor.id))
+
+    assert item["user_id"] == str(tutor.user_id)
+    assert item["user_id"] != item["id"]
 
 
 # --- writes: normalisation, the two UNIQUE columns, and soft delete ----------------------------

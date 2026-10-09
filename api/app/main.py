@@ -34,6 +34,7 @@ from app.routers import (
     reminders,
     settings,
     slots,
+    staff,
     stats,
     subjects,
     tutor_subjects,
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(bookings.router)
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
+    app.include_router(staff.router)
     app.include_router(stats.router)
     app.include_router(reminders.router)
     app.include_router(webhook.router)

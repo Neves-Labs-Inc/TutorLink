@@ -1,6 +1,7 @@
 """`POST /api/settings/email-templates/preview` over the wire: the email an unsaved draft would
 produce, with sample values, sending and writing nothing."""
 
+import re
 import uuid
 from typing import Any
 
@@ -24,6 +25,12 @@ BRAND_COLOR_ERROR = "Enter a colour like #74C8C9."
 PASSWORD = "correct horse battery staple"
 SAMPLE_LINK = "http://testserver/set-password?token=example"
 FALLBACK_LINK = "https://example.com/set-password?token=example"
+MIN_TEXT_CONTRAST = 4.5
+LIGHT_PRESETS = ["#74C8C9", "#CB9BC3", "#D6B990", "#C4BD82"]
+WORDMARK_COLOR = re.compile(r'color:(#[0-9A-F]{6});">TutorLink</p>')
+ANCHOR_COLOR = re.compile(r'<a href="[^"]*" style="color:(#[0-9A-F]{6});')
+BUTTON_BACKGROUND = re.compile(r'<td style="border-radius:6px;background:(#[0-9A-F]{6});">')
+TEXT_SHADE_BODY = "Open {link} now.\n\n{link}"
 
 
 def test_a_valid_draft_is_rendered_with_sample_values_and_the_branded_layout(
@@ -178,6 +185,74 @@ def test_nothing_is_sent_or_written(api: TestClient, db: Session, fake_mail: Fak
     assert fake_mail.sent == []
     assert db.scalar(select(func.count()).select_from(PasswordLink)) == links_before
     assert _settings_snapshot(db) == settings_before
+
+
+@pytest.mark.parametrize("brand_color", LIGHT_PRESETS)
+def test_a_light_brand_colour_is_darkened_for_text_but_not_for_the_button(
+    api: TestClient, db: Session, brand_color: str
+) -> None:
+    html = _preview_html(api, db, brand_color)
+
+    text_colors = _text_colors(html)
+    assert len(text_colors) == 3  # wordmark, inline anchor, fallback anchor
+    assert set(text_colors) != {brand_color}
+    for text_color in text_colors:
+        assert _contrast_on_white(text_color) >= MIN_TEXT_CONTRAST
+    assert BUTTON_BACKGROUND.findall(html) == [brand_color]
+    assert f"background:{brand_color};" in html
+
+
+@pytest.mark.parametrize("brand_color", LIGHT_PRESETS)
+def test_the_text_shade_keeps_the_hue_and_is_no_darker_than_needed(
+    api: TestClient, db: Session, brand_color: str
+) -> None:
+    (text_color,) = set(_text_colors(_preview_html(api, db, brand_color)))
+
+    factors = [_channel(text_color, i) / _channel(brand_color, i) for i in range(3)]
+    # Channels are rounded to whole numbers, so allow a step of rounding either side.
+    assert max(factors) - min(factors) < 0.02
+    lighter = "#" + "".join(f"{min(255, _channel(text_color, i) + 1):02X}" for i in range(3))
+    assert _contrast_on_white(lighter) < MIN_TEXT_CONTRAST
+
+
+def test_a_brand_colour_that_already_reads_well_is_used_unchanged_for_text(
+    api: TestClient, db: Session
+) -> None:
+    html = _preview_html(api, db, "#2F4A9E")
+
+    assert _text_colors(html) == ["#2F4A9E"] * 3
+    assert BUTTON_BACKGROUND.findall(html) == ["#2F4A9E"]
+
+
+def _preview_html(api: TestClient, db: Session, brand_color: str) -> str:
+    response = api.post(
+        PREVIEW_URL,
+        headers=_auth(_make_user(db)),
+        json=_draft("invite", "Hi", TEXT_SHADE_BODY, brand_color=brand_color),
+    )
+    assert response.status_code == 200
+
+    return str(response.json()["html"])
+
+
+def _text_colors(html: str) -> list[str]:
+    # The button anchor styles its label with `display:` first, so only link anchors match.
+    return WORDMARK_COLOR.findall(html) + ANCHOR_COLOR.findall(html)
+
+
+def _channel(color: str, index: int) -> int:
+    return int(color[1 + 2 * index : 3 + 2 * index], 16)
+
+
+def _contrast_on_white(color: str) -> float:
+    def linear(value: int) -> float:
+        srgb = value / 255
+        return srgb / 12.92 if srgb <= 0.03928 else ((srgb + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = (linear(_channel(color, i)) for i in range(3))
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    return 1.05 / (luminance + 0.05)
 
 
 def _settings_snapshot(db: Session) -> list[tuple[str, str]]:

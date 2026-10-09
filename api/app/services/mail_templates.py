@@ -34,6 +34,8 @@ FOOTER_TEXT = "Sent by TutorLink"
 LINK_FALLBACK_TEXT = "Or paste this link into your browser:"
 LIGHT_LABEL_COLOR = "#FFFFFF"
 DARK_LABEL_COLOR = "#111827"
+MIN_TEXT_CONTRAST = 4.5
+_CHANNEL_MAX = 255
 _MUTED_COLOR = "#6B7280"
 _TEXT_COLOR = "#111827"
 _PAGE_BACKGROUND = "#F3F4F6"
@@ -119,10 +121,11 @@ def render_email(
     coloured with `brand_color`, which must be a `#RRGGBB` hex (`EmailTemplateInvalid` if not).
     """
     color = validate_brand_color(brand_color)
+    text_color = _text_shade(color)
     known = _KNOWN_PLACEHOLDERS[kind]
     normalised_body = body.replace("\r\n", "\n")
     paragraphs = [
-        _html_paragraph(paragraph, kind=kind, values=values, color=color)
+        _html_paragraph(paragraph, kind=kind, values=values, color=color, text_color=text_color)
         for paragraph in _PARAGRAPH_BREAK.split(normalised_body)
         if paragraph.strip()
     ]
@@ -130,7 +133,7 @@ def render_email(
     return RenderedEmail(
         subject=_substitute(subject, known=known, values=values),
         text=_substitute(normalised_body, known=known, values=values),
-        html=_document("".join(paragraphs), color=color),
+        html=_document("".join(paragraphs), text_color=text_color),
     )
 
 
@@ -185,12 +188,14 @@ def _substitute(text: str, *, known: tuple[str, ...], values: Mapping[str, str])
 
 
 def _html_paragraph(
-    paragraph: str, *, kind: TemplateKind, values: Mapping[str, str], color: str
+    paragraph: str, *, kind: TemplateKind, values: Mapping[str, str], color: str, text_color: str
 ) -> str:
     known = _KNOWN_PLACEHOLDERS[kind]
 
     if paragraph.strip() == _placeholder(LINK_PLACEHOLDER):
-        return _button(_BUTTON_LABELS[kind], url=values[LINK_PLACEHOLDER], color=color)
+        return _button(
+            _BUTTON_LABELS[kind], url=values[LINK_PLACEHOLDER], color=color, text_color=text_color
+        )
 
     # Escaping leaves `{`, `}`, letters and `_` alone, so placeholders survive it intact.
     def replace(match: re.Match[str]) -> str:
@@ -201,7 +206,7 @@ def _html_paragraph(
 
         value = values[name]
         if name == LINK_PLACEHOLDER:
-            return _anchor(value, style=f"color:{color};")
+            return _anchor(value, style=f"color:{text_color};")
         return html.escape(value, quote=False)
 
     # Element text, not an attribute: quotes need no escaping, so "didn't" stays readable.
@@ -215,7 +220,7 @@ def _anchor(url: str, *, style: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}" style="{style}">{html.escape(url, quote=False)}</a>'
 
 
-def _button(label: str, *, url: str, color: str) -> str:
+def _button(label: str, *, url: str, color: str, text_color: str) -> str:
     label_color = _label_color(color)
     button_style = (
         f"display:block;padding:12px 24px;border-radius:6px;background:{color};"
@@ -231,7 +236,7 @@ def _button(label: str, *, url: str, color: str) -> str:
         f'<a href="{href}" style="{button_style}">{html.escape(label, quote=False)}</a>'
         "</td></tr></table>"
         f'<p style="margin:0 0 16px;font-size:13px;line-height:20px;color:{_MUTED_COLOR};">'
-        f"{LINK_FALLBACK_TEXT}<br>{_anchor(url, style=f'color:{color};word-break:break-all;')}</p>"
+        f"{LINK_FALLBACK_TEXT}<br>{_anchor(url, style=f'color:{text_color};word-break:break-all;')}</p>"
     )
 
 
@@ -242,6 +247,24 @@ def _label_color(color: str) -> str:
     dark_contrast = _contrast(_relative_luminance(DARK_LABEL_COLOR), background)
 
     return LIGHT_LABEL_COLOR if light_contrast >= dark_contrast else DARK_LABEL_COLOR
+
+
+def _text_shade(color: str) -> str:
+    """`color` itself when it reads on white, else its lightest same-hue darkening that does.
+
+    The brand colours are light, so as text they need darkening; the factor steps down in
+    1/255 increments from `color` itself, scaling all three channels to keep the hue.
+    """
+    white_luminance = _relative_luminance(LIGHT_LABEL_COLOR)
+    channels = [int(color[i : i + 2], 16) for i in (1, 3, 5)]
+    shade = color
+
+    for step in range(_CHANNEL_MAX, -1, -1):
+        shade = "#" + "".join(f"{round(channel * step / _CHANNEL_MAX):02X}" for channel in channels)
+        if _contrast(white_luminance, _relative_luminance(shade)) >= MIN_TEXT_CONTRAST:
+            break
+
+    return shade
 
 
 def _relative_luminance(color: str) -> float:
@@ -263,7 +286,7 @@ def _contrast(first: float, second: float) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
-def _document(body: str, *, color: str) -> str:
+def _document(body: str, *, text_color: str) -> str:
     # Fluid card: 100% wide up to 560px, so a ~311px preview or phone never scrolls sideways.
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
@@ -276,7 +299,7 @@ def _document(body: str, *, color: str) -> str:
         '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
         'style="width:100%;max-width:560px;margin:0 auto;">'
         '<tr><td style="background:#FFFFFF;border-radius:12px;padding:24px 20px;">'
-        f'<p style="margin:0 0 24px;font-size:22px;font-weight:bold;color:{color};">{WORDMARK}</p>'
+        f'<p style="margin:0 0 24px;font-size:22px;font-weight:bold;color:{text_color};">{WORDMARK}</p>'
         f"{body}"
         "</td></tr>"
         f'<tr><td align="center" style="padding:16px 0 0;font-size:12px;line-height:18px;'

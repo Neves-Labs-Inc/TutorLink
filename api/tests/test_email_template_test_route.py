@@ -71,7 +71,8 @@ def test_a_valid_draft_is_emailed_to_the_admin_with_the_dummy_link(
     assert f">{DUMMY_LINK}</a>" in email.html
     assert "TutorLink</p>" in email.html
     assert "Sent by TutorLink" in email.html
-    assert "#74C8C9" in email.html
+    # No button in this body, so the light brand colour appears only as a darker text shade.
+    assert "#74C8C9" not in email.html
 
 
 @pytest.mark.parametrize(

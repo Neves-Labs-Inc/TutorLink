@@ -237,9 +237,10 @@ def test_the_invite_uses_the_saved_brand_colour(
 
     (email,) = fake_mail.sent
     assert email.html is not None
-    assert 'font-weight:bold;color:#FFE066;">TutorLink</p>' in email.html
+    # The button keeps the exact colour; wordmark and links use a darker shade that reads on white.
     assert "background:#FFE066;" in email.html
-    assert 'style="color:#FFE066;word-break:break-all;"' in email.html
+    assert 'font-weight:bold;color:#FFE066;">TutorLink</p>' not in email.html
+    assert 'style="color:#FFE066;word-break:break-all;"' not in email.html
     assert "#74C8C9" not in email.html
     # A light colour gets the dark label.
     assert f"{DARK_LABEL}font-size:16px;font-weight:bold;" in email.html

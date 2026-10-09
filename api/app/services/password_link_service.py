@@ -10,9 +10,17 @@ time without a database clock. A user holds at most one live link per purpose: i
 one revokes the others, so a resent Invite replaces the earlier email's link.
 
 **Lock order: the user row, then the link rows.** `user_service.invite_user` and `update_user`
-lock the user `FOR UPDATE` before touching their links, and `set_password_with_link` does the
-same, so two of them running at once queue on the user row instead of deadlocking on each
-other's link rows.
+lock the user before touching their links, and `set_password_with_link` and `request_reset`
+do the same, so two of them running at once queue on the user row instead of deadlocking on
+each other's link rows. The lock is `FOR NO KEY UPDATE` (`with_for_update(key_share=True)`),
+never `FOR UPDATE`: inserting a `refresh_tokens` row takes `FOR KEY SHARE` on its user for
+the foreign key, which `FOR UPDATE` blocks, so a concurrent `/auth/refresh` holding its token
+row would wait on this lock while `set_password_with_link` waited on that row — a deadlock
+PostgreSQL resolves as a 500. `FOR NO KEY UPDATE` still excludes every other writer of the row.
+
+The reset email is sent from here too (`send_reset_email`), because the router hands it to a
+FastAPI background task that runs after the response and so must not touch the request's
+`Session`: it takes only the address, name and link.
 """
 
 import hashlib
@@ -28,11 +36,14 @@ from sqlalchemy.orm import Session
 from app.models.password_link import PasswordLink, PasswordLinkPurpose
 from app.models.user import User
 from app.security import MIN_PASSWORD_LENGTH, hash_password, password_is_encodable
-from app.services.auth_service import revoke_all_refresh_tokens_for_user
+from app.services.auth_service import normalise_email, revoke_all_refresh_tokens_for_user
+from app.services.mail_service import MailServiceError, public_url, send_email
+from app.services.mail_templates import reset_email
 
 INVITE_TTL = timedelta(days=7)
 RESET_TTL = timedelta(hours=48)
 TOKEN_BYTES = 32
+SET_PASSWORD_PATH = "/set-password"
 
 _TTL_BY_PURPOSE = {
     PasswordLinkPurpose.INVITE: INVITE_TTL,
@@ -160,11 +171,7 @@ def set_password_with_link(db: Session, *, token: str, password: str, now: datet
     user_id = db.scalar(
         select(PasswordLink.user_id).where(PasswordLink.token_hash == hash_token(token))
     )
-    user = (
-        db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
-        if user_id is not None
-        else None
-    )
+    user = _lock_user(db, user_id=user_id) if user_id is not None else None
     link = find_live_link(db, token=token, now=now)
 
     if link is None or user is None:
@@ -183,7 +190,9 @@ def set_password_with_link(db: Session, *, token: str, password: str, now: datet
     user.hashed_password = hash_password(password)
     link.used_at = now
     db.flush()
-    revoke_links_for_user(db, user_id=user.id, now=now, purpose=link.purpose)
+    # Both purposes, not just this link's: once a password is set, any other live link — an
+    # older reset still in an inbox, an Invite a reset overtook — would set it again.
+    revoke_links_for_user(db, user_id=user.id, now=now)
 
     if link.purpose is PasswordLinkPurpose.RESET:
         revoke_all_refresh_tokens_for_user(db, user_id=user.id)
@@ -191,8 +200,58 @@ def set_password_with_link(db: Session, *, token: str, password: str, now: datet
     return user
 
 
+def request_reset(db: Session, *, email: str, now: datetime) -> tuple[User, str] | None:
+    """A new reset link for the active, password-holding account at `email`, or None.
+
+    None for every miss alike — unknown address, inactive user, an account that has never had
+    a password (an Invite is its way in, not a reset) — and nothing is written for a miss. The
+    caller sends the email and answers the same way whether or not it got a link.
+    """
+    user = _lock_user_by_email(db, email=normalise_email(email))
+
+    if user is None or not user.is_active or user.hashed_password is None:
+        return None
+
+    _link, token = issue_link(db, user=user, purpose=PasswordLinkPurpose.RESET, now=now)
+
+    return user, token
+
+
+def send_reset_email(*, to: str, name: str, token: str) -> None:
+    """Build the link and send the reset email, logging any failure rather than raising.
+
+    Runs as a background task after the forgot-password response has gone out, so there is
+    nobody left to raise to: the response is the same whether the mail went or not (spec 04),
+    and the log line is how a dead SMTP server becomes visible. The link is built in here too,
+    not in the request: `public_url` raises when `PUBLIC_BASE_URL` is unset, and raising in
+    the request would 500 for a real account and 202 for an unknown one. The address stays
+    out of the log for the same reason it stays out of the response, and so does the chained
+    SMTP exception, which quotes the recipient.
+    """
+    try:
+        rendered = reset_email(name=name, link=public_url(f"{SET_PASSWORD_PATH}?token={token}"))
+        send_email(to=to, subject=rendered.subject, text=rendered.text, html=rendered.html)
+    except MailServiceError as exc:
+        logger.error(
+            "password_link.send_reset_email: the reset email was not sent: %s", type(exc).__name__
+        )
+
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _lock_user(db: Session, *, user_id: uuid.UUID) -> User | None:
+    """The user, locked `FOR NO KEY UPDATE` for the transaction (module docstring)."""
+    return db.scalars(
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
+    ).first()
+
+
+def _lock_user_by_email(db: Session, *, email: str) -> User | None:
+    return db.scalars(
+        select(User).where(User.email == email).with_for_update(key_share=True)
+    ).first()
 
 
 def _is_live(now: datetime) -> ColumnElement[bool]:

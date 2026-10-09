@@ -305,8 +305,15 @@ def invite_user(
 
 
 def _lock_user(db: Session, *, user_id: uuid.UUID) -> User:
-    """The user, locked `FOR UPDATE` for the rest of the transaction."""
-    user = db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
+    """The user, locked `FOR NO KEY UPDATE` for the rest of the transaction.
+
+    Not `FOR UPDATE`: that would block the `FOR KEY SHARE` a concurrent `refresh_tokens` insert
+    takes on the user row and could deadlock against `/auth/refresh` (see
+    `password_link_service`'s module docstring).
+    """
+    user = db.scalars(
+        select(User).where(User.id == user_id).with_for_update(key_share=True)
+    ).first()
 
     if user is None:
         raise UserNotFound

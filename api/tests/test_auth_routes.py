@@ -32,7 +32,11 @@ from app.services.password_link_service import (
     issue_link,
     set_password_with_link,
 )
-from app.services.rate_limit_service import EMAIL_BUCKET_PREFIX, IP_BUCKET_PREFIX
+from app.services.rate_limit_service import (
+    EMAIL_BUCKET_PREFIX,
+    FORGOT_EMAIL_BUCKET_PREFIX,
+    IP_BUCKET_PREFIX,
+)
 from tests.fake_mail import FakeMail, token_from
 
 EMAIL = "admin@example.com"
@@ -45,6 +49,9 @@ TEST_CLIENT_PEER = "testclient"
 INVITEE_EMAIL = "invitee@example.com"
 NEW_PASSWORD = "a brand new password"
 INVALID_LINK_BODY = {"detail": "This link is invalid or has expired"}
+FORGOT_BODY = {
+    "detail": "If an account exists for that email, we sent a link to reset the password."
+}
 BARRIER_TIMEOUT_SECONDS = 10
 
 
@@ -515,6 +522,188 @@ def test_two_concurrent_submits_of_one_token_let_exactly_one_through(
     assert sorted(outcomes) == [False, True]
 
 
+# --- POST /auth/password/forgot ----------------------------------------------------------------
+
+
+def test_a_forgot_for_an_account_with_a_password_sends_a_48_hour_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    user = _make_user(db)
+    before = datetime.now(UTC)
+
+    response = _forgot(api)
+
+    assert response.status_code == 202
+    assert response.json() == FORGOT_BODY
+    assert "retry-after" not in response.headers
+    assert len(fake_mail.sent) == 1
+    sent = fake_mail.sent[0]
+    assert sent.to == EMAIL
+    assert sent.subject == "Reset your TutorLink password"
+    assert "Hi Test User" in sent.text
+    assert "48 hours" in sent.text
+    link = _link_of(db, token_from(sent))
+    assert link.user_id == user.id
+    assert link.purpose is PasswordLinkPurpose.RESET
+    assert timedelta(hours=48) <= link.expires_at - before < timedelta(hours=48, minutes=1)
+
+
+@pytest.mark.parametrize(
+    ("email", "setup"),
+    [
+        pytest.param("admin@example.com", "password-less", id="password-less"),
+        pytest.param("admin@example.com", "inactive", id="inactive"),
+        pytest.param("nobody@example.com", "unknown", id="unknown"),
+        pytest.param("not an email at all", "unknown", id="odd-string"),
+    ],
+)
+def test_a_miss_answers_identically_and_sends_nothing(
+    api: TestClient, db: Session, fake_mail: FakeMail, email: str, setup: str
+) -> None:
+    if setup == "password-less":
+        _make_user(db, password=None)
+    elif setup == "inactive":
+        _make_user(db, is_active=False)
+
+    response = _forgot(api, email=email)
+
+    assert response.status_code == 202
+    assert response.json() == FORGOT_BODY
+    assert "retry-after" not in response.headers
+    assert fake_mail.sent == []
+    assert _reset_link_count(db) == 0
+
+
+def test_the_emailed_token_sets_the_password_and_signs_the_user_out_elsewhere(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    _make_user(db)
+    older_session = _login(api).json()["refresh_token"]
+    api.cookies.clear()
+    _forgot(api)
+    token = token_from(fake_mail.sent[0])
+
+    response = _set_password(api, token=token)
+    api.cookies.clear()
+    older_refresh = api.post("/auth/refresh", json={"refresh_token": older_session})
+    login = _login(api, password=NEW_PASSWORD)
+
+    assert response.status_code == 200
+    assert older_refresh.status_code == 401
+    assert login.status_code == 200
+
+
+def test_a_second_forgot_revokes_the_first_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    _make_user(db)
+    _forgot(api)
+    _forgot(api)
+    first, second = (token_from(sent) for sent in fake_mail.sent)
+
+    first_attempt = _set_password(api, token=first)
+    second_attempt = _set_password(api, token=second)
+
+    assert first_attempt.status_code == 400
+    assert first_attempt.json() == INVALID_LINK_BODY
+    assert second_attempt.status_code == 200
+
+
+def test_a_failed_send_answers_identically_and_keeps_the_link(
+    api: TestClient, db: Session, fake_mail: FakeMail, caplog: pytest.LogCaptureFixture
+) -> None:
+    _make_user(db)
+    fake_mail.fail_next()
+
+    with caplog.at_level("ERROR", logger="app.services.password_link_service"):
+        response = _forgot(api)
+
+    assert response.status_code == 202
+    assert response.json() == FORGOT_BODY
+    assert fake_mail.sent == []
+    assert _reset_link_count(db) == 1
+    failures = [record for record in caplog.records if "reset email was not sent" in record.message]
+    assert len(failures) == 1
+    # No chained traceback either: the SMTP exception it would print quotes the recipient.
+    assert failures[0].exc_info is None
+    assert not any(EMAIL in record.getMessage() for record in caplog.records)
+
+
+def test_a_missing_public_base_url_answers_a_hit_and_a_miss_identically(
+    api: TestClient,
+    db: Session,
+    fake_mail: FakeMail,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The link is built in the background task, so a config gap cannot 500 only for hits."""
+    from app.services import mail_service
+
+    unconfigured = get_settings().model_copy(update={"public_base_url": None})
+    monkeypatch.setattr(mail_service, "get_settings", lambda: unconfigured)
+    _make_user(db)
+
+    with caplog.at_level("ERROR", logger="app.services.password_link_service"):
+        hit = _forgot(api)
+        miss = _forgot(api, email="nobody@example.com")
+
+    assert (hit.status_code, hit.json()) == (202, FORGOT_BODY)
+    assert (miss.status_code, miss.json()) == (202, FORGOT_BODY)
+    assert fake_mail.sent == []
+    assert _reset_link_count(db) == 1
+    assert any("reset email was not sent" in record.message for record in caplog.records)
+
+
+def test_consuming_a_reset_link_revokes_a_live_invite_too(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    user = _make_user(db)
+    _link, invite_token = issue_link(
+        db, user=user, purpose=PasswordLinkPurpose.INVITE, now=datetime.now(UTC)
+    )
+    _forgot(api)
+    reset_token = token_from(fake_mail.sent[0])
+
+    reset = _set_password(api, token=reset_token)
+    api.cookies.clear()
+    invite = _set_password(api, token=invite_token)
+
+    assert reset.status_code == 200
+    assert invite.status_code == 400
+    assert invite.json() == INVALID_LINK_BODY
+    assert _link_of(db, invite_token).revoked_at is not None
+
+
+def test_a_forgot_commits_its_link_before_the_response_is_returned(
+    session_per_request_api: TestClient,
+    committed_sessions: sessionmaker[Session],
+    fake_mail: FakeMail,
+) -> None:
+    """The background task runs after the response, so the row must already be committed."""
+    email = f"forgot{COMMITTED_EMAIL_SUFFIX}"
+    _make_committed_user(committed_sessions, email)
+
+    response = _forgot(session_per_request_api, email=email)
+
+    assert response.status_code == 202
+    with committed_sessions() as observer:
+        committed = observer.execute(
+            select(func.count())
+            .select_from(PasswordLink)
+            .join(User, User.id == PasswordLink.user_id)
+            .where(User.email == email, PasswordLink.purpose == PasswordLinkPurpose.RESET)
+        ).scalar_one()
+    assert committed == 1
+    assert len(fake_mail.sent) == 1
+
+
+def test_a_missing_email_field_is_400(api: TestClient, fake_mail: FakeMail) -> None:
+    response = api.post("/auth/password/forgot", json={})
+
+    assert response.status_code == 400
+    assert fake_mail.sent == []
+
+
 @pytest.fixture
 def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session], None, None]:
     factory = sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)
@@ -600,6 +789,18 @@ def _set_password(api: TestClient, *, token: str, password: str = NEW_PASSWORD) 
     return api.post("/auth/password/set", json={"token": token, "password": password})
 
 
+def _forgot(api: TestClient, *, email: str = EMAIL) -> Response:
+    return api.post("/auth/password/forgot", json={"email": email})
+
+
+def _reset_link_count(db: Session) -> int:
+    return db.execute(
+        select(func.count())
+        .select_from(PasswordLink)
+        .where(PasswordLink.purpose == PasswordLinkPurpose.RESET)
+    ).scalar_one()
+
+
 def _link_of(db: Session, token: str) -> PasswordLink:
     return db.execute(
         select(PasswordLink).where(PasswordLink.token_hash == hash_token(token))
@@ -639,7 +840,9 @@ def _delete_committed_reservations(sessions: sessionmaker[Session]) -> None:
     # Logging in through committed sessions commits real reservations. Removed by the attempt
     # ids of this module's own email buckets, so the IP rows those attempts wrote under the
     # shared "testclient" peer go with them and nobody else's rows in that bucket do.
-    own_buckets = LoginAttempt.bucket_key.like(f"{EMAIL_BUCKET_PREFIX}%{COMMITTED_EMAIL_SUFFIX}")
+    own_buckets = LoginAttempt.bucket_key.like(
+        f"{EMAIL_BUCKET_PREFIX}%{COMMITTED_EMAIL_SUFFIX}"
+    ) | LoginAttempt.bucket_key.like(f"{FORGOT_EMAIL_BUCKET_PREFIX}%{COMMITTED_EMAIL_SUFFIX}")
     attempt_ids = select(LoginAttempt.attempt_id).where(own_buckets)
 
     with sessions() as cleanup:

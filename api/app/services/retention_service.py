@@ -32,6 +32,8 @@ from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.services.rate_limit_service import (
     EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_IP_WINDOW_SECONDS_SETTING,
     IP_WINDOW_SECONDS_SETTING,
 )
 from app.services.settings_service import get_int_setting
@@ -85,16 +87,18 @@ def reap_expired_flow_states(db: Session) -> int:
 
 
 def reap_expired_login_attempts(db: Session) -> int:
-    """Delete attempts older than the *larger* of the two windows, on the database's clock.
+    """Delete attempts older than the *largest* of the four windows, on the database's clock.
 
-    One DELETE covers both buckets, so it takes the longer window: the shorter one would delete
-    rows the other bucket still counts and hand back budget an attacker already spent. The
-    cutoff is measured on the database's clock — the one `rate_limit_service` stamps and prunes
-    with — so no host's drift enters it.
+    One DELETE covers every bucket — login's two and forgot-password's two — so it takes the
+    longest window: a shorter one would delete rows another bucket still counts and hand back
+    budget an attacker already spent. The cutoff is measured on the database's clock — the one
+    `rate_limit_service` stamps and prunes with — so no host's drift enters it.
     """
     window_seconds = max(
         get_int_setting(db, key=IP_WINDOW_SECONDS_SETTING),
         get_int_setting(db, key=EMAIL_WINDOW_SECONDS_SETTING),
+        get_int_setting(db, key=FORGOT_IP_WINDOW_SECONDS_SETTING),
+        get_int_setting(db, key=FORGOT_EMAIL_WINDOW_SECONDS_SETTING),
     )
     cutoff = func.now() - timedelta(seconds=window_seconds)
 

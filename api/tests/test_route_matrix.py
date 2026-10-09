@@ -58,6 +58,8 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/auth/logout"): Access.PUBLIC,
     # Authenticated by the single-use link token in the body, not by a user token.
     ("POST", "/auth/password/set"): Access.PUBLIC,
+    # Anyone may ask for a reset link; the answer never says whether the account exists.
+    ("POST", "/auth/password/forgot"): Access.PUBLIC,
     # Authenticated by Twilio's signature, not by a user token.
     ("POST", "/webhook/whatsapp"): Access.PUBLIC,
     ("POST", "/webhook/whatsapp/status"): Access.PUBLIC,

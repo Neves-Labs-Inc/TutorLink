@@ -144,6 +144,10 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
     from app.services.rate_limit_service import (
         EMAIL_MAX_ATTEMPTS_SETTING,
         EMAIL_WINDOW_SECONDS_SETTING,
+        FORGOT_EMAIL_MAX_ATTEMPTS_SETTING,
+        FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
+        FORGOT_IP_MAX_ATTEMPTS_SETTING,
+        FORGOT_IP_WINDOW_SECONDS_SETTING,
         IP_MAX_ATTEMPTS_SETTING,
         IP_WINDOW_SECONDS_SETTING,
     )
@@ -162,6 +166,10 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         IP_WINDOW_SECONDS_SETTING: "900",
         EMAIL_MAX_ATTEMPTS_SETTING: "5",
         EMAIL_WINDOW_SECONDS_SETTING: "900",
+        FORGOT_IP_MAX_ATTEMPTS_SETTING: "10",
+        FORGOT_IP_WINDOW_SECONDS_SETTING: "900",
+        FORGOT_EMAIL_MAX_ATTEMPTS_SETTING: "3",
+        FORGOT_EMAIL_WINDOW_SECONDS_SETTING: "3600",
         DEFAULT_COUNTRY_CODE_SETTING: "1",
         SESSION_LENGTH_SETTING: "60",
         SESSION_GAP_SETTING: "30",

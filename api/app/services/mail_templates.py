@@ -13,6 +13,11 @@ from dataclasses import dataclass
 
 INVITE_SUBJECT = "You're invited to TutorLink"
 INVITE_EXPIRY_WORDING = "This link expires in 7 days and can be used once."
+RESET_SUBJECT = "Reset your TutorLink password"
+RESET_EXPIRY_WORDING = (
+    "This link expires in 48 hours and can be used once. "
+    "If you didn't ask for this, you can ignore this email."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +44,21 @@ def invite_email(*, name: str, actor_name: str, link: str) -> RenderedEmail:
     )
 
     return RenderedEmail(subject=INVITE_SUBJECT, text=text, html=_document(body))
+
+
+def reset_email(*, name: str, link: str) -> RenderedEmail:
+    """The password reset: `name` asked for a link to choose a new password."""
+    text = (
+        f"Hi {name},\n\nReset your TutorLink password here:\n\n{link}\n\n{RESET_EXPIRY_WORDING}\n"
+    )
+    body = (
+        f"<p>Hi {html.escape(name)},</p>"
+        f'<p><a href="{html.escape(link, quote=True)}">Reset your TutorLink password</a>.</p>'
+        f"<p>{RESET_EXPIRY_WORDING}</p>"
+        f'<p style="color:#666;font-size:12px">{html.escape(link)}</p>'
+    )
+
+    return RenderedEmail(subject=RESET_SUBJECT, text=text, html=_document(body))
 
 
 def _document(body: str) -> str:

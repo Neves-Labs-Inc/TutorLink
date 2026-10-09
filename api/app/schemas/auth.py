@@ -16,3 +16,11 @@ class RefreshRequest(BaseModel):
 class SetPasswordRequest(BaseModel):
     token: str
     password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    detail: str

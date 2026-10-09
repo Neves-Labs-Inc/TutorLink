@@ -1,3 +1,5 @@
+import { formatLocalDateTime } from '@/lib/dates/dates'
+
 export type RoleOption = { value: string; label: string; disabled?: boolean }
 
 export type ProfileDraft = {
@@ -152,3 +154,6 @@ export const accessBadge = (user: {
 
   return badge
 }
+
+export const inviteExpiryTooltip = (user: { invite_expires_at: string | null }): string =>
+  user.invite_expires_at === null ? '' : `Link expires ${formatLocalDateTime(user.invite_expires_at)}`

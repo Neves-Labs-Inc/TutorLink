@@ -20,4 +20,8 @@ describe('StatusBadge access keys', () => {
   it('gives no_login the pending tone', () => {
     expect(TONE_CLASSES.no_login).toBe('bg-status-pending-bg text-status-pending')
   })
+
+  it('gives invited the neutral completed tone', () => {
+    expect(TONE_CLASSES.invited).toBe('bg-status-completed-bg text-status-completed')
+  })
 })

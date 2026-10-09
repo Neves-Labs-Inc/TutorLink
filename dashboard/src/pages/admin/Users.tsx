@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { Button } from '@/components/ui/button'
@@ -12,12 +12,20 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { errorDetail } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
-import { createUser, deactivateUser, updateUser, userQueries, type User } from '@/lib/queries/users'
+import {
+  createUser,
+  deactivateUser,
+  sendInvite,
+  updateUser,
+  userQueries,
+  type User,
+} from '@/lib/queries/users'
 import {
   createUserPayload,
   displayNameError,
   editRoleOptions,
   accessBadge,
+  inviteExpiryTooltip,
   PHONE_REQUIRED_ERROR,
   requiresProfile,
   roleLabel,
@@ -27,6 +35,7 @@ import {
   type UserDraft,
 } from '@/lib/users/users'
 import { cn } from '@/lib/utils'
+import { useToast } from '@/hooks/useToast'
 import { useAuthStore } from '@/stores/authStore'
 
 type FormState = UserDraft & { isActive: boolean }
@@ -42,12 +51,22 @@ const EMPTY_FORM: FormState = {
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const DEACTIVATE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
+const INVITE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 // Every slide-over control is a 44px touch target on phones and the compact h-8 from md up.
 const CONTROL_HEIGHT_CLASSES = 'h-11 md:h-8'
 const TAP_ROW_CLASSES = 'min-h-11 md:min-h-0'
 
+const inviteRowKey = (user: User): string =>
+  `${user.is_active}|${user.has_password}|${user.invite_expires_at}`
+
+const omitKey = <T,>(record: Record<string, T>, key: string): Record<string, T> =>
+  Object.fromEntries(Object.entries(record).filter(([entryKey]) => entryKey !== key))
+
 export const Users = () => {
   const queryClient = useQueryClient()
+  const { toast } = useToast()
+  // The row's data when its invite was sent, so a failure can be tied to that exact state.
+  const inviteRowKeys = useRef<Record<string, string>>({})
   const viewerRole = useAuthStore((state) => state.role) ?? ''
 
   const [page, setPage] = useState(1)
@@ -57,6 +76,9 @@ export const Users = () => {
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [deactivateTarget, setDeactivateTarget] = useState<User | null>(null)
+  const [pendingInviteIds, setPendingInviteIds] = useState<ReadonlySet<string>>(new Set())
+  // Keyed by user id; `rowKey` ties each message to the row data it was raised against.
+  const [inviteErrors, setInviteErrors] = useState<Record<string, { message: string; rowKey: string }>>({})
 
   const usersQuery = useQuery(
     userQueries.list({ is_active: !showInactive, page, page_size: DEFAULT_PAGE_SIZE }),
@@ -91,6 +113,37 @@ export const Users = () => {
       setDeactivateTarget(null)
     },
   })
+
+  const inviteMutation = useMutation({
+    mutationFn: sendInvite,
+    onSuccess: (invited, userId) => {
+      invalidateUsers()
+      setInviteErrors((current) => omitKey(current, userId))
+      toast(`Invite sent to ${invited.email}.`)
+    },
+    onError: (error, userId) => {
+      setInviteErrors((current) => ({
+        ...current,
+        [userId]: {
+          message: errorDetail(error) ?? INVITE_FALLBACK_ERROR,
+          rowKey: inviteRowKeys.current[userId] ?? '',
+        },
+      }))
+    },
+    onSettled: (_data, _error, userId) =>
+      setPendingInviteIds((current) => {
+        const next = new Set(current)
+        next.delete(userId)
+        return next
+      }),
+  })
+
+  const handleSendInvite = (user: User) => {
+    inviteRowKeys.current[user.id] = inviteRowKey(user)
+    setInviteErrors((current) => omitKey(current, user.id))
+    setPendingInviteIds((current) => new Set(current).add(user.id))
+    inviteMutation.mutate(user.id)
+  }
 
   const closeForm = () => {
     setFormMode(null)
@@ -167,10 +220,15 @@ export const Users = () => {
       id: 'status',
       header: 'Status',
       cell: (user) => (
-        <div className="flex flex-wrap items-center justify-end gap-1.5 md:justify-start">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 md:justify-start lg:flex-nowrap">
           <StatusBadge status={user.is_active ? 'active' : 'inactive'} />
-          {/* 'invited' renders in ticket 07 */}
           {accessBadge(user) === 'no_login' && <StatusBadge status="no_login" />}
+          {accessBadge(user) === 'invited' && (
+            <span className="inline-flex cursor-default" title={inviteExpiryTooltip(user)}>
+              <StatusBadge status="invited" />
+              <span className="sr-only">{inviteExpiryTooltip(user)}</span>
+            </span>
+          )}
         </div>
       ),
     },
@@ -180,9 +238,47 @@ export const Users = () => {
       align: 'end',
       cell: (user) =>
         user.is_active && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setDeactivateTarget(user)}>
-            Deactivate
-          </Button>
+          <div>
+            <div className="flex flex-wrap items-center justify-end gap-2 lg:flex-nowrap">
+              {accessBadge(user) !== null && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-11 md:h-7"
+                  disabled={pendingInviteIds.has(user.id)}
+                  aria-busy={pendingInviteIds.has(user.id)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    handleSendInvite(user)
+                  }}
+                >
+                  {pendingInviteIds.has(user.id)
+                    ? 'Sending…'
+                    : accessBadge(user) === 'invited'
+                      ? 'Resend'
+                      : 'Send invite'}
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-11 md:h-7"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setDeactivateTarget(user)
+                }}
+              >
+                Deactivate
+              </Button>
+            </div>
+            {inviteErrors[user.id]?.rowKey === inviteRowKey(user) && (
+              <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
+                {inviteErrors[user.id].message}
+              </p>
+            )}
+          </div>
         ),
     },
   ]

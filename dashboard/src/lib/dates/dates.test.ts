@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { addDaysIso, DAY_LABELS, formatIsoDate, formatTime, todayLocalIso } from './dates'
+import { addDaysIso, DAY_LABELS, formatIsoDate, formatLocalDateTime, formatTime, todayLocalIso } from './dates'
 
 describe('todayLocalIso', () => {
   const cases: { name: string; now: Date; expected: string }[] = [
@@ -115,5 +115,15 @@ describe('in a negative UTC offset', () => {
 
   it('adds days across a fall-back boundary', () => {
     expect(addDaysIso('2026-10-31', 2)).toBe('2026-11-02')
+  })
+})
+
+describe('formatLocalDateTime', () => {
+  it('formats an instant in the local zone', () => {
+    expect(formatLocalDateTime(new Date(2026, 9, 16, 15, 5).toISOString())).toBe('16 Oct 2026, 3:05 PM')
+  })
+
+  it('shows midnight as 12:00 AM', () => {
+    expect(formatLocalDateTime(new Date(2026, 0, 2, 0, 0).toISOString())).toBe('2 Jan 2026, 12:00 AM')
   })
 })

@@ -53,3 +53,9 @@ export const deactivateUser = async (userId: string): Promise<User> => {
 
   return response.data
 }
+
+export const sendInvite = async (userId: string): Promise<User> => {
+  const response = await api.post<User>(`/api/users/${userId}/invite`)
+
+  return response.data
+}

@@ -47,3 +47,10 @@ const splitIso = (iso: string): CalendarDate => {
 
   return { year, month, day }
 }
+
+export const formatLocalDateTime = (iso: string): string => {
+  const date = new Date(iso)
+  const time = formatTime(`${date.getHours()}:${date.getMinutes()}`)
+
+  return `${date.getDate()} ${MONTH_LABELS[date.getMonth()]} ${date.getFullYear()}, ${time}`
+}

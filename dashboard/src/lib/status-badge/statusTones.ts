@@ -24,4 +24,5 @@ export const TONE_CLASSES: Record<string, string> = {
   undeliverable: 'bg-status-cancelled-bg text-status-cancelled',
   skipped: 'bg-status-pending-bg text-status-pending',
   no_login: 'bg-status-pending-bg text-status-pending',
+  invited: 'bg-status-completed-bg text-status-completed',
 }

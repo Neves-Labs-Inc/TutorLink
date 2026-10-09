@@ -6,6 +6,7 @@ import {
   roleOptions,
   requiresProfile,
   accessBadge,
+  inviteExpiryTooltip,
   userFormErrors,
   createUserPayload,
   updateUserPayload,
@@ -265,5 +266,19 @@ describe('roleLabel', () => {
 
   it.each(cases)('labels $role as $expected', ({ role, expected }) => {
     expect(roleLabel(role)).toBe(expected)
+  })
+})
+
+describe('inviteExpiryTooltip', () => {
+  it('names the expiry in the browser local zone', () => {
+    const expiresAt = new Date(2026, 9, 16, 15, 5).toISOString()
+
+    expect(inviteExpiryTooltip({ invite_expires_at: expiresAt })).toBe(
+      'Link expires 16 Oct 2026, 3:05 PM',
+    )
+  })
+
+  it('is empty when there is no invite', () => {
+    expect(inviteExpiryTooltip({ invite_expires_at: null })).toBe('')
   })
 })

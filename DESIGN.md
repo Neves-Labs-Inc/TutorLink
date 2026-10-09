@@ -122,9 +122,9 @@ Current mapping:
 | Tone | Keys |
 |---|---|
 | confirmed | `confirmed`, `approved`, `active`, `bot` |
-| pending | `pending`, `guardian_link_request`, `reactivation_request` |
+| pending | `pending`, `guardian_link_request`, `reactivation_request`, `no_login` |
 | cancelled | `cancelled`, `rejected`, `inactive`, `stuck`, `parse_error` |
-| completed | `completed`, `human` |
+| completed | `completed`, `human`, `invited` |
 
 **Flag-reason rule.** The tone depends on whether the reason is a bot failure:
 - A **bot failure** (`stuck`, `parse_error`) uses the `cancelled` tone, and `isErrorFlag` returns true.

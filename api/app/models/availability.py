@@ -20,12 +20,20 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.enums import ExceptionStatus, exception_status_enum
+from app.models.enums import (
+    AvailabilityMode,
+    ExceptionStatus,
+    exception_status_enum,
+    in_values_predicate,
+    varchar_enum,
+)
 from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.tutor import Tutor
+
+AVAILABILITY_MODE_LENGTH = 16
 
 
 class TutorAvailability(HasID, HasTimestamps, HasActiveFlag, Base):
@@ -37,6 +45,9 @@ class TutorAvailability(HasID, HasTimestamps, HasActiveFlag, Base):
             "tutor_id", "day_of_week", "start_time", name="uq_tutor_availability_slot"
         ),
         CheckConstraint("day_of_week BETWEEN 0 AND 6", name="ck_tutor_availability_day_of_week"),
+        CheckConstraint(
+            in_values_predicate("mode", AvailabilityMode), name="ck_tutor_availability_mode"
+        ),
         Index("ix_tutor_availability_tutor_id_day_of_week", "tutor_id", "day_of_week"),
     )
 
@@ -46,6 +57,14 @@ class TutorAvailability(HasID, HasTimestamps, HasActiveFlag, Base):
     day_of_week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     start_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
     end_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
+    # Where this range's sessions may happen (#132). `traveler` is what every range meant
+    # before the column existed: home visits only.
+    mode: Mapped[AvailabilityMode] = mapped_column(
+        varchar_enum(AvailabilityMode, length=AVAILABILITY_MODE_LENGTH),
+        nullable=False,
+        server_default=text(f"'{AvailabilityMode.TRAVELER.value}'"),
+        default=AvailabilityMode.TRAVELER,
+    )
 
     tutor: Mapped["Tutor"] = relationship(back_populates="availability")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="availability")

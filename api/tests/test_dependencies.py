@@ -40,6 +40,7 @@ from app.dependencies import (
     TutorScopeNotApplied,
     assert_can_access_tutor,
 )
+from app.models.booking import Booking
 from app.models.enums import UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor
@@ -116,6 +117,13 @@ def probe_leak_users(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
 def probe_leak_tutors(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
     """`tutors` carries no `tutor_id` column — its own primary key is the scoped one."""
     return {"names": sorted(tutor.user.name for tutor in db.execute(select(Tutor)).scalars())}
+
+
+@probe_app.get("/probe/leak/bookings")
+def probe_leak_bookings(scope: TutorScope, db: DbSession) -> dict[str, int]:
+    """`bookings` carries no `tutor_id` column since #130 (its Staff member is `user_id`), so
+    it is guarded by name rather than by shape."""
+    return {"count": len(db.execute(select(Booking)).scalars().all())}
 
 
 @probe_app.get("/probe/leak/deactivate")
@@ -497,6 +505,14 @@ def test_discarded_scope_also_guards_the_tutors_table(probe: TestClient, db: Ses
 
     with pytest.raises(TutorScopeNotApplied):
         probe.get("/probe/leak/tutors", headers=_bearer(user))
+
+
+def test_discarded_scope_also_guards_the_bookings_table(probe: TestClient, db: Session) -> None:
+    own = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    with pytest.raises(TutorScopeNotApplied):
+        probe.get("/probe/leak/bookings", headers=_bearer(user))
 
 
 def test_discarded_scope_also_blocks_an_unscoped_mass_update(

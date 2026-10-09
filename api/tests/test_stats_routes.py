@@ -27,7 +27,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -64,13 +64,16 @@ LIVE_UPCOMING_TOTAL = ACTIVE_TUTOR_TOTAL + 1
 SUMMARY_FIELDS = {
     "id",
     "child",
-    "tutor",
+    "staff",
+    "kind",
+    "location",
     "subject",
     "scheduled_date",
     "start_time",
     "end_time",
     "status",
     "notes",
+    "updated_at",
 }
 
 
@@ -410,11 +413,20 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
     listed = api.get(f"/api/bookings?from={WEDNESDAY}&to={WEDNESDAY}", headers=_auth(admin)).json()
 
     assert set(item) == SUMMARY_FIELDS
-    assert set(item["child"]) == set(item["tutor"]) == set(item["subject"]) == {"id", "name"}
+    assert set(item["child"]) == set(item["subject"]) == {"id", "name"}
+    assert set(item["staff"]) == {"id", "name", "role"}
+    assert item == listed["items"][0]
+    assert datetime.datetime.fromisoformat(item.pop("updated_at")) == booking.updated_at
     assert item == {
         "id": str(booking.id),
         "child": {"id": str(stage.child.id), "name": stage.child.name},
-        "tutor": {"id": str(stage.cast.tutor.id), "name": stage.cast.tutor.user.name},
+        "staff": {
+            "id": str(stage.cast.tutor.user_id),
+            "name": stage.cast.tutor.user.name,
+            "role": "tutor",
+        },
+        "kind": "regular",
+        "location": "home",
         "subject": {"id": str(stage.subject.id), "name": stage.subject.name},
         "scheduled_date": str(WEDNESDAY),
         "start_time": "10:00:00",
@@ -422,7 +434,6 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         "status": "confirmed",
         "notes": None,
     }
-    assert item == listed["items"][0]
 
 
 def _book(
@@ -439,7 +450,9 @@ def _book(
     booked = cast or stage.cast
     booking = Booking(
         child_id=stage.child.id,
-        tutor_id=booked.tutor.id,
+        user_id=booked.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=stage.subject.id,
         availability_id=booked.availability_id,
         home_id=stage.home.id,

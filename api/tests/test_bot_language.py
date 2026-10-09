@@ -24,7 +24,14 @@ from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import BookingStatus, FlagReason, Language, UserRole
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    FlagReason,
+    Language,
+    UserRole,
+)
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -547,7 +554,7 @@ def test_a_spanish_guardian_books_a_session_in_spanish(
     assert booking.child_id == spanish.client.child_id
     assert booking.home_id == spanish.client.home_id
     assert booking.subject_id == spanish.subject.id
-    assert booking.tutor_id == spanish.tutor.id
+    assert booking.user_id == spanish.tutor.user_id
     assert booking.booked_by_guardian_id == spanish.client.guardian_id
     assert (booking.scheduled_date, booking.start_time) == (DATE, NINE)
     assert whatsapp.conversation().language is Language.ES
@@ -662,7 +669,9 @@ def _make_booking(db: Session, world: SpanishWorld, *, start: datetime.time) -> 
     end = (datetime.datetime.combine(DATE, start) + datetime.timedelta(hours=1)).time()
     booking = Booking(
         child_id=world.client.child_id,
-        tutor_id=world.tutor.id,
+        user_id=world.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject.id,
         availability_id=world.availability_id,
         home_id=world.client.home_id,

@@ -52,8 +52,9 @@ Five properties this module exists to guarantee, all of which Phase 3 onwards de
 
 Two route shapes, and they do not mix. A route that *lists* takes `TutorScope` and passes
 `scope.tutor_id` into the service call. A route that *loads one row by id* takes `Principal`,
-loads the row, and calls `assert_can_access_tutor` on its owner — that pattern queries before
-it can know the owner, so it deliberately does not arm the guard above.
+loads the row, and calls `assert_can_access_tutor` (or `assert_can_access_booking`, for a row
+keyed on the Staff member's user) on its owner — that pattern queries before it can know the
+owner, so it deliberately does not arm the guard above.
 """
 
 import uuid
@@ -67,6 +68,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Mapper, ORMExecuteState, Session, joinedload
 
 from app.db import get_db
+from app.models.booking import Booking
 from app.models.enums import UserRole
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -244,8 +246,13 @@ def _is_tutor_owned(mapper: Mapper[Any]) -> bool:
     # Fail closed by shape, not by a list someone has to remember to extend: anything mapped
     # onto a table with a `tutor_id`, plus `tutors` itself, whose own primary key is what a
     # tutor's scope filters on. A table added in a later phase is guarded the day it gains
-    # the column.
-    return "tutor_id" in mapper.columns or mapper.local_table is Tutor.__table__
+    # the column. `bookings` is named explicitly: it keys its Staff member on `user_id` (#130)
+    # and is still a tutor's own data, scoped through their profile.
+    return (
+        "tutor_id" in mapper.columns
+        or mapper.local_table is Tutor.__table__
+        or mapper.local_table is Booking.__table__
+    )
 
 
 def _guard_unapplied_scope(scope: ResolvedTutorScope) -> Callable[[ORMExecuteState], None]:
@@ -309,4 +316,14 @@ def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None)
     unapplied-scope guard to check.
     """
     if user.role not in OFFICE_ROLES and (user.tutor_id is None or owner_tutor_id != user.tutor_id):
+        raise _forbidden(TUTOR_SCOPE_ERROR)
+
+
+def assert_can_access_booking(user: CurrentUser, owner_user_id: uuid.UUID) -> None:
+    """`assert_can_access_tutor` for a Booking, whose owner is a user, not a profile (#130).
+
+    Office always passes. A tutor passes only when the Booking's Staff member is them. Raises
+    403 — never 404, never a silent empty response (`CONSTITUTION.md` §15).
+    """
+    if user.role not in OFFICE_ROLES and owner_user_id != user.id:
         raise _forbidden(TUTOR_SCOPE_ERROR)

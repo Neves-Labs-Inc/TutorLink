@@ -87,7 +87,7 @@ def _recent_bookings(db: Session) -> list[Booking]:
             select(Booking)
             .options(
                 joinedload(Booking.child),
-                joinedload(Booking.tutor),
+                joinedload(Booking.staff),
                 joinedload(Booking.subject),
             )
             .order_by(Booking.created_at.desc(), Booking.id.desc())

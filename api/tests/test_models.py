@@ -49,7 +49,7 @@ def test_live_bookings_are_excluded_by_overlap_not_by_equal_start_time() -> None
 
     assert constraint.using == "gist"
     assert constraint.operators == {
-        "tutor_id": "=",
+        "user_id": "=",
         "tsrange(scheduled_date + start_time, scheduled_date + end_time)": "&&",
     }
     where = str(constraint.where)
@@ -146,10 +146,13 @@ def test_an_exception_may_block_part_of_a_day() -> None:
     assert "ck_tutor_availability_exceptions_time_order" in names
 
 
-def test_a_booking_names_its_home_and_may_name_who_booked_it() -> None:
-    """home_id cannot be derived once a child has two homes, and a tutor with no address
-    cannot work — so it is required. booked_by_guardian_id is NULL for admin bookings."""
+def test_a_booking_names_its_home_exactly_when_it_is_at_one_and_may_name_who_booked_it() -> None:
+    """home_id cannot be derived once a child has two homes, so a home Location requires it
+    and an office one forbids it — the CHECK, not NOT NULL, carries that (#130).
+    booked_by_guardian_id is NULL for admin bookings."""
     bookings = metadata.tables["bookings"]
+    names = {constraint.name for constraint in bookings.constraints}
 
-    assert bookings.c.home_id.nullable is False
+    assert bookings.c.home_id.nullable is True
+    assert "ck_bookings_home_matches_location" in names
     assert bookings.c.booked_by_guardian_id.nullable is True

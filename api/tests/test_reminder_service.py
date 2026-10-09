@@ -26,6 +26,8 @@ from app.models.booking_reminder import BookingReminder
 from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
+    BookingKind,
+    BookingLocation,
     BookingStatus,
     ConsentAction,
     ConsentSource,
@@ -132,7 +134,9 @@ class World:
         self.db.add(
             Booking(
                 child_id=child.id,
-                tutor_id=self._tutor.id,
+                user_id=self._tutor.user_id,
+                kind=BookingKind.REGULAR,
+                location=BookingLocation.HOME,
                 subject_id=self._subject.id,
                 availability_id=self._availability.id,
                 home_id=self._home.id,

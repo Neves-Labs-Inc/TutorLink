@@ -23,7 +23,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
@@ -427,7 +427,9 @@ def test_a_deactivated_home_is_refused_by_post_bookings_and_bookable_once_reacti
     availability = _make_availability(db, tutor=tutor, weekday=on.weekday())
     payload = {
         "child_id": str(child.id),
-        "tutor_id": str(tutor.id),
+        "user_id": str(tutor.user_id),
+        "kind": "regular",
+        "location": "home",
         "subject_id": str(subject.id),
         "availability_id": str(availability.id),
         "home_id": str(home.id),
@@ -681,7 +683,9 @@ def _book(
     client = _make_client(db)
     booking = Booking(
         child_id=_make_child(db, guardians=[client], homes=[home]).id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=_make_subject(db).id,
         availability_id=_make_availability(db, tutor=tutor, weekday=on.weekday()).id,
         home_id=home.id,

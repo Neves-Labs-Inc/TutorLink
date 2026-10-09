@@ -266,10 +266,14 @@ def _approved_exceptions(
 def _live_booking_windows(
     db: Session, *, tutor_ids: list[uuid.UUID], date: datetime.date
 ) -> dict[uuid.UUID, list[TimeWindow]]:
-    """Step 3's rows. `LIVE_BOOKING_STATUSES` is the one definition of a booking that counts."""
+    """Step 3's rows, keyed by profile. `LIVE_BOOKING_STATUSES` is the one definition of a
+    booking that counts. A booking names its Staff member as a user (#130), so the profile is
+    reached through `tutors.user_id`."""
     rows = db.execute(
-        select(Booking.tutor_id, Booking.start_time, Booking.end_time).where(
-            Booking.tutor_id.in_(tutor_ids),
+        select(Tutor.id, Booking.start_time, Booking.end_time)
+        .join(Booking, Booking.user_id == Tutor.user_id)
+        .where(
+            Tutor.id.in_(tutor_ids),
             Booking.scheduled_date == date,
             Booking.status.in_(LIVE_BOOKING_STATUSES),
         )

@@ -21,7 +21,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCO
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
@@ -33,6 +33,7 @@ from app.routers.availability import (
 )
 from app.security import create_access_token, hash_password
 from app.services import availability_service
+from tests.support import user_id_of
 
 STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
 
@@ -570,7 +571,9 @@ def _make_booking(db: Session, *, tutor_id: uuid.UUID, availability_id: uuid.UUI
     db.flush()
 
     booking = Booking(
-        tutor_id=tutor_id,
+        user_id=user_id_of(db, tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         child_id=child.id,
         availability_id=availability_id,
         home_id=home.id,

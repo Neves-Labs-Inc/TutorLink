@@ -9,6 +9,7 @@ from app.models.enums import UserRole, user_role_enum
 from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
+    from app.models.booking import Booking
     from app.models.tutor import Tutor
 
 
@@ -31,6 +32,8 @@ class User(HasID, HasTimestamps, HasActiveFlag, Base):
     role: Mapped[UserRole] = mapped_column(user_role_enum, nullable=False)
 
     profile: Mapped["Tutor | None"] = relationship(back_populates="user", uselist=False)
+    # The sessions this person is the Staff member of (#130).
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="staff")
 
     @property
     def profile_id(self) -> uuid.UUID | None:

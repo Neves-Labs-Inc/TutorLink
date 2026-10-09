@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
@@ -285,7 +285,7 @@ def test_next_session_is_the_earliest_live_booking_after_now(
         "scheduled_date": TOMORROW.isoformat(),
         "start_time": "09:00:00",
         "end_time": "10:00:00",
-        "tutor": {"id": str(expected.tutor.id), "name": expected.tutor.user.name},
+        "tutor": {"id": str(expected.staff.id), "name": expected.staff.name},
         "subject": {"id": str(expected.subject.id), "name": expected.subject.name},
     }
     assert detail["upcoming_session_count"] == 2
@@ -593,7 +593,9 @@ def _book(
     db.flush()
     booking = Booking(
         child_id=child.id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject.id,
         availability_id=availability.id,
         home_id=home.id,

@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
@@ -85,6 +85,7 @@ class World:
     admin: User
     child_id: uuid.UUID
     tutor_id: uuid.UUID
+    user_id: uuid.UUID
     subject_id: uuid.UUID
     availability_id: uuid.UUID
     home_id: uuid.UUID
@@ -394,6 +395,7 @@ def _make_world(session: Session) -> World:
         admin=admin,
         child_id=child.id,
         tutor_id=tutor.id,
+        user_id=tutor.user_id,
         subject_id=subject.id,
         availability_id=availability.id,
         home_id=home.id,
@@ -410,7 +412,9 @@ def _add_booking(
 ) -> uuid.UUID:
     booking = Booking(
         child_id=world.child_id,
-        tutor_id=world.tutor_id,
+        user_id=world.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject_id,
         availability_id=world.availability_id,
         home_id=world.home_id,
@@ -465,7 +469,9 @@ def _post_booking(
         headers=_auth(world.admin),
         json={
             "child_id": str(world.child_id),
-            "tutor_id": str(world.tutor_id),
+            "user_id": str(world.user_id),
+            "kind": "regular",
+            "location": "home",
             "subject_id": str(world.subject_id),
             "availability_id": str(world.availability_id),
             "home_id": str(home_id),

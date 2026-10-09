@@ -36,7 +36,7 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ExceptionStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
@@ -53,6 +53,7 @@ from app.routers.booking_writes import (
     LEAD_TIME_NOT_MET_ERROR,
     OUTSIDE_AVAILABILITY_ERROR,
     REFERENCE_NOT_FOUND_ERROR,
+    SHAPE_NOT_SUPPORTED_ERROR,
 )
 from app.security import create_access_token, hash_password
 from app.services import booking_write_service, clock
@@ -696,7 +697,7 @@ def test_a_start_inside_the_minimum_lead_time_is_400(
     "field",
     [
         "child_id",
-        "tutor_id",
+        "user_id",
         "subject_id",
         "availability_id",
         "home_id",
@@ -794,17 +795,55 @@ def test_an_end_time_at_or_before_the_start_is_400(
     assert _count(db) == 0
 
 
-def test_a_body_without_home_id_is_400(api: TestClient, db: Session, family: Family) -> None:
+def test_a_body_without_home_id_is_refused(api: TestClient, db: Session, family: Family) -> None:
     """`home_id` is absent from the documented example body and required by the prose rules,
-    which are the contract (amendment P4-1). This pins the prose."""
+    which are the contract (amendment P4-1). It is optional in the schema since #130 (an office
+    session has none), so the refusal is the service's: ticket 04's shape gate for now, and
+    ticket 05's "home named against the Location" after it."""
     user = _make_user(db)
     body = _payload(family)
     del body["home_id"]
 
     response = api.post("/api/bookings", json=body, headers=_auth(user))
 
-    assert response.status_code == 400
-    assert "home_id" in response.json()["detail"]
+    _assert_detail(response, 422, SHAPE_NOT_SUPPORTED_ERROR)
+    assert _count(db) == 0
+
+
+# --- ticket 04's temporary shape gate ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"kind": "evaluation", "subject_id": None, "availability_id": None},
+        {"location": "in_office", "home_id": None},
+        {"availability_id": None},
+    ],
+    ids=["evaluation", "in_office", "no_slot"],
+)
+def test_a_shape_whose_rules_are_not_written_yet_is_422(
+    api: TestClient, db: Session, family: Family, overrides: dict[str, Any]
+) -> None:
+    """Until ticket 05 brings the per-kind rules, only a Regular booking at a home naming all
+    three ids is accepted; the rest is a deliberate semantic refusal, not a 400."""
+    user = _make_user(db)
+
+    response = _post(api, user, family, **overrides)
+
+    _assert_detail(response, 422, SHAPE_NOT_SUPPORTED_ERROR)
+    assert _count(db) == 0
+
+
+def test_a_staff_member_without_a_teaching_profile_is_422_for_now(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """An Admin is a bookable Staff member by spec 01, but their rules are ticket 05's."""
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(user.id))
+
+    _assert_detail(response, 422, SHAPE_NOT_SUPPORTED_ERROR)
     assert _count(db) == 0
 
 
@@ -814,7 +853,9 @@ def test_a_body_without_home_id_is_400(api: TestClient, db: Session, family: Fam
 def _payload(family: Family, **overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "child_id": str(family.child.id),
-        "tutor_id": str(family.tutor.id),
+        "user_id": str(family.tutor.user_id),
+        "kind": "regular",
+        "location": "home",
         "subject_id": str(family.subject.id),
         "availability_id": str(family.availability_id),
         "home_id": str(family.home.id),
@@ -998,7 +1039,9 @@ def _book(
 ) -> Booking:
     booking = Booking(
         child_id=family.child.id,
-        tutor_id=family.tutor.id,
+        user_id=family.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=family.subject.id,
         availability_id=family.availability_id,
         home_id=family.home.id,

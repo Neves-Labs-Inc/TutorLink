@@ -11,7 +11,6 @@ from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.availability import TutorAvailability, TutorAvailabilityException
-    from app.models.booking import Booking
     from app.models.subject import Subject
     from app.models.user import User
 
@@ -32,7 +31,6 @@ class Tutor(HasID, HasTimestamps, HasActiveFlag, Base):
     tutor_subjects: Mapped[list["TutorSubject"]] = relationship(back_populates="tutor")
     availability: Mapped[list["TutorAvailability"]] = relationship(back_populates="tutor")
     exceptions: Mapped[list["TutorAvailabilityException"]] = relationship(back_populates="tutor")
-    bookings: Mapped[list["Booking"]] = relationship(back_populates="tutor")
 
 
 class TutorSubject(HasID, Base):

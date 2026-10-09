@@ -85,10 +85,18 @@ from sqlalchemy.orm import Session
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH, Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ConsentAction, ConsentSource, FlagReason
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ConsentAction,
+    ConsentSource,
+    FlagReason,
+)
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
+from app.models.tutor import Tutor
 from app.schemas.bot import (
     AnswerKind,
     BotIntent,
@@ -1488,6 +1496,13 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     if _inside_cutoff(turn.db, booking=booking, now=turn.now):
         return _Next(reply=_say(turn, "CUTOFF_DECLINED"), step=None)
 
+    # A session the bot could not have booked — an Evaluation (no Subject), or one whose Staff
+    # member has no profile to offer slots from — is not on the list it offers (ticket 07);
+    # reaching here with one is a bug worth a flag, not a reply.
+    profile_id = _profile_id(turn.db, user_id=booking.user_id)
+    if booking.subject_id is None or booking.home_id is None or profile_id is None:
+        return _stuck(turn)
+
     _reset_booking(turn.data)
     turn.data["book_child_id"] = str(booking.child_id)
     turn.data["book_subject_id"] = str(booking.subject_id)
@@ -1499,7 +1514,7 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     if _needs_office(turn.db, child=booking.child, subject_id=booking.subject_id):
         return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_FIRST_SESSION_DATE)
 
-    turn.data["book_tutor_id"] = str(booking.tutor_id)
+    turn.data["book_tutor_id"] = str(profile_id)
     turn.data["book_home_id"] = str(booking.home_id)
 
     return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_BOOK_DATE)
@@ -1915,9 +1930,13 @@ def _write_booking(turn: _Turn) -> _Next:
         return _stuck(turn)
 
     chosen = turn.data["chosen"]
+    # The slot was offered by profile; the booking names the person behind it (#130). Home
+    # visits only until spec 03 adds In office.
     request = booking_write_service.BookingRequest(
         child_id=uuid.UUID(turn.data["book_child_id"]),
-        tutor_id=uuid.UUID(chosen["tutor_id"]),
+        user_id=_profile_user_id(turn.db, tutor_id=uuid.UUID(chosen["tutor_id"])),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=uuid.UUID(turn.data["book_subject_id"]),
         availability_id=uuid.UUID(chosen["availability_id"]),
         home_id=uuid.UUID(turn.data["book_home_id"]),
@@ -1952,6 +1971,16 @@ def _write_booking(turn: _Turn) -> _Next:
 
 class _ReplaceFailed(Exception):
     """The old session of a reschedule is still live and could not be cancelled."""
+
+
+def _profile_user_id(db: Session, *, tutor_id: uuid.UUID) -> uuid.UUID:
+    """The person behind a teaching profile the slot search offered (#130)."""
+    return db.scalars(select(Tutor.user_id).where(Tutor.id == tutor_id)).one()
+
+
+def _profile_id(db: Session, *, user_id: uuid.UUID) -> uuid.UUID | None:
+    """The teaching profile of a booking's Staff member, or None for an Admin."""
+    return db.scalars(select(Tutor.id).where(Tutor.user_id == user_id)).first()
 
 
 def _may_replace(turn: _Turn, *, booking_id: uuid.UUID) -> bool:
@@ -2312,7 +2341,7 @@ def _booking_label(booking: Booking, language: str) -> str:
         bot_messages.format_time_range(booking.start_time, booking.end_time, language),
         _subject_name(booking.subject, language),
         booking.child.name,
-        booking.tutor.user.name,
+        booking.staff.name,
         language,
     )
 

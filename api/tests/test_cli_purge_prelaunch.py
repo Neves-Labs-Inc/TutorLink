@@ -22,6 +22,8 @@ from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
+    BookingKind,
+    BookingLocation,
     BookingStatus,
     ConsentAction,
     ConsentSource,
@@ -261,7 +263,9 @@ def _make_test_data(db: Session) -> None:
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
             Booking(
                 child_id=child.id,
-                tutor_id=tutor.id,
+                user_id=tutor.user_id,
+                kind=BookingKind.REGULAR,
+                location=BookingLocation.HOME,
                 subject_id=subject.id,
                 availability_id=availability.id,
                 home_id=home.id,

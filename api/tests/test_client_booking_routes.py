@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -290,7 +290,7 @@ def test_paging_over_a_tied_group_repeats_and_drops_nothing(
     assert len(seen) == len(bookings)
 
 
-def test_an_item_is_the_nine_field_booking_summary(
+def test_an_item_is_the_twelve_field_booking_summary(
     api: TestClient, db: Session, family: Family
 ) -> None:
     """`start_time` renders as `09:00:00`, matching `ExceptionRead`, where `docs/api-design.md`
@@ -305,16 +305,26 @@ def test_an_item_is_the_nine_field_booking_summary(
     assert set(item) == {
         "id",
         "child",
-        "tutor",
+        "staff",
+        "kind",
+        "location",
         "subject",
         "scheduled_date",
         "start_time",
         "end_time",
         "status",
         "notes",
+        "updated_at",
     }
     assert item["child"] == {"id": str(family.child.id), "name": family.child.name}
-    assert item["tutor"] == {"id": str(family.tutor.id), "name": family.tutor.user.name}
+    assert item["staff"] == {
+        "id": str(family.tutor.user_id),
+        "name": family.tutor.user.name,
+        "role": "tutor",
+    }
+    assert item["kind"] == "regular"
+    assert item["location"] == "home"
+    assert item["updated_at"] is not None
     assert item["subject"] == {"id": str(family.subject.id), "name": family.subject.name}
     assert item["id"] == str(booking.id)
     assert item["scheduled_date"] == "2026-09-07"
@@ -417,7 +427,9 @@ def _book(
     booked_tutor = tutor or family.tutor
     booking = Booking(
         child_id=(child or family.child).id,
-        tutor_id=booked_tutor.id,
+        user_id=booked_tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=family.subject.id,
         availability_id=(
             family.availability_id

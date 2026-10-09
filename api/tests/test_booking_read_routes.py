@@ -20,7 +20,7 @@ from app.dependencies import CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -51,6 +51,91 @@ class Family:
     other_home: Home
     availability_id: uuid.UUID
     other_availability_id: uuid.UUID
+
+
+# --- the #130 read shape: Staff, kind, Location ----------------------------------------------
+
+
+def test_a_summary_names_its_staff_member_kind_and_location(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    booking = _book(db, family)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+
+    assert item["staff"] == {
+        "id": str(family.tutor.user_id),
+        "name": family.tutor.user.name,
+        "role": "tutor",
+    }
+    assert item["kind"] == "regular"
+    assert item["location"] == "home"
+    assert item["subject"] == {"id": str(family.subject.id), "name": family.subject.name}
+    assert datetime.datetime.fromisoformat(item["updated_at"]) == booking.updated_at
+    assert "tutor" not in item
+
+
+def test_the_detail_of_an_office_evaluation_has_no_subject_and_no_home(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """The two nullable refs, on the one shape that nulls both; written by hand because the
+    write path refuses it until ticket 05."""
+    admin = _make_user(db)
+    evaluation = _evaluation(db, family, staff=admin)
+
+    body = api.get(f"/api/bookings/{evaluation.id}", headers=_auth(admin)).json()
+
+    assert body["staff"] == {"id": str(admin.id), "name": admin.name, "role": "admin"}
+    assert body["kind"] == "evaluation"
+    assert body["location"] == "in_office"
+    assert body["subject"] is None
+    assert body["home"] is None
+    assert datetime.datetime.fromisoformat(body["updated_at"]) == evaluation.updated_at
+
+
+def test_an_office_evaluation_is_listed_with_a_null_subject(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _evaluation(db, family, staff=admin)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+
+    assert item["subject"] is None
+    assert item["staff"]["role"] == "admin"
+
+
+def test_admin_filtering_by_tutor_id_reaches_the_profiles_bookings(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """`?tutor_id=` is still the profile's id, resolved to the Staff member's user: the scope
+    parameter did not change shape when the column did (#130)."""
+    admin = _make_user(db)
+    own = _book(db, family, tutor=family.tutor)
+    _book(db, family, tutor=family.other_tutor)
+
+    body = api.get(f"/api/bookings?tutor_id={family.tutor.id}", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(own.id)]
+    assert body["total"] == 1
+
+
+def _evaluation(db: Session, family: Family, *, staff: User) -> Booking:
+    booking = Booking(
+        child_id=family.child.id,
+        user_id=staff.id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=DATE,
+        start_time=TEN,
+        end_time=ELEVEN,
+        status=BookingStatus.CONFIRMED,
+    )
+    db.add(booking)
+    db.flush()
+
+    return booking
 
 
 @pytest.fixture
@@ -409,7 +494,9 @@ def _book(
     booked_tutor = tutor or family.tutor
     booking = Booking(
         child_id=(child or family.child).id,
-        tutor_id=booked_tutor.id,
+        user_id=booked_tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=family.subject.id,
         availability_id=(
             family.availability_id

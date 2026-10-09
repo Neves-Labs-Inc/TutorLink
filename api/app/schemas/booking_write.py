@@ -1,12 +1,11 @@
 """Request and response shapes for `POST /api/bookings`.
 
-**`home_id` is required and `booked_by_guardian_id` is accepted**, even though neither appears
-in the documented example body at `docs/api-design.md:1189-1201`. The prose rules above that
-example are the contract — rule 6 validates `home_id` against `child_homes` and rule 7
-validates `booked_by_guardian_id` against `child_guardians`, and the column is `NOT NULL` on
-the table (`models/booking.py:88-90`). The example is the half that is stale. Per
-`CONSTITUTION.md` §1 that divergence is reported and not patched; it is recorded as amendment
-P4-1.
+**`home_id` is required when `location` is `home`, and `booked_by_guardian_id` is accepted**,
+even though neither appears in the documented example body at `docs/api-design.md:1189-1201`.
+The prose rules above that example are the contract — rule 6 validates `home_id` against
+`child_homes` and rule 7 validates `booked_by_guardian_id` against `child_guardians`. The
+example is the half that is stale. Per `CONSTITUTION.md` §1 that divergence is reported and not
+patched; it is recorded as amendment P4-1.
 
 `BookingCreated` restates the five fields of the documented response rather than importing a
 shape from `schemas/booking.py`. The duplication is deliberate: it is what lets the read path
@@ -21,15 +20,21 @@ from typing import Self
 
 from pydantic import BaseModel, model_validator
 
-from app.models.enums import BookingStatus
+from app.models.enums import BookingKind, BookingLocation, BookingStatus
 
 
 class BookingCreate(BaseModel):
     child_id: uuid.UUID
-    tutor_id: uuid.UUID
-    subject_id: uuid.UUID
-    availability_id: uuid.UUID
-    home_id: uuid.UUID
+    # The Staff member, as a user (#130).
+    user_id: uuid.UUID
+    kind: BookingKind
+    location: BookingLocation
+    # Required by shape, not by schema: a home Location names `home_id`, a Regular booking
+    # `subject_id`, and a Tutor/Manager Regular booking `availability_id`. The service refuses
+    # the mismatches (spec 01, ticket 05); the database CHECKs hold whatever it misses.
+    subject_id: uuid.UUID | None = None
+    availability_id: uuid.UUID | None = None
+    home_id: uuid.UUID | None = None
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time

@@ -23,7 +23,7 @@ from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.schemas.booking import NamedRef
+from app.schemas.booking import NamedRef, subject_ref
 from app.schemas.child import (
     ChildDetail,
     ChildGuardianRead,
@@ -117,8 +117,8 @@ def _next_session(booking: Booking | None) -> NextSession | None:
             scheduled_date=booking.scheduled_date,
             start_time=booking.start_time,
             end_time=booking.end_time,
-            tutor=NamedRef(id=booking.tutor.id, name=booking.tutor.user.name),
-            subject=NamedRef(id=booking.subject.id, name=booking.subject.name),
+            tutor=NamedRef(id=booking.staff.id, name=booking.staff.name),
+            subject=subject_ref(booking.subject),
         )
     )
 

@@ -41,21 +41,25 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ExceptionStatus
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
+from app.models.user import User
 from app.services import scheduling_service
 
 
 @dataclass(frozen=True, slots=True)
 class BookingRequest:
     child_id: uuid.UUID
-    tutor_id: uuid.UUID
-    subject_id: uuid.UUID
-    availability_id: uuid.UUID
-    home_id: uuid.UUID
+    # The Staff member, as a user (#130).
+    user_id: uuid.UUID
+    kind: BookingKind
+    location: BookingLocation
+    subject_id: uuid.UUID | None
+    availability_id: uuid.UUID | None
+    home_id: uuid.UUID | None
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
@@ -108,9 +112,27 @@ class LeadTimeNotMet(BookingWriteError):
     """REQ-044.22 — 400."""
 
 
+class BookingShapeNotSupported(BookingWriteError):
+    """Temporary (ticket 04) — 422. Anything but a Regular booking at a home with a Tutor or
+    Manager and all three ids; ticket 05 brings the rules for the other shapes and removes
+    this."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Resolved:
+    """The ids rule 1 to rule 6 read, present by construction once the shape check passed."""
+
+    subject_id: uuid.UUID
+    availability_id: uuid.UUID
+    home_id: uuid.UUID
+
+
 @dataclass(frozen=True, slots=True)
 class _Context:
     request: BookingRequest
+    resolved: _Resolved
+    # The Staff member's teaching profile, which the slot, subject and time-off rules key on.
+    tutor_id: uuid.UUID
     availability: TutorAvailability
     child: Child
     gap_minutes: int
@@ -137,7 +159,9 @@ def create_booking(db: Session, *, request: BookingRequest, now: datetime.dateti
 
     booking = Booking(
         child_id=request.child_id,
-        tutor_id=request.tutor_id,
+        user_id=request.user_id,
+        kind=request.kind,
+        location=request.location,
         subject_id=request.subject_id,
         availability_id=request.availability_id,
         home_id=request.home_id,
@@ -187,7 +211,7 @@ def _rule_1_inside_named_availability(db: Session, context: _Context) -> None:
     # encoding. `isoweekday()` and PostgreSQL's `EXTRACT(DOW)` both number differently and both
     # silently shift every booking by a day.
     if (
-        availability.tutor_id != request.tutor_id
+        availability.tutor_id != context.tutor_id
         or not availability.is_active
         or availability.day_of_week != request.scheduled_date.weekday()
         or request.start_time < availability.start_time
@@ -202,7 +226,7 @@ def _rule_2_no_live_overlap(db: Session, context: _Context) -> None:
 
     if _overlapping_booking(
         db,
-        tutor_id=request.tutor_id,
+        user_id=request.user_id,
         scheduled_date=request.scheduled_date,
         start_time=request.start_time,
         end_time=request.end_time,
@@ -216,7 +240,7 @@ def _rule_3_gap_respected(db: Session, context: _Context) -> None:
 
     if _gap_encroached(
         db,
-        tutor_id=request.tutor_id,
+        user_id=request.user_id,
         scheduled_date=request.scheduled_date,
         start_time=request.start_time,
         end_time=request.end_time,
@@ -233,7 +257,7 @@ def _rule_4_not_blocked_by_exception(db: Session, context: _Context) -> None:
     """
     request = context.request
 
-    for row in _approved_exceptions(db, tutor_id=request.tutor_id, on=request.scheduled_date):
+    for row in _approved_exceptions(db, tutor_id=context.tutor_id, on=request.scheduled_date):
         if _exception_blocks(row, start_time=request.start_time, end_time=request.end_time):
             raise BlockedByException
 
@@ -254,14 +278,14 @@ def _rule_5_grade_ceiling_respected(db: Session, context: _Context) -> None:
     request = context.request
     assignment = db.scalars(
         select(TutorSubject).where(
-            TutorSubject.tutor_id == request.tutor_id,
-            TutorSubject.subject_id == request.subject_id,
+            TutorSubject.tutor_id == context.tutor_id,
+            TutorSubject.subject_id == context.resolved.subject_id,
         )
     ).first()
     level = db.scalars(
         select(ChildSubjectLevel.level).where(
             ChildSubjectLevel.child_id == request.child_id,
-            ChildSubjectLevel.subject_id == request.subject_id,
+            ChildSubjectLevel.subject_id == context.resolved.subject_id,
         )
     ).first()
 
@@ -281,7 +305,7 @@ def _rule_6_home_belongs_to_child(db: Session, context: _Context) -> None:
     linked = db.scalars(
         select(ChildHome.id).where(
             ChildHome.child_id == request.child_id,
-            ChildHome.home_id == request.home_id,
+            ChildHome.home_id == context.resolved.home_id,
         )
     ).first()
 
@@ -364,14 +388,16 @@ def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Cont
     `tutor_availability.is_active` is absent from `retirable` because it is rule 1's, not a
     reference failure — a withdrawn range names the wrong times rather than the wrong row (OQ-4).
     """
+    resolved = _supported_shape(request)
     child = db.get(Child, request.child_id, with_for_update={"read": True}, populate_existing=True)
-    availability = db.get(TutorAvailability, request.availability_id)
-    tutor = db.get(Tutor, request.tutor_id)
-    # The Tutor's active flag is the person's (#130): a profile is retired with its user.
+    availability = db.get(TutorAvailability, resolved.availability_id)
+    # The Staff member is a person; the rules below key on their teaching profile (#130).
+    staff = db.get(User, request.user_id)
+    tutor = db.scalar(select(Tutor).where(Tutor.user_id == request.user_id))
     retirable = [
-        None if tutor is None else tutor.user,
-        db.get(Subject, request.subject_id),
-        db.get(Home, request.home_id, with_for_update={"read": True}, populate_existing=True),
+        staff,
+        db.get(Subject, resolved.subject_id),
+        db.get(Home, resolved.home_id, with_for_update={"read": True}, populate_existing=True),
     ]
 
     if request.booked_by_guardian_id is not None:
@@ -384,9 +410,38 @@ def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Cont
         or any(row is None or not row.is_active for row in retirable)
     ):
         raise BookingReferenceNotFound
+    if tutor is None:
+        raise BookingShapeNotSupported
 
     return _Context(
-        request=request, availability=availability, child=child, gap_minutes=gap_minutes
+        request=request,
+        resolved=resolved,
+        tutor_id=tutor.id,
+        availability=availability,
+        child=child,
+        gap_minutes=gap_minutes,
+    )
+
+
+def _supported_shape(request: BookingRequest) -> _Resolved:
+    """Ticket 04's temporary gate: only a Regular booking at a home naming all three ids.
+
+    Checked before any read, so an unsupported shape is refused for what it is rather than
+    for an id it never needed. Ticket 05 replaces this with the per-kind rules.
+    """
+    if (
+        request.kind is not BookingKind.REGULAR
+        or request.location is not BookingLocation.HOME
+        or request.subject_id is None
+        or request.availability_id is None
+        or request.home_id is None
+    ):
+        raise BookingShapeNotSupported
+
+    return _Resolved(
+        subject_id=request.subject_id,
+        availability_id=request.availability_id,
+        home_id=request.home_id,
     )
 
 
@@ -419,7 +474,7 @@ def _assert_within_window(
 def _overlapping_booking(
     db: Session,
     *,
-    tutor_id: uuid.UUID,
+    user_id: uuid.UUID,
     scheduled_date: datetime.date,
     start_time: datetime.time,
     end_time: datetime.time,
@@ -428,14 +483,14 @@ def _overlapping_booking(
     constraint (D-I). Nothing else in this module may compare bookings by hand."""
     return any(
         scheduling_service.overlaps(start_time, end_time, booking.start_time, booking.end_time)
-        for booking in _live_bookings(db, tutor_id=tutor_id, scheduled_date=scheduled_date)
+        for booking in _live_bookings(db, user_id=user_id, scheduled_date=scheduled_date)
     )
 
 
 def _gap_encroached(
     db: Session,
     *,
-    tutor_id: uuid.UUID,
+    user_id: uuid.UUID,
     scheduled_date: datetime.date,
     start_time: datetime.time,
     end_time: datetime.time,
@@ -448,20 +503,20 @@ def _gap_encroached(
         scheduling_service.overlaps_within_gap(
             start_time, end_time, booking.start_time, booking.end_time, gap_minutes=gap_minutes
         )
-        for booking in _live_bookings(db, tutor_id=tutor_id, scheduled_date=scheduled_date)
+        for booking in _live_bookings(db, user_id=user_id, scheduled_date=scheduled_date)
     )
 
 
 def _live_bookings(
-    db: Session, *, tutor_id: uuid.UUID, scheduled_date: datetime.date
+    db: Session, *, user_id: uuid.UUID, scheduled_date: datetime.date
 ) -> list[Booking]:
     """`LIVE_BOOKING_STATUSES` is the single definition of a booking that counts — the same set
     the exclusion constraint's `WHERE` covers, so a cancelled booking frees its range here
-    exactly as it does in the database."""
+    exactly as it does in the database. Keyed on the Staff member's user, as the constraint is."""
     return list(
         db.scalars(
             select(Booking).where(
-                Booking.tutor_id == tutor_id,
+                Booking.user_id == user_id,
                 Booking.scheduled_date == scheduled_date,
                 Booking.status.in_(LIVE_BOOKING_STATUSES),
             )

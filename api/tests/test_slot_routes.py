@@ -36,7 +36,7 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.models.enums import BookingStatus, ExceptionStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -79,6 +79,7 @@ class SlotWorld:
     """One qualified tutor with one 09:00-12:00 range, and the rows a booking needs."""
 
     tutor_id: uuid.UUID
+    user_id: uuid.UUID
     tutor_name: str
     subject_id: uuid.UUID
     availability_id: uuid.UUID
@@ -667,7 +668,9 @@ def test_a_retired_subject_offered_by_neither_surface(
         "/api/bookings",
         json={
             "child_id": str(world.child_id),
-            "tutor_id": str(world.tutor_id),
+            "user_id": str(world.user_id),
+            "kind": "regular",
+            "location": "home",
             "subject_id": str(world.subject_id),
             "availability_id": str(world.availability_id),
             "home_id": str(world.home_id),
@@ -898,6 +901,7 @@ def _make_world(
 
     return SlotWorld(
         tutor_id=tutor.id,
+        user_id=tutor.user_id,
         tutor_name=tutor.user.name,
         subject_id=subject_id,
         availability_id=_make_availability(db, tutor.id, date=date, start=start, end=end),
@@ -975,7 +979,9 @@ def _make_booking(
 ) -> Booking:
     booking = Booking(
         child_id=world.child_id,
-        tutor_id=world.tutor_id,
+        user_id=world.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject_id,
         availability_id=world.availability_id,
         home_id=world.home_id,

@@ -37,6 +37,7 @@ from app.services.booking_write_service import (
     BookingOverlaps,
     BookingReferenceNotFound,
     BookingRequest,
+    BookingShapeNotSupported,
     DateOutOfWindow,
     GapNotRespected,
     GuardianNotLinkedToChild,
@@ -57,6 +58,8 @@ HOME_NOT_LINKED_ERROR = "That home is not one of the child's homes"
 GUARDIAN_NOT_LINKED_ERROR = "That guardian is not linked to the child"
 DATE_OUT_OF_WINDOW_ERROR = "That date is in the past or beyond the booking window"
 LEAD_TIME_NOT_MET_ERROR = "That start time is too soon to be booked"
+# Temporary (ticket 04): the rules for Evaluations, Admins and In office are ticket 05's.
+SHAPE_NOT_SUPPORTED_ERROR = "Only Regular bookings at a home are supported yet"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -107,6 +110,10 @@ def create(payload: BookingCreate, user: OfficePrincipal, db: DbSession) -> Book
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=GUARDIAN_NOT_LINKED_ERROR
         ) from exc
+    except BookingShapeNotSupported as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=SHAPE_NOT_SUPPORTED_ERROR
+        ) from exc
 
     db.commit()
 
@@ -116,7 +123,9 @@ def create(payload: BookingCreate, user: OfficePrincipal, db: DbSession) -> Book
 def _request(payload: BookingCreate) -> BookingRequest:
     return BookingRequest(
         child_id=payload.child_id,
-        tutor_id=payload.tutor_id,
+        user_id=payload.user_id,
+        kind=payload.kind,
+        location=payload.location,
         subject_id=payload.subject_id,
         availability_id=payload.availability_id,
         home_id=payload.home_id,

@@ -48,7 +48,7 @@ from app.models.bot_flow_state import BotFlowState
 from app.models.child import NOTES_MAX_LENGTH, Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
-from app.models.enums import BookingStatus, FlagReason, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, FlagReason, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
@@ -69,6 +69,7 @@ from app.services import (
 from app.services.bot_messages import render
 from app.services.bot_state import FlowState, load_state, save_state
 from app.services.scheduling_service import MAX_SLOTS_OFFERED_SETTING
+from tests.support import user_id_of
 
 type SetIntSetting = Callable[[str, int], None]
 
@@ -2998,8 +2999,10 @@ def test_the_booking_request_pairs_the_tutor_with_the_availability_it_owns(
     availability = db.get(TutorAvailability, request.availability_id)
 
     assert len(seen) == 1
-    assert request.tutor_id == world.second_tutor_id
-    assert availability.tutor_id == request.tutor_id
+    assert request.user_id == user_id_of(db, world.second_tutor_id)
+    assert request.kind is BookingKind.REGULAR
+    assert request.location is BookingLocation.HOME
+    assert availability.tutor_id == world.second_tutor_id
 
 
 def test_a_mismatched_tutor_and_availability_pair_is_refused_by_rule_one(
@@ -3013,7 +3016,9 @@ def test_a_mismatched_tutor_and_availability_pair_is_refused_by_rule_one(
     """
     request = booking_write_service.BookingRequest(
         child_id=client.child_id,
-        tutor_id=world.first_tutor_id,
+        user_id=user_id_of(db, world.first_tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject_id,
         availability_id=world.second_availability_id,
         home_id=client.home_id,
@@ -3403,7 +3408,9 @@ def _make_booking(
 ) -> Booking:
     booking = Booking(
         child_id=client.child_id,
-        tutor_id=world.first_tutor_id,
+        user_id=user_id_of(db, world.first_tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=world.subject_id,
         availability_id=world.first_availability_id,
         home_id=client.home_id,

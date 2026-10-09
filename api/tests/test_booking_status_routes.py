@@ -23,12 +23,13 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR, ILLEGAL_TRANSITION_ERROR
+from tests.support import profile_id_of
 from app.security import create_access_token, hash_password
 from app.services.booking_status_service import IllegalTransition, change_status
 
@@ -100,7 +101,9 @@ def test_cancelling_a_booking_frees_its_range(api: TestClient, db: Session) -> N
 
     overlapping = Booking(
         child_id=booking.child_id,
-        tutor_id=booking.tutor_id,
+        user_id=booking.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=booking.subject_id,
         availability_id=booking.availability_id,
         home_id=booking.home_id,
@@ -263,7 +266,7 @@ def test_a_body_carrying_other_fields_ignores_them(api: TestClient, db: Session)
 
 def test_tutor_token_is_403(api: TestClient, db: Session) -> None:
     booking = _make_booking(db, status=BookingStatus.PENDING)
-    user = _make_user(db, role=UserRole.TUTOR, tutor_id=booking.tutor_id)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, booking.user_id))
 
     response = api.patch(
         f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
@@ -314,7 +317,7 @@ def _make_committed_booking(
         session.commit()
         return _CommittedBooking(
             booking_id=booking.id,
-            tutor_id=booking.tutor_id,
+            tutor_id=profile_id_of(session, booking.user_id),
             child_id=booking.child_id,
             subject_id=booking.subject_id,
             home_id=booking.home_id,
@@ -380,7 +383,9 @@ def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
 
     booking = Booking(
         child_id=child.id,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject.id,
         availability_id=availability.id,
         home_id=home.id,

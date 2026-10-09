@@ -19,7 +19,7 @@ from app.dependencies import CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -226,7 +226,9 @@ def _make_booking(
 ) -> uuid.UUID:
     booking = Booking(
         child_id=family.child.id,
-        tutor_id=family.tutor.id,
+        user_id=family.tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=family.subject.id,
         availability_id=family.availability_id,
         home_id=family.home.id,

@@ -12,10 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import Principal, TutorScope, assert_can_access_tutor
-from app.models.booking import Booking
+from app.dependencies import Principal, TutorScope, assert_can_access_booking
 from app.models.enums import BookingStatus
-from app.schemas.booking import BookingChild, BookingDetail, BookingSummary, HomeRef, NamedRef
+from app.schemas.booking import BookingDetail, BookingSummary, booking_detail, booking_summary
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.booking_service import (
     BookingFilters,
@@ -65,7 +64,7 @@ def list_bookings_route(
     )
 
     return Page[BookingSummary](
-        items=[_summary(row) for row in bookings],
+        items=[booking_summary(row) for row in bookings],
         total=total,
         page=page,
         page_size=page_size,
@@ -79,45 +78,6 @@ def get_booking_route(booking_id: uuid.UUID, user: Principal, db: DbSession) -> 
     except BookingNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, BOOKING_NOT_FOUND_ERROR) from exc
 
-    assert_can_access_tutor(user, booking.tutor_id)
+    assert_can_access_booking(user, booking.user_id)
 
-    return _detail(booking)
-
-
-def _summary(row: Booking) -> BookingSummary:
-    return BookingSummary(
-        id=row.id,
-        child=NamedRef(id=row.child.id, name=row.child.name),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.user.name),
-        subject=NamedRef(id=row.subject.id, name=row.subject.name),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
-    )
-
-
-def _detail(row: Booking) -> BookingDetail:
-    return BookingDetail(
-        id=row.id,
-        child=BookingChild(id=row.child.id, name=row.child.name, notes=row.child.notes),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.user.name),
-        subject=NamedRef(id=row.subject.id, name=row.subject.name),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
-        home=HomeRef(
-            id=row.home.id,
-            label=row.home.label,
-            address=row.home.address,
-            access_code=row.home.access_code,
-        ),
-        booked_by_guardian=(
-            None
-            if row.booked_by_guardian is None
-            else NamedRef(id=row.booked_by_guardian.id, name=row.booked_by_guardian.name)
-        ),
-    )
+    return booking_detail(booking)

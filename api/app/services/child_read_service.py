@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app.models.tutor import Tutor
 from app.models.booking import Booking, upcoming_live_bookings
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
@@ -227,7 +226,7 @@ def _next_sessions_by_child(db: Session, *, child_ids: list[uuid.UUID]) -> dict[
         .where(Booking.child_id.in_(child_ids), upcoming_live_bookings(clock.business_now()))
         .distinct(Booking.child_id)
         .order_by(Booking.child_id, Booking.scheduled_date, Booking.start_time, Booking.id)
-        .options(joinedload(Booking.tutor).joinedload(Tutor.user), joinedload(Booking.subject))
+        .options(joinedload(Booking.staff), joinedload(Booking.subject))
     ).all()
 
     return {booking.child_id: booking for booking in bookings}

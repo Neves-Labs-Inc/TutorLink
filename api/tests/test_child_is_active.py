@@ -12,13 +12,14 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking, upcoming_live_bookings
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import Guardian
 from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import create_access_token, hash_password
+from tests.support import user_id_of
 
 PASSWORD = "correct horse battery staple"
 NOW = datetime.datetime(2026, 9, 23, 10, 0)
@@ -99,7 +100,9 @@ def _make_booking(
     db.flush()
     booking = Booking(
         child_id=child.id,
-        tutor_id=tutor_id,
+        user_id=user_id_of(db, tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject.id,
         availability_id=availability_id,
         home_id=home_id,

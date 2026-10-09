@@ -43,7 +43,7 @@ from app.dependencies import (
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, ExceptionStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -51,6 +51,7 @@ from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.exceptions import EXCEPTION_NOT_DELETABLE_ERROR
 from app.security import create_access_token, hash_password
+from tests.support import user_id_of
 
 MONDAY = datetime.date(2026, 9, 7)
 
@@ -252,7 +253,7 @@ def test_a_tutor_listing_bookings_sees_one_of_the_two_in_the_database(
     assert response.status_code == 200
     assert body["total"] == 1
     assert [row["id"] for row in body["items"]] == [str(world.booking_id)]
-    assert body["items"][0]["tutor"]["id"] == str(world.tutor.id)
+    assert body["items"][0]["staff"]["id"] == str(world.tutor.user_id)
     assert body["items"][0]["subject"]["name"] == world.subject.name
     assert str(world.other_tutor.id) not in response.text
 
@@ -275,7 +276,7 @@ def test_a_tutor_reads_their_own_booking(api: TestClient, world: World) -> None:
 
     assert response.status_code == 200
     assert body["id"] == str(world.booking_id)
-    assert body["tutor"]["id"] == str(world.tutor.id)
+    assert body["staff"]["id"] == str(world.tutor.user_id)
     assert body["home"]["id"] == str(world.home_id)
     assert body["child"]["id"] == str(world.child_id)
 
@@ -483,7 +484,9 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
         "/api/bookings",
         json={
             "child_id": str(world.child_id),
-            "tutor_id": str(world.tutor.id),
+            "user_id": str(world.tutor.user_id),
+            "kind": "regular",
+            "location": "home",
             "subject_id": str(world.subject.id),
             "availability_id": str(world.slot_id),
             "home_id": str(world.home_id),
@@ -750,7 +753,9 @@ def _make_booking(
 ) -> uuid.UUID:
     booking = Booking(
         child_id=child_id,
-        tutor_id=tutor_id,
+        user_id=user_id_of(db, tutor_id),
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
         subject_id=subject_id,
         availability_id=availability_id,
         home_id=home_id,

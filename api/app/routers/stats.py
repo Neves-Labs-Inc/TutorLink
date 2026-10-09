@@ -26,8 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
-from app.models.booking import Booking
-from app.schemas.booking import BookingSummary, NamedRef
+from app.schemas.booking import booking_summary
 from app.schemas.stats import StatsOverview
 from app.services.stats_service import overview
 
@@ -47,19 +46,5 @@ def read_overview(user: OfficePrincipal, db: DbSession, date: datetime.date) -> 
         upcoming_week_session_count=data.upcoming_week_session_count,
         active_tutor_count=data.active_tutor_count,
         active_client_count=data.active_client_count,
-        recent_bookings=[_summary(row) for row in data.recent_bookings],
-    )
-
-
-def _summary(row: Booking) -> BookingSummary:
-    return BookingSummary(
-        id=row.id,
-        child=NamedRef(id=row.child.id, name=row.child.name),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.user.name),
-        subject=NamedRef(id=row.subject.id, name=row.subject.name),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
+        recent_bookings=[booking_summary(row) for row in data.recent_bookings],
     )

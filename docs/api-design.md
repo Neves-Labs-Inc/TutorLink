@@ -1432,10 +1432,14 @@ PATCH  /api/bookings/{id}
 
 ### `GET /api/bookings`
 
-Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&child_id=uuid&from=2026-08-01&to=2026-08-31`
+Returns all bookings. Supports filtering: `?status=confirmed&tutor_id=uuid&child_id=uuid&kind=evaluation&location=in_office&user_id=uuid&from=2026-08-01&to=2026-08-31`
 
 `?child_id=` filters to one child's bookings. It composes with every filter above and with the
 tutor scope on a tutor token; an unknown id returns an empty page, never a **404**.
+
+**`?kind=regular|evaluation`** and **`?location=home|in_office`** filter on the booking's kind and Location. **`?user_id=`** filters to one Staff member's bookings by user id (`bookings.user_id`), an Admin's Evaluations included; `tutor_id` stays the teaching profile's id, and the two simply AND. All three compose with every other filter and with the tutor scope. On a tutor token the scope wins: `?user_id=<another user>` ANDs with the tutor's own rows and returns an empty page (`total: 0`, both counts `0`), never a **403** and never that user's rows. `?subject_id=` never returns an Evaluation, since an Evaluation has no subject.
+
+**`counts_by_kind`** reports, for each kind, the `total` this same request would return with `kind` forced to that value: every other filter, the tutor scope and the date range apply, and `kind` itself is ignored. On the Regular tab `counts_by_kind.evaluation` is therefore still what the Evaluation tab would show. Only this endpoint returns it; the client bookings list (`GET /api/clients/{id}/bookings`) keeps the plain page.
 
 **`?status=` may be repeated**, and repeated values are ORed: `?status=pending&status=confirmed` returns every booking in either status. A single `?status=confirmed` is the one-element case and means what it has always meant, and omitting `status` still returns every status. Repetition rather than a comma-separated list, because every filter in this contract carries one value per key: a comma inside a value slot would need an escaping rule that then has to be documented for every parameter, and a repeated key needs none. This is the first multi-value parameter in this contract, and the form is chosen here rather than improvised later.
 
@@ -1448,18 +1452,22 @@ tutor scope on a tutor token; an unknown id returns an empty page, never a **404
     {
       "id": "uuid",
       "child": { "id": "uuid", "name": "Tommy Doe" },
-      "tutor": { "id": "uuid", "name": "Sarah Miller" },
+      "staff": { "id": "uuid", "name": "Sarah Miller", "role": "tutor" },
+      "kind": "regular",
+      "location": "home",
       "subject": { "id": "uuid", "name": "Math" },
       "scheduled_date": "2026-08-10",
       "start_time": "09:00:00",
       "end_time": "10:00:00",
       "status": "confirmed",
-      "notes": null
+      "notes": null,
+      "updated_at": "2026-08-01T12:00:00"
     }
   ],
   "total": 42,
   "page": 1,
-  "page_size": 20
+  "page_size": 20,
+  "counts_by_kind": { "regular": 40, "evaluation": 2 }
 }
 ```
 

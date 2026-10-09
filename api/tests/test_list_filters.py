@@ -483,7 +483,13 @@ def test_an_unknown_booking_subject_id_is_an_empty_page_not_an_error(
     )
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 20,
+        "counts_by_kind": {"regular": 0, "evaluation": 0},
+    }
 
 
 def test_a_malformed_booking_subject_id_is_400_not_422(

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from app.schemas.common import Page
+
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 
 if TYPE_CHECKING:
@@ -55,6 +57,17 @@ class BookingSummary(BaseModel):
     status: BookingStatus
     notes: str | None
     updated_at: datetime.datetime
+
+
+class BookingKindCounts(BaseModel):
+    regular: int
+    evaluation: int
+
+
+class BookingPage(Page[BookingSummary]):
+    """Each count is the `total` the same request would return with `kind` forced to it."""
+
+    counts_by_kind: BookingKindCounts
 
 
 class HomeRef(BaseModel):

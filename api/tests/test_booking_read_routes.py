@@ -121,6 +121,158 @@ def test_admin_filtering_by_tutor_id_reaches_the_profiles_bookings(
     assert body["total"] == 1
 
 
+# --- kind, Location and Staff filters; counts per kind (spec 02) ------------------------------
+
+
+def test_kind_filters_split_evaluations_from_regular_bookings(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    regular = _book(db, family)
+    evaluation = _evaluation(db, family, staff=admin)
+
+    evaluations = api.get("/api/bookings?kind=evaluation", headers=_auth(admin)).json()
+    regulars = api.get("/api/bookings?kind=regular", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in evaluations["items"]] == [str(evaluation.id)]
+    assert [row["id"] for row in regulars["items"]] == [str(regular.id)]
+
+
+def test_location_filters_split_home_from_in_office_bookings(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    at_home = _book(db, family)
+    evaluation = _evaluation(db, family, staff=admin)
+    regular_in_office = _book(db, family, start=TWELVE, end=TWELVE.replace(hour=13))
+    regular_in_office.location = BookingLocation.IN_OFFICE
+    regular_in_office.home_id = None
+    db.flush()
+
+    in_office = api.get("/api/bookings?location=in_office", headers=_auth(admin)).json()
+    home = api.get("/api/bookings?location=home", headers=_auth(admin)).json()
+
+    assert {row["id"] for row in in_office["items"]} == {
+        str(evaluation.id),
+        str(regular_in_office.id),
+    }
+    assert [row["id"] for row in home["items"]] == [str(at_home.id)]
+
+
+def test_user_id_returns_that_staff_users_bookings_admin_evaluations_included(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    other_admin = _make_user(db)
+    # One live Evaluation per child, so the other admin's is cancelled before ours is booked.
+    _evaluation(db, family, staff=other_admin).status = BookingStatus.CANCELLED
+    db.flush()
+    evaluation = _evaluation(db, family, staff=admin)
+    _book(db, family)
+
+    body = api.get(f"/api/bookings?user_id={admin.id}", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(evaluation.id)]
+    assert body["total"] == 1
+
+
+def test_user_id_composes_with_status(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db)
+    staff = family.tutor.user
+    pending = _book(db, family, status=BookingStatus.PENDING)
+    _book(db, family, start=TWELVE, end=TWELVE.replace(hour=13), status=BookingStatus.CANCELLED)
+
+    body = api.get(f"/api/bookings?user_id={staff.id}&status=pending", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(pending.id)]
+
+
+def test_subject_id_never_returns_an_evaluation(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    regular = _book(db, family)
+    _evaluation(db, family, staff=admin)
+
+    body = api.get(f"/api/bookings?subject_id={family.subject.id}", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(regular.id)]
+
+
+def test_a_tutor_naming_another_user_id_ands_with_their_scope_to_empty(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """The Tutor scope wins: `user_id` can only narrow it, never widen it to someone else's rows."""
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    _book(db, family, tutor=family.tutor)
+    other = _book(db, family, tutor=family.other_tutor)
+
+    body = api.get(f"/api/bookings?user_id={other.user_id}", headers=_auth(user)).json()
+
+    assert body["items"] == []
+    assert body["total"] == 0
+    assert body["counts_by_kind"] == {"regular": 0, "evaluation": 0}
+
+
+def test_counts_by_kind_equal_the_totals_of_the_same_request_per_kind(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _book(db, family)
+    _book(db, family, start=TWELVE, end=TWELVE.replace(hour=13))
+    _evaluation(db, family, staff=admin)
+
+    body = api.get("/api/bookings", headers=_auth(admin)).json()
+    regular_total = api.get("/api/bookings?kind=regular", headers=_auth(admin)).json()["total"]
+    evaluation_total = api.get("/api/bookings?kind=evaluation", headers=_auth(admin)).json()[
+        "total"
+    ]
+
+    assert body["counts_by_kind"] == {"regular": 2, "evaluation": 1}
+    assert body["counts_by_kind"] == {"regular": regular_total, "evaluation": evaluation_total}
+
+
+def test_counts_by_kind_ignore_the_active_kind_filter(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _book(db, family)
+    _evaluation(db, family, staff=admin)
+
+    body = api.get("/api/bookings?kind=regular", headers=_auth(admin)).json()
+
+    assert body["total"] == 1
+    assert body["counts_by_kind"] == {"regular": 1, "evaluation": 1}
+
+
+def test_counts_by_kind_respect_the_date_window_and_the_other_filters(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _book(db, family, on=DATE)
+    _book(db, family, on=LATEST)
+    _evaluation(db, family, staff=admin)
+
+    windowed = api.get(f"/api/bookings?from={LATER}&to={LATEST}", headers=_auth(admin)).json()
+    by_staff = api.get(f"/api/bookings?user_id={admin.id}", headers=_auth(admin)).json()
+
+    assert windowed["counts_by_kind"] == {"regular": 1, "evaluation": 0}
+    assert by_staff["counts_by_kind"] == {"regular": 0, "evaluation": 1}
+
+
+def test_counts_by_kind_stay_inside_the_tutor_scope(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    _book(db, family, tutor=family.tutor)
+    _book(db, family, tutor=family.other_tutor)
+    _evaluation(db, family, staff=_make_user(db))
+
+    body = api.get("/api/bookings", headers=_auth(user)).json()
+
+    assert body["counts_by_kind"] == {"regular": 1, "evaluation": 0}
+
+
 def _evaluation(db: Session, family: Family, *, staff: User) -> Booking:
     booking = Booking(
         child_id=family.child.id,
@@ -151,7 +303,7 @@ def test_list_returns_the_page_envelope_never_a_bare_array(
 
     body = api.get("/api/bookings", headers=_auth(user)).json()
 
-    assert set(body) == {"items", "total", "page", "page_size"}
+    assert set(body) == {"items", "total", "page", "page_size", "counts_by_kind"}
     assert isinstance(body["items"], list)
     assert body["page"] == 1
 
@@ -249,7 +401,13 @@ def test_an_inverted_range_selects_nothing_and_is_not_an_error(
     response = api.get("/api/bookings?from=2026-09-09&to=2026-09-07", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 20,
+        "counts_by_kind": {"regular": 0, "evaluation": 0},
+    }
 
 
 def test_filtering_by_child_id_returns_only_that_childs_bookings(
@@ -299,7 +457,13 @@ def test_an_unknown_child_id_is_an_empty_page_not_an_error(
     response = api.get(f"/api/bookings?child_id={uuid.uuid4()}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 20,
+        "counts_by_kind": {"regular": 0, "evaluation": 0},
+    }
 
 
 def test_a_malformed_child_id_is_400(api: TestClient, db: Session) -> None:

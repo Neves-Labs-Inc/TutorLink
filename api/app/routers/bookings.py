@@ -13,12 +13,19 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import Principal, TutorScope, assert_can_access_booking
-from app.models.enums import BookingStatus
-from app.schemas.booking import BookingDetail, BookingSummary, booking_detail, booking_summary
-from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
+from app.models.enums import BookingKind, BookingLocation, BookingStatus
+from app.schemas.booking import (
+    BookingDetail,
+    BookingKindCounts,
+    BookingPage,
+    booking_detail,
+    booking_summary,
+)
+from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.services.booking_service import (
     BookingFilters,
     BookingNotFound,
+    count_bookings_by_kind,
     get_booking,
     list_bookings,
 )
@@ -30,18 +37,21 @@ DbSession = Annotated[Session, Depends(get_db)]
 router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 
 
-@router.get("", response_model=Page[BookingSummary])
+@router.get("", response_model=BookingPage)
 def list_bookings_route(
     scope: TutorScope,
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     subject_id: uuid.UUID | None = None,
     child_id: uuid.UUID | None = None,
+    kind: BookingKind | None = None,
+    location: BookingLocation | None = None,
+    user_id: uuid.UUID | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
-) -> Page[BookingSummary]:
+) -> BookingPage:
     # `?tutor_id=` here is the `TutorScope` dependency's own query parameter
     # (`get_tutor_scope`, `dependencies.py:258-261`), not redeclared here: a tutor sees only
     # their own bookings, and redeclaring it would shadow the dependency's parameter and break
@@ -53,6 +63,9 @@ def list_bookings_route(
         date_to=date_to,
         subject_id=subject_id,
         child_id=child_id,
+        kind=kind,
+        location=location,
+        user_id=user_id,
     )
 
     bookings, total = list_bookings(
@@ -63,11 +76,16 @@ def list_bookings_route(
         offset=(page - 1) * page_size,
     )
 
-    return Page[BookingSummary](
+    counts = count_bookings_by_kind(db, tutor_id=scope.tutor_id, filters=filters)
+
+    return BookingPage(
         items=[booking_summary(row) for row in bookings],
         total=total,
         page=page,
         page_size=page_size,
+        counts_by_kind=BookingKindCounts(
+            regular=counts[BookingKind.REGULAR], evaluation=counts[BookingKind.EVALUATION]
+        ),
     )
 
 

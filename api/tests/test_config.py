@@ -224,3 +224,55 @@ def test_settings_rejects_an_unknown_business_timezone(business_timezone: str) -
     assert len(errors) == 1
     assert errors[0]["loc"] == ("business_timezone",)
     assert repr(business_timezone) in str(excinfo.value)
+
+
+def test_settings_boots_with_no_mail_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_USERNAME",
+        "SMTP_PASSWORD",
+        "MAIL_FROM",
+        "PUBLIC_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(secret_key=VALID_SECRET_KEY)
+
+    assert (settings.smtp_host, settings.smtp_port) == (None, 587)
+    assert (settings.smtp_username, settings.smtp_password) == (None, None)
+    assert (settings.mail_from, settings.public_base_url) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        pytest.param("https://tutorlink.example.com", "https://tutorlink.example.com", id="as-is"),
+        pytest.param(
+            "https://tutorlink.example.com/", "https://tutorlink.example.com", id="trailing-slash"
+        ),
+        pytest.param("http://localhost:5173", "http://localhost:5173", id="plain-http"),
+        pytest.param("", None, id="empty-means-unset"),
+    ],
+)
+def test_settings_normalises_public_base_url(given: str, expected: str | None) -> None:
+    assert Settings(secret_key=VALID_SECRET_KEY, public_base_url=given).public_base_url == expected
+
+
+@pytest.mark.parametrize(
+    "public_base_url",
+    [
+        pytest.param("tutorlink.example.com", id="no-scheme"),
+        pytest.param("ftp://tutorlink.example.com", id="wrong-scheme"),
+        pytest.param("https://", id="scheme-only"),
+    ],
+)
+def test_settings_rejects_a_public_base_url_without_an_http_scheme(public_base_url: str) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(secret_key=VALID_SECRET_KEY, public_base_url=public_base_url)
+
+    errors = excinfo.value.errors(include_input=False)
+    assert len(errors) == 1
+    assert errors[0]["loc"] == ("public_base_url",)
+    assert "PUBLIC_BASE_URL" in str(excinfo.value)
+    assert repr(public_base_url) in str(excinfo.value)

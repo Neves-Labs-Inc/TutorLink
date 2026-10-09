@@ -95,9 +95,15 @@ def test_a_reminders_request_where_null_was_expected_fails() -> None:
 
 
 def test_an_unscored_column_is_ignored_and_an_answer_compares_without_case() -> None:
-    passed, _ = parser_eval.score(_case("nm-2"), _parsed(answer="josé núñez", language="es"))
+    passed, _ = parser_eval.score(_case("yn-5"), _parsed(answer="YES", language="es"))
 
     assert passed is True
+
+
+def test_a_name_that_flips_the_language_fails() -> None:
+    passed, problems = parser_eval.score(_case("nm-2"), _parsed(answer="José Núñez", language="en"))
+
+    assert (passed, problems) == (False, "language=en")
 
 
 def test_a_missing_parse_fails() -> None:

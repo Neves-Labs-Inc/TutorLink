@@ -5,10 +5,11 @@ fallback model — #27 refuses all four, because this is extraction at a known s
 flow. `bot_service` owns every decision that follows from the result; this module owns none of
 them and knows nothing about FastAPI.
 
-**#27's standing warning, which outlives this implementation.** Claude Haiku 4.5 is the weakest
-of the candidate models on exactly the input free text exists to serve — "the tuesday one but
-later if she can" — and a misparse books the wrong child into the wrong slot. Two things follow
-from that. `confidence_is_low` is the model's own signal, passed through untouched, so the flow
+**#27's standing warning, which outlives this implementation.** #27 measured Claude Haiku 4.5 as
+the weakest of the candidate models on exactly the input free text exists to serve — "the tuesday
+one but later if she can" — and a misparse books the wrong child into the wrong slot. The parser
+now runs on Haiku 5.5, which that measurement did not cover, so the caution stands. Two things
+follow from it. `confidence_is_low` is the model's own signal, passed through untouched, so the flow
 machine can re-prompt rather than act on a guess; and the flag queue is the escape hatch for
 what still gets through. The model choice is meant to be revisited once there is real traffic to
 measure, so the whole vendor call sits behind `_call_model` and the request is built in one
@@ -25,13 +26,11 @@ nothing an admin could diagnose it from — which is the opposite of what the ru
 convention exists for. `REQUEST_TIMEOUT_SECONDS * (MAX_RETRIES + 1)` is the worst-case wall
 clock and is chosen to leave the surrounding database work room inside the Twilio budget.
 
-**Three parameters the request deliberately does not carry, all verified against the
-`claude-api` skill rather than recalled.** The reasoning-depth knob inside `output_config`
-errors outright on this model. Haiku 4.5 is still on the older extended-reasoning shape, and a
-single-call classifier wants none of it, so that parameter is omitted entirely rather than sent
-disabled. And this model's prompt-cache floor is 4096 tokens — a prompt this size is nowhere
-near it, so a cache breakpoint would silently do nothing, and no cost assumption is built on
-one.
+**What the request sends for Haiku 5.5, and what it must not.** Thinking is on by default on
+this model and would eat the `MAX_TOKENS` cap and the timeout, so it is sent disabled. Disabled
+thinking is only valid at effort low, medium or high, so effort is pinned to medium. Sampling
+parameters (`temperature`, `top_p`, `top_k`), assistant prefill, `budget_tokens` and `fallbacks`
+all return 400, so none is sent. The prompt-cache floor is 512 tokens and no cache is used.
 
 **The wire shape is `_ModelOutput`, not `ParsedIntent`, and that is not a preference.**
 Structured outputs accept `additionalProperties` only as `false`, and the SDK rewrites any
@@ -60,7 +59,8 @@ neutral to tell, so a name or "ok" never flips a Guardian's language) and `remin
 start request for the weekly reminders). `scripts/parser_eval.py` is the hand-run check of the
 whole prompt against the live model; run it after changing either.
 
-**Every vendor failure becomes `ParseFailed`.** CONSTITUTION §6 keeps HTTP out of anything below
+**Every vendor failure becomes `ParseFailed`**, a safety refusal (HTTP 200 with
+`stop_reason == "refusal"`, reported with its category) included. CONSTITUTION §6 keeps HTTP out of anything below
 `app/routers/`, and #27 assigns all of them one behaviour anyway: flag `parse_error` at once and
 do **not** burn one of the parent's two re-prompts, because a parser outage is not the parent
 failing to be understood.
@@ -81,7 +81,7 @@ from app.schemas.bot import (
     RemindersRequest,
 )
 
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-haiku-5-5"
 
 # Extraction, not generation: the whole reply is one small JSON object. A low ceiling also
 # bounds the worst case when the model ignores the schema and starts narrating.
@@ -93,6 +93,9 @@ MAX_TOKENS = 256
 # and costs four more seconds of a budget that is not ours to spend.
 REQUEST_TIMEOUT_SECONDS = 4.0
 MAX_RETRIES = 1
+
+# Stands in for `stop_details.category` when the API sends a refusal without one.
+REFUSAL_CATEGORY_FALLBACK = "unknown"
 
 SYSTEM_PROMPT = """You read one WhatsApp message sent by a parent to a tutoring service and \
 report what it means. You never reply to the parent and you never take an action.
@@ -141,11 +144,15 @@ Also return:
 - `language`: `es` when the message is clearly written in Spanish, `en` when clearly in \
 English, and null when it is too short or neutral to tell: a name, an address, a school name, \
 a number, a date, a single neutral word such as "ok" or "STOP", or an emoji. For a mix, the \
-language most of the words are in.
+language most of the words are in. A person's name on its own is always null, \
+even with accented characters such as "José Núñez": accents do not make a name Spanish.
 - `reminders`: `stop` when the parent asks to stop receiving the weekly reminders or messages \
 from us in any words or language ("STOP", "para", "ya no me escriban", "no more reminders"), \
 `start` when they ask to receive them again ("START", "quiero recibirlos otra vez"), \
-otherwise null. Asking to cancel a session is not `stop`."""
+otherwise null. Set `stop` or `start` only when the message itself explicitly refers to the \
+reminders or to messages from us. A plain yes, no, agreement or refusal ("no gracias", "claro \
+que sí", "yes por favor", "ok") is an answer to the bot's question, never a reminders request: \
+give null, even when the bot's question was about reminders. Asking to cancel a session is not `stop`."""
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +237,19 @@ def _call_model(prompt: str) -> _ModelOutput | None:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
         output_format=_ModelOutput,
+        thinking={"type": "disabled"},
+        output_config={"effort": "medium"},
     )
+
+    # A refusal arrives as HTTP 200, so check it before reading `parsed_output`. The message is
+    # fixed text plus the category: `bot_service` logs `str(error)`, so the explanation and any
+    # response text must never reach it. A refusal that carries partial JSON raises
+    # `ValidationError` inside `parse` above and takes the "did not match" path instead.
+    if response.stop_reason == "refusal":
+        category = response.stop_details.category if response.stop_details else None
+        raise ParseFailed(
+            f"the model declined the request ({category or REFUSAL_CATEGORY_FALLBACK})"
+        )
 
     return response.parsed_output
 
@@ -311,7 +330,8 @@ def parse_intent(
         raise ParseFailed("the model's answer did not match the expected shape") from exc
 
     if output is None:
-        # No text block came back at all, which is what a safety refusal looks like here.
+        # No text block came back at all. A safety refusal is handled in `_call_model`, with its
+        # category; this is whatever else leaves nothing to parse.
         raise ParseFailed("the model returned no parsable content")
 
     return ParsedIntent(

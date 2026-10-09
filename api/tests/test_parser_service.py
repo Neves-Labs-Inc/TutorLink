@@ -70,15 +70,36 @@ WELL_FORMED = (
 _REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
 
 
+class _StubRefusalDetails:
+    def __init__(self, *, category: str | None, explanation: str | None = None) -> None:
+        self.category = category
+        self.explanation = explanation
+
+
 class _StubResponse:
-    def __init__(self, parsed_output: _ModelOutput | None) -> None:
+    def __init__(
+        self,
+        parsed_output: _ModelOutput | None,
+        *,
+        stop_reason: str = "end_turn",
+        stop_details: _StubRefusalDetails | None = None,
+    ) -> None:
         self.parsed_output = parsed_output
+        self.stop_reason = stop_reason
+        self.stop_details = stop_details
 
 
 class _StubMessages:
-    def __init__(self, *, text: str | None, error: Exception | None) -> None:
+    def __init__(
+        self,
+        *,
+        text: str | None,
+        error: Exception | None,
+        refusal: _StubResponse | None,
+    ) -> None:
         self._text = text
         self._error = error
+        self._refusal = refusal
         self.calls: list[dict[str, object]] = []
 
     def parse(self, **kwargs: object) -> _StubResponse:
@@ -86,6 +107,8 @@ class _StubMessages:
 
         if self._error is not None:
             raise self._error
+        if self._refusal is not None:
+            return self._refusal
         if self._text is None:
             return _StubResponse(None)
 
@@ -96,8 +119,14 @@ class _StubMessages:
 
 
 class _StubClient:
-    def __init__(self, *, text: str | None = None, error: Exception | None = None) -> None:
-        self.messages = _StubMessages(text=text, error=error)
+    def __init__(
+        self,
+        *,
+        text: str | None = None,
+        error: Exception | None = None,
+        refusal: _StubResponse | None = None,
+    ) -> None:
+        self.messages = _StubMessages(text=text, error=error, refusal=refusal)
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, client: _StubClient) -> _StubMessages:
@@ -309,27 +338,30 @@ def test_the_request_names_the_model_as_a_literal(monkeypatch: pytest.MonkeyPatc
 
     parse_intent(**REQUEST)
 
-    assert MODEL == "claude-haiku-4-5"
-    assert messages.calls[0]["model"] == "claude-haiku-4-5"
+    assert MODEL == "claude-haiku-5-5"
+    assert messages.calls[0]["model"] == "claude-haiku-5-5"
 
 
-def test_the_request_carries_no_reasoning_or_caching_parameters(
+def test_the_request_disables_thinking_and_pins_effort_without_unsupported_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The three Haiku 4.5 constraints, asserted against the recorded call.
+    """The Haiku 5.5 constraints, asserted against the recorded call.
 
-    The reasoning-depth knob errors on this model, the extended-reasoning parameter belongs to
-    a shape a classifier has no use for, and a cache breakpoint on a prompt this far under the
-    4096-token floor would silently do nothing while a cost assumption was built on it.
+    Thinking is on by default and would eat the token cap and the timeout; disabled thinking is
+    only valid at effort low, medium or high. Sampling parameters, `fallbacks` and prefill
+    return 400, and a cache breakpoint on a prompt far under the 512-token floor would do
+    nothing.
     """
     messages = _install(monkeypatch, _StubClient(text=WELL_FORMED))
 
     parse_intent(**REQUEST)
 
     call = messages.calls[0]
-    assert "thinking" not in call
-    assert "output_config" not in call
-    assert "tools" not in call
+    assert call["thinking"] == {"type": "disabled"}
+    assert call["output_config"] == {"effort": "medium"}
+    assert call["output_format"] is parser_service._ModelOutput
+    for absent in ("temperature", "top_p", "top_k", "fallbacks", "tools"):
+        assert absent not in call
     assert "cache_control" not in repr(call)
 
 
@@ -436,12 +468,44 @@ def test_a_response_with_no_parsable_content_becomes_parse_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`parsed_output` is optional on the SDK's side and is `None` when nothing in the response
-    parsed — a safety refusal is what that looks like. Returning `None` up the stack would hand
+    parsed. Returning `None` up the stack would hand
     `bot_service` a `ParsedIntent | None` its signature does not admit."""
     _install(monkeypatch, _StubClient(text=None))
 
     with pytest.raises(ParseFailed):
         parse_intent(**REQUEST)
+
+
+def test_a_refusal_becomes_parse_failed_naming_its_category(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal = _StubResponse(
+        None,
+        stop_reason="refusal",
+        stop_details=_StubRefusalDetails(category="general_harms", explanation="secret detail"),
+    )
+    _install(monkeypatch, _StubClient(refusal=refusal))
+
+    with pytest.raises(ParseFailed) as raised:
+        parse_intent(**REQUEST)
+
+    assert str(raised.value) == "the model declined the request (general_harms)"
+
+
+@pytest.mark.parametrize(
+    "stop_details",
+    [None, _StubRefusalDetails(category=None, explanation="secret detail")],
+)
+def test_a_refusal_without_a_category_gets_the_fallback_wording(
+    monkeypatch: pytest.MonkeyPatch, stop_details: _StubRefusalDetails | None
+) -> None:
+    refusal = _StubResponse(None, stop_reason="refusal", stop_details=stop_details)
+    _install(monkeypatch, _StubClient(refusal=refusal))
+
+    with pytest.raises(ParseFailed) as raised:
+        parse_intent(**REQUEST)
+
+    assert str(raised.value) == "the model declined the request (unknown)"
 
 
 def test_the_schema_sent_to_the_api_can_still_carry_extracted_fields() -> None:

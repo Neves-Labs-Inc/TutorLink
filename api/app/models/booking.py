@@ -65,6 +65,10 @@ def upcoming_live_bookings(now: datetime.datetime) -> ColumnElement[bool]:
     )
 
 
+# Bounded in the write schemas, as `children.notes` is; the column itself stays `Text`.
+NOTES_MAX_LENGTH = 255
+
+
 class Booking(HasID, HasTimestamps, Base):
     __tablename__ = "bookings"
     __table_args__ = (

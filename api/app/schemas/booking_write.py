@@ -23,8 +23,9 @@ import datetime
 import uuid
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.booking import NOTES_MAX_LENGTH
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
 from app.services.booking_write_service import WarningCode
 
@@ -70,23 +71,29 @@ class BookingCreate(_BookingWrite):
     child_id: uuid.UUID
     kind: BookingKind
     booked_by_guardian_id: uuid.UUID | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
 
 
 class BookingReplace(_BookingWrite):
     """The body of `PUT /api/bookings/{id}`: a full replacement of the editable fields. The
-    Child, the booking guardian and the notes are not editable here and are not accepted;
-    `kind` may be omitted or equal to the row's, never different. The response is
-    `BookingDetail` (`schemas/booking.py`), the shape the dashboard already reads, with
-    `updated_at` bumped.
+    Child and the booking guardian are not editable here and are not accepted; `kind` may be
+    omitted or equal to the row's, never different. The response is `BookingDetail`
+    (`schemas/booking.py`), the shape the dashboard already reads, with `updated_at` bumped.
 
-    `extra="forbid"`: a body carrying `child_id`, `notes` or `booked_by_guardian_id` is refused
-    rather than silently ignored, so a client that believes it changed one of them learns it
-    did not."""
+    `notes` is the one field with three readings: omitted keeps the row's notes, `null` clears
+    them, a string replaces them. The router tells the first two apart by `model_fields_set`.
+
+    `extra="forbid"`: a body carrying `child_id` or `booked_by_guardian_id` is refused rather
+    than silently ignored, so a client that believes it changed one of them learns it did not."""
 
     model_config = ConfigDict(extra="forbid")
 
     kind: BookingKind | None = None
+    notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
+
+    @property
+    def notes_given(self) -> bool:
+        return "notes" in self.model_fields_set
 
 
 class BookingCreated(BaseModel):

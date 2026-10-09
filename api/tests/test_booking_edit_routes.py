@@ -23,7 +23,7 @@ from httpx import Response
 from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR
-from app.models.booking import Booking
+from app.models.booking import NOTES_MAX_LENGTH, Booking
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.user import User
 from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
@@ -407,7 +407,71 @@ def test_a_booking_made_by_a_since_deactivated_guardian_can_still_be_edited(
     assert row.start_time == datetime.time(10, 0)
 
 
-@pytest.mark.parametrize("field", ["child_id", "notes", "booked_by_guardian_id"])
+# --- notes: omitted keeps, null clears, a string replaces ------------------------------------
+
+
+def test_notes_are_replaced_by_an_edit(api: TestClient, db: Session, family: Family) -> None:
+    booking = _book(db, family, notes="bring the workbook")
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, notes="skip chapter 3")
+
+    assert response.status_code == 200
+    assert response.json()["notes"] == "skip chapter 3"
+    assert _row(db, booking.id).notes == "skip chapter 3"
+
+
+def test_omitting_notes_keeps_them(api: TestClient, db: Session, family: Family) -> None:
+    """A client that does not name notes has nothing to say about them."""
+    booking = _book(db, family, notes="bring the workbook")
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert response.status_code == 200
+    assert response.json()["notes"] == "bring the workbook"
+    assert _row(db, booking.id).notes == "bring the workbook"
+
+
+def test_null_notes_clears_them(api: TestClient, db: Session, family: Family) -> None:
+    booking = _book(db, family, notes="bring the workbook")
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, notes=None)
+
+    assert response.status_code == 200
+    assert response.json()["notes"] is None
+    assert _row(db, booking.id).notes is None
+
+
+def test_notes_at_the_limit_are_accepted_on_an_edit(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, notes="x" * NOTES_MAX_LENGTH)
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).notes == "x" * NOTES_MAX_LENGTH
+
+
+def test_notes_over_the_limit_are_400_and_change_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family, notes="bring the workbook")
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, notes="x" * (NOTES_MAX_LENGTH + 1))
+
+    assert response.status_code == 400
+    assert "notes" in response.json()["detail"]
+    row = _row(db, booking.id)
+    assert row.notes == "bring the workbook"
+    assert row.start_time == datetime.time(9, 0)
+
+
+@pytest.mark.parametrize("field", ["child_id", "booked_by_guardian_id"])
 def test_a_body_naming_a_field_an_edit_cannot_change_is_refused(
     api: TestClient, db: Session, family: Family, field: str
 ) -> None:
@@ -516,6 +580,7 @@ def _book(
     status: BookingStatus = BookingStatus.CONFIRMED,
     user_id: uuid.UUID | None = None,
     availability_id: uuid.UUID | None = None,
+    notes: str | None = None,
 ) -> Booking:
     """A Regular home booking on `MONDAY`, with the family's tutor and their slot unless a
     Staff member (and their slot, or none for an Admin) is named."""
@@ -531,6 +596,7 @@ def _book(
         start_time=start,
         end_time=end,
         status=status,
+        notes=notes,
     )
     db.add(booking)
     db.flush()

@@ -1475,6 +1475,7 @@ This must stay in step with `POST /api/bookings` below. The offer surface and th
 GET    /api/bookings
 GET    /api/bookings/{id}
 POST   /api/bookings
+PUT    /api/bookings/{id}
 PATCH  /api/bookings/{id}
 ```
 
@@ -1694,11 +1695,53 @@ A start time earlier than `now + min_booking_lead_hours` returns **400**. Both a
 }
 ```
 
+### `PUT /api/bookings/{id}`
+
+Edit a live booking in place. **Office only.** This is the dashboard Reschedule: the booking keeps
+its id, its `kind`, its `status` and its Child, and every rule of `POST /api/bookings` re-runs
+against the new values with the booking itself left out of its own neighbours (rules 2 and 3), under
+the same warning contract. No WhatsApp message is sent; the Office tells the Guardian itself.
+
+**Request** — a full replacement of the editable fields:
+```json
+{
+  "user_id": "uuid",
+  "location": "home",
+  "home_id": "uuid",
+  "subject_id": "uuid",
+  "availability_id": "uuid",
+  "scheduled_date": "2026-10-16",
+  "start_time": "16:00:00",
+  "end_time": "17:00:00",
+  "notes": "ring the side door",
+  "confirm_warnings": []
+}
+```
+
+- `kind` may be omitted or equal to the row's; a different one is **422**.
+- `notes` has three readings: **omitted** keeps the row's notes, **`null`** clears them, a string
+  replaces them. A client that does not name notes has nothing to say about them.
+- `child_id` and `booked_by_guardian_id` are not editable and a body naming either is **400**,
+  refused rather than silently ignored, so a client that believes it changed one of them learns it
+  did not.
+- **Correction mode.** When the row's current start is already past, the window and lead-time gates
+  are skipped and the new time may be past too: a session that has already happened is being
+  corrected, not booked. A future booking moved into the past, or beyond the window, is **400** as
+  on a create.
+- An Evaluation of a Child already Evaluated may still be edited (rule 8 is skipped; rule 9 still
+  holds against *other* live Evaluations).
+
+**Response** is the booking's `GET /api/bookings/{id}` shape with `updated_at` bumped, even when
+the body restates the current values.
+
+**Status codes.** As `POST /api/bookings`, plus **404** for an unknown id and **409** for a
+`completed` or `cancelled` booking ("Only a pending or confirmed booking can be edited").
+
 ### `PATCH /api/bookings/{id}`
 
-Update booking status. Used for cancellations, completions, and rescheduling.
+Update booking status. Used for cancellations and completions.
 
-**`status` is the only writable field.** The request body carries nothing else, and `notes` in particular cannot be edited through this endpoint — a booking's notes are set at creation and are read-only thereafter. That is a property of this contract, not a gap in a client.
+**`status` is the only writable field.** The request body carries nothing else, and `notes` in particular cannot be edited through this endpoint — a booking's notes are edited through `PUT /api/bookings/{id}`. That is a property of this contract, not a gap in a client.
 
 **The legal transitions are exactly these:**
 
@@ -1720,7 +1763,7 @@ A transition is decided once. The endpoint reads the row under a lock, judges th
 }
 ```
 
-For rescheduling, cancel the existing booking and create a new one via `POST /api/bookings`.
+For rescheduling, edit the booking in place via `PUT /api/bookings/{id}`.
 
 ---
 

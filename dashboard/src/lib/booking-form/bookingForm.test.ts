@@ -4,6 +4,7 @@ import { warningsOf } from '../api'
 import {
   childPickerOptions,
   draftErrors,
+  draftFromDetail,
   EMPTY_DRAFT,
   homeOptionsFor,
   IN_OFFICE,
@@ -20,10 +21,12 @@ import {
   submitPlan,
   timeSource,
   toCreateBody,
+  toUpdateBody,
   weekdayName,
   type BookingDraft,
 } from './bookingForm'
 import type { AvailabilitySlot } from '../queries/availability'
+import type { BookingDetail } from '../queries/bookings'
 import type { ChildDetail, ChildHome, ChildSummary } from '../queries/children'
 import type { Staff } from '../queries/staff'
 
@@ -84,6 +87,24 @@ const childSummary = (overrides: Partial<ChildSummary> = {}): ChildSummary => ({
   next_session: null,
   evaluated: null,
   created_at: '2026-09-28T12:00:00Z',
+  ...overrides,
+})
+
+const bookingDetail = (overrides: Partial<BookingDetail> = {}): BookingDetail => ({
+  id: 'booking-1',
+  child: { id: 'child-1', name: 'Tommy Doe', notes: null },
+  staff: { id: 'user-1', name: 'Tina Tutor', role: 'tutor' },
+  kind: 'regular',
+  location: 'home',
+  subject: { id: 'subject-1', name: 'Maths' },
+  scheduled_date: '2026-09-02',
+  start_time: '09:00:00',
+  end_time: '10:00:00',
+  status: 'confirmed',
+  notes: 'bring the workbook',
+  updated_at: '2026-09-01T12:00:00Z',
+  home: { id: 'home-1', label: null, address: '1 Main St', access_code: '1234' },
+  booked_by_guardian: null,
   ...overrides,
 })
 
@@ -479,6 +500,20 @@ describe('draftErrors', () => {
     expect(draftErrors({ ...filled, childInactive: true })).toEqual([])
   })
 
+  it('accepts notes at the limit', () => {
+    expect(draftErrors({ ...filled, notes: 'x'.repeat(255) })).toEqual([])
+  })
+
+  it('refuses notes over the limit, which the API would bounce', () => {
+    expect(draftErrors({ ...filled, notes: 'x'.repeat(256) })).toEqual([
+      'Notes cannot be longer than 255 characters.',
+    ])
+  })
+
+  it('measures the notes as sent, trimmed', () => {
+    expect(draftErrors({ ...filled, notes: `  ${'x'.repeat(255)}  ` })).toEqual([])
+  })
+
   it('does not guess at any server rule', () => {
     expect(draftErrors({ ...filled, date: '1999-01-01' })).toEqual([])
   })
@@ -677,5 +712,150 @@ describe('warningsOf', () => {
 
   it('returns null for an error that is not a response', () => {
     expect(warningsOf(new Error('offline'))).toBeNull()
+  })
+})
+
+describe('draftFromDetail', () => {
+  const staffList = [staff(), staff({ id: 'user-2', name: 'Mia Manager', role: 'manager', tutor_id: null })]
+
+  it('prefills an edit of a Regular booking at a home, leaving the slot to be picked again', () => {
+    expect(draftFromDetail(bookingDetail(), staffList)).toEqual({
+      mode: 'edit',
+      kind: 'regular',
+      childId: 'child-1',
+      childInactive: false,
+      staffId: 'user-1',
+      staffRole: 'tutor',
+      staffTutorId: 'tutor-1',
+      location: 'home-1',
+      subjectId: 'subject-1',
+      date: '2026-09-02',
+      availabilityId: '',
+      startTime: '09:00',
+      endTime: '10:00',
+      notes: 'bring the workbook',
+    })
+  })
+
+  it('prefills an edit of an In office Evaluation', () => {
+    const detail = bookingDetail({
+      kind: 'evaluation',
+      location: 'in_office',
+      home: null,
+      subject: null,
+      staff: { id: 'user-2', name: 'Mia Manager', role: 'manager' },
+      notes: null,
+    })
+
+    expect(draftFromDetail(detail, staffList)).toMatchObject({
+      mode: 'edit',
+      kind: 'evaluation',
+      staffId: 'user-2',
+      staffRole: 'manager',
+      staffTutorId: null,
+      location: IN_OFFICE,
+      subjectId: '',
+      notes: '',
+    })
+  })
+
+  it('has no teaching profile for a staff member missing from the list', () => {
+    expect(draftFromDetail(bookingDetail(), []).staffTutorId).toBeNull()
+  })
+})
+
+describe('edit mode', () => {
+  const editing: BookingDraft = { ...filled, mode: 'edit' }
+
+  it('keeps the kind locked', () => {
+    expect(onKindChange(editing, 'evaluation', { childEvaluable: true })).toBe(editing)
+  })
+
+  it('never reactivates the child', () => {
+    expect(submitPlan({ ...editing, childInactive: true })).toBe('book')
+  })
+
+  it('keeps the booking times when the slot is picked again', () => {
+    expect(onSlotChange(editing, slot({ start_time: '08:00:00', end_time: '12:00:00' }))).toMatchObject({
+      availabilityId: 'slot-1',
+      startTime: '09:00',
+      endTime: '10:00',
+    })
+  })
+
+  it('takes the slot bounds once the times were cleared by a date change', () => {
+    const afterDate = onDateChange(editing, '2026-09-09')
+
+    expect(onSlotChange(afterDate, slot({ start_time: '08:00:00', end_time: '12:00:00' }))).toMatchObject({
+      startTime: '08:00',
+      endTime: '12:00',
+    })
+  })
+
+  const labels: { name: string; hasWarnings: boolean; busy: boolean; expected: string }[] = [
+    { name: 'a plain save', hasWarnings: false, busy: false, expected: 'Save changes' },
+    { name: 'shown warnings', hasWarnings: true, busy: false, expected: 'Save anyway' },
+    { name: 'a save in flight', hasWarnings: true, busy: true, expected: 'Saving…' },
+  ]
+
+  it.each(labels)('labels the submit for $name', ({ hasWarnings, busy, expected }) => {
+    expect(submitLabel(editing, hasWarnings, busy)).toBe(expected)
+  })
+})
+
+describe('toUpdateBody', () => {
+  const editing: BookingDraft = { ...filled, mode: 'edit', notes: 'changed' }
+
+  it('sends the replacement as the endpoint reads it', () => {
+    expect(toUpdateBody(editing, ['outside_slot'])).toEqual({
+      notes: 'changed',
+      kind: 'regular',
+      user_id: 'user-1',
+      location: 'home',
+      home_id: 'home-1',
+      subject_id: 'subject-1',
+      availability_id: 'slot-1',
+      scheduled_date: '2026-09-02',
+      start_time: '09:00',
+      end_time: '10:00',
+      confirm_warnings: ['outside_slot'],
+    })
+  })
+
+  it.each(['child_id', 'booked_by_guardian_id'])('never carries %s, which the endpoint refuses', (key) => {
+    expect(toUpdateBody(editing, [])).not.toHaveProperty(key)
+  })
+
+  it('trims notes that carry text', () => {
+    expect(toUpdateBody({ ...editing, notes: '  skip chapter 3  ' }, [])).toMatchObject({
+      notes: 'skip chapter 3',
+    })
+  })
+
+  it.each(['', '   ', '\n'])('clears blank notes (%j) with null, which the endpoint reads as cleared', (notes) => {
+    expect(toUpdateBody({ ...editing, notes }, [])).toMatchObject({ notes: null })
+  })
+
+  it('sends In office with no home', () => {
+    expect(toUpdateBody({ ...editing, location: IN_OFFICE }, [])).toMatchObject({
+      location: 'in_office',
+      home_id: null,
+    })
+  })
+
+  it('sends an Evaluation with no subject and no slot', () => {
+    const draft = { ...editing, kind: 'evaluation' as const, staffRole: 'manager' as const }
+
+    expect(toUpdateBody(draft, [])).toMatchObject({
+      kind: 'evaluation',
+      subject_id: null,
+      availability_id: null,
+    })
+  })
+
+  it('sends no slot for an Admin, who has no availability', () => {
+    expect(toUpdateBody({ ...editing, staffRole: 'admin' }, [])).toMatchObject({
+      availability_id: null,
+    })
   })
 })

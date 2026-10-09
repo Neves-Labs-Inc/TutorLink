@@ -91,6 +91,12 @@ export type BookingCreate = {
   confirm_warnings: WarningCode[]
 }
 
+// The body of `PUT /api/bookings/{id}` (`api/app/schemas/booking_write.py` `BookingReplace`):
+// every editable field, in full. The Child and `booked_by_guardian_id` are refused there
+// (`extra="forbid"`), so the type leaves them out; `kind` must equal the row's. `notes` is always
+// sent: `null` clears them (omitting the key would keep the row's).
+export type BookingReplace = Omit<BookingCreate, 'child_id' | 'notes'> & { notes: string | null }
+
 export type BookingWriteResult = {
   id: string
   status: Booking['status']
@@ -151,6 +157,15 @@ export const bookingQueries = {
 
 export const createBooking = async (data: BookingCreate): Promise<BookingWriteResult> => {
   const response = await api.post<BookingWriteResult>('/api/bookings', data)
+
+  return response.data
+}
+
+export const updateBooking = async (
+  bookingId: string,
+  data: BookingReplace,
+): Promise<BookingDetail> => {
+  const response = await api.put<BookingDetail>(`/api/bookings/${bookingId}`, data)
 
   return response.data
 }

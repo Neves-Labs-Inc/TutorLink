@@ -1,7 +1,13 @@
 import { dayOfWeekFromIso } from '@/lib/availability/availability'
 import { gradeLabel } from '@/lib/children/children'
 import type { AvailabilitySlot } from '@/lib/queries/availability'
-import type { BookingCreate, BookingKind, WarningCode } from '@/lib/queries/bookings'
+import type {
+  BookingCreate,
+  BookingDetail,
+  BookingKind,
+  BookingReplace,
+  WarningCode,
+} from '@/lib/queries/bookings'
 import type { ChildDetail, ChildHome, ChildSummary } from '@/lib/queries/children'
 import type { Staff, StaffRole } from '@/lib/queries/staff'
 
@@ -50,6 +56,9 @@ export type TimeSource = 'slot' | 'typed'
 
 export const IN_OFFICE = 'in_office' as const
 
+// `api/app/models/booking.py` `NOTES_MAX_LENGTH`; the API refuses longer notes with a 400.
+export const NOTES_MAX_LENGTH = 255
+
 export const SLOT_HOME_ONLY_WARNING =
   'This slot is for home visits only; the bot would not offer it at the office.'
 export const SLOT_OFFICE_ONLY_WARNING =
@@ -95,6 +104,9 @@ export const onKindChange = (
   kind: BookingKind,
   context: KindContext,
 ): BookingDraft => {
+  // The kind is immutable on an edit (`PUT` refuses a different one with a 422).
+  if (draft.mode === 'edit') return draft
+
   // A Regular slot needs a teaching profile, so a profile-less Manager is not offered there.
   const keepStaff =
     kind === 'regular'
@@ -154,8 +166,9 @@ export const childPickerOptions = (
 export const homeOptionsFor = (detail: ChildDetail | undefined): ChildHome[] =>
   detail === undefined ? [] : detail.homes.filter((home) => home.is_active)
 
+// An edit never touches the Child, so an inactive one is left as it is.
 export const submitPlan = (draft: BookingDraft): SubmitPlan =>
-  draft.childInactive ? 'reactivate-then-book' : 'book'
+  draft.childInactive && draft.mode === 'create' ? 'reactivate-then-book' : 'book'
 
 export const onStaffChange = (draft: BookingDraft, staff: Staff | null): BookingDraft => ({
   ...draft,
@@ -195,12 +208,20 @@ export const onDateChange = (draft: BookingDraft, date: string): BookingDraft =>
 export const onSlotChange = (
   draft: BookingDraft,
   slot: AvailabilitySlot | null,
-): BookingDraft => ({
-  ...draft,
-  availabilityId: slot === null ? '' : slot.id,
-  startTime: slot === null ? '' : inputTime(slot.start_time),
-  endTime: slot === null ? '' : inputTime(slot.end_time),
-})
+): BookingDraft => {
+  if (slot === null) return { ...draft, availabilityId: '', startTime: '', endTime: '' }
+
+  // The detail carries no slot, so an edit re-picks it; the booking's own times survive the pick
+  // (a time outside the slot comes back as a confirmable warning). Cleared times take the bounds.
+  const keepTimes = draft.mode === 'edit' && draft.startTime !== '' && draft.endTime !== ''
+
+  return {
+    ...draft,
+    availabilityId: slot.id,
+    startTime: keepTimes ? draft.startTime : inputTime(slot.start_time),
+    endTime: keepTimes ? draft.endTime : inputTime(slot.end_time),
+  }
+}
 
 export const slotsForDate = (slots: AvailabilitySlot[], isoDate: string): AvailabilitySlot[] => {
   const weekday = dayOfWeekFromIso(isoDate)
@@ -240,6 +261,7 @@ export const DRAFT_ERROR = {
   startTime: 'Enter a start time.',
   endTime: 'Enter an end time.',
   order: 'End time must be after start time.',
+  notes: `Notes cannot be longer than ${NOTES_MAX_LENGTH} characters.`,
 } as const
 
 export const draftErrors = (draft: BookingDraft): string[] => {
@@ -272,15 +294,40 @@ export const draftErrors = (draft: BookingDraft): string[] => {
   if (draft.startTime !== '' && draft.endTime !== '' && draft.endTime <= draft.startTime) {
     errors.push(DRAFT_ERROR.order)
   }
+  if (draft.notes.trim().length > NOTES_MAX_LENGTH) {
+    errors.push(DRAFT_ERROR.notes)
+  }
 
   return errors
 }
 
-export const toCreateBody = (draft: BookingDraft, confirmed: WarningCode[]): BookingCreate => {
-  const notes = draft.notes.trim()
+// `staffTutorId` comes from the Staff list, which the detail does not carry; `availabilityId` is
+// left empty for the slot select to re-pick. The booking's own times are kept as the prefill.
+export const draftFromDetail = (detail: BookingDetail, staff: Staff[]): BookingDraft => ({
+  mode: 'edit',
+  kind: detail.kind,
+  childId: detail.child.id,
+  childInactive: false,
+  staffId: detail.staff.id,
+  staffRole: detail.staff.role,
+  staffTutorId: staff.find((member) => member.id === detail.staff.id)?.tutor_id ?? null,
+  location: detail.home === null ? IN_OFFICE : detail.home.id,
+  subjectId: detail.subject === null ? '' : detail.subject.id,
+  date: detail.scheduled_date,
+  availabilityId: '',
+  startTime: inputTime(detail.start_time),
+  endTime: inputTime(detail.end_time),
+  notes: detail.notes ?? '',
+})
+
+// The fields a create and an edit both send, notes aside (the two carry them differently).
+const toWriteBody = (
+  draft: BookingDraft,
+  confirmed: WarningCode[],
+): Omit<BookingReplace, 'notes'> => {
   const inOffice = draft.location === IN_OFFICE
-  const body: BookingCreate = {
-    child_id: draft.childId,
+
+  return {
     kind: draft.kind,
     user_id: draft.staffId,
     location: inOffice ? 'in_office' : 'home',
@@ -293,6 +340,11 @@ export const toCreateBody = (draft: BookingDraft, confirmed: WarningCode[]): Boo
     end_time: draft.endTime,
     confirm_warnings: confirmed,
   }
+}
+
+export const toCreateBody = (draft: BookingDraft, confirmed: WarningCode[]): BookingCreate => {
+  const notes = draft.notes.trim()
+  const body: BookingCreate = { child_id: draft.childId, ...toWriteBody(draft, confirmed) }
 
   if (notes !== '') {
     body.notes = notes
@@ -301,11 +353,23 @@ export const toCreateBody = (draft: BookingDraft, confirmed: WarningCode[]): Boo
   return body
 }
 
+// `PUT` refuses `child_id` and `booked_by_guardian_id` (`extra="forbid"`). Notes are always
+// named: blank ones go as `null`, which clears them; an omitted key would keep the old notes.
+export const toUpdateBody = (draft: BookingDraft, confirmed: WarningCode[]): BookingReplace => {
+  const notes = draft.notes.trim()
+
+  return { ...toWriteBody(draft, confirmed), notes: notes === '' ? null : notes }
+}
+
 export const submitLabel = (draft: BookingDraft, hasWarnings: boolean, busy: boolean): string => {
   const reactivating = submitPlan(draft) === 'reactivate-then-book'
   let label: string
 
-  if (busy) {
+  if (draft.mode === 'edit' && busy) {
+    label = 'Saving…'
+  } else if (draft.mode === 'edit') {
+    label = hasWarnings ? 'Save anyway' : 'Save changes'
+  } else if (busy) {
     label = reactivating ? 'Reactivating…' : 'Creating…'
   } else if (hasWarnings) {
     label = 'Book anyway'

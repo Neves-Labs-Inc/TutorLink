@@ -1,6 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Pencil } from 'lucide-react'
 
+import { BookingForm } from '@/components/bookings/BookingForm'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -11,6 +13,7 @@ import SubjectCell from '@/lib/booking-presentation/SubjectCell'
 import { bookingTimeLabel, statusLabel, STATUS_OPTIONS, type BookingStatus } from '@/lib/bookings/bookings'
 import { formatIsoDate } from '@/lib/dates/dates'
 import { bookingQueries, updateBookingStatus } from '@/lib/queries/bookings'
+import { cn } from '@/lib/utils'
 
 type BookingDetailPanelProps = {
   bookingId: string | null
@@ -30,10 +33,14 @@ const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const STATUS_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const ADMIN_CREATED_LABEL = 'Created by an admin'
 const NO_NOTES_LABEL = 'No notes.'
-const LOADING_ROWS = [0, 1, 2, 3, 4]
+// One label-over-value pair per `DetailRow` of a home booking.
+const LOADING_ROWS = [0, 1, 2, 3, 4, 5, 6, 7]
+// Only a live booking can be edited (`PUT` refuses the rest with `BookingNotLive`).
+const EDITABLE_STATUSES: BookingStatus[] = ['pending', 'confirmed']
 
 const pillClasses =
   'inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground'
+const skeletonBarClasses = 'animate-pulse rounded-lg bg-muted motion-reduce:animate-none'
 
 export const BookingDetailPanel = ({ bookingId, onOpenChange }: BookingDetailPanelProps) => (
   <SlideOver
@@ -49,6 +56,7 @@ export const BookingDetailPanel = ({ bookingId, onOpenChange }: BookingDetailPan
 const PanelBody = ({ bookingId }: PanelBodyProps) => {
   const queryClient = useQueryClient()
   const booking = useQuery(bookingQueries.detail(bookingId))
+  const [editing, setEditing] = useState(false)
 
   // The PATCH body carries `status` and nothing else. `BookingStatusUpdate`
   // (`api/app/schemas/booking_status.py:16-17`) drops any other key without complaint, so a
@@ -62,11 +70,21 @@ const PanelBody = ({ bookingId }: PanelBodyProps) => {
 
   if (booking.isPending) {
     content = (
-      <div aria-busy="true" className="space-y-3">
-        <p className="text-sm text-muted-foreground">Loading booking…</p>
-        {LOADING_ROWS.map((row) => (
-          <div key={row} className="h-8 animate-pulse rounded-lg bg-muted" />
-        ))}
+      <div aria-busy="true" className="space-y-6">
+        <p className="sr-only">Loading booking…</p>
+        <div className="space-y-3">
+          {LOADING_ROWS.map((row) => (
+            <div key={row} className="space-y-0.5">
+              <div className={cn(skeletonBarClasses, 'h-3 w-20')} />
+              <div className={cn(skeletonBarClasses, 'h-4 w-40')} />
+            </div>
+          ))}
+        </div>
+        <div className={cn(skeletonBarClasses, 'h-11 w-full md:h-8 md:w-24')} />
+        <div className="space-y-1.5">
+          <div className={cn(skeletonBarClasses, 'h-3 w-12')} />
+          <div className={cn(skeletonBarClasses, 'h-8 w-full')} />
+        </div>
       </div>
     )
   } else if (booking.isError) {
@@ -110,6 +128,21 @@ const PanelBody = ({ bookingId }: PanelBodyProps) => {
             </>
           )}
         </dl>
+
+        {EDITABLE_STATUSES.includes(detail.status) && (
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 w-full md:h-8 md:w-auto"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil data-icon="inline-start" aria-hidden="true" />
+              Edit
+            </Button>
+            <BookingForm open={editing} onOpenChange={setEditing} booking={detail} />
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <Label htmlFor="booking-status">Status</Label>

@@ -123,12 +123,22 @@ class BookingRequest:
     notes: str | None
 
 
+class KeepNotes(enum.Enum):
+    """The `notes` value of a replacement that leaves the row's notes as they are."""
+
+    KEEP = "keep"
+
+
+KEEP_NOTES = KeepNotes.KEEP
+
+
 @dataclass(frozen=True, slots=True)
 class BookingReplacement:
     """The editable fields of `PUT /api/bookings/{id}`: everything a `BookingRequest` names
-    except the Child, the kind, the booking guardian and the notes, which an edit keeps.
+    except the Child, the kind and the booking guardian, which an edit keeps.
 
     `kind` is here only to be checked: a body naming a kind other than the row's is refused.
+    `notes` is `KEEP_NOTES` when the body did not name them; `None` clears them.
     """
 
     user_id: uuid.UUID
@@ -140,6 +150,7 @@ class BookingReplacement:
     start_time: datetime.time
     end_time: datetime.time
     kind: BookingKind | None
+    notes: str | None | KeepNotes = KEEP_NOTES
 
 
 class BookingWriteError(Exception):
@@ -386,6 +397,7 @@ def replace_booking(
             row.scheduled_date = request.scheduled_date
             row.start_time = request.start_time
             row.end_time = request.end_time
+            row.notes = request.notes
             # Set here rather than left to the column's `onupdate`: that fires only when some
             # column changed, and an edit restating the current values must still bump it.
             row.updated_at = datetime.datetime.now(tz=datetime.UTC)
@@ -472,7 +484,7 @@ def _request_of(row: Booking, replacement: BookingReplacement) -> BookingRequest
         # it through would make a Guardian deactivated since the booking block every edit of it
         # with a 400 naming an id the body cannot carry.
         booked_by_guardian_id=None,
-        notes=row.notes,
+        notes=row.notes if replacement.notes is KEEP_NOTES else replacement.notes,
     )
 
 

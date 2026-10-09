@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
-from app.models.booking import Booking
+from app.models.booking import NOTES_MAX_LENGTH, Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
@@ -139,6 +139,28 @@ def family(db: Session) -> Family:
 
 
 # --- the happy path and RBAC ----------------------------------------------------------------
+
+
+def test_notes_at_the_limit_are_accepted(api: TestClient, db: Session, family: Family) -> None:
+    user = _make_user(db)
+
+    response = _post(api, user, family, notes="x" * NOTES_MAX_LENGTH)
+
+    assert response.status_code == 201
+    assert _row(db, uuid.UUID(response.json()["id"])).notes == "x" * NOTES_MAX_LENGTH
+
+
+def test_notes_over_the_limit_are_400_and_write_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    before = db.scalar(select(func.count()).select_from(Booking))
+
+    response = _post(api, user, family, notes="x" * (NOTES_MAX_LENGTH + 1))
+
+    assert response.status_code == 400
+    assert "notes" in response.json()["detail"]
+    assert db.scalar(select(func.count()).select_from(Booking)) == before
 
 
 @pytest.mark.parametrize("role", STAFF_ROLE_CASES)

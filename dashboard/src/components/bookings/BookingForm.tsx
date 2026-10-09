@@ -12,13 +12,16 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { useToast } from '@/hooks/useToast'
 import { errorDetail, warningsOf } from '@/lib/api'
 import {
   childPickerOptions,
   DRAFT_ERROR,
   draftErrors,
+  draftFromDetail,
   EMPTY_DRAFT,
   homeOptionsFor,
+  NOTES_MAX_LENGTH,
   onChildChange,
   onChildDetail,
   onDateChange,
@@ -32,6 +35,7 @@ import {
   submitPlan,
   timeSource,
   toCreateBody,
+  toUpdateBody,
   weekdayName,
   type BookingDraft,
   type ChildPickerOption,
@@ -40,8 +44,11 @@ import { formatTime } from '@/lib/dates/dates'
 import { availabilityQueries } from '@/lib/queries/availability'
 import {
   createBooking,
+  updateBooking,
   type BookingCreate,
+  type BookingDetail,
   type BookingKind,
+  type BookingReplace,
   type BookingWarning,
   type WarningCode,
 } from '@/lib/queries/bookings'
@@ -53,8 +60,11 @@ import { cn } from '@/lib/utils'
 type BookingFormProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCreated: () => void
+  onCreated?: () => void
   initialChild?: { id: string; name: string }
+  // Edit mode: the live booking to replace in place; the kind and the Child are locked.
+  booking?: BookingDetail
+  onSaved?: () => void
 }
 
 type FieldProps = {
@@ -67,6 +77,8 @@ type FieldProps = {
 
 type Hint = { text: string | null; isError: boolean }
 
+type ReplaceInput = { bookingId: string; body: BookingReplace }
+
 const FORM_ID = 'create-booking-form'
 const KIND_PANEL_ID = 'booking-kind-panel'
 const KIND_TABS: { value: BookingKind; label: string }[] = [
@@ -77,8 +89,10 @@ const REFERENCE_PAGE_SIZE = 100
 const CHILD_SEARCH_PAGE_SIZE = 20
 const CHILD_WRITE_KEYS = ['children', 'guardians', 'households']
 const CREATED_KEYS = ['bookings', 'stats', 'children']
+const SAVED_KEYS = ['bookings', 'stats']
 const SUBMIT_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const STAFF_FALLBACK_ERROR = 'Could not load staff.'
+const STAFF_PREFILL_ERROR = 'Could not load staff. Please try again.'
 const AVAILABILITY_FALLBACK_ERROR = 'Could not load this staff member’s availability.'
 const HOMES_FALLBACK_ERROR = 'Could not load this child’s homes.'
 const CHILD_FIRST_HINT = 'Choose a child first.'
@@ -86,9 +100,25 @@ const EVALUATION_CHILD_HINT = 'Only children who are not yet Evaluated and have 
 const EVALUATION_STAFF_HINT = 'Admins and Managers only.'
 const ADMIN_STAFF_HINT = 'Admins have no availability. Type the time; only overlap is checked.'
 const NO_STAFF_HINT = 'No staff can be booked for this kind.'
+const LOCKED_KIND_HINT = 'Locked on an edit.'
+const EDIT_SLOT_HINT = 'Select the slot again. Start and end keep the booking’s times.'
+const SAVED_TOAST = 'Booking updated. Let the Guardian know.'
+// A label bar over a control bar per field, in field order; the control bar's shape per field.
+const PREFILL_SKELETON_ROWS: { field: string; barClasses: string }[] = [
+  { field: 'kind', barClasses: 'h-11 w-48 md:h-9' },
+  { field: 'child', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'staff', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'location', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'subject', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'date', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'slot', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'times', barClasses: 'h-11 w-full md:h-8' },
+  { field: 'notes', barClasses: 'h-20 w-full' },
+]
 
 const NO_HINT: Hint = { text: null, isError: false }
 const alertClasses = 'text-sm font-medium text-destructive'
+const skeletonBarClasses = 'animate-pulse rounded-lg bg-muted motion-reduce:animate-none'
 
 const fieldHint = (text: string | null, isError = false): Hint => ({ text, isError })
 
@@ -96,8 +126,25 @@ const unionCodes = (confirmed: WarningCode[], shown: BookingWarning[]): WarningC
   ...new Set([...confirmed, ...shown.map((warning) => warning.code)]),
 ]
 
-export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: BookingFormProps) => {
+const lockedChildOption = (booking: BookingDetail): ChildPickerOption => ({
+  id: booking.child.id,
+  label: booking.child.name,
+  description: '',
+  inactive: false,
+  evaluable: false,
+})
+
+export const BookingForm = ({
+  open,
+  onOpenChange,
+  onCreated,
+  initialChild,
+  booking,
+  onSaved,
+}: BookingFormProps) => {
   const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const isEdit = booking !== undefined
 
   const [draft, setDraft] = useState<BookingDraft>(EMPTY_DRAFT)
   const [childOption, setChildOption] = useState<ChildPickerOption | null>(null)
@@ -105,6 +152,8 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
   const [reactivatedName, setReactivatedName] = useState<string | null>(null)
   const [seenOpen, setSeenOpen] = useState(false)
   const [syncedDetail, setSyncedDetail] = useState<ChildDetail | undefined>(undefined)
+  // The booking whose prefill waits for the Staff list (`draftFromDetail` needs the tutor ids).
+  const [prefill, setPrefill] = useState<BookingDetail | null>(null)
   // The server returns only the still-unconfirmed codes, so the ones already sent accumulate
   // here and every "Book anyway" resubmits `confirmed ∪ shown`.
   const [shownWarnings, setShownWarnings] = useState<BookingWarning[]>([])
@@ -114,7 +163,12 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
   if (open !== seenOpen) {
     setSeenOpen(open)
 
-    if (open && initialChild !== undefined) {
+    if (open && booking !== undefined) {
+      setPrefill(booking)
+      setChildOption(lockedChildOption(booking))
+      // The Child is known now, so its homes start loading under the skeleton.
+      setDraft({ ...EMPTY_DRAFT, mode: 'edit', kind: booking.kind, childId: booking.child.id })
+    } else if (open && initialChild !== undefined) {
       setChildOption({
         id: initialChild.id,
         label: initialChild.name,
@@ -156,6 +210,19 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
       }
     },
   })
+  const replace = useMutation({
+    mutationFn: ({ bookingId, body }: ReplaceInput) => updateBooking(bookingId, body),
+    onSuccess: () => {
+      for (const key of SAVED_KEYS) {
+        queryClient.invalidateQueries({ queryKey: [key] })
+      }
+    },
+  })
+
+  if (prefill !== null && staff.data !== undefined) {
+    setDraft(draftFromDetail(prefill, staff.data.items))
+    setPrefill(null)
+  }
 
   if (childDetail.data !== syncedDetail) {
     const loaded = childDetail.data
@@ -174,7 +241,8 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
   const errors = draftErrors(draft)
   const plan = submitPlan(draft)
   const noActiveHome = childDetail.data !== undefined && homeOptions.length === 0
-  const busy = create.isPending || reactivate.isPending
+  const busy = create.isPending || reactivate.isPending || replace.isPending
+  const prefilling = prefill !== null
   const slotWarning = source === 'slot' ? slotModeWarning(chosenSlot, draft.location) : null
   const warningMessages = [
     ...shownWarnings.map((warning) => warning.message),
@@ -209,9 +277,11 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
     setChildOption(null)
     setSubmitted(false)
     setReactivatedName(null)
+    setPrefill(null)
     clearWarnings()
     reactivate.reset()
     create.reset()
+    replace.reset()
     onOpenChange(false)
   }
 
@@ -223,21 +293,38 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
     }
   }
 
+  // A 409 with `warnings[]` is confirmable; anything else is a block and renders as an error.
+  const handleWriteError = (error: unknown, sent: WarningCode[]) => {
+    const warnings = warningsOf(error)
+
+    setConfirmed(warnings === null ? [] : sent)
+    setShownWarnings(warnings ?? [])
+    refocusSubmit()
+  }
+
   const book = (body: BookingCreate) => {
     create.mutate(body, {
       onSuccess: () => {
-        onCreated()
+        onCreated?.()
         resetAndClose()
       },
-      onError: (error) => {
-        const warnings = warningsOf(error)
-
-        // A 409 with `warnings[]` is confirmable; anything else is a block and renders as an error.
-        setConfirmed(warnings === null ? [] : body.confirm_warnings)
-        setShownWarnings(warnings ?? [])
-        refocusSubmit()
-      },
+      onError: (error) => handleWriteError(error, body.confirm_warnings),
     })
+  }
+
+  const save = (bookingId: string, body: BookingReplace) => {
+    replace.mutate(
+      { bookingId, body },
+      {
+        onSuccess: () => {
+          onSaved?.()
+          // Close first so the toast never sits behind the form.
+          resetAndClose()
+          toast(SAVED_TOAST, { tone: 'success' })
+        },
+        onError: (error) => handleWriteError(error, body.confirm_warnings),
+      },
+    )
   }
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -246,22 +333,25 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
     setReactivatedName(null)
     reactivate.reset()
     create.reset()
+    replace.reset()
 
     if (errors.length === 0) {
-      const body = toCreateBody(draft, unionCodes(confirmed, shownWarnings))
+      const confirming = unionCodes(confirmed, shownWarnings)
       const childName = childOption?.label ?? ''
 
-      if (plan === 'reactivate-then-book') {
+      if (booking !== undefined) {
+        save(booking.id, toUpdateBody(draft, confirming))
+      } else if (plan === 'reactivate-then-book') {
         reactivate.mutate(draft.childId, {
           onSuccess: () => {
             setDraft((current) => ({ ...current, childInactive: false }))
             setReactivatedName(childName)
-            book(body)
+            book(toCreateBody(draft, confirming))
           },
           onError: refocusSubmit,
         })
       } else {
-        book(body)
+        book(toCreateBody(draft, confirming))
       }
     }
   }
@@ -323,6 +413,8 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
 
   if (reactivate.isError) {
     submitError = errorDetail(reactivate.error) ?? SUBMIT_FALLBACK_ERROR
+  } else if (replace.isError && warningsOf(replace.error) === null) {
+    submitError = errorDetail(replace.error) ?? SUBMIT_FALLBACK_ERROR
   } else if (create.isError && warningsOf(create.error) === null) {
     const detail = errorDetail(create.error) ?? SUBMIT_FALLBACK_ERROR
 
@@ -376,72 +468,80 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
     slotHint = fieldHint(errorDetail(availability.error) ?? AVAILABILITY_FALLBACK_ERROR, true)
   } else if (slotOptions.length === 0) {
     slotHint = fieldHint(`This staff member has no availability on ${weekdayName(draft.date)}s.`)
+  } else if (isEdit && draft.availabilityId === '') {
+    slotHint = fieldHint(EDIT_SLOT_HINT)
   }
 
+  const subjectOptions = subjects.data?.items ?? []
+  // The subjects list is the active ones; a booking's Subject retired since stays shown, locked,
+  // so the select reads what the save will send.
+  const retiredSubject =
+    booking !== undefined &&
+    booking.subject !== null &&
+    draft.subjectId === booking.subject.id &&
+    !subjectOptions.some((subject) => subject.id === draft.subjectId)
+      ? booking.subject
+      : null
   const staffDisabled = busy || staff.isPending || staffOptions.length === 0
   // Kept disabled while the homes load so the list never pops in under an open menu.
   const locationDisabled = busy || childDetail.isPending
   const slotDisabled = busy || slotOptions.length === 0
+  // An edit has nothing to submit until the Staff list has filled the draft in. A later
+  // background refetch failing keeps the data, so it does not lock the form.
+  const submitDisabled = busy || (isEdit && prefilling)
 
-  return (
-    <SlideOver
-      open={open}
-      onOpenChange={handleOpenChange}
-      title="New booking"
-      description="Booked by the Office; no WhatsApp message is sent."
-      footer={
-        <div className="space-y-3">
-          <BookingWarnings messages={warningMessages} />
-          {submitted && errors.length > 0 && (
-            <ul role="alert" className={cn(alertClasses, 'space-y-1')}>
-              {errors.map((message) => (
-                <li key={message}>{message}</li>
-              ))}
-            </ul>
-          )}
-          {submitError !== null && (
-            <p role="alert" className={alertClasses}>
-              {submitError}
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-3">
-            <Button ref={submitButton} type="submit" form={FORM_ID} disabled={busy}>
-              {submitLabel(draft, warningMessages.length > 0, busy)}
-            </Button>
-            <Button type="button" variant="outline" disabled={busy} onClick={resetAndClose}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      }
-    >
+  let body: ReactNode
+
+  if (isEdit && prefilling && staff.isError) {
+    body = (
+      <div className="space-y-4">
+        <p role="alert" className={alertClasses}>
+          {STAFF_PREFILL_ERROR}
+        </p>
+        <Button type="button" variant="outline" onClick={() => staff.refetch()}>
+          Try again
+        </Button>
+      </div>
+    )
+  } else if (isEdit && prefilling) {
+    body = <PrefillSkeleton />
+  } else {
+    body = (
       <form
         id={FORM_ID}
         onSubmit={handleSubmit}
         className="space-y-4"
         aria-busy={staff.isPending || subjects.isPending}
       >
-        <SegmentedTabs
-          tabs={KIND_TABS}
-          value={draft.kind}
-          onChange={handleKindChange}
-          ariaLabel="Kind"
-          panelId={KIND_PANEL_ID}
-        />
+        <div className="space-y-1.5">
+          <SegmentedTabs
+            tabs={KIND_TABS}
+            value={draft.kind}
+            onChange={handleKindChange}
+            ariaLabel="Kind"
+            panelId={KIND_PANEL_ID}
+            disabled={isEdit}
+          />
+          {isEdit && <p className="text-xs text-muted-foreground">{LOCKED_KIND_HINT}</p>}
+        </div>
 
         <div id={KIND_PANEL_ID} role="tabpanel" className="space-y-4">
-          <Field id="booking-child" label="Child" hint={childHint}>
-            <SearchPicker
-              id="booking-child"
-              queryKeyPrefix={['children', 'picker', draft.kind]}
-              search={searchChildren}
-              value={childOption}
-              onChange={handleChildChange}
-              placeholder="Search by child or guardian name"
-              disabled={busy}
-              emptyMessage="No matching children."
-            />
-          </Field>
+          {isEdit ? (
+            <LockedField label="Child">{childOption?.label}</LockedField>
+          ) : (
+            <Field id="booking-child" label="Child" hint={childHint}>
+              <SearchPicker
+                id="booking-child"
+                queryKeyPrefix={['children', 'picker', draft.kind]}
+                search={searchChildren}
+                value={childOption}
+                onChange={handleChildChange}
+                placeholder="Search by child or guardian name"
+                disabled={busy}
+                emptyMessage="No matching children."
+              />
+            </Field>
+          )}
 
           <Field
             id="booking-staff"
@@ -488,7 +588,12 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
                 }
               >
                 <option value="">Select a subject</option>
-                {(subjects.data?.items ?? []).map((subject) => (
+                {retiredSubject !== null && (
+                  <option value={retiredSubject.id} disabled>
+                    {retiredSubject.name} (inactive)
+                  </option>
+                )}
+                {subjectOptions.map((subject) => (
                   <option key={subject.id} value={subject.id}>
                     {subject.name}
                   </option>
@@ -569,8 +674,10 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
             <Textarea
               id="booking-notes"
               rows={3}
+              maxLength={NOTES_MAX_LENGTH}
               value={draft.notes}
               disabled={busy}
+              aria-invalid={isInvalid(DRAFT_ERROR.notes) || undefined}
               onChange={(event) =>
                 updateDraft((current) => ({ ...current, notes: event.target.value }))
               }
@@ -578,6 +685,46 @@ export const BookingForm = ({ open, onOpenChange, onCreated, initialChild }: Boo
           </Field>
         </div>
       </form>
+    )
+  }
+
+  return (
+    <SlideOver
+      open={open}
+      onOpenChange={handleOpenChange}
+      title={isEdit ? 'Edit booking' : 'New booking'}
+      description={
+        isEdit
+          ? 'Changes are saved in place; no WhatsApp message is sent.'
+          : 'Booked by the Office; no WhatsApp message is sent.'
+      }
+      footer={
+        <div className="space-y-3">
+          <BookingWarnings messages={warningMessages} />
+          {submitted && errors.length > 0 && (
+            <ul role="alert" className={cn(alertClasses, 'space-y-1')}>
+              {errors.map((message) => (
+                <li key={message}>{message}</li>
+              ))}
+            </ul>
+          )}
+          {submitError !== null && (
+            <p role="alert" className={alertClasses}>
+              {submitError}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button ref={submitButton} type="submit" form={FORM_ID} disabled={submitDisabled}>
+              {submitLabel(draft, warningMessages.length > 0, busy)}
+            </Button>
+            <Button type="button" variant="outline" disabled={busy} onClick={resetAndClose}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      {body}
     </SlideOver>
   )
 }
@@ -591,5 +738,28 @@ const Field = ({ id, label, hint, hintIsError = false, children }: FieldProps) =
         {hint}
       </p>
     )}
+  </div>
+)
+
+// A value the edit cannot change, read like a `DetailRow`: no input chrome, nothing focusable.
+const LockedField = ({ label, children }: { label: string; children: ReactNode }) => (
+  <dl>
+    <div className="space-y-0.5">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-sm text-foreground">{children}</dd>
+    </div>
+  </dl>
+)
+
+// Same count and heights as the real fields, so the swap does not shift the footer.
+const PrefillSkeleton = () => (
+  <div aria-busy="true" className="space-y-4">
+    <p className="sr-only">Loading booking…</p>
+    {PREFILL_SKELETON_ROWS.map((row) => (
+      <div key={row.field} className="space-y-1.5">
+        <div className={cn(skeletonBarClasses, 'h-3 w-16')} />
+        <div className={cn(skeletonBarClasses, row.barClasses)} />
+      </div>
+    ))}
   </div>
 )

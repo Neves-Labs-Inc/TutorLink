@@ -68,6 +68,7 @@ from app.services.booking_write_service import (
     GapNotRespected,
     GuardianNotLinkedToChild,
     HomeNotLinkedToChild,
+    KEEP_NOTES,
     LeadTimeNotMet,
     LiveEvaluationExists,
     OutsideAvailability,
@@ -227,6 +228,7 @@ def _replacement(payload: BookingReplace) -> BookingReplacement:
         start_time=payload.start_time,
         end_time=payload.end_time,
         kind=payload.kind,
+        notes=payload.notes if payload.notes_given else KEEP_NOTES,
     )
 
 

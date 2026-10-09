@@ -9,7 +9,7 @@ would otherwise 500 the request (`dependencies.py:237-255`).
 row's owner is its own id, so the check is exact — and doing it first is what makes a tutor
 asking for an id that does not exist get 403 rather than a 404 that discloses non-existence.
 
-The write routes take `StaffPrincipal` and deliberately **not** `TutorScope`: they are
+The write routes take `OfficePrincipal` and deliberately **not** `TutorScope`: they are
 admin-only, they have no filter to apply, and an unread scope would turn every one of them into
 a 500 the moment it touched `tutors`.
 
@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal, Principal, TutorScope, assert_can_access_tutor
+from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.models.tutor import Tutor
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
@@ -120,7 +120,7 @@ def read_one(tutor_id: uuid.UUID, user: Principal, db: DbSession) -> TutorRead:
 
 
 @router.post("", response_model=TutorRead, status_code=status.HTTP_201_CREATED)
-def create(payload: TutorCreate, user: StaffPrincipal, db: DbSession) -> TutorRead:
+def create(payload: TutorCreate, user: OfficePrincipal, db: DbSession) -> TutorRead:
     try:
         created = create_tutor(
             db,
@@ -145,7 +145,7 @@ def create(payload: TutorCreate, user: StaffPrincipal, db: DbSession) -> TutorRe
 
 @router.patch("/{tutor_id}", response_model=TutorRead)
 def update(
-    tutor_id: uuid.UUID, payload: TutorUpdate, user: StaffPrincipal, db: DbSession
+    tutor_id: uuid.UUID, payload: TutorUpdate, user: OfficePrincipal, db: DbSession
 ) -> TutorRead:
     try:
         updated = update_tutor(
@@ -174,7 +174,7 @@ def update(
 
 
 @router.delete("/{tutor_id}", response_model=TutorRead)
-def soft_delete(tutor_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> TutorRead:
+def soft_delete(tutor_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> TutorRead:
     try:
         deactivated = deactivate_tutor(db, tutor_id=tutor_id)
     except TutorNotFound as exc:

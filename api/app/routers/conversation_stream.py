@@ -14,7 +14,7 @@ browser cannot set an `Authorization` header on a WebSocket upgrade — the clie
 specifies a first-frame handshake instead. §13's intent, that there is no unauthenticated
 `/api/*` surface, is met by that handshake: the socket is accepted but carries nothing until an
 `auth` frame has been validated through `app/security.py` and the same Staff role gate
-`require_staff` applies, no other frame is accepted before then, a socket that has not
+`require_office` applies, no other frame is accepted before then, a socket that has not
 authenticated within ten seconds is closed `1008`, and the socket closes `1008` again when the
 access token behind it expires. **The token is never read from the query string**
 (`api-design.md:1624`): a credential there is written into every proxy log, access log and
@@ -74,7 +74,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.db import SessionLocal, get_db
-from app.dependencies import CREDENTIALS_ERROR, STAFF_REQUIRED_ERROR, STAFF_ROLES
+from app.dependencies import CREDENTIALS_ERROR, OFFICE_REQUIRED_ERROR, OFFICE_ROLES
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus
 from app.models.user import User
@@ -223,8 +223,8 @@ async def _auth_frame(websocket: WebSocket) -> AuthFrame | None:
 def _resolve_admin(db: Session, token: str) -> _Admin | str:
     """The `Authorization` header's own validation, applied to the handshake frame.
 
-    One credential, one validator, one role gate: `decode_token` and `STAFF_ROLES` are the ones
-    `get_current_user` and `require_staff` use, and the failure messages are theirs too, so a
+    One credential, one validator, one role gate: `decode_token` and `OFFICE_ROLES` are the ones
+    `get_current_user` and `require_office` use, and the failure messages are theirs too, so a
     bad token is refused here for exactly the reason and in exactly the words REST refuses it.
     The `users` row is read rather than trusted from the claims for the reason
     `dependencies.py` gives: a deactivated account must lose access at its next use of the
@@ -244,8 +244,8 @@ def _resolve_admin(db: Session, token: str) -> _Admin | str:
 
     if claims is None or user is None or not user.is_active:
         resolved: _Admin | str = CREDENTIALS_ERROR
-    elif user.role not in STAFF_ROLES:
-        resolved = STAFF_REQUIRED_ERROR
+    elif user.role not in OFFICE_ROLES:
+        resolved = OFFICE_REQUIRED_ERROR
     else:
         resolved = _Admin(
             user_id=user.id, display_name=user.display_name, expires_at=claims.expires_at

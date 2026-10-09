@@ -1,6 +1,6 @@
 """`/api/me`: the signed-in user's own account, for every role, Tutors included.
 
-`Principal` rather than `StaffPrincipal`: any signed-in user may read and rename their own row,
+`Principal` rather than `OfficePrincipal`: any signed-in user may read and rename their own row,
 and only their own, because the id comes from the token and never from the request. The chat
 uses it for "Take it over as {me}" and My profile pre-fills from it (#109).
 """

@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import (
     ADMIN_REQUIRED_ERROR,
     CREDENTIALS_ERROR,
-    STAFF_REQUIRED_ERROR,
+    OFFICE_REQUIRED_ERROR,
     TUTOR_SCOPE_ERROR,
 )
 from app.models.availability import TutorAvailability, TutorAvailabilityException
@@ -416,29 +416,29 @@ def test_a_tutor_deleting_another_tutors_pending_request_is_403(
             "PATCH",
             "/api/exceptions/{pending_id}",
             {"status": "approved"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/exceptions/{other_pending_id}",
             {"status": "rejected"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
         ("DELETE", "/api/exceptions/{approved_id}", None, EXCEPTION_NOT_DELETABLE_ERROR),
         (
             "POST",
             "/api/tutors/{tutor_id}/availability",
             {"day_of_week": 3, "start_time": "09:00:00", "end_time": "12:00:00"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/availability/{slot_id}",
             {"start_time": "10:00:00", "end_time": "11:00:00"},
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
-        ("DELETE", "/api/availability/{slot_id}", None, STAFF_REQUIRED_ERROR),
-        ("PATCH", "/api/bookings/{booking_id}", {"status": "cancelled"}, STAFF_REQUIRED_ERROR),
+        ("DELETE", "/api/availability/{slot_id}", None, OFFICE_REQUIRED_ERROR),
+        ("PATCH", "/api/bookings/{booking_id}", {"status": "cancelled"}, OFFICE_REQUIRED_ERROR),
     ],
     ids=[
         "decide-own-pending",
@@ -494,7 +494,7 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
         headers=world.tutor_headers,
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _booking_count(db) == 2
 
 
@@ -504,13 +504,13 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
 @pytest.mark.parametrize(
     ("template", "detail"),
     [
-        ("/api/clients", STAFF_REQUIRED_ERROR),
+        ("/api/clients", OFFICE_REQUIRED_ERROR),
         ("/api/users", ADMIN_REQUIRED_ERROR),
         ("/api/settings", ADMIN_REQUIRED_ERROR),
-        ("/api/stats/overview?date=2026-09-07", STAFF_REQUIRED_ERROR),
+        ("/api/stats/overview?date=2026-09-07", OFFICE_REQUIRED_ERROR),
         (
             "/api/slots/available?subject_id={subject_id}&date=2026-09-07&grade_level=7",
-            STAFF_REQUIRED_ERROR,
+            OFFICE_REQUIRED_ERROR,
         ),
     ],
     ids=["clients", "users", "settings", "stats", "slots"],

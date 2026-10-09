@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.schemas.common import DEFAULT_PAGE, Page
 from app.schemas.slot import SlotRead
@@ -48,7 +48,7 @@ router = APIRouter(prefix="/api/slots", tags=["slots"])
 
 @router.get("/available", response_model=Page[SlotRead])
 def list_available_slots(
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     subject_id: uuid.UUID,
     date: datetime.date,

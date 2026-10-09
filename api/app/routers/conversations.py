@@ -6,7 +6,7 @@ Two routers share the `/api/conversations` prefix on purpose (D-G, P4-F): this o
 `conversation_stream.py`, so the two can be built concurrently. The paths do not shadow each
 other.
 
-**`StaffPrincipal` on every route, and the tutor-scope dependency on none of them** (§14, §15).
+**`OfficePrincipal` on every route, and the tutor-scope dependency on none of them** (§14, §15).
 This is not the "a route that lists is scoped to a tutor" case: chat is an admin surface, the
 RBAC table (`docs/api-design.md:1423-1424`) answers a tutor token with 403 on every one of
 these, and there is no tutor-scoped view of a conversation to narrow to. Taking a scope
@@ -52,7 +52,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.enums import ConversationStatus
 from app.models.child import Child
 from app.models.guardian import Guardian
@@ -129,7 +129,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 @router.get("", response_model=Page[ConversationSummary])
 def list_all(
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     conversation_status: Annotated[ConversationStatus | None, Query(alias="status")] = None,
     unread: bool | None = None,
@@ -160,7 +160,7 @@ def list_all(
 
 
 @router.get("/{conversation_id}", response_model=ConversationRead)
-def read_one(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ConversationRead:
+def read_one(conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> ConversationRead:
     try:
         detail = get_detail(db, conversation_id=conversation_id)
     except ConversationNotFound as exc:
@@ -171,7 +171,7 @@ def read_one(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) ->
 
 @router.patch("/{conversation_id}", response_model=ConversationRead)
 def update(
-    conversation_id: uuid.UUID, payload: ConversationUpdate, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, payload: ConversationUpdate, user: OfficePrincipal, db: DbSession
 ) -> ConversationRead:
     try:
         detail = change_language(db, conversation_id=conversation_id, language=payload.language)
@@ -188,7 +188,7 @@ def update(
 @router.get("/{conversation_id}/messages", response_model=Page[MessageRead])
 def read_thread(
     conversation_id: uuid.UUID,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     before: datetime.datetime | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -219,7 +219,7 @@ def read_thread(
 
 
 @router.post("/{conversation_id}/takeover", response_model=ConversationRead)
-def take_over(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -> ConversationRead:
+def take_over(conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> ConversationRead:
     try:
         outcome = notice_service.take_over(db, conversation_id=conversation_id, user_id=user.id)
     except ConversationNotFound as exc:
@@ -237,7 +237,7 @@ def take_over(conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession) -
 
 @router.post("/{conversation_id}/transfer", response_model=ConversationRead)
 def transfer_to_me(
-    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> ConversationRead:
     # The broadcast is what locks the previous holder's open thread: their composer reads
     # `taken_over_by` from the `conversation.updated` frame.
@@ -257,7 +257,7 @@ def transfer_to_me(
 
 @router.delete("/{conversation_id}/takeover", response_model=ConversationRead)
 def release_takeover(
-    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> ConversationRead:
     # No holder check, and that asymmetry with `take_over` is the contract rather than an
     # omission (`api-design.md:1579-1583`): a claim only its owner could undo leaves a client
@@ -273,7 +273,7 @@ def release_takeover(
 
 @router.post("/{conversation_id}/messages/{message_id}/retry", response_model=MessageRead)
 def retry_notice(
-    conversation_id: uuid.UUID, message_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, message_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> MessageRead:
     try:
         row = notice_service.retry(db, conversation_id=conversation_id, message_id=message_id)
@@ -296,7 +296,7 @@ def retry_notice(
 
 @router.post("/{conversation_id}/read", response_model=ConversationRead)
 def mark_thread_read(
-    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> ConversationRead:
     try:
         detail = mark_read(db, conversation_id=conversation_id)
@@ -310,14 +310,14 @@ def mark_thread_read(
 
 @router.post("/{conversation_id}/reactivation/approve", response_model=ConversationRead)
 def approve_reactivation(
-    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> ConversationRead:
     return _resolve_reactivation(db, conversation_id=conversation_id, approve=True)
 
 
 @router.post("/{conversation_id}/reactivation/deny", response_model=ConversationRead)
 def deny_reactivation(
-    conversation_id: uuid.UUID, user: StaffPrincipal, db: DbSession
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
 ) -> ConversationRead:
     return _resolve_reactivation(db, conversation_id=conversation_id, approve=False)
 
@@ -326,7 +326,7 @@ def deny_reactivation(
 def mark_flag_handled(
     conversation_id: uuid.UUID,
     payload: FlagHandled,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
 ) -> ConversationRead:
     try:

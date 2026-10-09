@@ -9,7 +9,7 @@ deliberately asymmetric about it:
 - `POST /api/tutors/{tutor_id}/exceptions` takes `TutorScope`, so a tutor may create only
   under their own id and an admin or developer may target anyone. The status the row lands at
   is derived from the caller's role in the service, never read from the body.
-- `PATCH /api/exceptions/{exception_id}` takes `StaffPrincipal`. No tutor may reach it at all,
+- `PATCH /api/exceptions/{exception_id}` takes `OfficePrincipal`. No tutor may reach it at all,
   which is what stops a tutor approving their own time off — the one authorisation rule this
   feature exists to enforce. It deliberately does not take `TutorScope`: the unapplied-scope
   guard is not armed here, and does not need to be, because there is no tutor-visible query to
@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal, Principal, TutorScope, assert_can_access_tutor
+from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
 from app.models.availability import TutorAvailabilityException
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.exceptions import ExceptionCreate, ExceptionDecision, ExceptionRead
@@ -130,7 +130,7 @@ def create_tutor_exception(
 def decide_tutor_exception(
     exception_id: uuid.UUID,
     payload: ExceptionDecision,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
 ) -> ExceptionRead:
     try:

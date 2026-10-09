@@ -1,6 +1,6 @@
 """`/api/stats/overview` — the admin dashboard's five widgets in one round trip.
 
-**`StaffPrincipal`, and `TutorScope` nowhere.** These are whole-system metrics and the RBAC
+**`OfficePrincipal`, and `TutorScope` nowhere.** These are whole-system metrics and the RBAC
 table gives a tutor no correct value for any of them, so a tutor is 403 — never an empty
 payload and never a scoped variant (CONSTITUTION §15, `docs/api-design.md:1239`). Taking
 `TutorScope` here would also be a 500 rather than a subtler bug: this route queries `Booking`
@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.schemas.booking import BookingSummary, NamedRef
 from app.schemas.stats import StatsOverview
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 
 @router.get("/overview", response_model=StatsOverview)
-def read_overview(user: StaffPrincipal, db: DbSession, date: datetime.date) -> StatsOverview:
+def read_overview(user: OfficePrincipal, db: DbSession, date: datetime.date) -> StatsOverview:
     data = overview(db, on=date)
 
     return StatsOverview(

@@ -31,11 +31,11 @@ from app.db import get_db
 from app.dependencies import (
     ADMIN_REQUIRED_ERROR,
     CREDENTIALS_ERROR,
-    STAFF_REQUIRED_ERROR,
+    OFFICE_REQUIRED_ERROR,
     TUTOR_SCOPE_ERROR,
     AdminPrincipal,
     Principal,
-    StaffPrincipal,
+    OfficePrincipal,
     TutorScope,
     TutorScopeNotApplied,
     assert_can_access_tutor,
@@ -72,7 +72,7 @@ def probe_admin(user: AdminPrincipal) -> dict[str, str]:
 
 
 @probe_app.get("/probe/staff")
-def probe_staff(user: StaffPrincipal) -> dict[str, str]:
+def probe_office(user: OfficePrincipal) -> dict[str, str]:
     return {"id": str(user.id)}
 
 
@@ -721,7 +721,7 @@ def test_admin_roles_pass_the_staff_gate(probe: TestClient, db: Session, role: U
 def test_tutor_on_the_staff_gate_is_403(probe: TestClient, db: Session) -> None:
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
 
-    _assert_detail(probe.get("/probe/staff", headers=_bearer(user)), 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(probe.get("/probe/staff", headers=_bearer(user)), 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_staff_probe_without_a_token_is_401_not_403(probe: TestClient) -> None:

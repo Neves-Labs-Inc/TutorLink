@@ -61,7 +61,7 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus, MessageAuthor, MessageStatus, UserRole
 from app.models.message import Message
@@ -198,7 +198,7 @@ def test_a_valid_staff_token_gets_ready(sockets: TestClient, db: Session, role: 
 @pytest.mark.parametrize(
     ("principal", "expected_reason"),
     [
-        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), STAFF_REQUIRED_ERROR),
+        (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), OFFICE_REQUIRED_ERROR),
         (lambda db: _token(_make_user(db, is_active=False)), CREDENTIALS_ERROR),
         (lambda db: _token(_make_user(db), lifetime=-_minutes(30)), CREDENTIALS_ERROR),
         (lambda db: "not.a.token", CREDENTIALS_ERROR),

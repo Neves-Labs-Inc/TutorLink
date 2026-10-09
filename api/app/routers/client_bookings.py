@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import StaffPrincipal
+from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.models.enums import BookingStatus
 from app.schemas.booking import BookingSummary, NamedRef
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/clients", tags=["bookings"])
 @router.get("/{client_id}/bookings", response_model=Page[BookingSummary])
 def list_bookings_for_client(
     client_id: uuid.UUID,
-    user: StaffPrincipal,
+    user: OfficePrincipal,
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     tutor_id: uuid.UUID | None = None,

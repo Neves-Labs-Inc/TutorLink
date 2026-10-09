@@ -19,7 +19,7 @@ from sqlalchemy import delete
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -269,7 +269,7 @@ def test_tutor_token_is_403(api: TestClient, db: Session) -> None:
         f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, booking.id).status is BookingStatus.PENDING
 
 

@@ -4,7 +4,7 @@ Application-level wiring, alongside `db.py` and `config.py` — not a router, no
 A router's whole auth surface is meant to be an import from here:
 
 ```python
-from app.dependencies import Principal, StaffPrincipal, AdminPrincipal, TutorScope
+from app.dependencies import Principal, OfficePrincipal, AdminPrincipal, TutorScope
 
 @router.get("/api/bookings")
 def list_bookings(scope: TutorScope, db: DbSession):
@@ -75,17 +75,17 @@ from app.security import ACCESS_TOKEN_TYPE, TokenError, decode_token
 
 CREDENTIALS_ERROR = "Could not validate credentials"
 ADMIN_REQUIRED_ERROR = "Admin privileges required"
-STAFF_REQUIRED_ERROR = "Staff privileges required"
+OFFICE_REQUIRED_ERROR = "Office access required"
 TUTOR_SCOPE_ERROR = "Not permitted to access this tutor's data"
 
 # Every gate below asks for a role set, never "is admin". `developer` is a superset of `admin`
 # — it reaches everything an admin reaches, plus developer-only system settings — so comparing
 # against `UserRole.ADMIN` by identity would refuse it everywhere.
 #
-# Two sets (#108). Staff run the office: everything but Users and Settings, chat included, and
+# Two sets (#108). Office runs the dashboard: everything but Users and Settings, chat included, and
 # never tutor-scoped. Admin roles additionally manage Users and Settings, which a Manager may
 # not reach.
-STAFF_ROLES = frozenset({UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER})
+OFFICE_ROLES = frozenset({UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER})
 ADMIN_ROLES = frozenset({UserRole.ADMIN, UserRole.DEVELOPER})
 
 # `auto_error=False` so this module owns the failure: FastAPI's built-in error omits the
@@ -156,14 +156,14 @@ def require_admin(user: Principal) -> CurrentUser:
 AdminPrincipal = Annotated[CurrentUser, Depends(require_admin)]
 
 
-def require_staff(user: Principal) -> CurrentUser:
+def require_office(user: Principal) -> CurrentUser:
     # Same 401-before-403 ordering as `require_admin`.
-    if user.role not in STAFF_ROLES:
-        raise _forbidden(STAFF_REQUIRED_ERROR)
+    if user.role not in OFFICE_ROLES:
+        raise _forbidden(OFFICE_REQUIRED_ERROR)
     return user
 
 
-StaffPrincipal = Annotated[CurrentUser, Depends(require_staff)]
+OfficePrincipal = Annotated[CurrentUser, Depends(require_office)]
 
 
 class TutorScopeNotApplied(RuntimeError):
@@ -213,20 +213,20 @@ def _decide_tutor_scope(
 ) -> uuid.UUID | None:
     """The scoping decision table. Kept separate from the dependency so it stays readable.
 
-    | principal                  | requested        | result           |
-    |----------------------------|------------------|------------------|
-    | staff (admin, manager, dev)| `None`           | `None`           |
-    | staff (admin, manager, dev)| any UUID         | that UUID        |
-    | tutor with `tutor_id`      | `None`           | own `tutor_id`   |
-    | tutor with `tutor_id`      | own              | own `tutor_id`   |
-    | tutor with `tutor_id`      | another tutor's  | **403**          |
+    | principal                   | requested        | result           |
+    |-----------------------------|------------------|------------------|
+    | office (admin, manager, dev) | `None`           | `None`           |
+    | office (admin, manager, dev) | any UUID         | that UUID        |
+    | tutor with `tutor_id`       | `None`           | own `tutor_id`   |
+    | tutor with `tutor_id`       | own              | own `tutor_id`   |
+    | tutor with `tutor_id`       | another tutor's  | **403**          |
     | tutor with `tutor_id` None | anything         | **403**          |
 
     A developer has no tutor profile, so treating them as anything but unscoped would send
     them down the tutor branch and 403 on `tutor_id is None` — the most confusing possible
     failure for the one role that is meant to see everything.
     """
-    if user.role in STAFF_ROLES:
+    if user.role in OFFICE_ROLES:
         scoped_tutor_id = requested_tutor_id
     else:
         if user.tutor_id is None:
@@ -301,7 +301,7 @@ TutorScope = Annotated[ResolvedTutorScope, Depends(get_tutor_scope)]
 def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None) -> None:
     """Row-level companion to `TutorScope`, for "load by id, then check the owner".
 
-    Staff (admins, managers, developers) always pass. A tutor passes only when the row belongs
+    Office (admins, managers, developers) always pass. A tutor passes only when the row belongs
     to them; an unowned row (`owner_tutor_id is None`) belongs to no tutor and so is not
     theirs. Raises 403 — never 404, never a silent empty response.
 
@@ -309,5 +309,5 @@ def assert_can_access_tutor(user: CurrentUser, owner_tutor_id: uuid.UUID | None)
     before it can know the owner, so there is no filter to apply up front and nothing for the
     unapplied-scope guard to check.
     """
-    if user.role not in STAFF_ROLES and (user.tutor_id is None or owner_tutor_id != user.tutor_id):
+    if user.role not in OFFICE_ROLES and (user.tutor_id is None or owner_tutor_id != user.tutor_id):
         raise _forbidden(TUTOR_SCOPE_ERROR)

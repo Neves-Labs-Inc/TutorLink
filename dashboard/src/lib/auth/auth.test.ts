@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   ADMIN_ROLES,
   ROLES,
-  STAFF_ROLES,
+  OFFICE_ROLES,
   chromeFor,
   decodeAccessToken,
   guardDecision,
-  isStaffRole,
+  isOfficeRole,
   landingPath,
   type Role,
 } from './auth'
@@ -98,7 +98,7 @@ describe('role sets', () => {
   })
 
   it('counts every role but tutor as staff', () => {
-    expect(STAFF_ROLES).toEqual(['admin', 'manager', 'developer'])
+    expect(OFFICE_ROLES).toEqual(['admin', 'manager', 'developer'])
   })
 
   it('keeps the admin set to admin and developer only', () => {
@@ -106,7 +106,7 @@ describe('role sets', () => {
   })
 })
 
-describe('isStaffRole', () => {
+describe('isOfficeRole', () => {
   const cases: { role: Role; expected: boolean }[] = [
     { role: 'admin', expected: true },
     { role: 'manager', expected: true },
@@ -115,15 +115,15 @@ describe('isStaffRole', () => {
   ]
 
   it.each(cases)('returns $expected for $role', ({ role, expected }) => {
-    expect(isStaffRole(role)).toBe(expected)
+    expect(isOfficeRole(role)).toBe(expected)
   })
 })
 
 describe('chromeFor', () => {
-  const cases: { role: Role; expected: 'staff' | 'tutor' }[] = [
-    { role: 'admin', expected: 'staff' },
-    { role: 'manager', expected: 'staff' },
-    { role: 'developer', expected: 'staff' },
+  const cases: { role: Role; expected: 'office' | 'tutor' }[] = [
+    { role: 'admin', expected: 'office' },
+    { role: 'manager', expected: 'office' },
+    { role: 'developer', expected: 'office' },
     { role: 'tutor', expected: 'tutor' },
   ]
 
@@ -134,18 +134,18 @@ describe('chromeFor', () => {
 
 describe('guardDecision', () => {
   it('waits while the session bootstrap is in flight', () => {
-    expect(guardDecision('loading', null, STAFF_ROLES)).toEqual({ kind: 'wait' })
+    expect(guardDecision('loading', null, OFFICE_ROLES)).toEqual({ kind: 'wait' })
   })
 
   it('sends an anonymous visitor to login', () => {
-    expect(guardDecision('anonymous', null, STAFF_ROLES)).toEqual({
+    expect(guardDecision('anonymous', null, OFFICE_ROLES)).toEqual({
       kind: 'redirect',
       to: '/login',
     })
   })
 
   it('lets a manager onto a staff route', () => {
-    expect(guardDecision('authenticated', 'manager', STAFF_ROLES)).toEqual({ kind: 'allow' })
+    expect(guardDecision('authenticated', 'manager', OFFICE_ROLES)).toEqual({ kind: 'allow' })
   })
 
   it('sends a manager on an admin-only route such as /users or /settings to the dashboard', () => {
@@ -160,7 +160,7 @@ describe('guardDecision', () => {
   })
 
   it('sends a tutor on a staff route to their schedule', () => {
-    expect(guardDecision('authenticated', 'tutor', STAFF_ROLES)).toEqual({
+    expect(guardDecision('authenticated', 'tutor', OFFICE_ROLES)).toEqual({
       kind: 'redirect',
       to: '/schedule',
     })

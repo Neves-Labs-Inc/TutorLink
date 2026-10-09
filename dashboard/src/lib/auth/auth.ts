@@ -12,26 +12,26 @@ export type AccessTokenClaims = {
 }
 
 // Every role that works the office side (Dashboard, Chats, Bookings...). Tutor is the only one out.
-export const STAFF_ROLES: readonly Role[] = ['admin', 'manager', 'developer']
+export const OFFICE_ROLES: readonly Role[] = ['admin', 'manager', 'developer']
 
 // The account-management subset: Users and Settings stay closed to a Manager.
 export const ADMIN_ROLES: readonly Role[] = ['admin', 'developer']
 
-const STAFF_ROLE_SET: ReadonlySet<Role> = new Set(STAFF_ROLES)
+const OFFICE_ROLE_SET: ReadonlySet<Role> = new Set(OFFICE_ROLES)
 
-export const isStaffRole = (role: Role): boolean => STAFF_ROLE_SET.has(role)
+export const isOfficeRole = (role: Role): boolean => OFFICE_ROLE_SET.has(role)
 
-const STAFF_LANDING_PATH = '/dashboard'
+const OFFICE_LANDING_PATH = '/dashboard'
 const TUTOR_LANDING_PATH = '/schedule'
 const LOGIN_PATH = '/login'
 
 export const landingPath = (role: Role): string =>
-  isStaffRole(role) ? STAFF_LANDING_PATH : TUTOR_LANDING_PATH
+  isOfficeRole(role) ? OFFICE_LANDING_PATH : TUTOR_LANDING_PATH
 
-export type Chrome = 'staff' | 'tutor'
+export type Chrome = 'office' | 'tutor'
 
-// Asked as "is tutor", never "is not admin": a new Staff role must not inherit the tutor chrome.
-export const chromeFor = (role: Role): Chrome => (role === 'tutor' ? 'tutor' : 'staff')
+// Asked as "is tutor", never "is not admin": a new Office role must not inherit the tutor chrome.
+export const chromeFor = (role: Role): Chrome => (role === 'tutor' ? 'tutor' : 'office')
 
 export type GuardDecision = { kind: 'wait' } | { kind: 'allow' } | { kind: 'redirect'; to: string }
 

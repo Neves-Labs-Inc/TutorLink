@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -750,7 +750,7 @@ def test_a_tutor_token_is_403_and_never_500(api: TestClient, db: Session, world:
 
     response = api.get(_url(world), headers=_bearer(tutor_user))
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_an_unauthenticated_request_is_401(api: TestClient, world: SlotWorld) -> None:

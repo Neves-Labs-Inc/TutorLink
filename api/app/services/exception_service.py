@@ -21,7 +21,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_ROLES
+from app.dependencies import OFFICE_ROLES
 from app.models.availability import TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.tutor import Tutor
@@ -205,7 +205,7 @@ def delete_exception(
     The row is really gone afterwards. `tutor_availability_exceptions` carries no `is_active`
     and nothing references it by foreign key, so there is no orphan and nothing to soft-delete.
     """
-    if actor_role not in STAFF_ROLES and exception.status is not ExceptionStatus.PENDING:
+    if actor_role not in OFFICE_ROLES and exception.status is not ExceptionStatus.PENDING:
         raise ExceptionNotDeletable(f"exception {exception.id} is already {exception.status.value}")
 
     db.delete(exception)
@@ -222,7 +222,7 @@ def _initial_status(creator_role: UserRole) -> ExceptionStatus:
     availability, and there is no second person to add when the admin is already the one
     typing.
     """
-    if creator_role in STAFF_ROLES:
+    if creator_role in OFFICE_ROLES:
         status = ExceptionStatus.APPROVED
     else:
         status = ExceptionStatus.PENDING

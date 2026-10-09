@@ -19,7 +19,7 @@ from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.tutor import Tutor
@@ -227,7 +227,7 @@ def test_tutor_cannot_decide_their_own_pending_request(api: TestClient, db: Sess
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -241,7 +241,7 @@ def test_tutor_cannot_decide_another_tutors_exception(api: TestClient, db: Sessi
         f"/api/exceptions/{row.id}", json={"status": "rejected"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 
@@ -824,7 +824,7 @@ def test_tutor_with_null_tutor_id_cannot_decide(api: TestClient, db: Session) ->
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
     assert _row(db, row.id).status is ExceptionStatus.PENDING
 
 

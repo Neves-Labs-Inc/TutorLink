@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import STAFF_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -188,7 +188,7 @@ def test_tutor_cannot_create_a_slot(api: TestClient, db: Session) -> None:
         f"/api/tutors/{tutor.id}/availability", json=_payload(), headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_admin_creating_for_an_unknown_tutor_is_404(api: TestClient, db: Session) -> None:
@@ -389,7 +389,7 @@ def test_tutor_cannot_update_a_slot(api: TestClient, db: Session) -> None:
         f"/api/availability/{row.id}", json={"end_time": "11:00:00"}, headers=_bearer(user)
     )
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_updating_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
@@ -459,7 +459,7 @@ def test_tutor_cannot_delete_a_slot(api: TestClient, db: Session) -> None:
 
     response = api.delete(f"/api/availability/{row.id}", headers=_bearer(user))
 
-    _assert_detail(response, 403, STAFF_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_deleting_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:

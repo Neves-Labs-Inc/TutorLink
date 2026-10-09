@@ -34,6 +34,7 @@ from app.services.auth_service import (
     revoke_family_for_token,
     rotate_refresh_token,
 )
+from app.services.mail_templates import TemplateKind
 from app.services.password_link_service import (
     InvalidLink,
     InvalidPassword,
@@ -48,6 +49,7 @@ from app.services.rate_limit_service import (
     reserve_forgot_password_attempt,
     reserve_login_attempt,
 )
+from app.services.settings_service import read_email_template
 
 logger = logging.getLogger(__name__)
 
@@ -215,9 +217,13 @@ def forgot_password(
 
     if issued is not None:
         user, token = issued
-        # Only strings cross into the task: it runs after the response, when `db` is closed,
-        # and it builds the link itself so a missing `PUBLIC_BASE_URL` fails there, not here.
-        background_tasks.add_task(send_reset_email, to=user.email, name=user.name, token=token)
+        # Only plain values cross into the task: it runs after the response, when `db` is
+        # closed, so the template is read here. It builds the link itself so a missing
+        # `PUBLIC_BASE_URL` fails there, not here.
+        template = read_email_template(db, kind=TemplateKind.PASSWORD_RESET)
+        background_tasks.add_task(
+            send_reset_email, to=user.email, name=user.name, token=token, template=template
+        )
 
     return FORGOT_PASSWORD_RESPONSE
 

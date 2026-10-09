@@ -20,7 +20,7 @@ PostgreSQL resolves as a 500. `FOR NO KEY UPDATE` still excludes every other wri
 
 The reset email is sent from here too (`send_reset_email`), because the router hands it to a
 FastAPI background task that runs after the response and so must not touch the request's
-`Session`: it takes only the address, name and link.
+`Session`: it takes only the address, name, token and the template the request read.
 """
 
 import hashlib
@@ -38,7 +38,13 @@ from app.models.user import User
 from app.security import MIN_PASSWORD_LENGTH, hash_password, password_is_encodable
 from app.services.auth_service import normalise_email, revoke_all_refresh_tokens_for_user
 from app.services.mail_service import MailServiceError, public_url, send_email
-from app.services.mail_templates import reset_email
+from app.services.mail_templates import (
+    LINK_PLACEHOLDER,
+    NAME_PLACEHOLDER,
+    TemplateKind,
+    render_email,
+)
+from app.services.settings_service import EmailTemplate
 
 INVITE_TTL = timedelta(days=7)
 RESET_TTL = timedelta(hours=48)
@@ -217,7 +223,7 @@ def request_reset(db: Session, *, email: str, now: datetime) -> tuple[User, str]
     return user, token
 
 
-def send_reset_email(*, to: str, name: str, token: str) -> None:
+def send_reset_email(*, to: str, name: str, token: str, template: EmailTemplate) -> None:
     """Build the link and send the reset email, logging any failure rather than raising.
 
     Runs as a background task after the forgot-password response has gone out, so there is
@@ -226,10 +232,19 @@ def send_reset_email(*, to: str, name: str, token: str) -> None:
     not in the request: `public_url` raises when `PUBLIC_BASE_URL` is unset, and raising in
     the request would 500 for a real account and 202 for an unknown one. The address stays
     out of the log for the same reason it stays out of the response, and so does the chained
-    SMTP exception, which quotes the recipient.
+    SMTP exception, which quotes the recipient. `template` is read by the request, since this
+    runs after its `Session` is closed.
     """
     try:
-        rendered = reset_email(name=name, link=public_url(f"{SET_PASSWORD_PATH}?token={token}"))
+        rendered = render_email(
+            TemplateKind.PASSWORD_RESET,
+            subject=template.subject,
+            body=template.body,
+            values={
+                NAME_PLACEHOLDER: name,
+                LINK_PLACEHOLDER: public_url(f"{SET_PASSWORD_PATH}?token={token}"),
+            },
+        )
         send_email(to=to, subject=rendered.subject, text=rendered.text, html=rendered.html)
     except MailServiceError as exc:
         logger.error(

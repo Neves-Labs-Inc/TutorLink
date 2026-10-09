@@ -48,6 +48,7 @@ from app.services import clock
 from app.services.settings_service import (
     BUSINESS_TIMEZONE_SETTING,
     BusinessTimezoneUnknown,
+    EmailTemplateSettingInvalid,
     SettingKeyDuplicated,
     SettingLocked,
     SettingNotEditable,
@@ -108,6 +109,9 @@ def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) ->
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=BUSINESS_TIMEZONE_INVALID_ERROR
         ) from exc
+    except EmailTemplateSettingInvalid as exc:
+        # The rule's own message: the Admin needs to know which one to fix.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
     except SettingValueInvalid as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=SETTING_VALUE_INVALID_ERROR

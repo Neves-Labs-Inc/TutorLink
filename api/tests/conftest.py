@@ -1,7 +1,9 @@
 import datetime
 import functools
+import importlib.util
 import os
 from collections.abc import Callable, Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +23,14 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
 os.environ.setdefault("COOKIE_SECURE", "false")
 # Emailed links can be built (`mail_service.public_url`) without configuring SMTP.
 os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
+
+# 0034 holds the default email copy; the harness seeds from it so the copy has one source.
+EMAIL_TEMPLATE_MIGRATION = (
+    Path(__file__).resolve().parent.parent
+    / "alembic"
+    / "versions"
+    / "0034_email_template_settings.py"
+)
 
 
 @pytest.fixture
@@ -120,7 +130,8 @@ def _get_test_engine() -> Engine:
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021 and 0025 seed.
+    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021, 0025 and 0034
+    seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
     /auth/token` now reads the four rate-limit rows on every request — without them every login
@@ -187,6 +198,7 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         ("reminder_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
         ("reminder_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
     ]
+    rows += list(_email_template_seed_rows())
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"
         " VALUES (:key, :value, :value_type, :is_developer_only) ON CONFLICT (key) DO NOTHING"
@@ -202,6 +214,16 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
                     "is_developer_only": is_developer_only,
                 },
             )
+
+
+def _email_template_seed_rows() -> tuple[tuple[str, str, str, bool], ...]:
+    """0034's `SEED_SETTINGS`, loaded from the migration file (alembic/ is not a package)."""
+    spec = importlib.util.spec_from_file_location("migration_0034", EMAIL_TEMPLATE_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return module.SEED_SETTINGS
 
 
 @pytest.fixture

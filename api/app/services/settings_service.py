@@ -90,12 +90,19 @@ from app.models.system_setting import (
     SETTING_VALUE_TYPE_STRING,
     SystemSetting,
 )
+from app.services.mail_templates import EmailTemplateInvalid, TemplateKind, validate_template
 
 BUSINESS_TIMEZONE_SETTING = "business_timezone"
 REMINDER_TEMPLATE_SID_EN_SETTING = "reminder_template_sid_en"
 REMINDER_TEMPLATE_SID_ES_SETTING = "reminder_template_sid_es"
 
 _INTEGER_VALUE_PATTERN = re.compile(r"[+-]?[0-9]{1,18}")
+
+# The rows migration 0034 seeds, by template kind: (subject key, body key).
+EMAIL_TEMPLATE_SETTINGS = {
+    TemplateKind.INVITE: ("email_invite_subject", "email_invite_body"),
+    TemplateKind.PASSWORD_RESET: ("email_reset_subject", "email_reset_body"),
+}
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,12 @@ class SettingsFlags:
 
     business_timezone_locked: bool
     reminders_paused: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EmailTemplate:
+    subject: str
+    body: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +230,18 @@ class BusinessTimezoneUnknown(SettingValueInvalid):
     A subclass so callers that only care "the value was refused" still catch it, while the
     router can tell the admin what a valid value looks like instead of the generic type error.
     """
+
+
+class EmailTemplateSettingInvalid(SettingValueInvalid):
+    """An email template row was given a subject or body `validate_template` refuses.
+
+    Carries the rule's message, which the router returns as-is: unlike a type error, the Admin
+    needs to know which rule they broke to fix the template.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 class SettingKeyDuplicated(SettingsError):
@@ -347,12 +372,23 @@ def apply_setting_updates(
 
         pending.append((row, value))
 
+    _check_email_templates(updates)
+
     for row, value in pending:
         row.value = value
 
     db.flush()
 
     return list_settings(db, actor_role=actor_role)
+
+
+def read_email_template(db: Session, *, kind: TemplateKind) -> EmailTemplate:
+    """The saved subject and body of the `kind` email."""
+    subject_key, body_key = EMAIL_TEMPLATE_SETTINGS[kind]
+
+    return EmailTemplate(
+        subject=get_str_setting(db, key=subject_key), body=get_str_setting(db, key=body_key)
+    )
 
 
 def has_any_booking(db: Session) -> bool:
@@ -372,20 +408,46 @@ def _check_integer_value(update: SettingUpdate) -> None:
         )
 
 
+def _check_email_templates(updates: Sequence[SettingUpdate]) -> None:
+    """Validate each email template the batch touches, checking only the parts it changes.
+
+    Per template rather than per row so that a batch saving both parts gets the rules in their
+    documented order (subject before body), as the test-send route does.
+    """
+    values = {update.key: update.value for update in updates}
+
+    for kind, (subject_key, body_key) in EMAIL_TEMPLATE_SETTINGS.items():
+        if subject_key not in values and body_key not in values:
+            continue
+
+        try:
+            validate_template(kind, subject=values.get(subject_key), body=values.get(body_key))
+        except EmailTemplateInvalid as exc:
+            raise EmailTemplateSettingInvalid(exc.message) from exc
+
+
 def _checked_string_value(update: SettingUpdate) -> str:
     """The value to store for a string row, stripped, or raise if this key refuses it.
 
     Stripped because every string row is pasted in by hand (a zone name, a Twilio template id),
     and a trailing space would make a template id that looks set fail at send time.
-    Only `business_timezone` has a validator; the template-id rows accept anything, and blank
-    is their documented "not approved" value.
+    Only `business_timezone` has a validator here; the template-id rows accept anything, and
+    blank is their documented "not approved" value. Email template rows are stored as written:
+    their whitespace is the email's layout, and `_check_email_templates` validates them.
     """
+    if _is_email_template_key(update.key):
+        return update.value
+
     value = update.value.strip()
 
     if update.key == BUSINESS_TIMEZONE_SETTING and not _is_known_zone(value):
         raise BusinessTimezoneUnknown(f"system setting {update.key!r} rejects {update.value!r}")
 
     return value
+
+
+def _is_email_template_key(key: str) -> bool:
+    return any(key in keys for keys in EMAIL_TEMPLATE_SETTINGS.values())
 
 
 def _is_known_zone(name: str) -> bool:

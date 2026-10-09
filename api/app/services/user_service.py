@@ -50,9 +50,16 @@ from app.models.password_link import PasswordLinkPurpose
 from app.models.user import User
 from app.services.auth_service import normalise_email
 from app.services.mail_service import public_url, send_email
-from app.services.mail_templates import invite_email
+from app.services.mail_templates import (
+    ACTOR_NAME_PLACEHOLDER,
+    LINK_PLACEHOLDER,
+    NAME_PLACEHOLDER,
+    TemplateKind,
+    render_email,
+)
 from app.services.name_rules import normalize_name
 from app.services.password_link_service import issue_link, revoke_links_for_user
+from app.services.settings_service import read_email_template
 from app.services.tutor_service import PROFILE_ROLES, create_profile
 
 SET_PASSWORD_PATH = "/set-password"
@@ -292,12 +299,19 @@ def invite_user(
     if not user.is_active:
         raise UserInactive
 
+    template = read_email_template(db, kind=TemplateKind.INVITE)
+
     with db.begin_nested():
         _link, token = issue_link(db, user=user, purpose=PasswordLinkPurpose.INVITE, now=now)
-        rendered = invite_email(
-            name=user.name,
-            actor_name=actor_name,
-            link=public_url(f"{SET_PASSWORD_PATH}?token={token}"),
+        rendered = render_email(
+            TemplateKind.INVITE,
+            subject=template.subject,
+            body=template.body,
+            values={
+                NAME_PLACEHOLDER: user.name,
+                ACTOR_NAME_PLACEHOLDER: actor_name,
+                LINK_PLACEHOLDER: public_url(f"{SET_PASSWORD_PATH}?token={token}"),
+            },
         )
         send_email(to=user.email, subject=rendered.subject, text=rendered.text, html=rendered.html)
 

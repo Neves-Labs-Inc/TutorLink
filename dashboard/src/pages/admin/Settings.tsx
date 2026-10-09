@@ -11,6 +11,8 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { WeeklyRemindersCard, WeeklyRemindersSkeleton } from '@/components/settings/WeeklyRemindersCard'
+import { EmailTemplatesCard, EmailTemplatesSkeleton } from '@/components/settings/EmailTemplatesCard'
+import { hasAllEmailTemplates } from '@/lib/settings/emailTemplates'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { errorDetail } from '@/lib/api'
@@ -86,6 +88,7 @@ export const Settings = () => {
           </CardContent>
         </Card>
         <WeeklyRemindersSkeleton />
+        <EmailTemplatesSkeleton />
       </div>
     )
   } else if (isError) {
@@ -164,6 +167,7 @@ export const Settings = () => {
         </form>
         )}
         <WeeklyRemindersCard page={data} role={role} />
+        {hasAllEmailTemplates(allSettings) && <EmailTemplatesCard page={data} />}
       </>
     )
   }

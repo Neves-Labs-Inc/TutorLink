@@ -233,6 +233,8 @@ the workflow with `jq`): `COOKIE_SECURE=true`, `BUSINESS_TIMEZONE=America/New_Yo
 `PUBLIC_BASE_URL` — never set it separately). `DASHBOARD_DIST_DIR` is **not** set here: it is baked
 into the image (`docker/api.Dockerfile`'s production stage sets `ENV DASHBOARD_DIST_DIR=/opt/dashboard`).
 
+> **Drift:** production now runs on one EC2 host with Docker Compose; the env the containers actually receive (mail settings and `PUBLIC_BASE_URL` included) is composed from SSM by `deploy/remote-deploy.sh`, not by this section.
+
 ## 7. Domain and TLS
 
 **The real domain name is not yet chosen (#34).** Until it is, `PUBLIC_BASE_URL` is set to the

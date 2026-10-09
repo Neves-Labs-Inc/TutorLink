@@ -15,11 +15,15 @@ readonly COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
 readonly ENV_FILE="$APP_DIR/.env"
 readonly PARAMETER_PATH="/tutorlink/prod/"
 readonly REQUIRED_PARAMETERS=(DATABASE_URL SECRET_KEY SITE_ADDRESS)
-# The WhatsApp bot's configuration: all four set turns the bot on, none set leaves it off, and a
-# mix fails the deploy so a half-configured bot never goes live.
+# Optional parameter groups, each all-or-nothing: every parameter set turns the feature on, none
+# set leaves it off, and a mix fails the deploy so a half-configured feature never goes live.
 readonly BOT_PARAMETERS=(TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_WHATSAPP_NUMBER ANTHROPIC_API_KEY)
-# Terraform creates the bot parameters holding this value (infra/ssm.tf); keep the two in sync.
-readonly BOT_PARAMETER_PLACEHOLDER="unset"
+readonly MAIL_PARAMETERS=(SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_FROM)
+# Terraform creates the optional parameters holding this value (infra/ssm.tf); keep the two in sync.
+readonly PARAMETER_PLACEHOLDER="unset"
+# .env is unquoted: compose's env_file parser treats ` #` as a comment and quotes and `$` as
+# syntax, and a line break ends the value. A value carrying any of these would deploy mangled.
+readonly UNSAFE_VALUE_PATTERN=$'[#"\'$\n\r]'
 # <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>; the region is read from the host part.
 readonly ECR_IMAGE_PATTERN='^[0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com/[a-z0-9._/-]+:[A-Za-z0-9._-]+$'
 
@@ -34,6 +38,46 @@ log() {
 
 compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+# Renders one optional parameter group as KEY=value lines into group_env_lines and sets
+# is_group_configured. Every key set: the real values, each refused if .env cannot carry it. None
+# set: blank lines ("blank") or no lines at all ("omit"), whichever the app reads as unconfigured.
+# A mix: the deploy fails naming the unset keys. Messages name keys, never values.
+#   render_parameter_group <label> blank|omit <key>...
+render_parameter_group() {
+  local label="$1" off_mode="$2" key value
+  shift 2
+  local keys=("$@") unset_keys=()
+  for key in "${keys[@]}"; do
+    value="${parameters[$key]:-}"
+    if [[ -z "$value" || "$value" == "$PARAMETER_PLACEHOLDER" ]]; then
+      unset_keys+=("$PARAMETER_PATH$key")
+    fi
+  done
+  if ((${#unset_keys[@]} > 0 && ${#unset_keys[@]} < ${#keys[@]})); then
+    fail "the $label parameters must be set together; still unset: ${unset_keys[*]}"
+  fi
+
+  group_env_lines=()
+  is_group_configured=false
+  if ((${#unset_keys[@]} == 0)); then
+    is_group_configured=true
+    for key in "${keys[@]}"; do
+      value="${parameters[$key]}"
+      if [[ "$value" =~ $UNSAFE_VALUE_PATTERN ]]; then
+        fail "parameter $PARAMETER_PATH$key contains a character .env cannot carry (# \" ' \$ or a line break)"
+      fi
+      group_env_lines+=("$key=$value")
+    done
+  else
+    log "${label^} not configured (all $label parameters unset); deploying without it"
+    if [[ "$off_mode" == blank ]]; then
+      for key in "${keys[@]}"; do
+        group_env_lines+=("$key=")
+      done
+    fi
+  fi
 }
 
 if [[ $# -ne 2 ]]; then
@@ -64,30 +108,16 @@ for key in "${REQUIRED_PARAMETERS[@]}"; do
   [[ -n "${parameters[$key]:-}" ]] || fail "parameter $PARAMETER_PATH$key is missing or empty"
 done
 
-unset_bot_parameters=()
-for key in "${BOT_PARAMETERS[@]}"; do
-  value="${parameters[$key]:-}"
-  if [[ -z "$value" || "$value" == "$BOT_PARAMETER_PLACEHOLDER" ]]; then
-    unset_bot_parameters+=("$PARAMETER_PATH$key")
-  fi
-done
-is_bot_configured=false
-if ((${#unset_bot_parameters[@]} == 0)); then
-  is_bot_configured=true
-elif ((${#unset_bot_parameters[@]} < ${#BOT_PARAMETERS[@]})); then
-  fail "the WhatsApp bot parameters must be set together; still unset: ${unset_bot_parameters[*]}"
-else
-  log "WhatsApp bot not configured (all bot parameters unset); deploying without it"
+# The bot keys are all strings and the app reads blank as off.
+render_parameter_group "WhatsApp bot" blank "${BOT_PARAMETERS[@]}"
+bot_env_lines=("${group_env_lines[@]}")
+# SMTP_PORT is an int in api/app/config.py and a blank one stops the API from booting, so an
+# unconfigured mail group writes nothing and the app falls back to its defaults.
+render_parameter_group "outbound mail" omit "${MAIL_PARAMETERS[@]}"
+mail_env_lines=("${group_env_lines[@]}")
+if [[ "$is_group_configured" == true && ! "${parameters[SMTP_PORT]}" =~ ^[0-9]+$ ]]; then
+  fail "parameter ${PARAMETER_PATH}SMTP_PORT must be a port number"
 fi
-# Blank values tell the app the bot is unconfigured.
-bot_env_lines=()
-for key in "${BOT_PARAMETERS[@]}"; do
-  if [[ "$is_bot_configured" == true ]]; then
-    bot_env_lines+=("$key=${parameters[$key]}")
-  else
-    bot_env_lines+=("$key=")
-  fi
-done
 
 env_lines=(
   "DATABASE_URL=${parameters[DATABASE_URL]}"
@@ -96,6 +126,9 @@ env_lines=(
   "SITE_ADDRESS=${parameters[SITE_ADDRESS]}"
   "${bot_env_lines[@]}"
   "TWILIO_STATUS_CALLBACK_URL=https://${parameters[SITE_ADDRESS]}/webhook/whatsapp/status"
+  "${mail_env_lines[@]}"
+  # Emailed links point at the site; derived here so it can never drift from SITE_ADDRESS.
+  "PUBLIC_BASE_URL=https://${parameters[SITE_ADDRESS]}"
   "API_DOCS_ENABLED=false"
   "COOKIE_SECURE=true"
   # The business is in Miami; a hardcoded non-secret, so not an SSM parameter.

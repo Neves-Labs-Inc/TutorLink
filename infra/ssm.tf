@@ -88,3 +88,42 @@ resource "aws_ssm_parameter" "twilio_whatsapp_number" {
   value_wo         = local.unset_placeholder
   value_wo_version = 1
 }
+
+# Outbound mail (invites, password resets), same write-only placeholder pattern as the bot's. Ship
+# with a real mailbox's SMTP (a Gmail/Workspace app password); once #34 picks the domain, switch
+# to SES over SMTP with domain DKIM by changing these parameters only. The five are all-or-nothing
+# in deploy/remote-deploy.sh; PUBLIC_BASE_URL is derived there from SITE_ADDRESS, not stored.
+resource "aws_ssm_parameter" "smtp_host" {
+  name             = "${local.parameter_prefix}/SMTP_HOST"
+  type             = "String"
+  value_wo         = local.unset_placeholder
+  value_wo_version = 1
+}
+
+resource "aws_ssm_parameter" "smtp_port" {
+  name             = "${local.parameter_prefix}/SMTP_PORT"
+  type             = "String"
+  value_wo         = local.unset_placeholder
+  value_wo_version = 1
+}
+
+resource "aws_ssm_parameter" "smtp_username" {
+  name             = "${local.parameter_prefix}/SMTP_USERNAME"
+  type             = "String"
+  value_wo         = local.unset_placeholder
+  value_wo_version = 1
+}
+
+resource "aws_ssm_parameter" "smtp_password" {
+  name             = "${local.parameter_prefix}/SMTP_PASSWORD"
+  type             = "SecureString"
+  value_wo         = local.unset_placeholder
+  value_wo_version = 1
+}
+
+resource "aws_ssm_parameter" "mail_from" {
+  name             = "${local.parameter_prefix}/MAIL_FROM"
+  type             = "String"
+  value_wo         = local.unset_placeholder
+  value_wo_version = 1
+}

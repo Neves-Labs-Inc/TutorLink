@@ -57,6 +57,21 @@ class SettingsUpdate(BaseModel):
     updates: Annotated[list[SettingWrite], Field(min_length=1)]
 
 
+class EmailTemplatePreview(BaseModel):
+    """An unsaved draft to render; `mail_templates` checks its rules."""
+
+    template: TemplateKind
+    subject: str
+    body: str
+    # Absent: the saved colour.
+    brand_color: str | None = None
+
+
+class EmailTemplatePreviewRead(BaseModel):
+    subject: str
+    html: str
+
+
 class EmailTemplateTest(BaseModel):
     """An unsaved draft to email to the caller; `mail_templates` checks its rules."""
 

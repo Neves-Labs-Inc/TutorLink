@@ -44,9 +44,16 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.system_setting import SystemSetting
-from app.schemas.settings import EmailTemplateTest, SettingRead, SettingsPage, SettingsUpdate
+from app.schemas.settings import (
+    EmailTemplatePreview,
+    EmailTemplatePreviewRead,
+    EmailTemplateTest,
+    SettingRead,
+    SettingsPage,
+    SettingsUpdate,
+)
 from app.services import clock
-from app.services.email_template_test_service import send_test_email
+from app.services.email_template_test_service import preview_email, send_test_email
 from app.services.mail_service import MailServiceError
 from app.services.mail_templates import EmailTemplateInvalid
 from app.services.settings_service import (
@@ -162,6 +169,24 @@ def send_email_template_test(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=TEST_EMAIL_SEND_FAILED_ERROR
         ) from exc
+
+
+@router.post("/email-templates/preview")
+def preview_email_template(
+    payload: EmailTemplatePreview, _user: AdminPrincipal, db: DbSession
+) -> EmailTemplatePreviewRead:
+    try:
+        rendered = preview_email(
+            db,
+            kind=payload.template,
+            subject=payload.subject,
+            body=payload.body,
+            brand_color=payload.brand_color,
+        )
+    except EmailTemplateInvalid as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+
+    return EmailTemplatePreviewRead(subject=rendered.subject, html=rendered.html)
 
 
 def _page(db: Session, rows: Sequence[SystemSetting]) -> SettingsPage:

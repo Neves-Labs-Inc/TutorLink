@@ -56,6 +56,8 @@ def _wire(answer: str | None, *, intent: str = "unknown", language: str | None =
 class _StubResponse:
     def __init__(self, parsed_output: object) -> None:
         self.parsed_output = parsed_output
+        self.stop_reason = "end_turn"
+        self.stop_details = None
 
 
 @dataclass

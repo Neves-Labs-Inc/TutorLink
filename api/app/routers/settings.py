@@ -34,6 +34,7 @@ guard is never armed here, and taking the dependency would give a tutorless reso
 `?tutor_id=` query parameter that means nothing.
 """
 
+import logging
 from collections.abc import Sequence
 from typing import Annotated
 
@@ -43,11 +44,22 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import AdminPrincipal
 from app.models.system_setting import SystemSetting
-from app.schemas.settings import SettingRead, SettingsPage, SettingsUpdate
+from app.schemas.settings import (
+    EmailTemplatePreview,
+    EmailTemplatePreviewRead,
+    EmailTemplateTest,
+    SettingRead,
+    SettingsPage,
+    SettingsUpdate,
+)
 from app.services import clock
+from app.services.email_template_test_service import preview_email, send_test_email
+from app.services.mail_service import MailServiceError
+from app.services.mail_templates import EmailTemplateInvalid
 from app.services.settings_service import (
     BUSINESS_TIMEZONE_SETTING,
     BusinessTimezoneUnknown,
+    EmailTemplateSettingInvalid,
     SettingKeyDuplicated,
     SettingLocked,
     SettingNotEditable,
@@ -69,6 +81,12 @@ DUPLICATE_KEY_ERROR = "A setting may appear only once in one request"
 SETTING_VALUE_INVALID_ERROR = "That value is not valid for this setting's type"
 SETTING_NOT_FOUND_ERROR = "No such setting"
 SETTING_NOT_EDITABLE_ERROR = "That setting is not editable with your role"
+
+TEST_EMAIL_SEND_FAILED_ERROR = (
+    "The test email couldn't be sent. Check the mail settings and try again."
+)
+
+logger = logging.getLogger(__name__)
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -108,6 +126,9 @@ def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) ->
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=BUSINESS_TIMEZONE_INVALID_ERROR
         ) from exc
+    except EmailTemplateSettingInvalid as exc:
+        # The rule's own message: the Admin needs to know which one to fix.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
     except SettingValueInvalid as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=SETTING_VALUE_INVALID_ERROR
@@ -125,6 +146,47 @@ def update_many(payload: SettingsUpdate, user: AdminPrincipal, db: DbSession) ->
         clock.refresh_business_zone(db)
 
     return _page(db, rows)
+
+
+@router.post("/email-templates/test", status_code=status.HTTP_204_NO_CONTENT)
+def send_email_template_test(
+    payload: EmailTemplateTest, user: AdminPrincipal, db: DbSession
+) -> None:
+    try:
+        send_test_email(
+            db,
+            user_id=user.id,
+            kind=payload.template,
+            subject=payload.subject,
+            body=payload.body,
+            brand_color=payload.brand_color,
+        )
+    except EmailTemplateInvalid as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+    except MailServiceError as exc:
+        # No address in the log.
+        logger.error("test email for user %s not sent: %s", user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=TEST_EMAIL_SEND_FAILED_ERROR
+        ) from exc
+
+
+@router.post("/email-templates/preview")
+def preview_email_template(
+    payload: EmailTemplatePreview, _user: AdminPrincipal, db: DbSession
+) -> EmailTemplatePreviewRead:
+    try:
+        rendered = preview_email(
+            db,
+            kind=payload.template,
+            subject=payload.subject,
+            body=payload.body,
+            brand_color=payload.brand_color,
+        )
+    except EmailTemplateInvalid as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+
+    return EmailTemplatePreviewRead(subject=rendered.subject, html=rendered.html)
 
 
 def _page(db: Session, rows: Sequence[SystemSetting]) -> SettingsPage:

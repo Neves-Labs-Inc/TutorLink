@@ -27,6 +27,7 @@ from app.services.mail_service import MailSendFailed
 SEND_CALLERS: tuple[str, ...] = (
     "app.services.user_service",
     "app.services.password_link_service",
+    "app.services.email_template_test_service",
 )
 SEND_FUNCTION_NAME = "send_email"
 

@@ -1064,7 +1064,7 @@ def test_inviting_a_user_without_a_login_emails_a_single_use_link(
     assert len(fake_mail.sent) == 1
     email = fake_mail.sent[0]
     assert email.to == invitee.email
-    assert email.subject == "You're invited to TutorLink"
+    assert email.subject == "Rita Admin invited you to TutorLink"
     assert "Rita Admin" in email.text
     assert "http://testserver/set-password?token=" in email.text
     assert "expires in 7 days" in email.text

@@ -26,6 +26,7 @@ from app.services.auth_service import (
     RefreshTokenReused,
     authenticate_user,
     issue_token_pair,
+    revoke_all_refresh_tokens_for_user,
     revoke_family_for_token,
     rotate_refresh_token,
 )
@@ -368,6 +369,26 @@ def test_revoke_family_for_token_is_a_silent_no_op_for_an_unknown_jti(db: Sessio
     db.flush()
 
     assert revoke_family_for_token(db, presented=issued.refresh_token) is None
+
+
+def test_revoke_all_refresh_tokens_for_user_revokes_every_live_row_of_that_user_only(
+    db: Session,
+) -> None:
+    user = _make_user(db)
+    bystander = _make_user(db, email="other@x.com")
+    first = issue_token_pair(db, user=user)
+    second = issue_token_pair(db, user=user)
+    rotated = rotate_refresh_token(db, presented=second.refresh_token)
+    untouched = issue_token_pair(db, user=bystander)
+
+    revoke_all_refresh_tokens_for_user(db, user_id=user.id)
+
+    assert _count_rows(db, _family_of(first.refresh_token), live_only=True) == 0
+    assert _count_rows(db, _family_of(second.refresh_token), live_only=True) == 0
+    assert _count_rows(db, _family_of(untouched.refresh_token), live_only=True) == 1
+    with pytest.raises(InvalidRefreshToken):
+        rotate_refresh_token(db, presented=rotated.refresh_token)
+    assert rotate_refresh_token(db, presented=untouched.refresh_token).access_token
 
 
 def test_revoke_family_for_token_revokes_every_live_row_and_is_idempotent(

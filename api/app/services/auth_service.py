@@ -178,6 +178,21 @@ def revoke_family_for_token(db: Session, *, presented: str) -> None:
         _revoke_family(db, family_id=row.family_id)
 
 
+def revoke_all_refresh_tokens_for_user(db: Session, *, user_id: uuid.UUID) -> None:
+    """Sign the user out everywhere: every live refresh token of theirs, across all families.
+
+    What a password reset does to the sessions the old password opened. Access tokens already
+    issued run to their own expiry; only refresh is cut off.
+    """
+    db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(UTC))
+        .execution_options(synchronize_session="fetch")
+    )
+    db.flush()
+
+
 def _mint(db: Session, *, user: User, family_id: uuid.UUID) -> tuple[RefreshToken, IssuedTokens]:
     jti = uuid.uuid4()
     refresh_token, refresh_expires_at = create_refresh_token(

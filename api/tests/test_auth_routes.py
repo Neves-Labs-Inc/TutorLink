@@ -1,5 +1,8 @@
+import threading
 import uuid
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,12 +14,26 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config import get_settings
 from app.models.enums import UserRole
 from app.models.login_attempt import LoginAttempt
+from app.models.password_link import PasswordLink, PasswordLinkPurpose
 from app.models.refresh_token import RefreshToken
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers import auth
-from app.security import ACCESS_TOKEN_TYPE, REFRESH_TOKEN_TYPE, decode_token, hash_password
+from app.security import (
+    ACCESS_TOKEN_TYPE,
+    REFRESH_TOKEN_TYPE,
+    create_access_token,
+    decode_token,
+    hash_password,
+)
+from app.services.password_link_service import (
+    InvalidLink,
+    hash_token,
+    issue_link,
+    set_password_with_link,
+)
 from app.services.rate_limit_service import EMAIL_BUCKET_PREFIX, IP_BUCKET_PREFIX
+from tests.fake_mail import FakeMail, token_from
 
 EMAIL = "admin@example.com"
 DORMANT_EMAIL = "dormant@example.com"
@@ -25,6 +42,10 @@ NO_PASSWORD_EMAIL = "office-created@example.com"
 PASSWORD = "correct horse battery staple"
 COMMITTED_EMAIL_SUFFIX = "@committed.test"
 TEST_CLIENT_PEER = "testclient"
+INVITEE_EMAIL = "invitee@example.com"
+NEW_PASSWORD = "a brand new password"
+INVALID_LINK_BODY = {"detail": "This link is invalid or has expired"}
+BARRIER_TIMEOUT_SECONDS = 10
 
 
 def test_login_returns_a_token_pair_and_sets_the_refresh_cookie(
@@ -273,6 +294,227 @@ def test_a_correct_password_leaves_none_of_its_own_reservation_rows(
     assert reserved == []
 
 
+# --- POST /auth/password/set -------------------------------------------------------------------
+
+
+def test_an_invite_link_sets_the_password_and_signs_the_user_in(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    response = _set_password(api, token=token)
+    body = response.json()
+    set_cookie = response.headers["set-cookie"]
+    claims = decode_token(body["access_token"], expected_type=ACCESS_TOKEN_TYPE)
+    read_back = api.get(f"/api/users/{invitee.id}", headers=_admin_auth(db)).json()
+    api.cookies.clear()
+    login = _login(api, email=INVITEE_EMAIL, password=NEW_PASSWORD)
+
+    assert response.status_code == 200
+    assert body["token_type"] == "bearer"
+    assert body["refresh_token"]
+    assert set_cookie.startswith("refresh_token=")
+    assert "HttpOnly" in set_cookie
+    assert "Path=/auth" in set_cookie
+    assert claims.subject == invitee.id
+    assert claims.role is UserRole.ADMIN
+    assert read_back["has_password"] is True
+    assert read_back["invite_expires_at"] is None
+    assert login.status_code == 200
+
+
+def test_a_link_works_only_once(api: TestClient, db: Session, fake_mail: FakeMail) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    first = _set_password(api, token=token)
+    second = _set_password(api, token=token)
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert second.json() == INVALID_LINK_BODY
+
+
+def test_an_unknown_token_gets_the_same_400(api: TestClient) -> None:
+    response = _set_password(api, token="not-a-token-anyone-was-sent")
+
+    assert response.status_code == 400
+    assert response.json() == INVALID_LINK_BODY
+    assert "set-cookie" not in response.headers
+
+
+def test_an_expired_link_gets_the_same_400(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    _link_of(db, token).expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.flush()
+
+    response = _set_password(api, token=token)
+
+    assert response.status_code == 400
+    assert response.json() == INVALID_LINK_BODY
+
+
+def test_a_deactivated_users_link_gets_the_same_400(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    invitee.is_active = False
+    db.flush()
+
+    response = _set_password(api, token=token)
+
+    assert response.status_code == 400
+    assert response.json() == INVALID_LINK_BODY
+
+
+def test_an_email_change_through_the_api_kills_the_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    patched = api.patch(
+        f"/api/users/{invitee.id}",
+        json={"email": "moved@example.com"},
+        headers=_admin_auth(db),
+    )
+    response = _set_password(api, token=token)
+
+    assert patched.status_code == 200
+    assert response.status_code == 400
+    assert response.json() == INVALID_LINK_BODY
+
+
+def test_a_link_sent_to_an_address_the_user_no_longer_has_gets_the_same_400(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    """The row's `email` is the backstop when the address drifts without a revocation."""
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    invitee.email = "drifted@example.com"
+    db.flush()
+
+    response = _set_password(api, token=token)
+
+    assert response.status_code == 400
+    assert response.json() == INVALID_LINK_BODY
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["seven77", "é" * 37],
+    ids=["seven characters", "over 72 bytes"],
+)
+def test_an_unusable_password_is_422_and_leaves_the_link_live(
+    api: TestClient, db: Session, fake_mail: FakeMail, password: str
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    refused = _set_password(api, token=token, password=password)
+    accepted = _set_password(api, token=token)
+
+    assert refused.status_code == 422
+    assert refused.json() == {"detail": "Password must be between 8 characters and 72 bytes"}
+    assert accepted.status_code == 200
+
+
+def test_a_missing_field_is_400_and_leaves_the_link_live(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    refused = api.post("/auth/password/set", json={"token": token})
+    accepted = _set_password(api, token=token)
+
+    assert refused.status_code == 400
+    assert accepted.status_code == 200
+
+
+def test_a_reset_signs_the_user_out_everywhere_else(api: TestClient, db: Session) -> None:
+    user = _make_user(db)
+    first = _login(api).json()["refresh_token"]
+    second = _login(api).json()["refresh_token"]
+    _link, token = issue_link(
+        db, user=user, purpose=PasswordLinkPurpose.RESET, now=datetime.now(UTC)
+    )
+
+    response = _set_password(api, token=token)
+    fresh = response.json()["refresh_token"]
+    api.cookies.clear()
+    first_refresh = api.post("/auth/refresh", json={"refresh_token": first})
+    second_refresh = api.post("/auth/refresh", json={"refresh_token": second})
+    fresh_refresh = api.post("/auth/refresh", json={"refresh_token": fresh})
+
+    assert response.status_code == 200
+    assert first_refresh.status_code == 401
+    assert second_refresh.status_code == 401
+    assert fresh_refresh.status_code == 200
+
+
+def test_an_invite_leaves_other_users_sessions_alone(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    _make_user(db)
+    bystander = _login(api).json()["refresh_token"]
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    response = _set_password(api, token=token)
+    api.cookies.clear()
+    bystander_refresh = api.post("/auth/refresh", json={"refresh_token": bystander})
+
+    assert response.status_code == 200
+    assert bystander_refresh.status_code == 200
+
+
+def test_two_concurrent_submits_of_one_token_let_exactly_one_through(
+    committed_sessions: sessionmaker[Session],
+) -> None:
+    """The row locks in `set_password_with_link`, raced on two real connections.
+
+    Both threads open their connection and wait on the barrier, so the two lookups overlap for
+    real: with no `FOR UPDATE` on the user and the link, each reads the link as live and both
+    store a password. The second waiter re-reads the link after the first commits and finds
+    it spent.
+    """
+    email = f"race{COMMITTED_EMAIL_SUFFIX}"
+    with committed_sessions() as setup:
+        user = _make_user(setup, email=email, password=None)
+        _link, token = issue_link(
+            setup, user=user, purpose=PasswordLinkPurpose.INVITE, now=datetime.now(UTC)
+        )
+        setup.commit()
+    started = threading.Barrier(2)
+
+    def submit() -> bool:
+        with committed_sessions() as session:
+            session.connection()
+            started.wait(timeout=BARRIER_TIMEOUT_SECONDS)
+            try:
+                set_password_with_link(
+                    session, token=token, password=NEW_PASSWORD, now=datetime.now(UTC)
+                )
+            except InvalidLink:
+                succeeded = False
+            else:
+                succeeded = True
+            session.commit()
+
+        return succeeded
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = [future.result() for future in [pool.submit(submit), pool.submit(submit)]]
+
+    assert sorted(outcomes) == [False, True]
+
+
 @pytest.fixture
 def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session], None, None]:
     factory = sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)
@@ -282,6 +524,7 @@ def committed_sessions(_test_engine: Engine) -> Generator[sessionmaker[Session],
         with factory() as cleanup:
             owners = select(User.id).where(User.email.like(f"%{COMMITTED_EMAIL_SUFFIX}"))
             cleanup.execute(delete(RefreshToken).where(RefreshToken.user_id.in_(owners)))
+            cleanup.execute(delete(PasswordLink).where(PasswordLink.user_id.in_(owners)))
             cleanup.execute(delete(User).where(User.email.like(f"%{COMMITTED_EMAIL_SUFFIX}")))
             cleanup.commit()
 
@@ -336,6 +579,31 @@ def _make_committed_user(sessions: sessionmaker[Session], email: str) -> None:
 
 def _login(api: TestClient, *, email: str = EMAIL, password: str = PASSWORD) -> Response:
     return api.post("/auth/token", data={"username": email, "password": password})
+
+
+def _admin_auth(db: Session) -> dict[str, str]:
+    admin = _make_user(db, email=f"admin-{uuid.uuid4().hex[:8]}@example.com")
+    token = create_access_token(user_id=admin.id, role=admin.role, tutor_id=None)
+
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _invite(api: TestClient, db: Session, invitee: User, fake_mail: FakeMail) -> str:
+    """Send `invitee` an Invite as an Admin and return the token from the email."""
+    response = api.post(f"/api/users/{invitee.id}/invite", headers=_admin_auth(db))
+    assert response.status_code == 200, response.json()
+
+    return token_from(fake_mail.sent[-1])
+
+
+def _set_password(api: TestClient, *, token: str, password: str = NEW_PASSWORD) -> Response:
+    return api.post("/auth/password/set", json={"token": token, "password": password})
+
+
+def _link_of(db: Session, token: str) -> PasswordLink:
+    return db.execute(
+        select(PasswordLink).where(PasswordLink.token_hash == hash_token(token))
+    ).scalar_one()
 
 
 def _family_of(refresh_token: str) -> uuid.UUID:

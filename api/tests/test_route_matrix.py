@@ -56,6 +56,8 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/auth/token"): Access.PUBLIC,
     ("POST", "/auth/refresh"): Access.PUBLIC,
     ("POST", "/auth/logout"): Access.PUBLIC,
+    # Authenticated by the single-use link token in the body, not by a user token.
+    ("POST", "/auth/password/set"): Access.PUBLIC,
     # Authenticated by Twilio's signature, not by a user token.
     ("POST", "/webhook/whatsapp"): Access.PUBLIC,
     ("POST", "/webhook/whatsapp/status"): Access.PUBLIC,

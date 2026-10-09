@@ -42,7 +42,7 @@ from app.models.home import ChildHome, GuardianHome, Home
 from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.models.user import User
-from app.security import hash_password, password_is_encodable
+from app.security import MIN_PASSWORD_LENGTH, hash_password, password_is_encodable
 from app.services import clock
 from app.services.phone_service import (
     InvalidPhoneNumber,
@@ -53,8 +53,6 @@ from app.services.reminder_service import TemplateNotApproved, send_sample
 from app.services.retention_scheduler import run_guarded_purge
 from app.services.twilio_service import TwilioSendFailed, TwilioServiceError
 from app.services.name_rules import InvalidName, normalize_name
-
-MIN_PASSWORD_LENGTH = 8
 
 # Bounds the wait for the table locks, so an idle-in-transaction session cannot make the purge
 # (and the bot's writes queued behind it) wait forever.

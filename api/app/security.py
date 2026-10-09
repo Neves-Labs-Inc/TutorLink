@@ -15,6 +15,8 @@ REFRESH_TOKEN_TYPE = "refresh"
 # bcrypt only consumes the first 72 bytes of a password; anything beyond is silently
 # discarded, which would make two different long passwords interchangeable. We reject instead.
 MAX_PASSWORD_BYTES = 72
+# The floor every password a user chooses (CLI seed, Invite, reset) must clear.
+MIN_PASSWORD_LENGTH = 8
 
 
 class TokenError(Exception):

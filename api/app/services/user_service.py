@@ -208,8 +208,12 @@ def update_user(
     name: str | None,
     now: datetime,
 ) -> User:
-    """`now` dates the revocation of the user's links when `email` changes address."""
-    user = get_user(db, user_id=user_id)
+    """`now` dates the revocation of the user's links when `email` changes address.
+
+    The user row is locked first, as `invite_user` does, so an edit and an Invite running at
+    once take the user row and then the link rows in the same order rather than deadlocking.
+    """
+    user = _lock_user(db, user_id=user_id)
 
     # Both directions. An admin may not promote anyone to developer (#13), and may not write to
     # an existing developer at all.
@@ -277,10 +281,7 @@ def invite_user(
     Resend, two Admins) run one after the other and the second revokes the first's link: at
     most one live Invite, as `password_link_service` promises.
     """
-    user = db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
-
-    if user is None:
-        raise UserNotFound
+    user = _lock_user(db, user_id=user_id)
 
     if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
         raise RoleNotPermitted
@@ -299,6 +300,16 @@ def invite_user(
             link=public_url(f"{SET_PASSWORD_PATH}?token={token}"),
         )
         send_email(to=user.email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+
+    return user
+
+
+def _lock_user(db: Session, *, user_id: uuid.UUID) -> User:
+    """The user, locked `FOR UPDATE` for the rest of the transaction."""
+    user = db.scalars(select(User).where(User.id == user_id).with_for_update()).first()
+
+    if user is None:
+        raise UserNotFound
 
     return user
 

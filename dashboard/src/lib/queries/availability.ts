@@ -3,6 +3,9 @@ import { queryOptions } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { Page } from '@/lib/queries/page'
 
+// Mirrors `AvailabilityMode` in the API: Home visits, Home or office, Office only.
+export type AvailabilityMode = 'traveler' | 'anywhere' | 'only_office'
+
 export type AvailabilitySlot = {
   id: string
   tutor_id: string
@@ -12,12 +15,14 @@ export type AvailabilitySlot = {
   start_time: string
   end_time: string
   is_active: boolean
+  mode: AvailabilityMode
 }
 
 export type SlotCreate = {
   day_of_week: number
   start_time: string
   end_time: string
+  mode: AvailabilityMode
 }
 
 // No `day_of_week`, mirroring `AvailabilityUpdate` in `api/app/schemas/availability.py`:
@@ -26,6 +31,7 @@ export type SlotUpdate = {
   start_time?: string
   end_time?: string
   is_active?: boolean
+  mode?: AvailabilityMode
 }
 
 const SLOT_PAGE_SIZE = 100

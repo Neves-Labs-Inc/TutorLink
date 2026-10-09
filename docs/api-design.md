@@ -1178,7 +1178,8 @@ Returns the tutor's full weekly schedule.
       "day_of_week": 0,
       "start_time": "09:00:00",
       "end_time": "12:00:00",
-      "is_active": true
+      "is_active": true,
+      "mode": "anywhere"
     }
   ],
   "total": 42,
@@ -1196,13 +1197,22 @@ Add a recurring weekly slot.
 {
   "day_of_week": 0,
   "start_time": "09:00",
-  "end_time": "12:00"
+  "end_time": "12:00",
+  "mode": "anywhere"
 }
 ```
 
+`mode` is optional and one of `traveler` (Home visits), `anywhere` (Home or office) or `only_office` (Office only). Omitted, it defaults to `anywhere`; an unknown value is a 400. The mode limits only what the bot offers; the Office can book any Location. Every slot is returned with its `mode`.
+
 ### `PATCH /api/availability/{id}`
 
-Update a slot's time or active status.
+Update a slot's time, active status or `mode`.
+
+```json
+{ "mode": "traveler" }
+```
+
+A `mode` change runs no booking checks and leaves existing bookings alone; omitting `mode` leaves it as it was.
 
 ### `DELETE /api/availability/{id}`
 

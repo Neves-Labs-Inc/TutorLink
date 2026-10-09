@@ -27,6 +27,7 @@ const slot = (overrides: Partial<AvailabilitySlot> = {}): AvailabilitySlot => ({
   start_time: '09:00:00',
   end_time: '10:30:00',
   is_active: true,
+  mode: 'anywhere',
   ...overrides,
 })
 

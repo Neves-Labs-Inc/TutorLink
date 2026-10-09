@@ -79,6 +79,7 @@ export const AvailabilitySection = ({ tutorId }: AvailabilitySectionProps) => {
             day_of_week: input.dayOfWeek,
             start_time: input.start,
             end_time: input.end,
+            mode: 'anywhere',
           })
         : updateSlot(input.slot.id, { start_time: input.start, end_time: input.end }),
     onSuccess: async () => {

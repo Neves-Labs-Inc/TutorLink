@@ -91,6 +91,7 @@ def create_tutor_availability(
             day_of_week=payload.day_of_week,
             start_time=payload.start_time,
             end_time=payload.end_time,
+            mode=payload.mode,
         )
     except TutorNotFound as exc:
         raise HTTPException(
@@ -122,6 +123,7 @@ def update_tutor_availability(
             start_time=payload.start_time,
             end_time=payload.end_time,
             is_active=payload.is_active,
+            mode=payload.mode,
         )
     except AvailabilityNotFound as exc:
         raise HTTPException(
@@ -163,4 +165,5 @@ def _read(row: TutorAvailability) -> AvailabilityRead:
         start_time=row.start_time,
         end_time=row.end_time,
         is_active=row.is_active,
+        mode=row.mode,
     )

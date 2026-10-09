@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability
+from app.models.enums import AvailabilityMode
 from app.models.tutor import Tutor
 
 
@@ -83,6 +84,7 @@ def create_availability(
     day_of_week: int,
     start_time: datetime.time,
     end_time: datetime.time,
+    mode: AvailabilityMode,
 ) -> TutorAvailability:
     """Add a recurring weekly slot for `tutor_id`."""
     if db.get(Tutor, tutor_id) is None:
@@ -97,7 +99,11 @@ def create_availability(
         raise AvailabilitySlotTaken
 
     row = TutorAvailability(
-        tutor_id=tutor_id, day_of_week=day_of_week, start_time=start_time, end_time=end_time
+        tutor_id=tutor_id,
+        day_of_week=day_of_week,
+        start_time=start_time,
+        end_time=end_time,
+        mode=mode,
     )
 
     # The savepoint wraps the insert and nothing else — the same shape `client_service.py`'s
@@ -121,6 +127,7 @@ def update_availability(
     start_time: datetime.time | None,
     end_time: datetime.time | None,
     is_active: bool | None,
+    mode: AvailabilityMode | None,
 ) -> TutorAvailability:
     """Change a slot's time window or active status. `day_of_week` cannot move here — moving a
     slot to a different day is a delete plus a create, not an edit."""
@@ -156,6 +163,9 @@ def update_availability(
 
             if is_active is not None:
                 row.is_active = is_active
+
+            if mode is not None:
+                row.mode = mode
 
             db.flush()
     except IntegrityError as exc:

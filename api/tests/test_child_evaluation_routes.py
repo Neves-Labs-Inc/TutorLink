@@ -354,6 +354,74 @@ def test_awaiting_evaluation_lists_active_children_not_evaluated_oldest_first(
     assert len(first["guardians"]) == 1
 
 
+def test_evaluable_lists_active_children_with_no_evaluation_booked_or_done_oldest_first(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    token = _suffix()
+    newest = _make_child(db, name=f"Ana {token}", created_days_ago=1)
+    oldest = _make_child(db, name=f"Zoe {token}", created_days_ago=9)
+    evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
+    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_active=False)
+    api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
+    api.post(_evaluated_url(evaluated), headers=_auth(admin))
+
+    body = api.get(f"/api/children?q={token}&evaluable=true", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(oldest.id), str(newest.id)]
+    assert body["total"] == 2
+
+
+@pytest.mark.parametrize("status", [BookingStatus.PENDING, BookingStatus.CONFIRMED])
+def test_evaluable_leaves_out_a_child_with_a_live_evaluation(
+    api: TestClient, db: Session, status: BookingStatus
+) -> None:
+    admin = _make_user(db)
+    token = _suffix()
+    booked = _make_child(db, name=f"Ana {token}")
+    free = _make_child(db, name=f"Zoe {token}")
+    _set_status(db, _book_evaluation(api, admin, booked), status)
+
+    body = api.get(f"/api/children?q={token}&evaluable=true", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(free.id)]
+
+
+@pytest.mark.parametrize("status", [BookingStatus.COMPLETED, BookingStatus.CANCELLED])
+def test_evaluable_keeps_a_child_whose_only_evaluation_is_over(
+    api: TestClient, db: Session, status: BookingStatus
+) -> None:
+    admin = _make_user(db)
+    token = _suffix()
+    child = _make_child(db, name=f"Ana {token}")
+    _set_status(db, _book_evaluation(api, admin, child), status)
+
+    body = api.get(f"/api/children?q={token}&evaluable=true", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(child.id)]
+
+
+def test_awaiting_evaluation_still_lists_a_child_with_a_live_evaluation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    token = _suffix()
+    booked = _make_child(db, name=f"Ana {token}")
+    _book_evaluation(api, admin, booked)
+
+    body = api.get(f"/api/children?q={token}&awaiting_evaluation=true", headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(booked.id)]
+
+
+def test_a_tutor_is_refused_the_evaluable_list(api: TestClient, db: Session) -> None:
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+
+    response = api.get("/api/children?evaluable=true", headers=_auth(tutor_user))
+
+    assert response.status_code == 403
+
+
 # --- the RBAC gate ----------------------------------------------------------------------------
 
 
@@ -446,6 +514,11 @@ def _book_evaluation(api: TestClient, staff: User, child: Child) -> uuid.UUID:
     response = api.post("/api/bookings", json=_evaluation_body(staff, child), headers=_auth(staff))
     assert response.status_code == 201, response.json()
     return uuid.UUID(response.json()["id"])
+
+
+def _set_status(db: Session, booking_id: uuid.UUID, status: BookingStatus) -> None:
+    db.get_one(Booking, booking_id).status = status
+    db.flush()
 
 
 def _make_tutor(db: Session) -> Tutor:

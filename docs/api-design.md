@@ -901,6 +901,8 @@ themselves rather than acting as wildcards, the same rule `?q=` follows on
 
 Ordered by `Child.name`, then `Child.id`.
 
+`?awaiting_evaluation=true` narrows to active, not-Evaluated children (whatever `is_active` says), oldest `created_at` first. `?evaluable=true` narrows further to those with no live Evaluation (a `pending` or `confirmed` booking of `kind = 'evaluation'`), i.e. who may be booked an Evaluation; a child whose only Evaluations are `completed` or `cancelled` is included. It is ordered like `awaiting_evaluation` and composes with `?q=`.
+
 `guardians` lists every linked guardian, active or not, ordered by name then id. `homes` lists
 only the child's **active** homes, ordered by creation. `next_session` is the child's earliest
 booking that is live and starts after now (business time) — `null` when there is none.

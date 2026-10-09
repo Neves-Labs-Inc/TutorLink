@@ -9,7 +9,8 @@ tutors cannot call either route, and an unread scope would arm the guard that 50
 `bookings` read behind `next_session`.
 
 `?awaiting_evaluation=true` is the Awaiting evaluation tab: active Children not yet Evaluated,
-oldest `created_at` first.
+oldest `created_at` first. `?evaluable=true` is the same list minus Children with a live
+Evaluation: who the booking form may offer for an Evaluation.
 """
 
 import uuid
@@ -58,6 +59,7 @@ def list_all(
     is_active: bool = True,
     q: str | None = None,
     awaiting_evaluation: bool = False,
+    evaluable: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ChildSummary]:
@@ -68,6 +70,7 @@ def list_all(
         limit=page_size,
         offset=(page - 1) * page_size,
         awaiting_evaluation=awaiting_evaluation,
+        evaluable=evaluable,
     )
 
     return Page[ChildSummary](

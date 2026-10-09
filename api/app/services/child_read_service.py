@@ -22,9 +22,10 @@ from dataclasses import dataclass
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app.models.booking import Booking, upcoming_live_bookings
+from app.models.booking import LIVE_BOOKING_STATUSES, Booking, upcoming_live_bookings
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
+from app.models.enums import BookingKind
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, Home
 from app.models.subject import Subject
@@ -67,6 +68,7 @@ def list_children(
     limit: int,
     offset: int,
     awaiting_evaluation: bool = False,
+    evaluable: bool = False,
 ) -> tuple[list[ChildRow], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -75,9 +77,14 @@ def list_children(
 
     `awaiting_evaluation` narrows to active Children who aren't Evaluated, whatever
     `is_active` says, oldest first: the Child waiting longest leads the tab.
+
+    `evaluable` is `awaiting_evaluation` minus Children with a live Evaluation: the ones the
+    booking form may offer for an Evaluation. Same order, so the two tabs read alike.
     """
-    if awaiting_evaluation:
+    if awaiting_evaluation or evaluable:
         matching = _matching(is_active=True, q=q).where(Child.evaluated_at.is_(None))
+        if evaluable:
+            matching = matching.where(~_has_live_evaluation().exists())
         order = (Child.created_at, Child.id)
     else:
         matching = _matching(is_active=is_active, q=q)
@@ -166,6 +173,18 @@ def _matching(*, is_active: bool, q: str | None) -> Select[tuple[Child]]:
         )
 
     return statement
+
+
+def _has_live_evaluation() -> Select[tuple[int]]:
+    return (
+        select(1)
+        .select_from(Booking)
+        .where(
+            Booking.child_id == Child.id,
+            Booking.kind == BookingKind.EVALUATION,
+            Booking.status.in_(LIVE_BOOKING_STATUSES),
+        )
+    )
 
 
 def _substring_pattern(raw: str | None) -> str | None:

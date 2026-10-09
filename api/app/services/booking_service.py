@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.booking import Booking
 from app.models.enums import BookingStatus
 from app.models.guardian import ChildGuardian, Guardian
+from app.models.tutor import Tutor
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +54,7 @@ def list_bookings(
         db.scalars(
             statement.options(
                 joinedload(Booking.child),
-                joinedload(Booking.tutor),
+                joinedload(Booking.tutor).joinedload(Tutor.user),
                 joinedload(Booking.subject),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
@@ -71,7 +72,7 @@ def get_booking(db: Session, *, booking_id: uuid.UUID) -> Booking:
         .where(Booking.id == booking_id)
         .options(
             joinedload(Booking.child),
-            joinedload(Booking.tutor),
+            joinedload(Booking.tutor).joinedload(Tutor.user),
             joinedload(Booking.subject),
             joinedload(Booking.home),
             joinedload(Booking.booked_by_guardian),
@@ -100,7 +101,7 @@ def list_client_bookings(
         db.scalars(
             matching.options(
                 joinedload(Booking.child),
-                joinedload(Booking.tutor),
+                joinedload(Booking.tutor).joinedload(Tutor.user),
                 joinedload(Booking.subject),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)

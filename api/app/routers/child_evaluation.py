@@ -128,7 +128,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
         name=row.subject.name,
         is_active=row.subject.is_active,
         level=row.level,
-        set_by=StaffRef(id=row.set_by.id, display_name=row.set_by.display_name),
+        set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,
     )
 
@@ -138,5 +138,5 @@ def _evaluated(child: Child) -> EvaluatedRead:
     assert child.evaluated_at is not None and child.evaluated_by is not None
     return EvaluatedRead(
         at=child.evaluated_at,
-        by=StaffRef(id=child.evaluated_by.id, display_name=child.evaluated_by.display_name),
+        by=StaffRef(id=child.evaluated_by.id, name=child.evaluated_by.name),
     )

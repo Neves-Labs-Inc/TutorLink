@@ -67,7 +67,7 @@ def _summary(row: Booking) -> BookingSummary:
     return BookingSummary(
         id=row.id,
         child=NamedRef(id=row.child.id, name=row.child.name),
-        tutor=NamedRef(id=row.tutor.id, name=row.tutor.name),
+        tutor=NamedRef(id=row.tutor.id, name=row.tutor.user.name),
         subject=NamedRef(id=row.subject.id, name=row.subject.name),
         scheduled_date=row.scheduled_date,
         start_time=row.start_time,

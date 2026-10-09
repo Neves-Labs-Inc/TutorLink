@@ -104,7 +104,7 @@ from app.services.notice_service import (
 )
 
 CONVERSATION_NOT_FOUND_ERROR = "Conversation not found"
-HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {display_name}"
+HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {name}"
 NO_REACTIVATION_PENDING_ERROR = "No reactivation request is pending"
 FLAG_CHANGED_ERROR = "The flag changed since you opened this conversation; review it and try again"
 REACTIVATION_FLAG_ERROR = "Approve or deny the reactivation request instead"
@@ -229,7 +229,7 @@ def take_over(conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession) 
     except ConversationHeldByAnother as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            HELD_BY_ANOTHER_ERROR.format(display_name=exc.holder.display_name),
+            HELD_BY_ANOTHER_ERROR.format(name=exc.holder.name),
         ) from exc
 
     return _publish_outcome(outcome)
@@ -460,6 +460,6 @@ def _user_ref(user: User | None) -> UserRef | None:
     if user is None:
         reference = None
     else:
-        reference = UserRef(id=user.id, display_name=user.display_name)
+        reference = UserRef(id=user.id, name=user.name)
 
     return reference

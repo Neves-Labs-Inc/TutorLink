@@ -35,9 +35,8 @@ PASSWORD = "correct horse battery staple"
 
 def _make_tutor(db: Session, *, suffix: str = "a") -> Tutor:
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1555000{suffix}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -53,15 +52,21 @@ def _make_user(
     tutor_id: uuid.UUID | None = None,
     is_active: bool = True,
 ) -> User:
-    user = User(
-        email=email,
-        display_name="Test User",
-        hashed_password=hash_password(password),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=is_active,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=email,
+            name="Test User",
+            hashed_password=hash_password(password),
+            role=role,
+            is_active=is_active,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(password)
+        user.role = role
+        user.is_active = is_active
     db.flush()
     return user
 

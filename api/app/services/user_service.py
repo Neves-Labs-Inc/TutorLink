@@ -14,50 +14,47 @@ Managers are ordinary accounts on this boundary: an admin or developer creates, 
 demotes and deactivates them (#108). A Manager never reaches this module, since `/api/users` is
 admin-only.
 
-**Every account has a Display name**, tutors included, given on create and never derived. A
-tutor account's name is independent of `tutors.name`: renaming the profile leaves it alone.
+**Every account has a Display name**, given on create and never derived. It is the one name
+the person has: a Tutor's profile carries no name of its own, so renaming here renames them on
+the Tutors page too.
 
-**A tutor account names its profile one of two ways.** `tutor_id` links a profile the Tutors
-page already created — tutors exist there before their login does — and `tutor` creates one
-here, from the account's own email. Exactly one of the two: neither is the NULL `tutor_id` row
-`TutorScope` refuses, and both is two answers to which profile the account belongs to.
+**A Tutor or Manager is created with a profile, an Admin or Developer without.** The `tutor`
+input carries what only the profile holds (phone, bio); the account's email and name are the
+person's. `tutor_id` is refused: every profile already has its user (0030), so an Admin edits
+that user rather than creating a second one for it.
+
+**A role change keeps the profile.** Promoting a Tutor to Admin leaves their bookings,
+availability and subjects where they are, so demotion restores them; they are simply no longer
+offered. Changing to Tutor or Manager requires a profile to exist.
 
 The ordering inside `create_user` is the no-orphan guarantee, and a caller cannot restore it
 from outside. Every check that can fail runs before the first INSERT, and the profile and the
 account are written to the caller's one transaction — so a refused request has written nothing
-at all, and a failure between the two writes is one rollback rather than a profile no login
-points at or an account whose profile never landed.
+at all, and a failure between the two writes is one rollback rather than a person with no
+profile or a profile whose person never landed.
 """
 
 import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import Select, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import UserRole
-from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import hash_password, password_is_encodable
-from app.services.text_rules import HiddenCharacters, clean_single_line
-from app.services.tutor_service import create_tutor
+from app.services.name_rules import normalize_name
+from app.services.tutor_service import PROFILE_ROLES, create_profile
+
 
 MIN_PASSWORD_LENGTH = 8
-# The `users.display_name` column width.
-MAX_DISPLAY_NAME_LENGTH = 255
-DISPLAY_NAME_LENGTH_ERROR = "display_name must be 1 to 255 characters and not blank"
-DISPLAY_NAME_CHARACTERS_ERROR = (
-    "display_name must not contain control or invisible characters "
-    "(line breaks, tabs, zero-width or text-direction characters)"
-)
 
 
 @dataclass(frozen=True, slots=True)
 class TutorProfileInput:
-    """The profile `create_user` is asked to create, carrying no email — see the module
-    docstring: it takes the account's."""
+    """The profile `create_user` is asked to create. No name and no email: both are the
+    account's — see the module docstring."""
 
-    name: str
     phone_number: str
     bio: str | None
 
@@ -78,14 +75,13 @@ class RoleNotPermitted(UserServiceError):
     """The actor may not create, become, or modify this role."""
 
 
-class InvalidDisplayName(UserServiceError):
-    """A Display name that is blank, too long, or carries a hidden character. The message is
-    safe to show the caller and says which."""
+class ProfileAlreadyLinked(UserServiceError):
+    """`tutor_id` named a profile; every profile already has its user."""
 
 
 class InvalidUserShape(UserServiceError):
-    """A tutor account with no profile or with two ways of naming one, a non-tutor carrying
-    either, or an unusable password."""
+    """A Tutor or Manager with no profile, an Admin or Developer with one, or an unusable
+    password."""
 
 
 def _visible(is_active: bool) -> Select[tuple[User]]:
@@ -101,7 +97,13 @@ def list_users(db: Session, *, is_active: bool, limit: int, offset: int) -> tupl
     """
     total = db.scalar(select(func.count()).select_from(_visible(is_active).subquery())) or 0
     users = list(
-        db.scalars(_visible(is_active).order_by(User.email).limit(limit).offset(offset)).all()
+        db.scalars(
+            _visible(is_active)
+            .options(selectinload(User.profile))
+            .order_by(User.email)
+            .limit(limit)
+            .offset(offset)
+        ).all()
     )
 
     return users, total
@@ -125,86 +127,56 @@ def create_user(
     role: UserRole,
     tutor_id: uuid.UUID | None,
     tutor: TutorProfileInput | None,
-    display_name: str,
+    name: str,
 ) -> User:
-    """The account, and the tutor profile too when `tutor` is given rather than `tutor_id`.
+    """The account, and the profile too for a Tutor or Manager.
 
-    The order of the two writes is deliberate. The account email is claimed *before*
-    `create_tutor` inserts anything, so the 409 a duplicate account email produces cannot leave
-    a profile behind — which matters because that profile would hold the same email, and the
-    obvious retry would then collide with it on `tutors.email` instead, reporting a conflict
-    with a row the failed request had created. The account's INSERT is last because it is the
-    only one of the two that can still fail, and rolling it back takes the profile with it.
-
-    The profile's email is the account's normalised one, not a second field: one address for
-    both is an invariant here rather than something a caller has to keep true.
+    Every check runs before the first INSERT: the developer boundary, the name, the password,
+    the role/profile pairing and the email. `create_profile` then checks the phone number and
+    writes the account and the profile inside one savepoint, so nothing is left behind by a
+    refusal on either side.
     """
     normalized_email = email.strip().lower()
 
     if role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
         raise RoleNotPermitted
 
-    name = normalize_display_name(display_name)
+    if tutor_id is not None:
+        raise ProfileAlreadyLinked
+
+    cleaned_name = normalize_name(name)
     _assert_password_usable(password)
-    _assert_tutor_input_matches_role(role=role, tutor_id=tutor_id, tutor=tutor)
+    _assert_create_shape(role=role, has_profile_input=tutor is not None)
 
     if db.scalars(select(User).where(User.email == normalized_email)).first() is not None:
         raise EmailTaken
 
-    profile_id = tutor_id
-
-    if tutor is not None:
-        profile_id = create_tutor(
-            db,
-            name=tutor.name,
-            email=normalized_email,
-            phone_number=tutor.phone_number,
-            bio=tutor.bio,
-        ).id
-
-    _assert_profile_matches_role(db, role=role, tutor_id=profile_id)
-
     user = User(
         email=normalized_email,
-        display_name=name,
-        display_name_is_default=False,
+        name=cleaned_name,
+        name_is_default=False,
         hashed_password=hash_password(password),
         role=role,
-        tutor_id=profile_id,
         is_active=True,
     )
-    db.add(user)
-    db.flush()
+
+    if tutor is None:
+        db.add(user)
+        db.flush()
+    else:
+        create_profile(db, user=user, phone_number=tutor.phone_number, bio=tutor.bio)
 
     return user
 
 
-def normalize_display_name(display_name: str) -> str:
-    """The Display name as stored: `text_rules.clean_single_line` (trimmed, whitespace runs
-    collapsed, no control or invisible characters), non-blank and within the column.
-
-    Every write goes through here — Users create and update, `PATCH /api/me` and the CLI seeds —
-    so one rule decides what a usable name is.
-    """
-    try:
-        name = clean_single_line(display_name)
-    except HiddenCharacters as exc:
-        raise InvalidDisplayName(DISPLAY_NAME_CHARACTERS_ERROR) from exc
-
-    if not name or len(name) > MAX_DISPLAY_NAME_LENGTH:
-        raise InvalidDisplayName(DISPLAY_NAME_LENGTH_ERROR)
-
-    return name
-
-
-def rename_user(db: Session, *, user_id: uuid.UUID, display_name: str) -> User:
-    """Set a chosen Display name. Clears `display_name_is_default`, so the next Takeover or
+def rename_user(db: Session, *, user_id: uuid.UUID, name: str) -> User:
+    """Set a chosen Display name. Clears `name_is_default`, so the next Takeover or
     Transfer notice names this user (#109)."""
-    name = normalize_display_name(display_name)
+    name = normalize_name(name)
     user = get_user(db, user_id=user_id)
 
-    user.display_name = name
-    user.display_name_is_default = False
+    user.name = name
+    user.name_is_default = False
     db.flush()
 
     return user
@@ -219,7 +191,7 @@ def update_user(
     password: str | None,
     role: UserRole | None,
     is_active: bool | None,
-    display_name: str | None,
+    name: str | None,
 ) -> User:
     user = get_user(db, user_id=user_id)
 
@@ -231,7 +203,7 @@ def update_user(
         raise RoleNotPermitted
 
     # Validated before anything is written, so a refused name leaves the row untouched.
-    name = normalize_display_name(display_name) if display_name is not None else None
+    name = normalize_name(name) if name is not None else None
 
     if email is not None:
         normalized_email = email.strip().lower()
@@ -247,11 +219,11 @@ def update_user(
         user.hashed_password = hash_password(password)
 
     if name is not None:
-        user.display_name = name
-        user.display_name_is_default = False
+        user.name = name
+        user.name_is_default = False
 
     if role is not None:
-        _assert_profile_matches_role(db, role=role, tutor_id=user.tutor_id)
+        _assert_role_fits_profile(role=role, has_profile=user.profile is not None)
         user.role = role
 
     if is_active is not None:
@@ -281,38 +253,16 @@ def _assert_password_usable(password: str) -> None:
         raise InvalidUserShape
 
 
-def _assert_tutor_input_matches_role(
-    *, role: UserRole, tutor_id: uuid.UUID | None, tutor: TutorProfileInput | None
-) -> None:
-    """Which of the two ways of naming a profile a `create` used — the half of the rule that
-    needs no database, and create-only, since `PATCH` offers neither field.
-
-    Exactly one, for a tutor: neither leaves the NULL `tutor_id` row the helper below
-    describes, and both would have this pick one of them, linking the account to a profile the
-    caller did not choose while silently dropping — or, worse, creating — the other.
-
-    Any other role sends no `tutor`; `_assert_profile_matches_role` refuses them a
-    `tutor_id` below, on the id this resolves to.
-    """
-    if role is UserRole.TUTOR:
-        if (tutor_id is None) == (tutor is None):
-            raise InvalidUserShape
-    elif tutor is not None:
+def _assert_create_shape(*, role: UserRole, has_profile_input: bool) -> None:
+    """Exactly: a Tutor or Manager comes with a `tutor` input, any other role without one.
+    `TutorScope` refuses a Tutor with no profile, and that row must not be manufactured here."""
+    if (role in PROFILE_ROLES) != has_profile_input:
         raise InvalidUserShape
 
 
-def _assert_profile_matches_role(
-    db: Session, *, role: UserRole, tutor_id: uuid.UUID | None
-) -> None:
-    """A tutor account needs a profile; every other role (admin, manager, developer) must not
-    have one.
-
-    `TutorScope` refuses a tutor whose `tutor_id` is NULL — the dependency calls that a data
-    error that must fail loudly. Creating one through the API would be manufacturing exactly
-    that row, so it is refused here instead.
-    """
-    if role is UserRole.TUTOR:
-        if tutor_id is None or db.get(Tutor, tutor_id) is None:
-            raise InvalidUserShape
-    elif tutor_id is not None:
+def _assert_role_fits_profile(*, role: UserRole, has_profile: bool) -> None:
+    """A change to Tutor or Manager needs the profile to be there already: a `PATCH` never
+    creates one. A change to Admin or Developer keeps the profile the person has, so the
+    bookings, availability and subjects on it survive a demotion back (#130)."""
+    if role in PROFILE_ROLES and not has_profile:
         raise InvalidUserShape

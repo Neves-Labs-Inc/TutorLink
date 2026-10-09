@@ -56,14 +56,14 @@ def at(freeze_business_clock: Callable[[datetime.datetime], None]) -> Callable[.
 def _staff(db: Session, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password="not-a-hash",
         role=role,
         is_active=True,
     )
     db.add(user)
     db.flush()
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 

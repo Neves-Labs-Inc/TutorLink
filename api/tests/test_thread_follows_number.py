@@ -297,7 +297,7 @@ def test_the_merged_thread_keeps_only_the_guardians_thread_state(
     old_thread.last_read_at = read_at
     other_staff = User(
         email=f"other-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Other Staff",
+        name="Other Staff",
         hashed_password="not-a-hash",
         role=UserRole.ADMIN,
     )

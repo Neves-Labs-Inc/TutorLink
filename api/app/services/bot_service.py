@@ -2312,7 +2312,7 @@ def _booking_label(booking: Booking, language: str) -> str:
         bot_messages.format_time_range(booking.start_time, booking.end_time, language),
         _subject_name(booking.subject, language),
         booking.child.name,
-        booking.tutor.name,
+        booking.tutor.user.name,
         language,
     )
 

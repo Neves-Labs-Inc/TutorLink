@@ -519,10 +519,9 @@ def _login(client: TestClient, *, email: str = EMAIL, password: str = WRONG_PASS
 def _make_user(db: Session) -> User:
     user = User(
         email=EMAIL,
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=UserRole.ADMIN,
-        tutor_id=None,
         is_active=True,
     )
     db.add(user)

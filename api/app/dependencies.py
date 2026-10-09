@@ -26,16 +26,15 @@ Five properties this module exists to guarantee, all of which Phase 3 onwards de
 - **The `users` row is read on every request** (D-023). One primary-key lookup buys the
   property that setting `is_active = false` takes effect on the caller's *next* request rather
   than up to fifteen minutes later when their access token expires — which is the entire point
-  of `is_active` soft delete. `role` and `tutor_id` are taken from that row, not from the
-  token's claims, for the same reason. Do not "optimise" this into a claims-only path and do
-  not cache it.
+  of `is_active` soft delete. `role` and `tutor_id` (the user's profile id, read through
+  `tutors.user_id`) are taken from that row, not from the token's claims, for the same reason.
+  Do not "optimise" this into a claims-only path and do not cache it.
 
 - **A tutor cannot opt out of scoping.** The scope carries the caller's own `tutor_id` when a
   tutor asks for nothing in particular. Carrying `None` there would mean "no filter" and would
-  silently widen a list endpoint to every tutor's rows. A tutor account whose `users.tutor_id`
-  is `NULL` is rejected with 403 rather than treated as an admin or scoped to `NULL`: that
-  column is nullable because admins have no tutor profile, so a tutor row in that state is a
-  data error and must fail loudly.
+  silently widen a list endpoint to every tutor's rows. A tutor account with no profile is
+  rejected with 403 rather than treated as an admin or scoped to `None`: only admins have no
+  profile, so a tutor in that state is a data error and must fail loudly.
 
 - **A route cannot forget to apply the scope.** The scope is an object, not a bare
   `uuid.UUID | None`, and for as long as it goes unread the request's `Session` refuses to run
@@ -65,7 +64,7 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import event
-from sqlalchemy.orm import Mapper, ORMExecuteState, Session
+from sqlalchemy.orm import Mapper, ORMExecuteState, Session, joinedload
 
 from app.db import get_db
 from app.models.enums import UserRole
@@ -130,7 +129,7 @@ def get_current_user(
     except TokenError as exc:
         raise _unauthorized() from exc
 
-    user = db.get(User, claims.subject)
+    user = db.get(User, claims.subject, options=[joinedload(User.profile)])
     if user is None or not user.is_active:
         raise _unauthorized()
 
@@ -138,7 +137,7 @@ def get_current_user(
         id=user.id,
         email=user.email,
         role=user.role,
-        tutor_id=user.tutor_id,
+        tutor_id=user.profile_id,
     )
 
 

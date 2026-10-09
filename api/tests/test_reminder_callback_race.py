@@ -72,7 +72,7 @@ def committed_guardian(
         ).one()
         staff = User(
             email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-            display_name="Test Staff",
+            name="Test Staff",
             hashed_password="not-a-hash",
             role=UserRole.ADMIN,
         )

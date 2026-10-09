@@ -91,9 +91,14 @@ def authenticate_user(db: Session, *, email: str, password: str) -> User:
         raise InvalidCredentials("no account for that email")
 
     # Checked before is_active so that an inactive account costs the same bcrypt round as an
-    # active one and the two stay indistinguishable from outside.
-    if not verify_password(password, user.hashed_password):
+    # active one and the two stay indistinguishable from outside. A user with no password (a
+    # Tutor the office created without a login) pays the same round against the dummy hash
+    # and fails like a wrong password.
+    if not verify_password(password, user.hashed_password or DUMMY_PASSWORD_HASH):
         raise InvalidCredentials("password does not match")
+
+    if user.hashed_password is None:
+        raise InvalidCredentials("account has no password")
 
     if not user.is_active:
         raise InvalidCredentials("account is not active")
@@ -142,7 +147,7 @@ def rotate_refresh_token(db: Session, *, presented: str) -> IssuedTokens:
         # survive for the remaining seven days of the refresh lifetime.
         raise InvalidRefreshToken("account is missing or not active")
 
-    # The new access token is minted from the user's current role and tutor_id, re-read here,
+    # The new access token is minted from the user's current role and profile, re-read here,
     # never carried over from the presented token — a refresh token carries no role for
     # exactly this reason.
     new_row, issued = _mint(db, user=user, family_id=row.family_id)
@@ -187,7 +192,7 @@ def _mint(db: Session, *, user: User, family_id: uuid.UUID) -> tuple[RefreshToke
     db.add(row)
     db.flush()
 
-    access_token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    access_token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return row, IssuedTokens(
         access_token=access_token,
         refresh_token=refresh_token,

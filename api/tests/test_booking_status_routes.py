@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -323,9 +323,11 @@ def _make_committed_booking(
 
 def _delete_committed_booking(sessions: sessionmaker[Session], row: _CommittedBooking) -> None:
     with sessions() as session:
+        tutor_user_id = session.scalar(select(Tutor.user_id).where(Tutor.id == row.tutor_id))
         session.execute(delete(Booking).where(Booking.id == row.booking_id))
         session.execute(delete(TutorAvailability).where(TutorAvailability.tutor_id == row.tutor_id))
         session.execute(delete(Tutor).where(Tutor.id == row.tutor_id))
+        session.execute(delete(User).where(User.id == tutor_user_id))
         session.execute(delete(Child).where(Child.id == row.child_id))
         session.execute(delete(Subject).where(Subject.id == row.subject_id))
         session.execute(delete(Home).where(Home.id == row.home_id))
@@ -335,9 +337,8 @@ def _delete_committed_booking(sessions: sessionmaker[Session], row: _CommittedBo
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -345,14 +346,19 @@ def _make_tutor(db: Session) -> Tutor:
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("booking-status-password"),
-        role=role,
-        tutor_id=tutor_id,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("booking-status-password"),
+            role=role,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("booking-status-password")
+        user.role = role
     db.flush()
     return user
 
@@ -394,7 +400,7 @@ def _row(db: Session, booking_id: uuid.UUID) -> Booking:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 

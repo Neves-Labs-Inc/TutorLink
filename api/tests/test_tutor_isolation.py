@@ -572,8 +572,8 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
     template: str,
     body: dict[str, str] | None,
 ) -> None:
-    """`users.tutor_id` is nullable because admins have no tutor profile, so a `tutor` row in
-    that state is a data error. `dependencies.py:196-226` refuses it rather than reading it as
+    """Only admins have no profile, so a `tutor` user with none is a data error.
+    `dependencies.py` refuses it rather than reading it as
     "unscoped" — a 200 here would carry every tutor's rows."""
     response = api.request(
         method, template.format(**_targets(world)), json=body, headers=world.unlinked_headers
@@ -645,9 +645,8 @@ def _targets(world: World) -> dict[str, str]:
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -656,15 +655,21 @@ def _make_tutor(db: Session) -> Tutor:
 
 
 def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("isolation-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("isolation-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("isolation-password")
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
@@ -797,7 +802,7 @@ def _slot_is_active(db: Session, slot_id: uuid.UUID) -> bool:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 

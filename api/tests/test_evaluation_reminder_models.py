@@ -341,7 +341,7 @@ def test_a_manager_user_can_be_stored(db: Session) -> None:
     assert manager.role is UserRole.MANAGER
 
 
-def test_migrations_0021_to_0024_backfill_display_names_and_round_trip(
+def test_migrations_0021_to_0024_backfill_names_and_round_trip(
     _migration_engine: Engine,
 ) -> None:
     """Upgrade to 0020, write the rows the backfill reads, then upgrade to head.
@@ -373,9 +373,7 @@ def test_migrations_0021_to_0024_backfill_display_names_and_round_trip(
     command.upgrade(config, "head")
 
     with _migration_engine.begin() as connection:
-        display_names = dict(
-            connection.execute(text("SELECT email, display_name FROM users")).all()
-        )
+        names = dict(connection.execute(text("SELECT email, name FROM users")).all())
         settings = {
             row.key: (row.value, row.value_type, row.is_developer_only)
             for row in connection.execute(
@@ -400,7 +398,7 @@ def test_migrations_0021_to_0024_backfill_display_names_and_round_trip(
             {"conversation_id": conversation_id},
         )
 
-    assert display_names == {"maria.l@x.com": "Maria Lopez", "jane@x.com": "jane"}
+    assert names == {"maria.l@x.com": "Maria Lopez", "jane@x.com": "jane"}
     assert settings == NEW_SETTINGS
 
     command.downgrade(config, "0020")
@@ -429,7 +427,7 @@ def test_migrations_0021_to_0024_backfill_display_names_and_round_trip(
     command.upgrade(config, "head")
 
 
-def test_migration_0025_flags_display_names_taken_from_the_email_and_round_trips(
+def test_migration_0025_flags_names_taken_from_the_email_and_round_trips(
     _migration_engine: Engine,
 ) -> None:
     """Only a non-tutor whose Display name is still its email's local part (0021's backfill) is
@@ -680,9 +678,12 @@ def _make_subject(db: Session) -> Subject:
 
 def _make_tutor(db: Session) -> Tutor:
     tutor = Tutor(
-        name="Test Tutor",
+        user=User(
+            email=f"tutor-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test Tutor",
+            role=UserRole.TUTOR,
+        ),
         phone_number=_phone_number(),
-        email=f"tutor-{uuid.uuid4().hex[:12]}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -693,7 +694,7 @@ def _make_tutor(db: Session) -> Tutor:
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test Staff",
+        name="Test Staff",
         hashed_password=hash_password("reminder-password"),
         role=role,
     )

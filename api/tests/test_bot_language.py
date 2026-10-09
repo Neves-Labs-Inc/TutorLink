@@ -273,7 +273,7 @@ def test_a_spanish_name_staff_set_through_the_api_is_the_one_the_bot_shows(
     world = _make_world(db, name_es=None)
     manager = User(
         email=f"manager-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Mia Manager",
+        name="Mia Manager",
         hashed_password="unused",
         role=UserRole.MANAGER,
         is_active=True,
@@ -519,7 +519,7 @@ def test_hola_at_the_webhook_stores_spanish_on_the_conversation(
 def test_a_spanish_guardian_books_a_session_in_spanish(
     whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
 ) -> None:
-    tutor = spanish.tutor.name
+    tutor = spanish.tutor.user.name
     slot = format_slot_label(format_time_range(NINE, TEN, "es"), tutor, "es")
     date = format_date(DATE, "es")
 
@@ -586,7 +586,7 @@ def test_a_spanish_guardian_moves_a_session_in_spanish(
 ) -> None:
     original = _make_booking(db, spanish, start=FOUR_PM)
     line = _session_line(spanish, start=FOUR_PM, end=FIVE_PM)
-    slot = format_slot_label(format_time_range(NINE, TEN, "es"), spanish.tutor.name, "es")
+    slot = format_slot_label(format_time_range(NINE, TEN, "es"), spanish.tutor.user.name, "es")
     date = format_date(DATE, "es")
 
     replies = [
@@ -635,9 +635,10 @@ def _make_world(db: Session, *, name_es: str | None) -> _World:
     suffix = uuid.uuid4().hex[:12]
     subject = Subject(name=f"Math {suffix}", name_es=name_es)
     tutor = Tutor(
-        name=f"Mr. Lee {suffix[:4]}",
+        user=User(
+            email=f"tutor-{suffix}@example.com", name=f"Mr. Lee {suffix[:4]}", role=UserRole.TUTOR
+        ),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add_all([subject, tutor])
     db.flush()
@@ -683,6 +684,6 @@ def _session_line(world: SpanishWorld, *, start: datetime.time, end: datetime.ti
         format_time_range(start, end, "es"),
         SPANISH_SUBJECT,
         CHILD_NAME,
-        world.tutor.name,
+        world.tutor.user.name,
         "es",
     )

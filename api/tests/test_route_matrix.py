@@ -182,20 +182,29 @@ def gate_client(db: Session) -> Generator[TestClient, None, None]:
 @pytest.fixture
 def callers(db: Session) -> dict[UserRole, Caller]:
     suffix = uuid.uuid4().hex[:10]
-    tutor = Tutor(name="Matrix Tutor", phone_number=f"+1{suffix}", email=f"t-{suffix}@x.com")
+    tutor = Tutor(
+        user=User(email=f"t-{suffix}@x.com", name="Matrix Tutor", role=UserRole.TUTOR),
+        phone_number=f"+1{suffix}",
+    )
     db.add(tutor)
     db.flush()
 
     def make(role: UserRole, tutor_id: uuid.UUID | None) -> Caller:
-        user = User(
-            email=f"{role.value}-{uuid.uuid4().hex[:10]}@x.com",
-            display_name=f"Matrix {role.value}",
-            hashed_password="not-a-real-hash",
-            role=role,
-            tutor_id=tutor_id,
-            is_active=True,
-        )
-        db.add(user)
+        if tutor_id is None:
+            user = User(
+                email=f"{role.value}-{uuid.uuid4().hex[:10]}@x.com",
+                name=f"Matrix {role.value}",
+                hashed_password="not-a-real-hash",
+                role=role,
+                is_active=True,
+            )
+            db.add(user)
+        else:
+            # The profile's own user is the login: one record per person.
+            user = db.get_one(Tutor, tutor_id).user
+            user.hashed_password = "not-a-real-hash"
+            user.role = role
+            user.is_active = True
         db.flush()
         token = create_access_token(user_id=user.id, role=role, tutor_id=tutor_id)
         return Caller(role=role, headers={"Authorization": f"Bearer {token}"}, tutor_id=tutor_id)

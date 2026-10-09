@@ -284,7 +284,7 @@ def test_a_send_on_a_human_conversation_is_recorded_sent_and_echoed(
     assert frame["conversation_id"] == str(conversation.id)
     assert frame["client_message_id"] == "composer-1"
     assert frame["message"]["id"] == str(message.id)
-    assert frame["message"]["author"] == {"id": str(user.id), "display_name": user.display_name}
+    assert frame["message"]["author"] == {"id": str(user.id), "name": user.name}
     assert frame["message"]["status"] == MessageStatus.QUEUED.value
     assert twilio == [{"to": conversation.phone_number, "body": "on my way"}]
     assert (message.author_kind, message.status) == (MessageAuthor.ADMIN, MessageStatus.QUEUED)
@@ -304,7 +304,7 @@ def test_a_manager_sends_on_a_chat_they_hold(
         frame = _receive(socket)
 
     assert frame["type"] == "message.created"
-    assert frame["message"]["author"] == {"id": str(manager.id), "display_name": "Test User"}
+    assert frame["message"]["author"] == {"id": str(manager.id), "name": "Test User"}
     assert twilio == [{"to": conversation.phone_number, "body": "Hi, Maria here"}]
     assert _only_message(db, conversation.id).author_user_id == manager.id
 
@@ -924,7 +924,7 @@ def _token(user: User, lifetime: datetime.timedelta | None = None) -> str:
     `access_token_expire_minutes`, whose granularity is a minute.
     """
     if lifetime is None:
-        return create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+        return create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     settings = get_settings()
     issued_at = datetime.datetime.now(tz=datetime.UTC)
@@ -944,7 +944,7 @@ def _token(user: User, lifetime: datetime.timedelta | None = None) -> str:
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password("conversation-stream-password"),
         role=role,
         is_active=is_active,

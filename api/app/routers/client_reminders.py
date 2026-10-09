@@ -126,6 +126,6 @@ def _who(entry: ConsentEntry) -> str:
     elif entry.set_by is None:
         author = UNKNOWN_STAFF_AUTHOR
     else:
-        author = entry.set_by.display_name
+        author = entry.set_by.name
 
     return author

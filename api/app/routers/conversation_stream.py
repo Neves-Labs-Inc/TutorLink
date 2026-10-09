@@ -166,7 +166,7 @@ class _Admin:
     user_id: uuid.UUID
     # Read at the handshake. A rename shows on this socket's echoes from the next connection,
     # which the token's expiry forces within minutes; REST always reads the current name.
-    display_name: str
+    name: str
     expires_at: datetime.datetime
 
 
@@ -247,9 +247,7 @@ def _resolve_admin(db: Session, token: str) -> _Admin | str:
     elif user.role not in OFFICE_ROLES:
         resolved = OFFICE_REQUIRED_ERROR
     else:
-        resolved = _Admin(
-            user_id=user.id, display_name=user.display_name, expires_at=claims.expires_at
-        )
+        resolved = _Admin(user_id=user.id, name=user.name, expires_at=claims.expires_at)
 
     db.commit()
 
@@ -421,7 +419,7 @@ def _record_and_send(
     read = MessageRead(
         id=message.id,
         author_kind=message.author_kind,
-        author=UserRef(id=admin.user_id, display_name=admin.display_name),
+        author=UserRef(id=admin.user_id, name=admin.name),
         body=message.body,
         status=message.status,
         created_at=message.created_at,

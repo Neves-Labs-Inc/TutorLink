@@ -38,6 +38,8 @@ from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import ExceptionStatus
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
+from app.models.user import User
+from app.services.tutor_service import PROFILE_ROLES
 from app.services.scheduling_service import (
     LeadTimeNotMet,
     SchedulingSettings,
@@ -152,7 +154,12 @@ def _qualified_tutor_names(
     grade_level: int | None = None,
     tutor_id: uuid.UUID | None,
 ) -> dict[uuid.UUID, str]:
-    """Active tutors who teach `subject_id`, at a ceiling that reaches the Child or the grade.
+    """Active Tutors and Managers who teach `subject_id`, at a ceiling that reaches the Child
+    or the grade.
+
+    Active is the person's `users.is_active`, and the role is checked too: an Admin keeps the
+    profile they had as a Tutor (`user_service`) but is no longer offered (#130). Names are the
+    person's.
 
     The ceiling is matched one of three ways:
 
@@ -176,11 +183,13 @@ def _qualified_tutor_names(
     unsatisfiable filter.
     """
     statement = (
-        select(Tutor.id, Tutor.name)
+        select(Tutor.id, User.name)
+        .join(User, User.id == Tutor.user_id)
         .join(TutorSubject, TutorSubject.tutor_id == Tutor.id)
         .join(Subject, Subject.id == TutorSubject.subject_id)
         .where(
-            Tutor.is_active.is_(True),
+            User.is_active.is_(True),
+            User.role.in_(PROFILE_ROLES),
             Subject.id == subject_id,
             Subject.is_active.is_(True),
         )

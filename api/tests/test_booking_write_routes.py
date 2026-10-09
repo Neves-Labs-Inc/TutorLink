@@ -731,7 +731,7 @@ def test_a_reference_an_admin_has_retired_is_400(
     `child` is a case from migration 0016 on (P7C-1, REQ-114): an inactive child is refused with
     the same `detail` as a missing one.
     """
-    getattr(family, reference).is_active = False
+    _retire(getattr(family, reference))
     db.flush()
     user = _make_user(db)
 
@@ -769,7 +769,7 @@ def test_a_booking_naming_only_active_references_is_accepted(
     """The retirement check reads the five ids the request names and no others — retiring every
     unnamed tutor, subject, home, client and child in the fixture leaves this booking untouched."""
     for name in ("other_tutor", "other_subject", "stranger_home", "stranger_guardian", "sibling"):
-        getattr(family, name).is_active = False
+        _retire(getattr(family, name))
     db.flush()
     user = _make_user(db)
 
@@ -926,9 +926,8 @@ def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) ->
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -1017,22 +1016,28 @@ def _book(
 def _make_user(
     db: Session, *, role: UserRole = UserRole.ADMIN, tutor_id: uuid.UUID | None = None
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("booking-write-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("booking-write-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("booking-write-password")
+        user.role = role
+        user.is_active = True
     db.flush()
 
     return user
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -1041,6 +1046,13 @@ def _row(db: Session, booking_id: uuid.UUID) -> Booking:
     db.expire_all()
 
     return db.execute(select(Booking).where(Booking.id == booking_id)).scalar_one()
+
+
+def _retire(row: object) -> None:
+    """Soft-delete a reference. A Tutor is retired through their user: `tutors.is_active` decides
+    nothing (#130)."""
+    target = row.user if isinstance(row, Tutor) else row
+    target.is_active = False  # type: ignore[attr-defined]
 
 
 def _count(db: Session) -> int:

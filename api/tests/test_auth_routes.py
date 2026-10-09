@@ -12,13 +12,16 @@ from app.config import get_settings
 from app.models.enums import UserRole
 from app.models.login_attempt import LoginAttempt
 from app.models.refresh_token import RefreshToken
+from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers import auth
-from app.security import REFRESH_TOKEN_TYPE, decode_token, hash_password
+from app.security import ACCESS_TOKEN_TYPE, REFRESH_TOKEN_TYPE, decode_token, hash_password
 from app.services.rate_limit_service import EMAIL_BUCKET_PREFIX, IP_BUCKET_PREFIX
 
 EMAIL = "admin@example.com"
 DORMANT_EMAIL = "dormant@example.com"
+# A Tutor the office created on the Tutors page: a user with no password at all.
+NO_PASSWORD_EMAIL = "office-created@example.com"
 PASSWORD = "correct horse battery staple"
 COMMITTED_EMAIL_SUFFIX = "@committed.test"
 TEST_CLIENT_PEER = "testclient"
@@ -64,6 +67,7 @@ def test_login_marks_the_refresh_cookie_secure_when_cookie_secure_is_on(
         (EMAIL, "not the password"),
         ("nobody@example.com", PASSWORD),
         (DORMANT_EMAIL, PASSWORD),
+        (NO_PASSWORD_EMAIL, PASSWORD),
     ],
 )
 def test_login_rejects_bad_credentials_with_one_indistinguishable_401(
@@ -71,6 +75,7 @@ def test_login_rejects_bad_credentials_with_one_indistinguishable_401(
 ) -> None:
     _make_user(db, email=EMAIL)
     _make_user(db, email=DORMANT_EMAIL, is_active=False)
+    _make_user(db, email=NO_PASSWORD_EMAIL, password=None)
 
     response = _login(api, email=email, password=password)
 
@@ -78,6 +83,19 @@ def test_login_rejects_bad_credentials_with_one_indistinguishable_401(
     assert response.json() == {"detail": "Incorrect email or password"}
     assert response.headers["www-authenticate"] == "Bearer"
     assert "set-cookie" not in response.headers
+
+
+def test_a_tutors_access_token_carries_their_profile_id(api: TestClient, db: Session) -> None:
+    """The claim comes from `tutors.user_id`, not from a column on the user."""
+    user = _make_user(db, email="tutor@example.com")
+    user.role = UserRole.TUTOR
+    user.profile = Tutor(phone_number="+12025550199")
+    db.flush()
+
+    body = _login(api, email="tutor@example.com").json()
+
+    claims = decode_token(body["access_token"], expected_type=ACCESS_TOKEN_TYPE)
+    assert claims.tutor_id == user.profile.id
 
 
 def test_login_with_a_json_body_returns_400_with_a_string_detail(api: TestClient) -> None:
@@ -294,15 +312,14 @@ def _make_user(
     db: Session,
     *,
     email: str = EMAIL,
-    password: str = PASSWORD,
+    password: str | None = PASSWORD,
     is_active: bool = True,
 ) -> User:
     user = User(
         email=email,
-        display_name="Test User",
-        hashed_password=hash_password(password),
+        name="Test User",
+        hashed_password=None if password is None else hash_password(password),
         role=UserRole.ADMIN,
-        tutor_id=None,
         is_active=is_active,
     )
     db.add(user)

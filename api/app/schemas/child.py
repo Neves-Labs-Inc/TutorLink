@@ -76,7 +76,7 @@ class ChildUpdate(BaseModel):
 
 class StaffRef(BaseModel):
     id: uuid.UUID
-    display_name: str
+    name: str
 
 
 class EvaluatedRead(BaseModel):

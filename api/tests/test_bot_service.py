@@ -1070,11 +1070,11 @@ def test_only_tutors_whose_ceiling_reaches_the_childs_level_are_offered(
     chat.say(value=render("ANY_TUTOR_LABEL", "en"))
     offer = chat.say(value=DATE.isoformat())
 
-    assert at_five.name in tutor_question.reply
-    assert at_eight.name in tutor_question.reply
-    assert at_four.name not in tutor_question.reply
-    assert at_four.name not in offer.reply
-    assert at_five.name in offer.reply
+    assert at_five.user.name in tutor_question.reply
+    assert at_eight.user.name in tutor_question.reply
+    assert at_four.user.name not in tutor_question.reply
+    assert at_four.user.name not in offer.reply
+    assert at_five.user.name in offer.reply
 
 
 def test_a_kindergarten_level_matches_a_tutor_whose_ceiling_is_kindergarten(
@@ -1088,7 +1088,7 @@ def test_a_kindergarten_level_matches_a_tutor_whose_ceiling_is_kindergarten(
     tutor_question = chat.say(value=phonics.name)
 
     assert tutor_question.reply.startswith(render("ASK_TUTOR", "en"))
-    assert kindergarten_tutor.name in tutor_question.reply
+    assert kindergarten_tutor.user.name in tutor_question.reply
 
 
 def test_the_overall_grade_plays_no_part_in_matching(
@@ -1102,7 +1102,7 @@ def test_the_overall_grade_plays_no_part_in_matching(
 
     tutor_question = chat.say(value=math.name)
 
-    assert at_three.name in tutor_question.reply
+    assert at_three.user.name in tutor_question.reply
 
 
 def test_rescheduling_a_session_for_a_child_not_evaluated_is_handed_to_the_office(
@@ -3212,9 +3212,9 @@ def _make_world(db: Session) -> BotWorld:
         subject_id=subject.id,
         subject_name=subject.name,
         first_tutor_id=first.id,
-        first_tutor_name=first.name,
+        first_tutor_name=first.user.name,
         second_tutor_id=second.id,
-        second_tutor_name=second.name,
+        second_tutor_name=second.user.name,
         first_availability_id=_make_availability(db, first.id, date=DATE, start=NINE, end=TWELVE),
         second_availability_id=_make_availability(db, second.id, date=DATE, start=NINE, end=TWELVE),
     )
@@ -3223,9 +3223,10 @@ def _make_world(db: Session) -> BotWorld:
 def _make_tutor(db: Session, *, name: str) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"{name} {suffix[:4]}",
+        user=User(
+            email=f"tutor-{suffix}@example.com", name=f"{name} {suffix[:4]}", role=UserRole.TUTOR
+        ),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -3366,7 +3367,7 @@ def _make_subject_taught_at(
 def _make_staff(db: Session) -> User:
     user = User(
         email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test Staff",
+        name="Test Staff",
         # Never logged in with, so no real hash is needed.
         hashed_password="not-a-hash",
         role=UserRole.ADMIN,

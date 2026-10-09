@@ -122,7 +122,7 @@ class World:
         if self._staff is None:
             self._staff = User(
                 email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-                display_name="Test Staff",
+                name="Test Staff",
                 hashed_password="not-a-hash",
                 role=UserRole.ADMIN,
             )

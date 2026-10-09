@@ -27,9 +27,10 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus
+from app.models.enums import BookingStatus, UserRole
 from app.models.home import Home
 from app.models.subject import Subject
+from app.models.user import User
 from app.models.tutor import Tutor
 
 DATE = datetime.date(2026, 9, 7)
@@ -263,9 +264,8 @@ def _exception(
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()

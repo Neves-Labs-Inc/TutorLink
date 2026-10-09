@@ -207,7 +207,7 @@ def test_tutor_q_composes_with_the_is_active_filter(
     api: TestClient, db: Session, roster: Roster
 ) -> None:
     admin = _make_user(db)
-    roster.brook.is_active = False
+    roster.brook.user.is_active = False
     db.flush()
 
     body = api.get("/api/tutors", params={"q": "nadia"}, headers=_auth(admin)).json()
@@ -500,10 +500,9 @@ def test_a_malformed_booking_subject_id_is_400_not_422(
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
+        name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        tutor_id=None,
         is_active=True,
     )
     db.add(user)
@@ -513,7 +512,7 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -529,9 +528,10 @@ def _make_subject(db: Session, *, name: str | None = None) -> Subject:
 def _make_tutor(db: Session, *, name: str | None = None) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=name or f"Tutor {suffix}",
+        user=User(
+            email=f"tutor-{suffix}@example.com", name=name or f"Tutor {suffix}", role=UserRole.TUTOR
+        ),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()

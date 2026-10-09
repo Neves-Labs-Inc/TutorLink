@@ -18,12 +18,14 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import UserRole
+from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
+from app.routers.users import INVALID_SHAPE_ERROR
 from app.security import create_access_token, hash_password, verify_password
 
 PASSWORD = "correct horse battery staple"
@@ -47,9 +49,8 @@ def _phone_number() -> str:
 def _make_tutor(db: Session, *, phone_number: str | None = None) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=phone_number or f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -63,28 +64,34 @@ def _make_user(
     tutor_id: uuid.UUID | None = None,
     is_active: bool = True,
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password(PASSWORD),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=is_active,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password(PASSWORD),
+            role=role,
+            is_active=is_active,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password(PASSWORD)
+        user.role = role
+        user.is_active = is_active
     db.flush()
     return user
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
 def _create_payload(**overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
         "email": f"user-{uuid.uuid4().hex[:12]}@example.com",
-        "display_name": DISPLAY_NAME,
+        "name": DISPLAY_NAME,
         "password": PASSWORD,
         "role": "tutor",
     }
@@ -93,10 +100,8 @@ def _create_payload(**overrides: object) -> dict[str, object]:
 
 
 def _profile(**overrides: object) -> dict[str, object]:
-    body: dict[str, object] = {
-        "name": f"Tutor {uuid.uuid4().hex[:12]}",
-        "phone_number": _phone_number(),
-    }
+    # No name and no email: the profile's are the account's (one record per person).
+    body: dict[str, object] = {"phone_number": _phone_number()}
     body.update(overrides)
     return body
 
@@ -202,7 +207,7 @@ def test_an_admin_cannot_create_a_developer(api: TestClient, db: Session) -> Non
         headers=_auth(admin),
         json={
             "email": "new@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "developer",
         },
@@ -273,7 +278,7 @@ def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
         headers=headers,
         json={
             "email": "dev2@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "developer",
         },
@@ -288,9 +293,9 @@ def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
 # --- REQ-030: the rest of the surface -------------------------------------------------------
 
 
-def test_creating_a_tutor_account_requires_a_real_profile(api: TestClient, db: Session) -> None:
-    """A tutor whose `tutor_id` is NULL is the data error `TutorScope` refuses on, so the API
-    will not manufacture one."""
+def test_creating_a_tutor_account_requires_a_profile_input(api: TestClient, db: Session) -> None:
+    """A tutor with no profile is the data error `TutorScope` refuses on, so the API will not
+    manufacture one; and `tutor_id` is refused outright — every profile has its user."""
     admin = _make_user(db)
     headers = _auth(admin)
 
@@ -299,7 +304,7 @@ def test_creating_a_tutor_account_requires_a_real_profile(api: TestClient, db: S
         headers=headers,
         json={
             "email": "t1@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "tutor",
         },
@@ -309,7 +314,7 @@ def test_creating_a_tutor_account_requires_a_real_profile(api: TestClient, db: S
         headers=headers,
         json={
             "email": "t2@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "tutor",
             "tutor_id": str(uuid.uuid4()),
@@ -317,10 +322,11 @@ def test_creating_a_tutor_account_requires_a_real_profile(api: TestClient, db: S
     )
 
     assert without.status_code == 400
-    assert unknown.status_code == 400
+    assert unknown.status_code == 409
 
 
-def test_an_admin_account_may_not_carry_a_tutor_profile(api: TestClient, db: Session) -> None:
+def test_tutor_id_is_refused_for_every_role(api: TestClient, db: Session) -> None:
+    """The profile named already has its user; an Admin edits that user instead."""
     admin = _make_user(db)
 
     response = api.post(
@@ -328,14 +334,15 @@ def test_an_admin_account_may_not_carry_a_tutor_profile(api: TestClient, db: Ses
         headers=_auth(admin),
         json={
             "email": "a@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "admin",
             "tutor_id": str(_make_tutor(db).id),
         },
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 409
+    assert response.json()["detail"] == "That tutor profile already has a user account"
 
 
 def test_duplicate_email_is_409(api: TestClient, db: Session) -> None:
@@ -346,7 +353,7 @@ def test_duplicate_email_is_409(api: TestClient, db: Session) -> None:
         headers=_auth(admin),
         json={
             "email": admin.email,
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "admin",
         },
@@ -363,7 +370,7 @@ def test_email_is_normalised_on_create(api: TestClient, db: Session) -> None:
         headers=_auth(admin),
         json={
             "email": "  MiXeD@Example.COM ",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "admin",
         },
@@ -381,7 +388,7 @@ def test_short_password_is_400_not_422(api: TestClient, db: Session) -> None:
         headers=_auth(admin),
         json={
             "email": "short@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": "short",
             "role": "admin",
         },
@@ -429,7 +436,7 @@ def test_password_never_comes_back(api: TestClient, db: Session) -> None:
         headers=_auth(admin),
         json={
             "email": "quiet@example.com",
-            "display_name": DISPLAY_NAME,
+            "name": DISPLAY_NAME,
             "password": PASSWORD,
             "role": "admin",
         },
@@ -443,24 +450,23 @@ def test_password_never_comes_back(api: TestClient, db: Session) -> None:
 # --- the two ways a tutor account names its profile -----------------------------------------
 
 
-def test_a_tutor_account_may_bring_its_own_profile(api: TestClient, db: Session) -> None:
+def test_a_tutor_account_brings_its_profile(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
     response = api.post(
         "/api/users",
         headers=_auth(admin),
-        json=_create_payload(
-            tutor=_profile(name="Nadia Okafor", phone_number="(202) 555-0180", bio="Algebra")
-        ),
+        json=_create_payload(tutor=_profile(phone_number="(202) 555-0180", bio="Algebra")),
     )
 
     assert response.status_code == 201
     body = response.json()
     profile = db.get(Tutor, uuid.UUID(body["tutor_id"]))
     assert profile is not None
-    assert profile.name == "Nadia Okafor"
+    assert profile.user.id == uuid.UUID(body["id"])
+    assert profile.user.name == DISPLAY_NAME
     assert profile.bio == "Algebra"
-    assert profile.is_active is True
+    assert profile.user.is_active is True
     # Canonicalised on the way in, like every other write path: `phone_service` owns the form.
     assert profile.phone_number == "+12025550180"
 
@@ -477,26 +483,29 @@ def test_the_new_profile_takes_the_accounts_own_email(api: TestClient, db: Sessi
     ).json()
 
     assert body["email"] == "mirror.me@example.com"
-    assert db.get(Tutor, uuid.UUID(body["tutor_id"])).email == "mirror.me@example.com"
+    assert db.get(Tutor, uuid.UUID(body["tutor_id"])).user.email == "mirror.me@example.com"
 
 
-def test_an_existing_profile_is_still_linked_by_id(api: TestClient, db: Session) -> None:
-    """The Tutors page creates tutors before their login exists, so `tutor_id` stays the way an
-    account joins one of those."""
+def test_an_existing_profile_cannot_be_linked_by_id(api: TestClient, db: Session) -> None:
+    """The Tutors page creates the person and their profile together now, so the profile
+    already has its user: a second account for it is a 409, and nothing is written."""
     admin = _make_user(db)
     existing = _make_tutor(db)
+    payload = _create_payload(tutor_id=str(existing.id))
 
-    response = api.post(
-        "/api/users", headers=_auth(admin), json=_create_payload(tutor_id=str(existing.id))
-    )
+    response = api.post("/api/users", headers=_auth(admin), json=payload)
 
-    assert response.status_code == 201
-    assert response.json()["tutor_id"] == str(existing.id)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "That tutor profile already has a user account"
+    db.flush()
+    assert db.scalars(select(User).where(User.email == payload["email"])).first() is None
 
 
-def test_a_tutor_account_names_its_profile_exactly_once(api: TestClient, db: Session) -> None:
-    """Both is two answers to which profile the account belongs to, and neither is the NULL
-    `tutor_id` row `TutorScope` refuses. Each is a 400 carrying `{"detail": "<string>"}`."""
+def test_a_tutor_account_needs_a_profile_input_and_may_not_name_one(
+    api: TestClient, db: Session
+) -> None:
+    """Neither is the Tutor with no profile `TutorScope` refuses (400); naming one by id is the
+    409 above even when a profile input comes with it. Each carries `{"detail": "<string>"}`."""
     admin = _make_user(db)
     headers = _auth(admin)
 
@@ -507,7 +516,7 @@ def test_a_tutor_account_names_its_profile_exactly_once(api: TestClient, db: Ses
     )
     neither = api.post("/api/users", headers=headers, json=_create_payload())
 
-    assert both.status_code == 400
+    assert both.status_code == 409
     assert isinstance(both.json()["detail"], str)
     assert neither.status_code == 400
     assert isinstance(neither.json()["detail"], str)
@@ -526,19 +535,19 @@ def test_a_non_tutor_account_may_not_bring_a_profile(
 
     assert response.status_code == 400
     db.flush()
-    assert db.scalars(select(Tutor).where(Tutor.email == payload["email"])).first() is None
+    assert db.scalars(select(User).where(User.email == payload["email"])).first() is None
 
 
-def test_a_profile_already_holding_that_email_is_409(api: TestClient, db: Session) -> None:
-    """The profile exists and the account does not, which is what `tutor_id` is for. Reported
-    as a conflict rather than linked to silently: the caller did not name that row."""
+def test_a_tutor_already_holding_that_email_is_409(api: TestClient, db: Session) -> None:
+    """A Tutor the office created is a user already, so their email is taken like any other
+    account's. Reported as a conflict rather than merged silently."""
     admin = _make_user(db)
     existing = _make_tutor(db)
 
     response = api.post(
         "/api/users",
         headers=_auth(admin),
-        json=_create_payload(email=existing.email, tutor=_profile()),
+        json=_create_payload(email=existing.user.email, tutor=_profile()),
     )
 
     assert response.status_code == 409
@@ -575,10 +584,9 @@ def test_an_undialable_profile_phone_number_is_400(api: TestClient, db: Session)
 
 
 def test_a_taken_account_email_leaves_no_profile_behind(api: TestClient, db: Session) -> None:
-    """Ordering, not luck. The account email is claimed before `create_tutor` inserts anything,
-    so this 409 cannot leave a profile holding that same email — which the obvious retry would
-    then collide with on `tutors.email`, reporting a conflict with a row the failed request had
-    created.
+    """Ordering, not luck. The account email is claimed before anything is inserted, so this
+    409 cannot leave a profile behind — neither hanging off `taken` nor off a person that was
+    never written.
 
     The `flush` is half the assertion: a profile added to the `Session` but not yet written
     would be sent by it, so finding nothing afterwards means nothing was ever staged.
@@ -589,12 +597,12 @@ def test_a_taken_account_email_leaves_no_profile_behind(api: TestClient, db: Ses
     response = api.post(
         "/api/users",
         headers=_auth(admin),
-        json=_create_payload(email=taken.email, tutor=_profile(name="Orphan")),
+        json=_create_payload(email=taken.email, tutor=_profile()),
     )
 
     assert response.status_code == 409
     db.flush()
-    assert db.scalars(select(Tutor).where(Tutor.email == taken.email)).first() is None
+    assert db.scalar(select(func.count()).select_from(Tutor)) == 0
 
 
 def test_a_refused_profile_leaves_no_account_behind(api: TestClient, db: Session) -> None:
@@ -615,12 +623,12 @@ def test_a_refused_profile_leaves_no_account_behind(api: TestClient, db: Session
 
 
 @pytest.mark.parametrize("role", ["tutor", "manager", "admin"])
-def test_a_display_name_is_required_on_create_for_every_role(
+def test_a_name_is_required_on_create_for_every_role(
     api: TestClient, db: Session, role: str
 ) -> None:
     admin = _make_user(db)
     payload = _create_payload(role=role)
-    del payload["display_name"]
+    del payload["name"]
     if role == "tutor":
         payload["tutor"] = _profile()
 
@@ -630,12 +638,10 @@ def test_a_display_name_is_required_on_create_for_every_role(
     assert db.scalars(select(User).where(User.email == payload["email"])).first() is None
 
 
-@pytest.mark.parametrize("display_name", ["", "   ", "x" * 256], ids=["empty", "blank", "long"])
-def test_an_unusable_display_name_is_422_on_create(
-    api: TestClient, db: Session, display_name: str
-) -> None:
+@pytest.mark.parametrize("name", ["", "   ", "x" * 256], ids=["empty", "blank", "long"])
+def test_an_unusable_name_is_422_on_create(api: TestClient, db: Session, name: str) -> None:
     admin = _make_user(db)
-    payload = _create_payload(display_name=display_name, tutor=_profile())
+    payload = _create_payload(name=name, tutor=_profile())
 
     response = api.post("/api/users", headers=_auth(admin), json=payload)
 
@@ -643,14 +649,12 @@ def test_an_unusable_display_name_is_422_on_create(
     assert db.scalars(select(User).where(User.email == payload["email"])).first() is None
 
 
-@pytest.mark.parametrize(
-    "display_name", HIDDEN_CHARACTER_NAMES.values(), ids=HIDDEN_CHARACTER_NAMES.keys()
-)
-def test_a_display_name_with_control_or_invisible_characters_is_422_on_create(
-    api: TestClient, db: Session, display_name: str
+@pytest.mark.parametrize("name", HIDDEN_CHARACTER_NAMES.values(), ids=HIDDEN_CHARACTER_NAMES.keys())
+def test_a_name_with_control_or_invisible_characters_is_422_on_create(
+    api: TestClient, db: Session, name: str
 ) -> None:
     admin = _make_user(db)
-    payload = _create_payload(role="manager", display_name=display_name)
+    payload = _create_payload(role="manager", name=name, tutor=_profile())
 
     response = api.post("/api/users", headers=_auth(admin), json=payload)
 
@@ -659,46 +663,40 @@ def test_a_display_name_with_control_or_invisible_characters_is_422_on_create(
     assert db.scalars(select(User).where(User.email == payload["email"])).first() is None
 
 
-@pytest.mark.parametrize(
-    "display_name", HIDDEN_CHARACTER_NAMES.values(), ids=HIDDEN_CHARACTER_NAMES.keys()
-)
-def test_a_display_name_with_control_or_invisible_characters_is_422_on_update(
-    api: TestClient, db: Session, display_name: str
+@pytest.mark.parametrize("name", HIDDEN_CHARACTER_NAMES.values(), ids=HIDDEN_CHARACTER_NAMES.keys())
+def test_a_name_with_control_or_invisible_characters_is_422_on_update(
+    api: TestClient, db: Session, name: str
 ) -> None:
     admin = _make_user(db)
     target = _make_user(db, role=UserRole.MANAGER)
 
-    response = api.patch(
-        f"/api/users/{target.id}", headers=_auth(admin), json={"display_name": display_name}
-    )
+    response = api.patch(f"/api/users/{target.id}", headers=_auth(admin), json={"name": name})
 
     assert response.status_code == 422
     assert "control or invisible characters" in response.json()["detail"]
     db.refresh(target)
-    assert target.display_name == "Test User"
+    assert target.name == "Test User"
 
 
-def test_an_accented_display_name_is_accepted_on_create_and_update(
-    api: TestClient, db: Session
-) -> None:
+def test_an_accented_name_is_accepted_on_create_and_update(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
     created = api.post(
         "/api/users",
         headers=_auth(admin),
-        json=_create_payload(role="manager", display_name="José Núñez"),
+        json=_create_payload(role="manager", name="José Núñez", tutor=_profile()),
     )
     updated = api.patch(
         f"/api/users/{created.json()['id']}",
         headers=_auth(admin),
-        json={"display_name": "Zoë Ångström"},
+        json={"name": "Zoë Ångström"},
     )
 
-    assert (created.status_code, created.json()["display_name"]) == (201, "José Núñez")
-    assert (updated.status_code, updated.json()["display_name"]) == (200, "Zoë Ångström")
+    assert (created.status_code, created.json()["name"]) == (201, "José Núñez")
+    assert (updated.status_code, updated.json()["name"]) == (200, "Zoë Ångström")
 
 
-def test_a_run_of_spaces_in_the_display_name_is_stored_as_one_on_create_and_update(
+def test_a_run_of_spaces_in_the_name_is_stored_as_one_on_create_and_update(
     api: TestClient, db: Session
 ) -> None:
     """WhatsApp refuses a template parameter with more than four consecutive spaces."""
@@ -707,70 +705,67 @@ def test_a_run_of_spaces_in_the_display_name_is_stored_as_one_on_create_and_upda
     created = api.post(
         "/api/users",
         headers=_auth(admin),
-        json=_create_payload(role="manager", display_name=" José      Núñez "),
+        json=_create_payload(role="manager", name=" José      Núñez ", tutor=_profile()),
     )
     updated = api.patch(
         f"/api/users/{created.json()['id']}",
         headers=_auth(admin),
-        json={"display_name": "Zoë     Ångström"},
+        json={"name": "Zoë     Ångström"},
     )
 
-    assert (created.status_code, created.json()["display_name"]) == (201, "José Núñez")
-    assert (updated.status_code, updated.json()["display_name"]) == (200, "Zoë Ångström")
+    assert (created.status_code, created.json()["name"]) == (201, "José Núñez")
+    assert (updated.status_code, updated.json()["name"]) == (200, "Zoë Ångström")
 
 
-def test_a_tutor_account_takes_its_own_display_name_not_the_tutors(
-    api: TestClient, db: Session
-) -> None:
+def test_a_tutor_accounts_name_is_the_tutors_name(api: TestClient, db: Session) -> None:
+    """One record per person: the name given here is what the Tutors page shows."""
     admin = _make_user(db)
 
     body = api.post(
-        "/api/users",
-        headers=_auth(admin),
-        json=_create_payload(display_name="Nadia", tutor=_profile(name="Nadia Okafor")),
+        "/api/users", headers=_auth(admin), json=_create_payload(name="Nadia", tutor=_profile())
     ).json()
+    listed = api.get(f"/api/tutors/{body['tutor_id']}", headers=_auth(admin)).json()
 
-    assert body["display_name"] == "Nadia"
+    assert body["name"] == "Nadia"
+    assert listed["name"] == "Nadia"
     created = db.get(User, uuid.UUID(body["id"]))
-    assert (created.display_name, created.display_name_is_default) == ("Nadia", False)
+    assert (created.name, created.name_is_default) == ("Nadia", False)
 
 
-def test_the_display_name_is_listed_and_read_back(api: TestClient, db: Session) -> None:
+def test_the_name_is_listed_and_read_back(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     target = _make_user(db, role=UserRole.MANAGER)
 
     read = api.get(f"/api/users/{target.id}", headers=_auth(admin)).json()
     listed = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
 
-    assert read["display_name"] == "Test User"
-    assert {"id": str(target.id), "display_name": "Test User"}.items() <= next(
+    assert read["name"] == "Test User"
+    assert {"id": str(target.id), "name": "Test User"}.items() <= next(
         row for row in listed if row["id"] == str(target.id)
     ).items()
 
 
 @pytest.mark.parametrize("role", [UserRole.TUTOR, UserRole.MANAGER])
-def test_an_update_sets_the_display_name_and_clears_the_default_flag(
+def test_an_update_sets_the_name_and_clears_the_default_flag(
     api: TestClient, db: Session, role: UserRole
 ) -> None:
     admin = _make_user(db)
     tutor_id = _make_tutor(db).id if role is UserRole.TUTOR else None
     target = _make_user(db, role=role, tutor_id=tutor_id)
-    target.display_name_is_default = True
+    target.name_is_default = True
     db.flush()
 
-    response = api.patch(
-        f"/api/users/{target.id}", headers=_auth(admin), json={"display_name": " Maria "}
-    )
+    response = api.patch(f"/api/users/{target.id}", headers=_auth(admin), json={"name": " Maria "})
 
     assert response.status_code == 200
-    assert response.json()["display_name"] == "Maria"
+    assert response.json()["name"] == "Maria"
     db.refresh(target)
-    assert (target.display_name, target.display_name_is_default) == ("Maria", False)
+    assert (target.name, target.name_is_default) == ("Maria", False)
 
 
-@pytest.mark.parametrize("display_name", ["", "   ", "x" * 256], ids=["empty", "blank", "long"])
-def test_an_unusable_display_name_is_422_on_update_and_changes_nothing(
-    api: TestClient, db: Session, display_name: str
+@pytest.mark.parametrize("name", ["", "   ", "x" * 256], ids=["empty", "blank", "long"])
+def test_an_unusable_name_is_422_on_update_and_changes_nothing(
+    api: TestClient, db: Session, name: str
 ) -> None:
     admin = _make_user(db)
     target = _make_user(db, role=UserRole.MANAGER)
@@ -778,39 +773,48 @@ def test_an_unusable_display_name_is_422_on_update_and_changes_nothing(
     response = api.patch(
         f"/api/users/{target.id}",
         headers=_auth(admin),
-        json={"display_name": display_name, "email": "changed@example.com"},
+        json={"name": name, "email": "changed@example.com"},
     )
 
     assert response.status_code == 422
     db.refresh(target)
-    assert (target.display_name, target.email) != (display_name, "changed@example.com")
-    assert target.display_name == "Test User"
+    assert (target.name, target.email) != (name, "changed@example.com")
+    assert target.name == "Test User"
 
 
-def test_an_update_without_a_display_name_leaves_it_alone(api: TestClient, db: Session) -> None:
+def test_an_update_without_a_name_leaves_it_alone(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     target = _make_user(db, role=UserRole.MANAGER)
 
     api.patch(f"/api/users/{target.id}", headers=_auth(admin), json={"is_active": True})
 
     db.refresh(target)
-    assert target.display_name == "Test User"
+    assert target.name == "Test User"
 
 
-def test_renaming_the_tutor_leaves_the_accounts_display_name_alone(
-    api: TestClient, db: Session
-) -> None:
+def test_renaming_the_tutor_renames_the_account_and_back(api: TestClient, db: Session) -> None:
+    """The two routes edit one row: a name or email written through either is read from both."""
     admin = _make_user(db)
     tutor = _make_tutor(db)
     account = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.patch(
-        f"/api/tutors/{tutor.id}", headers=_auth(admin), json={"name": "Renamed Tutor"}
+    via_tutor = api.patch(
+        f"/api/tutors/{tutor.id}",
+        headers=_auth(admin),
+        json={"name": "Renamed Tutor", "email": "renamed@example.com"},
     )
+    as_user = api.get(f"/api/users/{account.id}", headers=_auth(admin)).json()
+    via_user = api.patch(
+        f"/api/users/{account.id}",
+        headers=_auth(admin),
+        json={"name": "Renamed Again", "email": "again@example.com"},
+    )
+    as_tutor = api.get(f"/api/tutors/{tutor.id}", headers=_auth(admin)).json()
 
-    assert response.status_code == 200
-    db.refresh(account)
-    assert account.display_name == "Test User"
+    assert via_tutor.status_code == 200
+    assert (as_user["name"], as_user["email"]) == ("Renamed Tutor", "renamed@example.com")
+    assert via_user.status_code == 200
+    assert (as_tutor["name"], as_tutor["email"]) == ("Renamed Again", "again@example.com")
 
 
 # --- Managers ---------------------------------------------------------------------------------
@@ -823,22 +827,28 @@ def test_admin_and_developer_run_a_managers_whole_lifecycle(
     """Create, edit, promote to admin, demote back, deactivate (#108)."""
     actor = _make_user(db, role=actor_role)
 
-    created = api.post("/api/users", headers=_auth(actor), json=_create_payload(role="manager"))
+    created = api.post(
+        "/api/users", headers=_auth(actor), json=_create_payload(role="manager", tutor=_profile())
+    )
     manager_id = created.json()["id"]
     path = f"/api/users/{manager_id}"
-    edited = api.patch(path, headers=_auth(actor), json={"display_name": "Lead"})
+    edited = api.patch(path, headers=_auth(actor), json={"name": "Lead"})
     promoted = api.patch(path, headers=_auth(actor), json={"role": "admin"})
     demoted = api.patch(path, headers=_auth(actor), json={"role": "manager"})
     deactivated = api.delete(path, headers=_auth(actor))
 
     assert (created.status_code, created.json()["role"]) == (201, "manager")
-    assert (edited.status_code, edited.json()["display_name"]) == (200, "Lead")
+    assert (edited.status_code, edited.json()["name"]) == (200, "Lead")
     assert (promoted.status_code, promoted.json()["role"]) == (200, "admin")
     assert (demoted.status_code, demoted.json()["role"]) == (200, "manager")
     assert (deactivated.status_code, deactivated.json()["is_active"]) == (200, False)
 
 
-def test_a_manager_may_not_carry_a_tutor_link(api: TestClient, db: Session) -> None:
+def test_a_manager_is_created_with_a_profile_and_listed_by_tutors(
+    api: TestClient, db: Session
+) -> None:
+    """A Manager is a Tutor with extra privileges (#130): both rows, and the Tutors page
+    lists them. Naming an existing profile is the same 409 it is for a Tutor."""
     admin = _make_user(db)
     tutor = _make_tutor(db)
 
@@ -850,22 +860,75 @@ def test_a_manager_may_not_carry_a_tutor_link(api: TestClient, db: Session) -> N
     with_profile = api.post(
         "/api/users",
         headers=_auth(admin),
-        json=_create_payload(role="manager", tutor=_profile()),
+        json=_create_payload(role="manager", name="Lead", tutor=_profile()),
     )
+    body = with_profile.json()
+    tutors = api.get("/api/tutors?page_size=100", headers=_auth(admin)).json()["items"]
 
-    assert (linked.status_code, with_profile.status_code) == (400, 400)
+    assert linked.status_code == 409
+    assert with_profile.status_code == 201
+    assert body["role"] == "manager"
+    assert db.get(Tutor, uuid.UUID(body["tutor_id"])).user_id == uuid.UUID(body["id"])
+    assert {"id": body["tutor_id"], "name": "Lead"}.items() <= next(
+        row for row in tutors if row["id"] == body["tutor_id"]
+    ).items()
 
 
-def test_a_tutor_account_cannot_become_a_manager(api: TestClient, db: Session) -> None:
-    """The role change would leave a manager holding the tutor's link."""
+def test_a_tutor_may_become_a_manager_or_an_admin_and_keeps_the_profile(
+    api: TestClient, db: Session
+) -> None:
+    """Promotion keeps the profile, bookings, availability and subjects, so demotion restores
+    them; `tutor_id` stays on the user all the way."""
     admin = _make_user(db)
-    tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    profile = _make_tutor(db)
+    tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=profile.id)
+    subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
+    db.add(subject)
+    db.flush()
+    api.post(
+        f"/api/tutors/{profile.id}/subjects",
+        headers=_auth(admin),
+        json={"subject_id": str(subject.id), "max_grade_level": 8},
+    )
+    api.post(
+        f"/api/tutors/{profile.id}/availability",
+        headers=_auth(admin),
+        json={"day_of_week": 0, "start_time": "09:00:00", "end_time": "12:00:00"},
+    )
+    path = f"/api/users/{tutor.id}"
 
-    response = api.patch(f"/api/users/{tutor.id}", headers=_auth(admin), json={"role": "manager"})
+    manager = api.patch(path, headers=_auth(admin), json={"role": "manager"})
+    promoted = api.patch(path, headers=_auth(admin), json={"role": "admin"})
+    read = api.get(f"/api/tutors/{profile.id}", headers=_auth(admin)).json()
+    availability = api.get(f"/api/tutors/{profile.id}/availability", headers=_auth(admin)).json()
+    demoted = api.patch(path, headers=_auth(admin), json={"role": "tutor"})
+
+    assert [(r.status_code, r.json()["role"]) for r in (manager, promoted, demoted)] == [
+        (200, "manager"),
+        (200, "admin"),
+        (200, "tutor"),
+    ]
+    assert {r.json()["tutor_id"] for r in (manager, promoted, demoted)} == {str(profile.id)}
+    assert [row["subject_id"] for row in read["subjects"]] == [str(subject.id)]
+    assert availability["total"] == 1
+    db.refresh(tutor)
+    assert tutor.profile is not None and tutor.profile.id == profile.id
+
+
+@pytest.mark.parametrize("role", ["tutor", "manager"])
+def test_a_user_without_a_profile_may_not_become_a_tutor_or_a_manager(
+    api: TestClient, db: Session, role: str
+) -> None:
+    """The same refusal as a Tutor created without a profile: a `PATCH` never creates one."""
+    admin = _make_user(db)
+    target = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(f"/api/users/{target.id}", headers=_auth(admin), json={"role": role})
 
     assert response.status_code == 400
-    db.refresh(tutor)
-    assert tutor.role is UserRole.TUTOR
+    assert response.json()["detail"] == INVALID_SHAPE_ERROR
+    db.refresh(target)
+    assert target.role is UserRole.ADMIN
 
 
 @pytest.mark.parametrize(
@@ -874,7 +937,7 @@ def test_a_tutor_account_cannot_become_a_manager(api: TestClient, db: Session) -
         ("GET", "/api/users", None),
         ("GET", "/api/users/{id}", None),
         ("POST", "/api/users", "create"),
-        ("PATCH", "/api/users/{id}", {"display_name": "Hijack"}),
+        ("PATCH", "/api/users/{id}", {"name": "Hijack"}),
         ("DELETE", "/api/users/{id}", None),
         ("GET", "/api/settings", None),
         ("PATCH", "/api/settings", {"updates": [{"key": "reminder_hour", "value": "5"}]}),
@@ -891,4 +954,4 @@ def test_a_manager_is_refused_users_and_settings(
 
     assert response.status_code == 403
     db.refresh(target)
-    assert (target.display_name, target.is_active) == ("Test User", True)
+    assert (target.name, target.is_active) == ("Test User", True)

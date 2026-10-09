@@ -24,7 +24,7 @@ from app.security import create_access_token, hash_password
 
 
 def test_setting_a_level_records_it_and_who_set_it(api: TestClient, db: Session) -> None:
-    admin = _make_user(db, display_name="Marta")
+    admin = _make_user(db, name="Marta")
     child = _make_child(db)
     math = _make_subject(db, name=f"Math {_suffix()}")
 
@@ -38,14 +38,14 @@ def test_setting_a_level_records_it_and_who_set_it(api: TestClient, db: Session)
     assert row["name"] == math.name
     assert row["is_active"] is True
     assert row["level"] == 5
-    assert row["set_by"] == {"id": str(admin.id), "display_name": "Marta"}
+    assert row["set_by"] == {"id": str(admin.id), "name": "Marta"}
     assert row["updated_at"] is not None
 
 
-def test_a_manager_sets_a_level_and_marks_evaluated_under_their_display_name(
+def test_a_manager_sets_a_level_and_marks_evaluated_under_their_name(
     api: TestClient, db: Session
 ) -> None:
-    manager = _make_user(db, display_name="Rosa", role=UserRole.MANAGER)
+    manager = _make_user(db, name="Rosa", role=UserRole.MANAGER)
     child = _make_child(db)
     math = _make_subject(db)
 
@@ -54,13 +54,13 @@ def test_a_manager_sets_a_level_and_marks_evaluated_under_their_display_name(
     detail = api.get(f"/api/children/{child.id}", headers=_auth(manager)).json()
 
     assert (level.status_code, evaluated.status_code) == (200, 200)
-    assert detail["levels"][0]["set_by"] == {"id": str(manager.id), "display_name": "Rosa"}
-    assert evaluated.json()["by"] == {"id": str(manager.id), "display_name": "Rosa"}
+    assert detail["levels"][0]["set_by"] == {"id": str(manager.id), "name": "Rosa"}
+    assert evaluated.json()["by"] == {"id": str(manager.id), "name": "Rosa"}
 
 
 def test_editing_a_level_replaces_it_and_the_setter(api: TestClient, db: Session) -> None:
-    first = _make_user(db, display_name="Marta")
-    second = _make_user(db, display_name="Luis")
+    first = _make_user(db, name="Marta")
+    second = _make_user(db, name="Luis")
     child = _make_child(db)
     math = _make_subject(db)
     api.put(_level_url(child, math), headers=_auth(first), json={"level": 5})
@@ -71,7 +71,7 @@ def test_editing_a_level_replaces_it_and_the_setter(api: TestClient, db: Session
     assert response.status_code == 200
     [row] = detail["levels"]
     assert row["level"] == 0
-    assert row["set_by"]["display_name"] == "Luis"
+    assert row["set_by"]["name"] == "Luis"
 
 
 @pytest.mark.parametrize("level", [-1, 13])
@@ -171,7 +171,7 @@ def test_marking_evaluated_without_a_level_is_409(api: TestClient, db: Session) 
 
 
 def test_marking_evaluated_records_who_and_when(api: TestClient, db: Session) -> None:
-    admin = _make_user(db, display_name="Marta")
+    admin = _make_user(db, name="Marta")
     child = _make_child(db)
     api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
     before = datetime.datetime.now(tz=datetime.UTC)
@@ -180,7 +180,7 @@ def test_marking_evaluated_records_who_and_when(api: TestClient, db: Session) ->
     evaluated = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()["evaluated"]
 
     assert response.status_code == 200
-    assert evaluated["by"] == {"id": str(admin.id), "display_name": "Marta"}
+    assert evaluated["by"] == {"id": str(admin.id), "name": "Marta"}
     assert datetime.datetime.fromisoformat(evaluated["at"]) >= before - datetime.timedelta(
         seconds=5
     )
@@ -188,8 +188,8 @@ def test_marking_evaluated_records_who_and_when(api: TestClient, db: Session) ->
 
 
 def test_marking_twice_keeps_the_first_who_and_when(api: TestClient, db: Session) -> None:
-    first = _make_user(db, display_name="Marta")
-    second = _make_user(db, display_name="Luis")
+    first = _make_user(db, name="Marta")
+    second = _make_user(db, name="Luis")
     child = _make_child(db)
     api.put(_level_url(child, _make_subject(db)), headers=_auth(first), json={"level": 5})
     original = api.post(_evaluated_url(child), headers=_auth(first)).json()
@@ -198,7 +198,7 @@ def test_marking_twice_keeps_the_first_who_and_when(api: TestClient, db: Session
 
     assert again.status_code == 200
     assert again.json() == original
-    assert again.json()["by"]["display_name"] == "Marta"
+    assert again.json()["by"]["name"] == "Marta"
 
 
 def test_clearing_evaluated_keeps_the_levels(api: TestClient, db: Session) -> None:
@@ -270,7 +270,7 @@ def test_removing_the_last_level_of_a_child_not_evaluated_is_fine(
 
 
 def test_the_list_row_carries_the_evaluated_summary(api: TestClient, db: Session) -> None:
-    admin = _make_user(db, display_name="Marta")
+    admin = _make_user(db, name="Marta")
     token = _suffix()
     evaluated = _make_child(db, name=f"Ana {token}")
     _make_child(db, name=f"Luis {token}")
@@ -280,7 +280,7 @@ def test_the_list_row_carries_the_evaluated_summary(api: TestClient, db: Session
     body = api.get(f"/api/children?q={token}", headers=_auth(admin)).json()
 
     assert [row["evaluated"] for row in body["items"]] == [marked, None]
-    assert marked["by"]["display_name"] == "Marta"
+    assert marked["by"]["name"] == "Marta"
 
 
 def test_awaiting_evaluation_lists_active_children_not_evaluated_oldest_first(
@@ -351,31 +351,40 @@ def _levels(api: TestClient, user: User, child: Child) -> list[dict[str, object]
 def _make_user(
     db: Session,
     *,
-    display_name: str = "Test User",
+    name: str = "Test User",
     role: UserRole = UserRole.ADMIN,
     tutor_id: uuid.UUID | None = None,
 ) -> User:
-    user = User(
-        email=f"user-{_suffix()}@example.com",
-        display_name=display_name,
-        hashed_password=hash_password("evaluation-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=True,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{_suffix()}@example.com",
+            name=name,
+            hashed_password=hash_password("evaluation-password"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("evaluation-password")
+        user.role = role
+        user.is_active = True
     db.flush()
     return user
 
 
 def _auth(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
 def _make_tutor(db: Session) -> Tutor:
     suffix = _suffix()
-    tutor = Tutor(name=f"Tutor {suffix}", phone_number=f"+1{suffix}", email=f"t-{suffix}@x.com")
+    tutor = Tutor(
+        user=User(email=f"t-{suffix}@x.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
+        phone_number=f"+1{suffix}",
+    )
     db.add(tutor)
     db.flush()
     return tutor

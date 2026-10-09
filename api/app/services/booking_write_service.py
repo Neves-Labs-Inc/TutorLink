@@ -366,8 +366,10 @@ def _resolve(db: Session, *, request: BookingRequest, gap_minutes: int) -> _Cont
     """
     child = db.get(Child, request.child_id, with_for_update={"read": True}, populate_existing=True)
     availability = db.get(TutorAvailability, request.availability_id)
+    tutor = db.get(Tutor, request.tutor_id)
+    # The Tutor's active flag is the person's (#130): a profile is retired with its user.
     retirable = [
-        db.get(Tutor, request.tutor_id),
+        None if tutor is None else tutor.user,
         db.get(Subject, request.subject_id),
         db.get(Home, request.home_id, with_for_update={"read": True}, populate_existing=True),
     ]

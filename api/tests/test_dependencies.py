@@ -99,30 +99,30 @@ def probe_row_owner(user: Principal, owner_tutor_id: uuid.UUID | None = None) ->
 @probe_app.get("/probe/users")
 def probe_users_scoped(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
     """The correct shape: the scope is read, and its value narrows the query."""
-    statement = select(User)
+    statement = select(Tutor)
     resolved = scope.tutor_id
     if resolved is not None:
-        statement = statement.where(User.tutor_id == resolved)
-    return {"emails": sorted(user.email for user in db.execute(statement).scalars())}
+        statement = statement.where(Tutor.id == resolved)
+    return {"emails": sorted(tutor.user.email for tutor in db.execute(statement).scalars())}
 
 
 @probe_app.get("/probe/leak/users")
 def probe_leak_users(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
     """The bug this module exists to make impossible: scope taken, scope never applied."""
-    return {"emails": sorted(user.email for user in db.execute(select(User)).scalars())}
+    return {"emails": sorted(tutor.user.email for tutor in db.execute(select(Tutor)).scalars())}
 
 
 @probe_app.get("/probe/leak/tutors")
 def probe_leak_tutors(scope: TutorScope, db: DbSession) -> dict[str, list[str]]:
     """`tutors` carries no `tutor_id` column — its own primary key is the scoped one."""
-    return {"names": sorted(tutor.name for tutor in db.execute(select(Tutor)).scalars())}
+    return {"names": sorted(tutor.user.name for tutor in db.execute(select(Tutor)).scalars())}
 
 
 @probe_app.get("/probe/leak/deactivate")
 def probe_leak_deactivate(scope: TutorScope, db: DbSession) -> dict[str, int]:
     """A mass write is the same breach in the other direction, so the guard covers it too."""
     result = db.execute(
-        update(User).values(is_active=False).execution_options(synchronize_session=False)
+        update(Tutor).values(is_active=False).execution_options(synchronize_session=False)
     )
     return {"rows": result.rowcount}
 
@@ -167,9 +167,8 @@ def probe_over_http(db: Session) -> Generator[TestClient, None, None]:
 def _make_tutor(db: Session) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
-        name=f"Tutor {suffix}",
+        user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[:10]}",
-        email=f"tutor-{suffix}@example.com",
     )
     db.add(tutor)
     db.flush()
@@ -183,21 +182,27 @@ def _make_user(
     tutor_id: uuid.UUID | None = None,
     is_active: bool = True,
 ) -> User:
-    user = User(
-        email=f"user-{uuid.uuid4().hex[:12]}@example.com",
-        display_name="Test User",
-        hashed_password=hash_password("probe-password"),
-        role=role,
-        tutor_id=tutor_id,
-        is_active=is_active,
-    )
-    db.add(user)
+    if tutor_id is None:
+        user = User(
+            email=f"user-{uuid.uuid4().hex[:12]}@example.com",
+            name="Test User",
+            hashed_password=hash_password("probe-password"),
+            role=role,
+            is_active=is_active,
+        )
+        db.add(user)
+    else:
+        # The profile's own user is the login: one record per person.
+        user = db.get_one(Tutor, tutor_id).user
+        user.hashed_password = hash_password("probe-password")
+        user.role = role
+        user.is_active = is_active
     db.flush()
     return user
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.tutor_id)
+    token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -505,7 +510,7 @@ def test_discarded_scope_also_blocks_an_unscoped_mass_update(
         probe.get("/probe/leak/deactivate", headers=_bearer(user))
 
     db.refresh(victim)
-    assert victim.is_active is True
+    assert victim.profile is not None and victim.profile.is_active is True
 
 
 def test_applying_the_scope_lets_the_query_run_and_narrows_it(
@@ -660,13 +665,13 @@ def test_developer_requesting_another_tutor_passes_through_unchanged(
 
 def test_developer_applying_the_scope_sees_every_tutor(probe: TestClient, db: Session) -> None:
     own = _make_tutor(db)
-    _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
     user = _make_user(db, role=UserRole.DEVELOPER)
 
     response = probe.get("/probe/users", headers=_bearer(user))
 
     assert response.status_code == 200
-    assert user.email in response.json()["emails"]
+    assert tutor_user.email in response.json()["emails"]
 
 
 def test_developer_may_access_any_row(probe: TestClient, db: Session) -> None:

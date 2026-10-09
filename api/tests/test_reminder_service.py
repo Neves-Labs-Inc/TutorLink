@@ -191,7 +191,7 @@ class World:
         if self._staff is None:
             self._staff = User(
                 email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
-                display_name="Test Staff",
+                name="Test Staff",
                 hashed_password="not-a-hash",
                 role=UserRole.ADMIN,
             )
@@ -206,7 +206,8 @@ class World:
         suffix = uuid.uuid4().hex[:12]
         self._home = Home(label="Home", address="1 Test Street", access_code="1234")
         self._tutor = Tutor(
-            name=f"Tutor {suffix}", phone_number=f"+1{suffix[:10]}", email=f"t-{suffix}@x.com"
+            user=User(email=f"t-{suffix}@x.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
+            phone_number=f"+1{suffix[:10]}",
         )
         self._subject = Subject(name=f"Subject {suffix}")
         self.db.add_all([self._home, self._tutor, self._subject])

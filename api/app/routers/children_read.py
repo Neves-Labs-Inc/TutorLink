@@ -117,7 +117,7 @@ def _next_session(booking: Booking | None) -> NextSession | None:
             scheduled_date=booking.scheduled_date,
             start_time=booking.start_time,
             end_time=booking.end_time,
-            tutor=NamedRef(id=booking.tutor.id, name=booking.tutor.name),
+            tutor=NamedRef(id=booking.tutor.id, name=booking.tutor.user.name),
             subject=NamedRef(id=booking.subject.id, name=booking.subject.name),
         )
     )
@@ -163,7 +163,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
         name=row.subject.name,
         is_active=row.subject.is_active,
         level=row.level,
-        set_by=StaffRef(id=row.set_by.id, display_name=row.set_by.display_name),
+        set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,
     )
 
@@ -174,7 +174,5 @@ def _evaluated(child: Child) -> EvaluatedRead | None:
     return (
         None
         if child.evaluated_at is None or by is None
-        else EvaluatedRead(
-            at=child.evaluated_at, by=StaffRef(id=by.id, display_name=by.display_name)
-        )
+        else EvaluatedRead(at=child.evaluated_at, by=StaffRef(id=by.id, name=by.name))
     )

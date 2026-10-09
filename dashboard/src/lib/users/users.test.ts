@@ -4,7 +4,8 @@ import {
   editRoleOptions,
   roleLabel,
   roleOptions,
-  requiresTutorLink,
+  requiresProfile,
+  accessBadge,
   userFormErrors,
   createUserPayload,
   updateUserPayload,
@@ -58,16 +59,16 @@ describe('editRoleOptions', () => {
   })
 })
 
-describe('requiresTutorLink', () => {
+describe('requiresProfile', () => {
   const cases: { role: string; expected: boolean }[] = [
     { role: 'admin', expected: false },
-    { role: 'manager', expected: false },
+    { role: 'manager', expected: true },
     { role: 'tutor', expected: true },
     { role: 'developer', expected: false },
   ]
 
   it.each(cases)('returns $expected for role $role', ({ role, expected }) => {
-    expect(requiresTutorLink(role)).toBe(expected)
+    expect(requiresProfile(role)).toBe(expected)
   })
 })
 
@@ -75,19 +76,17 @@ describe('userFormErrors', () => {
   const validDraft: UserDraft = {
     displayName: 'Maria Lopez',
     email: 'person@example.com',
-    password: 'longenough',
     role: 'admin',
-    tutorId: null,
-    tutorMode: 'link',
-    newTutor: { name: '', phoneNumber: '', bio: '' },
+    profile: { phoneNumber: '', bio: '' },
   }
+  const withPhone = { phoneNumber: '555-0100', bio: '' }
 
   it('returns no errors for a valid create draft', () => {
     expect(userFormErrors(validDraft, 'create')).toEqual([])
   })
 
-  it('returns no errors for a valid edit draft with a blank password', () => {
-    expect(userFormErrors({ ...validDraft, password: '' }, 'edit')).toEqual([])
+  it('returns no errors for a valid edit draft', () => {
+    expect(userFormErrors(validDraft, 'edit')).toEqual([])
   })
 
   it('reports an empty email', () => {
@@ -100,56 +99,27 @@ describe('userFormErrors', () => {
     ])
   })
 
-  it('reports a short password on create', () => {
-    expect(userFormErrors({ ...validDraft, password: 'short' }, 'create')).toEqual([
-      'Password must be at least 8 characters.',
-    ])
+  it.each(['tutor', 'manager'])('requires a phone number for a %s on create', (role) => {
+    expect(userFormErrors({ ...validDraft, role }, 'create')).toEqual(['Phone number is required.'])
   })
 
-  it('does not check password length on edit, even when short', () => {
-    expect(userFormErrors({ ...validDraft, password: 'short' }, 'edit')).toEqual([])
-  })
-
-  it('reports a missing tutor link for a tutor role on create', () => {
+  it('treats a whitespace-only phone number as missing', () => {
     expect(
-      userFormErrors({ ...validDraft, role: 'tutor', tutorId: null }, 'create'),
-    ).toEqual(['A tutor account requires a linked tutor.'])
+      userFormErrors({ ...validDraft, role: 'tutor', profile: { phoneNumber: '   ', bio: '' } }, 'create'),
+    ).toEqual(['Phone number is required.'])
   })
 
-  it('does not report a missing tutor link for a tutor role on edit', () => {
-    expect(userFormErrors({ ...validDraft, role: 'tutor', tutorId: null }, 'edit')).toEqual([])
+  it.each(['tutor', 'manager'])('accepts a %s with a phone number on create', (role) => {
+    expect(userFormErrors({ ...validDraft, role, profile: withPhone }, 'create')).toEqual([])
   })
 
-  it('accepts a tutor role with a tutor link on create', () => {
-    expect(
-      userFormErrors({ ...validDraft, role: 'tutor', tutorId: 'tutor-1' }, 'create'),
-    ).toEqual([])
+  it('does not ask for a phone number on edit', () => {
+    expect(userFormErrors({ ...validDraft, role: 'tutor' }, 'edit')).toEqual([])
   })
 
-  it('reports a missing name and phone for a new tutor on create', () => {
-    expect(
-      userFormErrors({ ...validDraft, role: 'tutor', tutorMode: 'new' }, 'create'),
-    ).toEqual(['New tutor name is required.', 'New tutor phone number is required.'])
-  })
-
-  it('accepts a new tutor with a name and phone on create', () => {
-    expect(
-      userFormErrors(
-        { ...validDraft, role: 'tutor', tutorMode: 'new', newTutor: { name: 'Jane', phoneNumber: '555-0100', bio: '' } },
-        'create',
-      ),
-    ).toEqual([])
-  })
-
-  it('does not report missing new-tutor fields for a tutor role on edit', () => {
-    expect(userFormErrors({ ...validDraft, role: 'tutor', tutorMode: 'new' }, 'edit')).toEqual([])
-  })
-
-  it('reports no tutor errors for a non-tutor role, whichever tutor mode the draft is left in', () => {
-    expect(userFormErrors({ ...validDraft, role: 'admin', tutorMode: 'new' }, 'create')).toEqual([])
-    expect(
-      userFormErrors({ ...validDraft, role: 'developer', tutorMode: 'link', tutorId: null }, 'create'),
-    ).toEqual([])
+  it('does not ask for a phone number for admin or developer on create', () => {
+    expect(userFormErrors({ ...validDraft, role: 'admin' }, 'create')).toEqual([])
+    expect(userFormErrors({ ...validDraft, role: 'developer' }, 'create')).toEqual([])
   })
 
   const displayNameCases: { role: string; mode: 'create' | 'edit' }[] = [
@@ -161,13 +131,13 @@ describe('userFormErrors', () => {
   ]
 
   it.each(displayNameCases)('requires a Display name for a $role on $mode', ({ role, mode }) => {
-    const draft = { ...validDraft, role, tutorId: 'tutor-1', displayName: '   ' }
+    const draft = { ...validDraft, role, profile: withPhone, displayName: '   ' }
 
     expect(userFormErrors(draft, mode)).toEqual(['Display name is required.'])
   })
 
   it('refuses a Display name over 255 characters, tutor included', () => {
-    const draft = { ...validDraft, role: 'tutor', tutorId: 'tutor-1', displayName: 'a'.repeat(256) }
+    const draft = { ...validDraft, role: 'tutor', profile: withPhone, displayName: 'a'.repeat(256) }
 
     expect(userFormErrors(draft, 'create')).toEqual(['Display name must be 255 characters or fewer.'])
   })
@@ -175,184 +145,83 @@ describe('userFormErrors', () => {
   it('collects multiple errors together', () => {
     expect(
       userFormErrors(
-        { displayName: '', email: '', password: 'short', role: 'tutor', tutorId: null, tutorMode: 'link', newTutor: { name: '', phoneNumber: '', bio: '' } },
+        { displayName: '', email: '', role: 'tutor', profile: { phoneNumber: '', bio: '' } },
         'create',
       ),
-    ).toEqual([
-      'Display name is required.',
-      'Email is required.',
-      'Password must be at least 8 characters.',
-      'A tutor account requires a linked tutor.',
-    ])
+    ).toEqual(['Display name is required.', 'Email is required.', 'Phone number is required.'])
   })
 })
 
 describe('createUserPayload', () => {
-  const emptyNewTutor = { name: '', phoneNumber: '', bio: '' }
-
-  it('trims the email and omits tutor_id and tutor for a non-tutor role', () => {
-    expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: '  person@example.com  ',
-        password: 'longenough',
-        role: 'admin',
-        tutorId: null,
-        tutorMode: 'link',
-        newTutor: emptyNewTutor,
-      }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'admin' })
+  const draftFor = (role: string, profile = { phoneNumber: '', bio: '' }): UserDraft => ({
+    displayName: '  Maria Lopez  ',
+    email: '  person@example.com  ',
+    role,
+    profile,
   })
 
-  it('includes tutor_id for a tutor role linking an existing tutor', () => {
+  it('trims the email and name and sends no tutor or password for an Admin', () => {
     expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'tutor',
-        tutorId: 'tutor-1',
-        tutorMode: 'link',
-        newTutor: emptyNewTutor,
-      }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
+      createUserPayload(draftFor('admin', { phoneNumber: '555-0100', bio: 'left over' })),
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin' })
   })
 
-  it('omits tutor_id for a tutor role with no selection', () => {
+  it.each(['tutor', 'manager'])('sends a trimmed tutor profile for a %s', (role) => {
     expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'tutor',
-        tutorId: null,
-        tutorMode: 'link',
-        newTutor: emptyNewTutor,
-      }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'tutor' })
-  })
-
-  it('includes a trimmed tutor object for a tutor role creating a new tutor', () => {
-    expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'tutor',
-        tutorId: null,
-        tutorMode: 'new',
-        newTutor: { name: '  Jane Doe  ', phoneNumber: '  555-0100  ', bio: '  Loves algebra  ' },
-      }),
+      createUserPayload(draftFor(role, { phoneNumber: '  555-0100  ', bio: '  Loves algebra  ' })),
     ).toEqual({
       email: 'person@example.com',
       name: 'Maria Lopez',
-      password: 'longenough',
-      role: 'tutor',
-      tutor: { name: 'Jane Doe', phone_number: '555-0100', bio: 'Loves algebra' },
+      role,
+      tutor: { phone_number: '555-0100', bio: 'Loves algebra' },
     })
   })
 
-  it('omits bio from the tutor object when blank', () => {
-    expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'tutor',
-        tutorId: null,
-        tutorMode: 'new',
-        newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: '' },
-      }),
-    ).toEqual({
+  it('omits bio from the profile when blank', () => {
+    expect(createUserPayload(draftFor('tutor', { phoneNumber: '555-0100', bio: '   ' }))).toEqual({
       email: 'person@example.com',
       name: 'Maria Lopez',
-      password: 'longenough',
       role: 'tutor',
-      tutor: { name: 'Jane Doe', phone_number: '555-0100' },
+      tutor: { phone_number: '555-0100' },
     })
   })
 
-  // The draft can hold a tutor selection and a filled-in new tutor at the same time — switching
-  // the radio back and forth leaves both populated. The server rejects a request carrying both
-  // `tutor_id` and `tutor`, so `tutorMode` alone must decide which one ships.
-  it('sends only tutor_id when a new tutor is also filled in and the mode is link', () => {
-    expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'tutor',
-        tutorId: 'tutor-1',
-        tutorMode: 'link',
-        newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: 'Loves algebra' },
-      }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'tutor', tutor_id: 'tutor-1' })
-  })
+  it('never carries a password, tutor_id or tutor name', () => {
+    const payload = createUserPayload(draftFor('tutor', { phoneNumber: '555-0100', bio: '' }))
 
-  it('sends only tutor when a tutor is also selected and the mode is new', () => {
-    expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'tutor',
-        tutorId: 'tutor-1',
-        tutorMode: 'new',
-        newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: '' },
-      }),
-    ).toEqual({
-      email: 'person@example.com',
-      name: 'Maria Lopez',
-      password: 'longenough',
-      role: 'tutor',
-      tutor: { name: 'Jane Doe', phone_number: '555-0100' },
-    })
-  })
-
-  it('sends neither tutor_id nor tutor for a non-tutor role, even with both filled in', () => {
-    expect(
-      createUserPayload({
-        displayName: '  Maria Lopez  ',
-        email: 'person@example.com',
-        password: 'longenough',
-        role: 'admin',
-        tutorId: 'tutor-1',
-        tutorMode: 'new',
-        newTutor: { name: 'Jane Doe', phoneNumber: '555-0100', bio: 'Loves algebra' },
-      }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', password: 'longenough', role: 'admin' })
+    expect(payload).not.toHaveProperty('password')
+    expect(payload).not.toHaveProperty('tutor_id')
+    expect(payload.tutor).not.toHaveProperty('name')
   })
 })
 
 describe('updateUserPayload', () => {
-  it('omits password when blank', () => {
+  it('sends the account fields and no password', () => {
     expect(
-      updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: '', role: 'admin', isActive: true }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: true })
+      updateUserPayload({
+        displayName: ' Maria Lopez ',
+        email: ' person@example.com ',
+        role: 'admin',
+        profile: { phoneNumber: '', bio: '' },
+        isActive: false,
+      }),
+    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: false })
+  })
+})
+
+describe('accessBadge', () => {
+  const user = { has_password: true, invite_expires_at: null }
+
+  it('is null for a user with a password', () => {
+    expect(accessBadge(user)).toBeNull()
   })
 
-  it('omits password when only whitespace', () => {
-    expect(
-      updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: '   ', role: 'admin', isActive: true }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: true })
+  it('is no_login for a user without a password or an invite', () => {
+    expect(accessBadge({ ...user, has_password: false })).toBe('no_login')
   })
 
-  it('includes password when non-empty', () => {
-    expect(
-      updateUserPayload({ displayName: ' Maria Lopez ', email: 'person@example.com', password: 'newpassword', role: 'admin', isActive: false }),
-    ).toEqual({ email: 'person@example.com', name: 'Maria Lopez', role: 'admin', is_active: false, password: 'newpassword' })
-  })
-
-  it('never includes a tutor_id field', () => {
-    const payload = updateUserPayload({
-      displayName: 'Maria Lopez',
-      email: 'person@example.com',
-      password: '',
-      role: 'tutor',
-      isActive: true,
-    })
-
-    expect(payload).not.toHaveProperty('tutor_id')
+  it('is invited when an invite expiry is set', () => {
+    expect(accessBadge({ has_password: false, invite_expires_at: '2026-10-20T00:00:00Z' })).toBe('invited')
   })
 })
 

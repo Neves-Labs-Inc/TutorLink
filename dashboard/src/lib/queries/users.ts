@@ -11,6 +11,8 @@ export type User = {
   role: Role
   tutor_id: string | null
   is_active: boolean
+  has_password: boolean
+  invite_expires_at: string | null
 }
 
 export type UserListParams = {

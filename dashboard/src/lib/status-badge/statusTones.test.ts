@@ -15,3 +15,9 @@ describe('StatusBadge reminder keys', () => {
     expect(TONE_CLASSES[key]).toBe(`bg-status-${tone}-bg text-status-${tone}`)
   })
 })
+
+describe('StatusBadge access keys', () => {
+  it('gives no_login the pending tone', () => {
+    expect(TONE_CLASSES.no_login).toBe('bg-status-pending-bg text-status-pending')
+  })
+})

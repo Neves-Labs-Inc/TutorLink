@@ -8,6 +8,7 @@ import {
   guardDecision,
   isOfficeRole,
   landingPath,
+  setPasswordFormErrors,
   type Role,
 } from './auth'
 
@@ -163,6 +164,31 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'tutor', OFFICE_ROLES)).toEqual({
       kind: 'redirect',
       to: '/schedule',
+    })
+  })
+})
+
+describe('setPasswordFormErrors', () => {
+  it('accepts a matching password of at least 8 characters', () => {
+    expect(setPasswordFormErrors('12345678', '12345678')).toEqual({})
+  })
+
+  it('refuses a password shorter than 8 characters', () => {
+    expect(setPasswordFormErrors('short', 'short')).toEqual({
+      password: 'Password must be at least 8 characters.',
+    })
+  })
+
+  it('refuses an empty password with the length error and an empty confirm with the mismatch error', () => {
+    expect(setPasswordFormErrors('', '')).toEqual({
+      password: 'Password must be at least 8 characters.',
+    })
+    expect(setPasswordFormErrors('12345678', '')).toEqual({ confirm: 'Passwords do not match.' })
+  })
+
+  it('refuses a confirm that differs from the password', () => {
+    expect(setPasswordFormErrors('12345678', '12345679')).toEqual({
+      confirm: 'Passwords do not match.',
     })
   })
 })

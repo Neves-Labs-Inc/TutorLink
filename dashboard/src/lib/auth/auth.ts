@@ -81,3 +81,18 @@ export const decodeAccessToken = (token: string): AccessTokenClaims | null => {
 
   return claims
 }
+
+const MIN_PASSWORD_LENGTH = 8
+
+export type SetPasswordFormErrors = { password?: string; confirm?: string }
+
+export const setPasswordFormErrors = (password: string, confirm: string): SetPasswordFormErrors => {
+  const errors: SetPasswordFormErrors = {}
+
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    errors.password = 'Password must be at least 8 characters.'
+  }
+  if (confirm !== password) errors.confirm = 'Passwords do not match.'
+
+  return errors
+}

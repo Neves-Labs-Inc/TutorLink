@@ -1,7 +1,14 @@
 import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { errorDetail, requestLogin, requestLogout } from '@/lib/api'
+import {
+  errorDetail,
+  errorStatus,
+  requestForgotPassword,
+  requestLogin,
+  requestLogout,
+  requestSetPassword,
+} from '@/lib/api'
 import { decodeAccessToken, landingPath } from '@/lib/auth/auth'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -31,6 +38,29 @@ export const useAuth = () => {
     },
   })
 
+  const setPasswordMutation = useMutation({
+    mutationFn: async ({ token, password }: { token: string; password: string }) => {
+      const { data } = await requestSetPassword(token, password)
+      const claims = decodeAccessToken(data.access_token)
+
+      if (claims === null) throw new Error('Unreadable access token')
+
+      return { accessToken: data.access_token, role: claims.role }
+    },
+    onSuccess: ({ accessToken, role: nextRole }) => {
+      setSession({ accessToken })
+      navigate(landingPath(nextRole), { replace: true })
+    },
+  })
+
+  const forgotPasswordMutation = useMutation({
+    mutationFn: async (email: string) => {
+      const { data } = await requestForgotPassword(email)
+
+      return data.detail
+    },
+  })
+
   const logoutMutation = useMutation({
     mutationFn: requestLogout,
     onSuccess: () => {
@@ -49,6 +79,17 @@ export const useAuth = () => {
     (email: string, password: string) => loginMutate({ email, password }),
     [loginMutate],
   )
+  const { mutate: setPasswordMutate } = setPasswordMutation
+  const { mutate: forgotPasswordMutate } = forgotPasswordMutation
+
+  const setPasswordWithToken = useCallback(
+    (token: string, password: string) => setPasswordMutate({ token, password }),
+    [setPasswordMutate],
+  )
+  const forgotPassword = useCallback(
+    (email: string) => forgotPasswordMutate(email),
+    [forgotPasswordMutate],
+  )
   const logout = useCallback(() => logoutMutate(), [logoutMutate])
 
   return {
@@ -57,6 +98,25 @@ export const useAuth = () => {
     tutorId,
     login,
     logout,
+    setPasswordWithToken,
+    // Stays true after a 200 on purpose: navigation away is imminent and the form must not
+    // flash back to enabled.
+    isSettingPassword: setPasswordMutation.isPending || setPasswordMutation.isSuccess,
+    // 400 = dead link, 422 = bad password; any other status (or none) is a plain failure.
+    setPasswordFailure:
+      setPasswordMutation.error === null
+        ? null
+        : {
+            status: errorStatus(setPasswordMutation.error),
+            detail: errorDetail(setPasswordMutation.error) ?? LOGIN_FALLBACK_ERROR,
+          },
+    forgotPassword,
+    isSendingReset: forgotPasswordMutation.isPending,
+    // The server's confirmation sentence once any 2xx came back, else null.
+    forgotPasswordConfirmation: forgotPasswordMutation.isSuccess
+      ? forgotPasswordMutation.data
+      : null,
+    forgotPasswordError: forgotPasswordMutation.isError ? LOGIN_FALLBACK_ERROR : null,
     isLoggingIn: loginMutation.isPending,
     // Already a renderable string: the server's `detail` when it sent one, a fixed fallback
     // otherwise. Never a raw Axios error, a status code, or a stack.

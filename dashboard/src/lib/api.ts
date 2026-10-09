@@ -36,6 +36,12 @@ export const requestLogin = (email: string, password: string) =>
     new URLSearchParams({ username: email, password }),
   )
 
+export const requestForgotPassword = (email: string) =>
+  authApi.post<{ detail: string }>('/auth/password/forgot', { email })
+
+export const requestSetPassword = (token: string, password: string) =>
+  authApi.post<TokenPairResponse>('/auth/password/set', { token, password })
+
 // No body: the HttpOnly cookie carries the refresh token.
 export const requestRefresh = () => authApi.post<TokenPairResponse>('/auth/refresh')
 

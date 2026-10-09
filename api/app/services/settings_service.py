@@ -90,7 +90,12 @@ from app.models.system_setting import (
     SETTING_VALUE_TYPE_STRING,
     SystemSetting,
 )
-from app.services.mail_templates import EmailTemplateInvalid, TemplateKind, validate_template
+from app.services.mail_templates import (
+    EmailTemplateInvalid,
+    TemplateKind,
+    validate_brand_color,
+    validate_template,
+)
 
 BUSINESS_TIMEZONE_SETTING = "business_timezone"
 REMINDER_TEMPLATE_SID_EN_SETTING = "reminder_template_sid_en"
@@ -103,6 +108,8 @@ EMAIL_TEMPLATE_SETTINGS = {
     TemplateKind.INVITE: ("email_invite_subject", "email_invite_body"),
     TemplateKind.PASSWORD_RESET: ("email_reset_subject", "email_reset_body"),
 }
+# Migration 0035's row: the colour both emails use.
+EMAIL_BRAND_COLOR_SETTING = "email_brand_color"
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,7 @@ class SettingsFlags:
 class EmailTemplate:
     subject: str
     body: str
+    brand_color: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +241,8 @@ class BusinessTimezoneUnknown(SettingValueInvalid):
 
 
 class EmailTemplateSettingInvalid(SettingValueInvalid):
-    """An email template row was given a subject or body `validate_template` refuses.
+    """An email row was given a subject or body `validate_template` refuses, or a brand colour
+    `validate_brand_color` refuses.
 
     Carries the rule's message, which the router returns as-is: unlike a type error, the Admin
     needs to know which rule they broke to fix the template.
@@ -383,12 +392,19 @@ def apply_setting_updates(
 
 
 def read_email_template(db: Session, *, kind: TemplateKind) -> EmailTemplate:
-    """The saved subject and body of the `kind` email."""
+    """The saved subject and body of the `kind` email, and the saved brand colour."""
     subject_key, body_key = EMAIL_TEMPLATE_SETTINGS[kind]
 
     return EmailTemplate(
-        subject=get_str_setting(db, key=subject_key), body=get_str_setting(db, key=body_key)
+        subject=get_str_setting(db, key=subject_key),
+        body=get_str_setting(db, key=body_key),
+        brand_color=read_email_brand_color(db),
     )
+
+
+def read_email_brand_color(db: Session) -> str:
+    """The saved `#RRGGBB` colour every email is branded with."""
+    return get_str_setting(db, key=EMAIL_BRAND_COLOR_SETTING)
 
 
 def has_any_booking(db: Session) -> bool:
@@ -433,10 +449,17 @@ def _checked_string_value(update: SettingUpdate) -> str:
     and a trailing space would make a template id that looks set fail at send time.
     Only `business_timezone` has a validator here; the template-id rows accept anything, and
     blank is their documented "not approved" value. Email template rows are stored as written:
-    their whitespace is the email's layout, and `_check_email_templates` validates them.
+    their whitespace is the email's layout, and `_check_email_templates` validates them. The
+    brand colour is not stripped either: the spec refuses `#74C8C9 ` rather than repairing it.
     """
     if _is_email_template_key(update.key):
         return update.value
+
+    if update.key == EMAIL_BRAND_COLOR_SETTING:
+        try:
+            return validate_brand_color(update.value)
+        except EmailTemplateInvalid as exc:
+            raise EmailTemplateSettingInvalid(exc.message) from exc
 
     value = update.value.strip()
 

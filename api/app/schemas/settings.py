@@ -63,3 +63,5 @@ class EmailTemplateTest(BaseModel):
     template: TemplateKind
     subject: str
     body: str
+    # Absent: the saved colour.
+    brand_color: str | None = None

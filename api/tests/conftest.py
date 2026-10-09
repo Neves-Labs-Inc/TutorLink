@@ -24,12 +24,12 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Emailed links can be built (`mail_service.public_url`) without configuring SMTP.
 os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 
-# 0034 holds the default email copy; the harness seeds from it so the copy has one source.
-EMAIL_TEMPLATE_MIGRATION = (
-    Path(__file__).resolve().parent.parent
-    / "alembic"
-    / "versions"
-    / "0034_email_template_settings.py"
+# 0034 holds the default email copy and 0035 the default brand colour; the harness seeds from
+# them so each default has one source.
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+EMAIL_SETTING_MIGRATIONS = (
+    MIGRATIONS_DIR / "0034_email_template_settings.py",
+    MIGRATIONS_DIR / "0035_email_brand_color_setting.py",
 )
 
 
@@ -130,8 +130,8 @@ def _get_test_engine() -> Engine:
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021, 0025 and 0034
-    seed.
+    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021, 0025, 0034 and
+    0035 seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
     /auth/token` now reads the four rate-limit rows on every request — without them every login
@@ -198,7 +198,7 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         ("reminder_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
         ("reminder_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
     ]
-    rows += list(_email_template_seed_rows())
+    rows += [row for migration in EMAIL_SETTING_MIGRATIONS for row in _seed_rows(migration)]
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"
         " VALUES (:key, :value, :value_type, :is_developer_only) ON CONFLICT (key) DO NOTHING"
@@ -216,9 +216,9 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
             )
 
 
-def _email_template_seed_rows() -> tuple[tuple[str, str, str, bool], ...]:
-    """0034's `SEED_SETTINGS`, loaded from the migration file (alembic/ is not a package)."""
-    spec = importlib.util.spec_from_file_location("migration_0034", EMAIL_TEMPLATE_MIGRATION)
+def _seed_rows(migration: Path) -> tuple[tuple[str, str, str, bool], ...]:
+    """A migration's `SEED_SETTINGS`, loaded from its file (alembic/ is not a package)."""
+    spec = importlib.util.spec_from_file_location(f"migration_{migration.stem}", migration)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

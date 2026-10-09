@@ -20,8 +20,6 @@ NAME_PLACEHOLDER = "name"
 ACTOR_NAME_PLACEHOLDER = "actor_name"
 LINK_PLACEHOLDER = "link"
 
-DEFAULT_BRAND_COLOR = "#2F4A9E"
-
 MAX_SUBJECT_LENGTH = 200
 MAX_BODY_LENGTH = 5000
 
@@ -30,7 +28,7 @@ _PLACEHOLDER_PATTERN = re.compile(r"\{([a-z_]+)\}")
 _PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 _BRAND_COLOR_PATTERN = re.compile(r"#[0-9A-Fa-f]{6}")
 
-BRAND_COLOR_ERROR = "Enter a colour like #2F4A9E."
+BRAND_COLOR_ERROR = "Enter a colour like #74C8C9."
 WORDMARK = "TutorLink"
 FOOTER_TEXT = "Sent by TutorLink"
 LINK_FALLBACK_TEXT = "Or paste this link into your browser:"

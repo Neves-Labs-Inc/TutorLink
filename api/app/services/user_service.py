@@ -52,7 +52,6 @@ from app.services.auth_service import normalise_email
 from app.services.mail_service import public_url, send_email
 from app.services.mail_templates import (
     ACTOR_NAME_PLACEHOLDER,
-    DEFAULT_BRAND_COLOR,
     LINK_PLACEHOLDER,
     NAME_PLACEHOLDER,
     TemplateKind,
@@ -313,7 +312,7 @@ def invite_user(
                 ACTOR_NAME_PLACEHOLDER: actor_name,
                 LINK_PLACEHOLDER: public_url(f"{SET_PASSWORD_PATH}?token={token}"),
             },
-            brand_color=DEFAULT_BRAND_COLOR,
+            brand_color=template.brand_color,
         )
         send_email(to=user.email, subject=rendered.subject, text=rendered.text, html=rendered.html)
 

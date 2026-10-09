@@ -8,8 +8,8 @@ import {
   toggleStatus,
   type BookingFilterState,
 } from '@/lib/bookings/bookings'
+import type { Staff, StaffRole } from '@/lib/queries/staff'
 import type { Subject } from '@/lib/queries/subjects'
-import type { Tutor } from '@/lib/queries/tutors'
 import { cn } from '@/lib/utils'
 
 export type BookingFilterFieldsProps = {
@@ -18,7 +18,7 @@ export type BookingFilterFieldsProps = {
   childOption: SearchPickerOption | null
   onChildChange: (option: SearchPickerOption | null) => void
   searchChildren: (term: string) => Promise<SearchPickerOption[]>
-  tutors: Tutor[]
+  staff: Staff[]
   subjects: Subject[]
   // Keeps element ids unique when the card and the slide-over are both in the DOM.
   idPrefix: string
@@ -33,6 +33,12 @@ const chipSelectedClasses = 'border-primary bg-primary text-primary-foreground'
 // New stacked controls meet the 44px touch target below md (DESIGN.md R1); the card keeps its size.
 const stackedChipClasses = 'min-h-11 px-4 active:translate-y-px md:min-h-0 md:px-3'
 const stackedControlClasses = 'h-11 md:h-8'
+// Group order in the Staff select; a group with nobody in it is not rendered.
+const STAFF_GROUPS: { role: StaffRole; label: string }[] = [
+  { role: 'tutor', label: 'Tutors' },
+  { role: 'manager', label: 'Managers' },
+  { role: 'admin', label: 'Admins' },
+]
 
 export const BookingFilterFields = ({
   filters,
@@ -40,7 +46,7 @@ export const BookingFilterFields = ({
   childOption,
   onChildChange,
   searchChildren,
-  tutors,
+  staff,
   subjects,
   idPrefix,
   layout,
@@ -49,14 +55,19 @@ export const BookingFilterFields = ({
   const isStacked = layout === 'stacked'
   const controlClassName = isStacked ? stackedControlClasses : undefined
   const statusGroupLabelId = `${idPrefix}-status-filter`
+  const staffGroups = STAFF_GROUPS.map((group) => ({
+    ...group,
+    members: staff.filter((member) => member.role === group.role),
+  })).filter((group) => group.members.length > 0)
 
   return (
     <div className="space-y-4">
       <div
         className={cn(
           isStacked ? 'space-y-4' : 'grid grid-cols-1 gap-4 sm:grid-cols-2',
-          // Three fields without From/To: one column each, so none is left empty.
-          !isStacked && (showDateRange ? 'lg:grid-cols-5' : 'lg:grid-cols-3'),
+          // Six fields with From/To fill two rows of three; the four without fill one row of
+          // four, so no cell is left empty at any width.
+          !isStacked && (showDateRange ? 'lg:grid-cols-3' : 'lg:grid-cols-4'),
         )}
       >
         {showDateRange && (
@@ -86,19 +97,42 @@ export const BookingFilterFields = ({
         )}
 
         <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-tutor-filter`}>Tutor</Label>
+          <Label htmlFor={`${idPrefix}-staff-filter`}>Staff</Label>
           <Select
-            id={`${idPrefix}-tutor-filter`}
+            id={`${idPrefix}-staff-filter`}
             className={controlClassName}
-            value={filters.tutorId}
-            onChange={(event) => onChange({ ...filters, tutorId: event.target.value })}
+            value={filters.staffId}
+            onChange={(event) => onChange({ ...filters, staffId: event.target.value })}
           >
-            <option value="">All tutors</option>
-            {tutors.map((tutor) => (
-              <option key={tutor.id} value={tutor.id}>
-                {tutor.name}
-              </option>
+            <option value="">All staff</option>
+            {staffGroups.map((group) => (
+              <optgroup key={group.role} label={group.label}>
+                {group.members.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name}
+                  </option>
+                ))}
+              </optgroup>
             ))}
+          </Select>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-location-filter`}>Location</Label>
+          <Select
+            id={`${idPrefix}-location-filter`}
+            className={controlClassName}
+            value={filters.location}
+            onChange={(event) =>
+              onChange({
+                ...filters,
+                location: event.target.value as BookingFilterState['location'],
+              })
+            }
+          >
+            <option value="">All locations</option>
+            <option value="home">At a home</option>
+            <option value="in_office">In office</option>
           </Select>
         </div>
 

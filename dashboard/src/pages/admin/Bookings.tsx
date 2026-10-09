@@ -13,6 +13,7 @@ import { BookingForm } from '@/components/bookings/BookingForm'
 import type { SearchPickerOption } from '@/components/pickers/SearchPicker'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
+import { SegmentedTabs, type SegmentedTab } from '@/components/shared/SegmentedTabs'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -34,20 +35,31 @@ import {
   bookingFiltersFromSearchParams,
   bookingListParams,
   bookingTimeLabel,
-  EMPTY_FILTERS,
+  clearedFilters,
+  emptyBookingsMessage,
+  kindTabCount,
   type BookingFilterState,
+  type BookingKindTab,
 } from '@/lib/bookings/bookings'
 import { formatIsoDate, todayLocalIso } from '@/lib/dates/dates'
-import { bookingQueries, type Booking } from '@/lib/queries/bookings'
+import { bookingQueries, type Booking, type BookingCounts } from '@/lib/queries/bookings'
 import { childQueries } from '@/lib/queries/children'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
+import { staffQueries } from '@/lib/queries/staff'
 import { subjectQueries } from '@/lib/queries/subjects'
-import { tutorQueries } from '@/lib/queries/tutors'
+import { segmentedTabId } from '@/lib/segmented-tabs/segmentedTabs'
 import { weekStartIso } from '@/lib/tutor-schedule/tutorSchedule'
 import { cn } from '@/lib/utils'
 
 const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const REFERENCE_PAGE_SIZE = 100
+const KIND_PANEL_ID = 'bookings-panel'
+
+const KIND_TAB_NAMES: Record<BookingKindTab, string> = {
+  '': 'All',
+  regular: 'Regular',
+  evaluation: 'Evaluation',
+}
 
 // The incoming view fades in; there is no exit animation.
 const viewEnterClasses = 'animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none'
@@ -58,6 +70,22 @@ const toggleOff = 'text-muted-foreground hover:bg-muted hover:text-foreground'
 
 const queryStatus = (query: { isPending: boolean; isError: boolean }): BookingCalendarStatus =>
   query.isPending ? 'pending' : query.isError ? 'error' : 'ready'
+
+// No count until the first response: the label swaps in place rather than showing a skeleton.
+// The button is `inline-flex`, which drops a whitespace text node, so the gap is a margin.
+const kindTabs = (counts: BookingCounts | undefined): SegmentedTab<BookingKindTab>[] =>
+  (Object.keys(KIND_TAB_NAMES) as BookingKindTab[]).map((kind) => ({
+    value: kind,
+    label:
+      counts === undefined ? (
+        KIND_TAB_NAMES[kind]
+      ) : (
+        <>
+          {KIND_TAB_NAMES[kind]}
+          <span className="ms-1 tabular-nums">({kindTabCount(kind, counts)})</span>
+        </>
+      ),
+  }))
 
 export const Bookings = () => {
   const queryClient = useQueryClient()
@@ -85,7 +113,7 @@ export const Bookings = () => {
     ...bookingQueries.week(calendarListParams(filters, weekStart)),
     enabled: isCalendar,
   })
-  const tutors = useQuery(tutorQueries.list({ page_size: REFERENCE_PAGE_SIZE }))
+  const staff = useQuery(staffQueries.list())
   const subjects = useQuery(subjectQueries.list({ page_size: REFERENCE_PAGE_SIZE }))
   const filteredChild = useQuery({
     ...childQueries.detail(filters.childId),
@@ -119,11 +147,8 @@ export const Bookings = () => {
   }
 
   // Clear all disables itself at 0 filters, so move focus on to keep it inside the panel.
-  // In calendar view the hidden From/To survive, so switching back to List restores them.
   const handleClearAll = () => {
-    applyFilters(
-      isCalendar ? { ...EMPTY_FILTERS, from: filters.from, to: filters.to } : EMPTY_FILTERS,
-    )
+    applyFilters(clearedFilters(filters, { keepDateRange: isCalendar }))
     setChildOption(null)
     showBookingsRef.current?.focus()
   }
@@ -137,6 +162,8 @@ export const Bookings = () => {
       : bookings.data.total
   const showBookingsLabel = total === undefined ? 'Show bookings' : `Show ${bookingCountLabel(total)}`
   const countTotal = isCalendar ? week.data?.total : bookings.data?.total
+  // While paging, `bookings.data` is the previous page, so the counts hold rather than vanish.
+  const kindCounts = isCalendar ? week.data?.counts_by_kind : bookings.data?.counts_by_kind
 
   const filterFieldProps = {
     filters,
@@ -144,7 +171,7 @@ export const Bookings = () => {
     childOption,
     onChildChange: handleChildChange,
     searchChildren,
-    tutors: tutors.data?.items ?? [],
+    staff: staff.data?.items ?? [],
     subjects: subjects.data?.items ?? [],
     showDateRange: !isCalendar,
   }
@@ -177,9 +204,17 @@ export const Bookings = () => {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-heading text-2xl font-semibold tracking-tight">Bookings</h1>
         <Button type="button" onClick={() => setFormOpen(true)}>
-          Create Booking
+          New booking
         </Button>
       </div>
+
+      <SegmentedTabs
+        tabs={kindTabs(kindCounts)}
+        value={filters.kind}
+        onChange={(kind) => applyFilters({ ...filters, kind })}
+        ariaLabel="Booking kind"
+        panelId={KIND_PANEL_ID}
+      />
 
       <div className="md:hidden">
         <Button
@@ -239,44 +274,51 @@ export const Bookings = () => {
         </div>
       </div>
 
-      {isCalendar ? (
-        <div key="calendar" className={viewEnterClasses}>
-          <BookingCalendar
-            weekStart={weekStart}
-            onWeekChange={setWeekStart}
-            query={{
-              status: queryStatus(week),
-              bookings: week.data?.items ?? [],
-              error: week.error,
-              refetch: () => week.refetch(),
-            }}
-            filtersActive={filterCount > 0}
-            onSelect={setSelectedBookingId}
-          />
-        </div>
-      ) : (
-        <div key="list" className={cn('space-y-6', viewEnterClasses)}>
-          <DataTable
-            caption="Bookings"
-            columns={columns}
-            rows={bookings.data?.items ?? []}
-            rowKey={(booking) => booking.id}
-            status={queryStatus(bookings)}
-            errorMessage={errorDetail(bookings.error) ?? LOAD_FALLBACK_ERROR}
-            onRetry={() => bookings.refetch()}
-            emptyMessage="No bookings match these filters."
-            onRowSelect={(booking) => setSelectedBookingId(booking.id)}
-          />
+      <div
+        id={KIND_PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={segmentedTabId(KIND_PANEL_ID, filters.kind)}
+      >
+        {isCalendar ? (
+          <div key="calendar" className={viewEnterClasses}>
+            <BookingCalendar
+              weekStart={weekStart}
+              onWeekChange={setWeekStart}
+              query={{
+                status: queryStatus(week),
+                bookings: week.data?.items ?? [],
+                error: week.error,
+                refetch: () => week.refetch(),
+              }}
+              // A kind tab narrows the week too, so its empty line says "match these filters".
+              filtersActive={filterCount > 0 || filters.kind !== ''}
+              onSelect={setSelectedBookingId}
+            />
+          </div>
+        ) : (
+          <div key="list" className={cn('space-y-6', viewEnterClasses)}>
+            <DataTable
+              caption="Bookings"
+              columns={columns}
+              rows={bookings.data?.items ?? []}
+              rowKey={(booking) => booking.id}
+              status={queryStatus(bookings)}
+              errorMessage={errorDetail(bookings.error) ?? LOAD_FALLBACK_ERROR}
+              onRetry={() => bookings.refetch()}
+              emptyMessage={emptyBookingsMessage(filters.kind)}
+              onRowSelect={(booking) => setSelectedBookingId(booking.id)}
+            />
 
-          <Pager
-            page={page}
-            pageSize={DEFAULT_PAGE_SIZE}
-            total={bookings.data?.total ?? 0}
-            onPageChange={setPage}
-            disabled={bookings.isPending}
-          />
-        </div>
-      )}
+            <Pager
+              page={page}
+              pageSize={DEFAULT_PAGE_SIZE}
+              total={bookings.data?.total ?? 0}
+              onPageChange={setPage}
+              disabled={bookings.isPending}
+            />
+          </div>
+        )}
+      </div>
 
       <SlideOver
         open={filtersOpen}

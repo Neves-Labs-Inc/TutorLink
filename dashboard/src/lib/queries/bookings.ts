@@ -56,12 +56,13 @@ export type BookingListParams = {
 
 export type BookingWeekParams = Omit<BookingListParams, 'page' | 'page_size'>
 
-export type BookingWeek = { items: Booking[]; total: number }
+export type BookingCounts = { regular: number; evaluation: number }
 
 // `counts_by_kind` is optional until the API sends it (ticket 03).
-export type BookingPage = Page<Booking> & {
-  counts_by_kind?: { regular: number; evaluation: number }
-}
+export type BookingPage = Page<Booking> & { counts_by_kind?: BookingCounts }
+
+// `counts_by_kind` is the shown week's, from its first page, so the kind tabs can count it.
+export type BookingWeek = { items: Booking[]; total: number; counts_by_kind?: BookingCounts }
 
 export type BookingCreate = {
   child_id: string
@@ -114,7 +115,11 @@ export const bookingQueries = {
           ),
         )
 
-        return { items: [first, ...rest].flatMap((page) => page.items), total: first.total }
+        return {
+          items: [first, ...rest].flatMap((page) => page.items),
+          total: first.total,
+          counts_by_kind: first.counts_by_kind,
+        }
       },
     }),
 

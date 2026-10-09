@@ -34,6 +34,7 @@ names below. They never use raw hex, `oklch()`, or Tailwind palette colours (`re
 | Border / input / ring | `border-border`, `border-input`, `ring-ring/50` | Dividers, field outlines, focus rings |
 | Sidebar | `bg-sidebar`, `bg-sidebar-primary`, `bg-sidebar-accent`, `border-sidebar-border` | Admin sidebar, tutor nav, mobile headers |
 | Chart 1-5 | `chart-*` | Charts only |
+| Calendar: Evaluation | `border-calendar-evaluation` (with `border-dashed`) | Border of an Evaluation entry in the booking calendar. Only through `CalendarEntry`. |
 
 ### Status tones (badges)
 

@@ -24,6 +24,9 @@ const entryClasses = cn(
 )
 const compactClasses = 'space-y-1 p-2 text-xs'
 const rowClasses = 'min-h-11 space-y-1 px-3 py-2.5'
+// The dash survives the focus ring's colour change, so a focused entry still reads as an
+// Evaluation; the "Evaluation" text line means colour is never the only cue.
+const evaluationClasses = 'border-dashed border-calendar-evaluation'
 
 // The visible text is the accessible name; no `aria-label` on top of it.
 export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps) => {
@@ -62,7 +65,11 @@ export const CalendarEntry = ({ booking, variant, onSelect }: CalendarEntryProps
     <button
       type="button"
       aria-haspopup="dialog"
-      className={cn(entryClasses, variant === 'compact' ? compactClasses : rowClasses)}
+      className={cn(
+        entryClasses,
+        variant === 'compact' ? compactClasses : rowClasses,
+        booking.kind === 'evaluation' && evaluationClasses,
+      )}
       onClick={() => onSelect(booking.id)}
     >
       {content}

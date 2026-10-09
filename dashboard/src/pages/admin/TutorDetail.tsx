@@ -72,7 +72,7 @@ export const TutorDetail = () => {
         <SubjectsSection tutorId={tutor.id} />
         <AvailabilitySection tutorId={tutor.id} />
         <ExceptionsSection tutorId={tutor.id} />
-        <TutorBookingsSection tutorId={tutor.id} />
+        <TutorBookingsSection tutorId={tutor.id} userId={tutor.user_id} />
       </>
     )
   }

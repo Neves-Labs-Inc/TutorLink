@@ -35,6 +35,7 @@
     --color-status-cancelled-bg: var(--status-cancelled-bg);
     --color-status-completed: var(--status-completed);
     --color-status-completed-bg: var(--status-completed-bg);
+    --color-calendar-evaluation: var(--calendar-evaluation);
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
@@ -104,6 +105,7 @@
     --status-cancelled-bg: oklch(0.952 0.028 27);
     --status-completed: oklch(0.462 0.014 264);
     --status-completed-bg: oklch(0.938 0.005 264);
+    --calendar-evaluation: oklch(0.50 0.15 290);
 
     --chart-1: oklch(0.448 0.145 264);
     --chart-2: oklch(0.438 0.112 152);
@@ -156,6 +158,7 @@
     --status-cancelled-bg: oklch(0.318 0.068 25);
     --status-completed: oklch(0.792 0.01 264);
     --status-completed-bg: oklch(0.312 0.012 264);
+    --calendar-evaluation: oklch(0.74 0.12 290);
 
     --chart-1: oklch(0.712 0.132 264);
     --chart-2: oklch(0.812 0.142 152);
@@ -205,6 +208,7 @@
         --status-cancelled-bg: oklch(0.318 0.068 25);
         --status-completed: oklch(0.792 0.01 264);
         --status-completed-bg: oklch(0.312 0.012 264);
+        --calendar-evaluation: oklch(0.74 0.12 290);
 
         --chart-1: oklch(0.712 0.132 264);
         --chart-2: oklch(0.812 0.142 152);

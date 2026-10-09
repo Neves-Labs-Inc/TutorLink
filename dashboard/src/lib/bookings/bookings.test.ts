@@ -6,7 +6,10 @@ import {
   bookingFiltersFromSearchParams,
   bookingListParams,
   bookingTimeLabel,
+  clearedFilters,
   EMPTY_FILTERS,
+  emptyBookingsMessage,
+  kindTabCount,
   statusLabel,
   STATUS_OPTIONS,
   toggleStatus,
@@ -30,14 +33,34 @@ describe('bookingListParams', () => {
         expected: { status: ['pending', 'confirmed', 'cancelled', 'completed'] },
       },
       {
-        name: 'a tutor and a subject',
-        state: { ...EMPTY_FILTERS, tutorId: 'tutor-1', subjectId: 'subject-1' },
-        expected: { tutor_id: 'tutor-1', subject_id: 'subject-1' },
+        name: 'a staff member and a subject',
+        state: { ...EMPTY_FILTERS, staffId: 'user-1', subjectId: 'subject-1' },
+        expected: { user_id: 'user-1', subject_id: 'subject-1' },
       },
       {
         name: 'a child',
         state: { ...EMPTY_FILTERS, childId: 'child-1' },
         expected: { child_id: 'child-1' },
+      },
+      {
+        name: 'the Evaluation kind tab',
+        state: { ...EMPTY_FILTERS, kind: 'evaluation' },
+        expected: { kind: 'evaluation' },
+      },
+      {
+        name: 'the Regular kind tab',
+        state: { ...EMPTY_FILTERS, kind: 'regular' },
+        expected: { kind: 'regular' },
+      },
+      {
+        name: 'an In office location',
+        state: { ...EMPTY_FILTERS, location: 'in_office' },
+        expected: { location: 'in_office' },
+      },
+      {
+        name: 'an At a home location',
+        state: { ...EMPTY_FILTERS, location: 'home' },
+        expected: { location: 'home' },
       },
       {
         name: 'a date range',
@@ -53,7 +76,9 @@ describe('bookingListParams', () => {
         name: 'every filter together',
         state: {
           statuses: ['confirmed'],
-          tutorId: 'tutor-1',
+          kind: 'evaluation',
+          staffId: 'user-1',
+          location: 'in_office',
           subjectId: 'subject-1',
           childId: 'child-1',
           from: '2026-09-01',
@@ -61,7 +86,9 @@ describe('bookingListParams', () => {
         },
         expected: {
           status: ['confirmed'],
-          tutor_id: 'tutor-1',
+          kind: 'evaluation',
+          user_id: 'user-1',
+          location: 'in_office',
           subject_id: 'subject-1',
           child_id: 'child-1',
           from: '2026-09-01',
@@ -78,15 +105,36 @@ describe('bookingListParams', () => {
     expect(bookingListParams(EMPTY_FILTERS)).not.toHaveProperty('status')
   })
 
-  it('drops a tutor and a subject cleared back to all', () => {
-    const params = bookingListParams({ ...EMPTY_FILTERS, tutorId: '', subjectId: '' })
+  it('drops a staff member and a subject cleared back to all', () => {
+    const params = bookingListParams({ ...EMPTY_FILTERS, staffId: '', subjectId: '' })
 
-    expect(params).not.toHaveProperty('tutor_id')
+    expect(params).not.toHaveProperty('user_id')
     expect(params).not.toHaveProperty('subject_id')
   })
 
   it('drops a child cleared back to all', () => {
     expect(bookingListParams({ ...EMPTY_FILTERS, childId: '' })).not.toHaveProperty('child_id')
+  })
+
+  it('omits kind and location on the All tab with every location', () => {
+    const params = bookingListParams({ ...EMPTY_FILTERS, kind: '', location: '' })
+
+    expect(params).not.toHaveProperty('kind')
+    expect(params).not.toHaveProperty('location')
+  })
+
+  it('sends the Staff member as user_id, never as the old tutor_id', () => {
+    const params = bookingListParams({ ...EMPTY_FILTERS, staffId: 'user-1' })
+
+    expect(params).toEqual({ user_id: 'user-1' })
+    expect(params).not.toHaveProperty('tutor_id')
+  })
+
+  it('has no tutorId in the filter state', () => {
+    expect(EMPTY_FILTERS).not.toHaveProperty('tutorId')
+    const stale = { ...EMPTY_FILTERS, tutorId: 'tutor-1' } as BookingFilterState
+
+    expect(bookingListParams(stale)).toEqual({})
   })
 })
 
@@ -94,14 +142,39 @@ describe('bookingFiltersFromSearchParams', () => {
   const cases: { name: string; search: string; expected: BookingFilterState }[] = [
     { name: 'an empty query string', search: '', expected: EMPTY_FILTERS },
     {
-      name: 'a tutor deep link',
-      search: 'tutor_id=tutor-1',
-      expected: { ...EMPTY_FILTERS, tutorId: 'tutor-1' },
+      name: 'a staff deep link',
+      search: 'user_id=user-1',
+      expected: { ...EMPTY_FILTERS, staffId: 'user-1' },
     },
     {
       name: 'a child deep link',
       search: 'child_id=child-1',
       expected: { ...EMPTY_FILTERS, childId: 'child-1' },
+    },
+    {
+      name: 'the Evaluation tab',
+      search: 'kind=evaluation',
+      expected: { ...EMPTY_FILTERS, kind: 'evaluation' },
+    },
+    {
+      name: 'a kind that is not one of the two, read as All',
+      search: 'kind=trial',
+      expected: EMPTY_FILTERS,
+    },
+    {
+      name: 'an In office location',
+      search: 'location=in_office',
+      expected: { ...EMPTY_FILTERS, location: 'in_office' },
+    },
+    {
+      name: 'a location that is not one of the two, read as all locations',
+      search: 'location=school',
+      expected: EMPTY_FILTERS,
+    },
+    {
+      name: 'the old tutor_id param, which this page no longer reads',
+      search: 'tutor_id=tutor-1',
+      expected: EMPTY_FILTERS,
     },
     {
       name: 'repeated status keys',
@@ -130,7 +203,7 @@ describe('bookingFiltersFromSearchParams', () => {
     },
     {
       name: 'a param present but blank',
-      search: 'tutor_id=&subject_id=',
+      search: 'user_id=&subject_id=',
       expected: EMPTY_FILTERS,
     },
     {
@@ -141,11 +214,13 @@ describe('bookingFiltersFromSearchParams', () => {
     {
       name: 'every filter at once',
       search:
-        'status=pending&status=confirmed&tutor_id=tutor-1' +
+        'status=pending&status=confirmed&kind=regular&user_id=user-1&location=home' +
         '&subject_id=subject-1&child_id=child-1&from=2026-09-01&to=2026-09-30',
       expected: {
         statuses: ['pending', 'confirmed'],
-        tutorId: 'tutor-1',
+        kind: 'regular',
+        staffId: 'user-1',
+        location: 'home',
         subjectId: 'subject-1',
         childId: 'child-1',
         from: '2026-09-01',
@@ -178,9 +253,9 @@ describe('bookingFilterSearchParams', () => {
       expected: 'status=pending&status=confirmed&status=cancelled&status=completed',
     },
     {
-      name: 'a tutor alone',
-      state: { ...EMPTY_FILTERS, tutorId: 'tutor-1' },
-      expected: 'tutor_id=tutor-1',
+      name: 'a staff member alone',
+      state: { ...EMPTY_FILTERS, staffId: 'user-1' },
+      expected: 'user_id=user-1',
     },
     {
       name: 'a child alone',
@@ -188,18 +263,35 @@ describe('bookingFilterSearchParams', () => {
       expected: 'child_id=child-1',
     },
     {
+      name: 'the Regular tab alone',
+      state: { ...EMPTY_FILTERS, kind: 'regular' },
+      expected: 'kind=regular',
+    },
+    {
+      name: 'the All tab, written as no kind at all',
+      state: { ...EMPTY_FILTERS, kind: '' },
+      expected: '',
+    },
+    {
+      name: 'a location alone',
+      state: { ...EMPTY_FILTERS, location: 'home' },
+      expected: 'location=home',
+    },
+    {
       name: 'every filter at once',
       state: {
         statuses: ['confirmed'],
-        tutorId: 'tutor-1',
+        kind: 'evaluation',
+        staffId: 'user-1',
+        location: 'in_office',
         subjectId: 'subject-1',
         childId: 'child-1',
         from: '2026-09-01',
         to: '2026-09-30',
       },
       expected:
-        'status=confirmed&tutor_id=tutor-1&subject_id=subject-1&child_id=child-1' +
-        '&from=2026-09-01&to=2026-09-30',
+        'status=confirmed&kind=evaluation&user_id=user-1&location=in_office' +
+        '&subject_id=subject-1&child_id=child-1&from=2026-09-01&to=2026-09-30',
     },
   ]
 
@@ -222,8 +314,10 @@ describe('bookingFilterSearchParams', () => {
 describe('booking filter URL round trip', () => {
   const states: { name: string; state: BookingFilterState }[] = [
     { name: 'an empty filter set', state: EMPTY_FILTERS },
-    { name: 'a tutor deep link', state: { ...EMPTY_FILTERS, tutorId: 'tutor-1' } },
+    { name: 'a staff deep link', state: { ...EMPTY_FILTERS, staffId: 'user-1' } },
     { name: 'a child deep link', state: { ...EMPTY_FILTERS, childId: 'child-1' } },
+    { name: 'the Evaluation tab', state: { ...EMPTY_FILTERS, kind: 'evaluation' } },
+    { name: 'an In office location', state: { ...EMPTY_FILTERS, location: 'in_office' } },
     {
       name: 'multiple statuses',
       state: { ...EMPTY_FILTERS, statuses: ['pending', 'confirmed'] },
@@ -233,7 +327,9 @@ describe('booking filter URL round trip', () => {
       name: 'every filter at once',
       state: {
         statuses: ['confirmed', 'completed'],
-        tutorId: 'tutor-1',
+        kind: 'regular',
+        staffId: 'user-1',
+        location: 'home',
         subjectId: 'subject-1',
         childId: 'child-1',
         from: '2026-09-01',
@@ -359,9 +455,15 @@ describe('activeFilterCount', () => {
       state: { ...EMPTY_FILTERS, statuses: ['pending', 'completed', 'cancelled'] },
       expected: 3,
     },
-    { name: 'a tutor', state: { ...EMPTY_FILTERS, tutorId: 'tutor-1' }, expected: 1 },
+    { name: 'a staff member', state: { ...EMPTY_FILTERS, staffId: 'user-1' }, expected: 1 },
     { name: 'a subject', state: { ...EMPTY_FILTERS, subjectId: 'subject-1' }, expected: 1 },
     { name: 'a child', state: { ...EMPTY_FILTERS, childId: 'child-1' }, expected: 1 },
+    { name: 'a location', state: { ...EMPTY_FILTERS, location: 'home' }, expected: 1 },
+    {
+      name: 'a kind tab, which is not a filter badge',
+      state: { ...EMPTY_FILTERS, kind: 'evaluation' },
+      expected: 0,
+    },
     { name: 'only a from date', state: { ...EMPTY_FILTERS, from: '2026-09-01' }, expected: 1 },
     { name: 'only a to date', state: { ...EMPTY_FILTERS, to: '2026-09-30' }, expected: 1 },
     {
@@ -373,13 +475,15 @@ describe('activeFilterCount', () => {
       name: 'every filter together',
       state: {
         statuses: ['pending', 'confirmed'],
-        tutorId: 'tutor-1',
+        kind: 'evaluation',
+        staffId: 'user-1',
+        location: 'in_office',
         subjectId: 'subject-1',
         childId: 'child-1',
         from: '2026-09-01',
         to: '2026-09-30',
       },
-      expected: 7,
+      expected: 8,
     },
   ]
 
@@ -397,5 +501,65 @@ describe('bookingCountLabel', () => {
 
   it.each(cases)('renders $total as $expected', ({ total, expected }) => {
     expect(bookingCountLabel(total)).toBe(expected)
+  })
+})
+
+describe('clearedFilters', () => {
+  const filters: BookingFilterState = {
+    statuses: ['pending'],
+    kind: 'evaluation',
+    staffId: 'user-1',
+    location: 'in_office',
+    subjectId: 'subject-1',
+    childId: 'child-1',
+    from: '2026-09-01',
+    to: '2026-09-30',
+  }
+
+  it('keeps the kind tab, which is not a filter, and clears everything else', () => {
+    expect(clearedFilters(filters, { keepDateRange: false })).toEqual({
+      ...EMPTY_FILTERS,
+      kind: 'evaluation',
+    })
+  })
+
+  it('keeps the hidden date range in calendar view, so List gets it back', () => {
+    expect(clearedFilters(filters, { keepDateRange: true })).toEqual({
+      ...EMPTY_FILTERS,
+      kind: 'evaluation',
+      from: '2026-09-01',
+      to: '2026-09-30',
+    })
+  })
+
+  it('leaves the All tab as it is', () => {
+    const cleared = clearedFilters({ ...filters, kind: '' }, { keepDateRange: false })
+
+    expect(cleared).toEqual(EMPTY_FILTERS)
+  })
+})
+
+describe('kindTabCount', () => {
+  const counts = { regular: 40, evaluation: 2 }
+
+  it('sums both kinds for the All tab', () => {
+    expect(kindTabCount('', counts)).toBe(42)
+  })
+
+  it('reads each kind for its own tab', () => {
+    expect(kindTabCount('regular', counts)).toBe(40)
+    expect(kindTabCount('evaluation', counts)).toBe(2)
+  })
+})
+
+describe('emptyBookingsMessage', () => {
+  const cases: { kind: BookingFilterState['kind']; expected: string }[] = [
+    { kind: '', expected: 'No bookings match these filters.' },
+    { kind: 'regular', expected: 'No Regular bookings match these filters.' },
+    { kind: 'evaluation', expected: 'No Evaluations match these filters.' },
+  ]
+
+  it.each(cases)('names the $kind tab', ({ kind, expected }) => {
+    expect(emptyBookingsMessage(kind)).toBe(expected)
   })
 })

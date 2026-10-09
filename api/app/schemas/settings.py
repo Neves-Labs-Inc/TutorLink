@@ -26,6 +26,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from app.schemas.common import Page
+from app.services.mail_templates import TemplateKind
 
 
 class SettingRead(BaseModel):
@@ -54,3 +55,11 @@ class SettingWrite(BaseModel):
 
 class SettingsUpdate(BaseModel):
     updates: Annotated[list[SettingWrite], Field(min_length=1)]
+
+
+class EmailTemplateTest(BaseModel):
+    """An unsaved draft to email to the caller; `mail_templates` checks its rules."""
+
+    template: TemplateKind
+    subject: str
+    body: str

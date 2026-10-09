@@ -135,6 +135,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/users/{user_id}/invite"): Access.ADMIN,
     ("GET", "/api/settings"): Access.ADMIN,
     ("PATCH", "/api/settings"): Access.ADMIN,
+    ("POST", "/api/settings/email-templates/test"): Access.ADMIN,
 }
 
 ALLOWED_ROLES: dict[Access, frozenset[UserRole]] = {

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   byDayOfWeek,
+  DEFAULT_MODE,
   dayOfWeekFromIso,
   EXCEPTION_REASONS,
   exceptionPreviewLabel,
@@ -10,6 +11,9 @@ import {
   exceptionWindowLabel,
   isDecidable,
   isTimeRangeOrdered,
+  MODE_OPTIONS,
+  modeHint,
+  modeLabel,
   slotRangeLabel,
   timeInputValue,
   weekdaysInRange,
@@ -347,5 +351,26 @@ describe('exceptionTimesAcceptable', () => {
 
   it.each(cases)('is $expected for "$start" to "$end"', ({ start, end, expected }) => {
     expect(exceptionTimesAcceptable(start, end)).toBe(expected)
+  })
+})
+
+describe('availability mode copy', () => {
+  it('labels the three modes without the word Traveler', () => {
+    expect(modeLabel('traveler')).toBe('Home visits')
+    expect(modeLabel('anywhere')).toBe('Home or office')
+    expect(modeLabel('only_office')).toBe('Office only')
+    expect(MODE_OPTIONS.some((option) => /traveler/i.test(option.label))).toBe(false)
+  })
+
+  it('returns the approved hint for each mode', () => {
+    expect(modeHint('traveler')).toBe("The bot offers this slot only at the Child's home.")
+    expect(modeHint('anywhere')).toBe(
+      "The bot offers this slot at the Child's home or at the office.",
+    )
+    expect(modeHint('only_office')).toBe('The bot offers this slot only at the office.')
+  })
+
+  it('defaults a new slot to Home or office', () => {
+    expect(DEFAULT_MODE).toBe('anywhere')
   })
 })

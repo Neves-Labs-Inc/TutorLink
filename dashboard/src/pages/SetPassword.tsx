@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import AuthCard from "@/components/auth/AuthCard";
 import { DISABLED_INPUT, FADE_IN, SUBMIT_BUTTON } from "@/components/auth/authStyles";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/useAuth";
 import { setPasswordFormErrors, type SetPasswordFormErrors } from "@/lib/auth/auth";
@@ -71,10 +71,9 @@ export default function SetPassword(): ReactNode {
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="password">New password</Label>
-            <Input
+            <PasswordInput
               id="password"
               name="password"
-              type="password"
               autoComplete="new-password"
               value={password}
               disabled={isSettingPassword}
@@ -95,10 +94,9 @@ export default function SetPassword(): ReactNode {
 
           <div className="space-y-1.5">
             <Label htmlFor="confirm">Confirm password</Label>
-            <Input
+            <PasswordInput
               id="confirm"
               name="confirm"
-              type="password"
               autoComplete="new-password"
               value={confirm}
               disabled={isSettingPassword}

@@ -52,7 +52,12 @@ export const AdminSidebar = () => {
       const focusables = () =>
         Array.from(panel?.querySelectorAll<HTMLElement>('a[href], button:not([disabled])') ?? [])
 
-      focusables()[0]?.focus()
+      // The panel is still `invisible` on this commit, so focus must wait a frame.
+      const focusFrame = requestAnimationFrame(() => {
+        const target = panel?.querySelector<HTMLElement>('nav a[href]') ?? focusables()[0]
+        // preventScroll: the overflow-hidden container must not scroll to the translated panel.
+        target?.focus({ preventScroll: true })
+      })
 
       const onKeyDown = (event: KeyboardEvent) => {
         if (event.key === 'Escape') {
@@ -82,6 +87,7 @@ export const AdminSidebar = () => {
       document.addEventListener('keydown', onKeyDown)
 
       cleanup = () => {
+        cancelAnimationFrame(focusFrame)
         document.removeEventListener('keydown', onKeyDown)
         document.body.style.overflow = previousOverflow
         trigger?.focus()
@@ -116,8 +122,9 @@ export const AdminSidebar = () => {
 
       <div
         className={cn(
-          'fixed inset-0 z-40 overflow-hidden transition-[visibility] duration-200 md:hidden',
-          mobileNavOpen ? 'visible' : 'invisible',
+          'fixed inset-0 z-40 overflow-hidden md:hidden',
+          // Visibility delay only on close: on open it must be visible by the first frame so focus() lands.
+          mobileNavOpen ? 'visible' : 'invisible transition-[visibility] duration-200',
         )}
       >
         <div

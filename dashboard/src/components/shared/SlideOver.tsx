@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type ReactNode } from 'react'
 import { Dialog } from 'radix-ui'
 import { X } from 'lucide-react'
 
+import { isOpenCombobox } from '@/lib/dialog/openCombobox'
 import { cn } from '@/lib/utils'
 
 export type SlideOverProps = {
@@ -55,11 +56,23 @@ export const SlideOver = ({
     triggerRef.current?.focus()
   }
 
+  // Radix hears Escape on the document before the focused control does, so an open
+  // combobox list would otherwise take the whole dialog down with it.
+  const keepOpenWhileListOpen = (event: KeyboardEvent) => {
+    const target = event.target instanceof Element ? event.target : null
+
+    if (isOpenCombobox(target)) event.preventDefault()
+  }
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className={overlayClasses} />
-        <Dialog.Content className={contentClasses} onCloseAutoFocus={restoreTriggerFocus}>
+        <Dialog.Content
+          className={contentClasses}
+          onCloseAutoFocus={restoreTriggerFocus}
+          onEscapeKeyDown={keepOpenWhileListOpen}
+        >
           <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
             <div className="space-y-1">
               <Dialog.Title className="font-heading text-lg font-semibold tracking-tight">

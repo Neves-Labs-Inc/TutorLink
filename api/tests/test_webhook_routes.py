@@ -682,6 +682,36 @@ def test_a_status_callback_that_advances_a_row_publishes_one_message_updated(
     assert len(published) == 1
 
 
+def test_a_replayed_status_callback_leaves_the_row_and_publishes_nothing(
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
+) -> None:
+    """Twilio replays and reorders callbacks: a late `failed` or `sent` must not undo `delivered`."""
+    message = _admin_message(db)
+
+    responses = [
+        _post_status(webhook_client, message_status="delivered"),
+        _post_status(webhook_client, message_status="failed", error_code="63016"),
+        _post_status(webhook_client, message_status="sent"),
+    ]
+    db.refresh(message)
+
+    assert [response.status_code for response in responses] == [204, 204, 204]
+    assert message.status is MessageStatus.DELIVERED
+    assert message.error_code is None
+    assert len(published) == 1
+
+
+def test_the_same_status_sent_twice_publishes_once(
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
+) -> None:
+    _admin_message(db)
+
+    responses = [_post_status(webhook_client, message_status="sent") for _ in range(2)]
+
+    assert [response.status_code for response in responses] == [204, 204]
+    assert len(published) == 1
+
+
 def test_a_bad_signature_on_the_status_callback_is_403_and_changes_nothing(
     webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
 ) -> None:

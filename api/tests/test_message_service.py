@@ -199,15 +199,70 @@ def test_a_send_that_never_earned_a_sid_can_still_reach_failed(
 
 
 def test_a_failed_delivery_records_twilios_error_code(db: Session) -> None:
-    conversation = _make_conversation(db)
-    sid = _twilio_sid()
-    record_inbound(db, conversation=conversation, body="hello", twilio_sid=sid)
+    message, sid = _sent_message(db, MessageStatus.QUEUED)
 
     advanced = advance_status(db, twilio_sid=sid, status=MessageStatus.FAILED, error_code="63016")
 
     assert advanced is not None
     assert advanced.status is MessageStatus.FAILED
     assert advanced.error_code == "63016"
+
+
+@pytest.mark.parametrize(
+    ("current", "reported"),
+    [
+        (MessageStatus.QUEUED, MessageStatus.SENT),
+        (MessageStatus.QUEUED, MessageStatus.DELIVERED),
+        (MessageStatus.SENT, MessageStatus.DELIVERED),
+        (MessageStatus.QUEUED, MessageStatus.FAILED),
+        (MessageStatus.SENT, MessageStatus.FAILED),
+    ],
+)
+def test_a_status_moves_forward(
+    db: Session, current: MessageStatus, reported: MessageStatus
+) -> None:
+    message, sid = _sent_message(db, current)
+
+    advanced = advance_status(db, twilio_sid=sid, status=reported, error_code="63016")
+
+    assert advanced is not None
+    assert advanced.id == message.id
+    assert advanced.status is reported
+    assert advanced.error_code == "63016"
+
+
+@pytest.mark.parametrize(
+    ("current", "reported"),
+    [
+        (MessageStatus.QUEUED, MessageStatus.QUEUED),
+        (MessageStatus.SENT, MessageStatus.SENT),
+        (MessageStatus.SENT, MessageStatus.QUEUED),
+        (MessageStatus.DELIVERED, MessageStatus.DELIVERED),
+        (MessageStatus.DELIVERED, MessageStatus.SENT),
+        (MessageStatus.DELIVERED, MessageStatus.QUEUED),
+        (MessageStatus.DELIVERED, MessageStatus.FAILED),
+        (MessageStatus.FAILED, MessageStatus.FAILED),
+        (MessageStatus.FAILED, MessageStatus.SENT),
+        (MessageStatus.FAILED, MessageStatus.DELIVERED),
+        (MessageStatus.RECEIVED, MessageStatus.SENT),
+        (MessageStatus.RECEIVED, MessageStatus.DELIVERED),
+        (MessageStatus.RECEIVED, MessageStatus.FAILED),
+    ],
+)
+def test_a_status_that_does_not_move_forward_changes_nothing(
+    db: Session, current: MessageStatus, reported: MessageStatus
+) -> None:
+    """Twilio does not order its callbacks, and replays them: a late `sent` or `failed` must not
+    undo a `delivered`."""
+    message, sid = _sent_message(db, current)
+    message.error_code = "30008"
+    db.flush()
+
+    advanced = advance_status(db, twilio_sid=sid, status=reported, error_code="63016")
+
+    assert advanced is None
+    assert message.status is current
+    assert message.error_code == "30008"
 
 
 def test_an_unknown_sid_is_not_an_error(db: Session) -> None:
@@ -354,6 +409,16 @@ def test_the_service_owns_no_http_and_no_transaction() -> None:
 
 def _minutes(count: int) -> datetime.timedelta:
     return datetime.timedelta(minutes=count)
+
+
+def _sent_message(db: Session, status: MessageStatus) -> tuple[Message, str]:
+    conversation = _make_conversation(db)
+    sid = _twilio_sid()
+    message = record_inbound(db, conversation=conversation, body="hello", twilio_sid=sid)
+    message.status = status
+    db.flush()
+
+    return message, sid
 
 
 def _twilio_sid() -> str:

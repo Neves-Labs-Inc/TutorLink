@@ -7,6 +7,8 @@ import {
   assembleThread,
   canMarkHandled,
   failedAnnouncement,
+  messageAreaState,
+  olderPageState,
   canTransfer,
   isTakeoverOffered,
   isTransferOffered,
@@ -733,5 +735,75 @@ describe('window-dependent takeover decisions', () => {
     )
     expect(takeoverClosedNotice(closed)).toBe(TAKEOVER_CLOSED_NOTICE)
     expect(takeoverClosedNotice(open)).toBeNull()
+  })
+})
+
+describe('messageAreaState', () => {
+  const page = (
+    overrides: Partial<{ hasData: boolean; isPending: boolean; isFetching: boolean; isError: boolean }>,
+  ) => ({
+    isPending: false,
+    hasData: false,
+    isFetching: false,
+    isError: false,
+    ...overrides,
+  })
+
+  it('is loading while the first page is fetching without data', () => {
+    expect(messageAreaState(page({ isFetching: true }), 0)).toBe('loading')
+  })
+
+  it('is loading while the first page is pending but not fetching (paused offline)', () => {
+    expect(messageAreaState(page({ isPending: true }), 0)).toBe('loading')
+  })
+
+  it('stays loading when a pending message exists before the page lands', () => {
+    expect(messageAreaState(page({ isFetching: true }), 1)).toBe('loading')
+  })
+
+  it('is loading again during a retry refetch rather than showing the stale error', () => {
+    expect(messageAreaState(page({ isFetching: true, isError: true }), 0)).toBe('loading')
+  })
+
+  it('is error when the first page failed and is idle', () => {
+    expect(messageAreaState(page({ isError: true }), 0)).toBe('error')
+  })
+
+  it('is empty only after a successful load with no messages', () => {
+    expect(messageAreaState(page({ hasData: true }), 0)).toBe('empty')
+  })
+
+  it('is ready when the load succeeded with no items but a pending message exists', () => {
+    expect(messageAreaState(page({ hasData: true }), 1)).toBe('ready')
+  })
+
+  it('is ready when messages loaded, even while a background refetch runs', () => {
+    expect(messageAreaState(page({ hasData: true, isFetching: true }), 3)).toBe('ready')
+  })
+})
+
+describe('olderPageState', () => {
+  it('is idle when no cursor page was requested', () => {
+    expect(olderPageState(null)).toBe('idle')
+  })
+
+  it('is fetching while the newest cursor page loads', () => {
+    expect(olderPageState({ isPending: false, hasData: false, isFetching: true, isError: false })).toBe('fetching')
+  })
+
+  it('is fetching during a retry of a failed cursor page', () => {
+    expect(olderPageState({ isPending: false, hasData: false, isFetching: true, isError: true })).toBe('fetching')
+  })
+
+  it('is error when the newest cursor page failed', () => {
+    expect(olderPageState({ isPending: false, hasData: false, isFetching: false, isError: true })).toBe('error')
+  })
+
+  it('is idle when a landed cursor page only failed a background refetch', () => {
+    expect(olderPageState({ isPending: false, hasData: true, isFetching: false, isError: true })).toBe('idle')
+  })
+
+  it('is idle once the cursor page landed', () => {
+    expect(olderPageState({ isPending: false, hasData: true, isFetching: false, isError: false })).toBe('idle')
   })
 })

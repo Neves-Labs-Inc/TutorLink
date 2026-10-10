@@ -5,6 +5,7 @@ import BrandColorField from '@/components/settings/BrandColorField'
 import EmailPreview from '@/components/settings/EmailPreview'
 import EmailPreviewSkeleton from '@/components/settings/EmailPreviewSkeleton'
 import { CONTROL_HEIGHT, FADE_IN, SKELETON_BAR } from '@/components/settings/emailTemplateClasses'
+import { useSettingsFocus } from '@/hooks/useSettingsFocus'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -333,15 +334,23 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
 
   const updates = emailTemplateUpdates(page.items, draft)
   const hasErrors = hasTemplateErrors(page.items, draft)
-  const canSave = updates.length > 0 && !hasErrors && !save.isPending
+  const canSave = updates.length > 0 && !hasErrors
   const valueOf = (key: string) => draft[key] ?? savedTemplateValue(page.items, key)
   const setValue = (key: string, value: string) => setDraft((current) => ({ ...current, [key]: value }))
   const brandColor = valueOf(BRAND_COLOR_KEY)
   const brandColorError = validateBrandColor(brandColor)
 
+  const { saveRef, savedRef, focusSave, markDiscarded } = useSettingsFocus({
+    status: save.status,
+    isSaveEnabled: canSave,
+    firstFieldId: 'email-brand-color',
+  })
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (canSave) save.mutate(updates)
+    if (!canSave || save.isPending) return
+    focusSave()
+    save.mutate(updates)
   }
 
   const handleDiscard = () => {
@@ -349,6 +358,7 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
     save.reset()
     inviteTest.reset()
     resetTest.reset()
+    markDiscarded()
   }
 
   return (
@@ -389,7 +399,14 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <Button type="submit" className="h-11 md:h-8" disabled={!canSave}>
+            <Button
+              ref={saveRef}
+              type="submit"
+              className="h-11 md:h-8 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              disabled={!canSave}
+              // aria-disabled (not disabled) while saving, so keyboard focus stays on the button.
+              aria-disabled={save.isPending}
+            >
               {save.isPending ? 'Saving…' : 'Save changes'}
             </Button>
             <Button
@@ -407,7 +424,14 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
               </span>
             )}
             {save.isSuccess && updates.length === 0 && (
-              <span className={cn('text-sm text-muted-foreground duration-150', FADE_IN)}>Saved.</span>
+              <span
+                ref={savedRef}
+                role="status"
+                tabIndex={-1}
+                className={cn('text-sm text-muted-foreground outline-none duration-150', FADE_IN)}
+              >
+                Saved.
+              </span>
             )}
           </div>
         </CardFooter>

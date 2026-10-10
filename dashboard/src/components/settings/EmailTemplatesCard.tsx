@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
 
 import BrandColorField from '@/components/settings/BrandColorField'
@@ -38,6 +38,7 @@ import {
   type EmailDraftPayload,
   type TemplateSectionConfig,
 } from '@/lib/settings/emailTemplates'
+import { createSingleFlight, type SingleFlight } from '@/lib/single-flight/singleFlight'
 import { cn } from '@/lib/utils'
 
 export type EmailTemplatesCardProps = {
@@ -281,8 +282,10 @@ const TemplateSectionWithTest = ({
   onSubjectChange,
   onBodyChange,
   mutation,
+  flight,
 }: Omit<TemplateSectionProps, 'actions'> & {
   email: string | undefined
+  flight: RefObject<SingleFlight>
   mutation: UseMutationResult<void, Error, EmailDraftPayload>
 }) => (
   <TemplateSection
@@ -299,7 +302,8 @@ const TemplateSectionWithTest = ({
         isDisabled={brandColor === null || validateTemplate(section, subject, body) !== null}
         email={email}
         onSend={() => {
-          if (brandColor !== null) mutation.mutate(draftEmailPayload(section, subject, body, brandColor))
+          // The ref guard is synchronous; mutation.isPending lags a tick behind a double activation.
+          if (brandColor !== null && flight.current.tryStart()) mutation.mutate(draftEmailPayload(section, subject, body, brandColor))
         }}
       />
     }
@@ -320,9 +324,12 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
 
   // One mutation per section so their sending/result states stay independent.
   const me = useQuery(meQueries.detail())
-  const inviteTest = useMutation({ mutationFn: sendTestEmail })
-  const resetTest = useMutation({ mutationFn: sendTestEmail })
+  const inviteFlight = useRef(createSingleFlight())
+  const resetFlight = useRef(createSingleFlight())
+  const inviteTest = useMutation({ mutationFn: sendTestEmail, onSettled: () => inviteFlight.current.finish() })
+  const resetTest = useMutation({ mutationFn: sendTestEmail, onSettled: () => resetFlight.current.finish() })
   const testMutations = { invite: inviteTest, password_reset: resetTest }
+  const testFlights = { invite: inviteFlight, password_reset: resetFlight }
 
   const updates = emailTemplateUpdates(page.items, draft)
   const hasErrors = hasTemplateErrors(page.items, draft)
@@ -364,6 +371,7 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
                 section={section}
                 email={me.data?.email}
                 mutation={testMutations[section.id]}
+                flight={testFlights[section.id]}
                 subject={valueOf(section.keys.subject)}
                 body={valueOf(section.keys.body)}
                 brandColor={brandColorError === null ? brandColor : null}

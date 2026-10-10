@@ -274,25 +274,33 @@ def mark_failed(db: Session, *, message: Message, error_code: str | None) -> Mes
 def advance_status(
     db: Session, *, twilio_sid: str, status: MessageStatus, error_code: str | None
 ) -> Message | None:
-    """Apply Twilio's delivery callback. `None` means no row carries that SID.
+    """Apply Twilio's delivery callback. `None` means nothing changed: no row carries that SID,
+    or the callback does not move the row forward.
 
     An unknown SID is **not an error**: retention deletes messages on a schedule and Twilio's
     callbacks are not bounded by it, so a status arriving for a purged message is an ordinary
     event and the router answers 204 (`api-design.md:533-536`). A 404 would only teach Twilio
     to retry a row that no longer exists.
 
-    No row lock, unlike the takeover: nothing here judges legality — the callback reports what
-    Twilio's own state machine already decided, and there is no local rule this could read the
-    row to check. **Accepted gap**: Twilio does not guarantee callback ordering, so a `sent`
-    arriving after a `delivered` moves the row backwards. Ordering them would need a sequence
-    the callback does not carry.
+    **Forward only**, mirroring `reminder_service.apply_delivery_status`. Twilio does not
+    guarantee callback ordering and replays them, so a late `sent` or `failed` must not undo a
+    `delivered`. Rank is queued < sent < delivered and a status applies only if it ranks higher;
+    `failed` applies only while the row is `queued` or `sent`. Anything else — the same status
+    again, an earlier one, anything once the row is `delivered` or `failed`, any callback for a
+    `received` row — changes nothing and returns `None`, so the router publishes nothing. The
+    row is locked so two callbacks racing on one SID apply in turn.
 
     `error_code` is written as given rather than only on `failed`, so a message that later
     succeeds does not keep a stale code from an earlier attempt.
     """
-    message = db.scalars(select(Message).where(Message.twilio_sid == twilio_sid)).first()
+    message = db.scalars(
+        select(Message)
+        .where(Message.twilio_sid == twilio_sid)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
 
-    if message is None:
+    if message is None or not _moves_forward(message.status, status):
         return None
 
     message.status = status
@@ -300,6 +308,20 @@ def advance_status(
     db.flush()
 
     return message
+
+
+_DELIVERY_RANK = {MessageStatus.QUEUED: 0, MessageStatus.SENT: 1, MessageStatus.DELIVERED: 2}
+
+
+def _moves_forward(current: MessageStatus, reported: MessageStatus) -> bool:
+    if reported is MessageStatus.FAILED:
+        return current in (MessageStatus.QUEUED, MessageStatus.SENT)
+
+    return (
+        current in _DELIVERY_RANK
+        and reported in _DELIVERY_RANK
+        and _DELIVERY_RANK[reported] > _DELIVERY_RANK[current]
+    )
 
 
 def list_thread(

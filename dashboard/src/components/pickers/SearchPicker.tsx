@@ -25,6 +25,8 @@ type SearchPickerProps = {
   placeholder?: string
   disabled?: boolean
   emptyMessage?: string
+  // Multi-select hosts keep the pick elsewhere: empty the input after a pick instead of showing its label.
+  clearOnSelect?: boolean
 }
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -40,6 +42,7 @@ export const SearchPicker = ({
   placeholder,
   disabled,
   emptyMessage,
+  clearOnSelect = false,
 }: SearchPickerProps) => {
   const listboxId = `${id}-listbox`
   const [inputValue, setInputValue] = useState(value?.label ?? '')
@@ -86,7 +89,14 @@ export const SearchPicker = ({
 
   const selectOption = (option: SearchPickerOption) => {
     onChange(option)
-    setInputValue(option.label)
+    setInputValue(clearOnSelect ? '' : option.label)
+
+    if (clearOnSelect) {
+      // '' (not null) so the next keystroke fetches straight away instead of flashing "No matches."
+      setTerm('')
+      setDebouncedTerm('')
+    }
+
     setOpen(false)
     setHighlighted(-1)
   }

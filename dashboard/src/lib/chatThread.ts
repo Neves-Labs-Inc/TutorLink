@@ -437,3 +437,26 @@ export const systemLineLabel = (
 
   return { text, isFailed, canRetry }
 }
+
+export type MessageAreaState = 'loading' | 'error' | 'empty' | 'ready'
+
+export type PageStatus = { hasData: boolean; isPending: boolean; isFetching: boolean; isError: boolean }
+
+// `messageCount` is the assembled thread (loaded + pending/optimistic), so a pending send is content.
+export const messageAreaState = (firstPage: PageStatus, messageCount: number): MessageAreaState => {
+  // isPending covers a paused (offline) fetch, which is not isFetching.
+  if (!firstPage.hasData && (firstPage.isPending || firstPage.isFetching)) return 'loading'
+  if (!firstPage.hasData && firstPage.isError) return 'error'
+  if (firstPage.hasData && messageCount === 0) return 'empty'
+  return 'ready'
+}
+
+export type OlderPageState = 'idle' | 'fetching' | 'error'
+
+// `lastPage` is the newest cursor page, or null when only the first page is requested.
+export const olderPageState = (lastPage: PageStatus | null): OlderPageState => {
+  if (lastPage === null) return 'idle'
+  if (lastPage.isFetching) return 'fetching'
+  if (lastPage.isError && !lastPage.hasData) return 'error'
+  return 'idle'
+}

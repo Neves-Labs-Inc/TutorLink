@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -1246,3 +1247,179 @@ def test_the_list_shows_an_expiry_only_for_a_live_invite(api: TestClient, db: Se
     assert by_id[str(lapsed.id)] is None
     assert by_id[str(never.id)] is None
     assert by_id[str(admin.id)] is None
+
+
+# --- password reset links --------------------------------------------------------------------
+
+RESET_HOURS = 48
+NEW_PASSWORD = "a brand new password"
+
+
+def _send_reset(api: TestClient, target: User, *, actor: User) -> Response:
+    return api.post(f"/api/users/{target.id}/password-reset", headers=_auth(actor))
+
+
+def _login(api: TestClient, user: User, *, password: str = PASSWORD) -> Response:
+    return api.post("/auth/token", data={"username": user.email, "password": password})
+
+
+def _set_password(api: TestClient, *, token: str) -> Response:
+    return api.post("/auth/password/set", json={"token": token, "password": NEW_PASSWORD})
+
+
+def _refresh(api: TestClient, refresh_token: str) -> Response:
+    # The body, not a cookie: each call names exactly the session it tests.
+    api.cookies.clear()
+    return api.post("/auth/refresh", json={"refresh_token": refresh_token})
+
+
+def test_an_admin_emails_a_user_a_reset_link_that_sets_their_password(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+
+    response = _send_reset(api, target, actor=admin)
+
+    assert response.status_code == 204
+    assert response.content == b""
+    (email,) = fake_mail.sent
+    assert email.to == target.email
+    (link,) = _live_links(db, target)
+    expected = datetime.now(UTC) + timedelta(hours=RESET_HOURS)
+    assert abs(link.expires_at - expected) < CLOCK_SLACK
+
+    completed = _set_password(api, token=token_from(email))
+
+    assert completed.status_code == 200
+    assert _login(api, target, password=NEW_PASSWORD).status_code == 200
+    assert _login(api, target).status_code == 401
+
+
+def test_a_second_reset_link_revokes_the_first(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+
+    first = _send_reset(api, target, actor=admin)
+    second = _send_reset(api, target, actor=admin)
+
+    assert (first.status_code, second.status_code) == (204, 204)
+    older, newer = (token_from(email) for email in fake_mail.sent)
+    assert _set_password(api, token=older).status_code == 400
+    assert _set_password(api, token=newer).status_code == 200
+
+
+def test_a_failed_reset_send_is_502_and_keeps_no_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+    fake_mail.fail_next()
+
+    response = _send_reset(api, target, actor=admin)
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Could not send the reset email. Try again."
+    assert fake_mail.sent == []
+    assert _links(db, target) == []
+
+
+def test_only_a_developer_may_send_a_developer_a_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    target = _make_user(db, role=UserRole.DEVELOPER)
+
+    refused = _send_reset(api, target, actor=admin)
+    allowed = _send_reset(api, target, actor=developer)
+
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "Only a developer may create or modify a developer account"
+    assert allowed.status_code == 204
+    assert len(fake_mail.sent) == 1
+
+
+def test_a_deactivated_user_cannot_be_sent_a_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    dormant = _make_user(db, is_active=False)
+
+    response = _send_reset(api, dormant, actor=admin)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Deactivated users cannot be sent a reset link"
+    assert fake_mail.sent == []
+    assert _links(db, dormant) == []
+
+
+def test_a_user_without_a_password_is_pointed_to_an_invite(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+
+    response = _send_reset(api, invitee, actor=admin)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "That user has not set a password yet. Send an invite instead."
+    )
+    assert fake_mail.sent == []
+    assert _links(db, invitee) == []
+
+
+def test_sending_a_reset_link_to_an_unknown_id_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(f"/api/users/{uuid.uuid4()}/password-reset", headers=_auth(admin))
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User not found"
+
+
+def test_a_manager_may_not_send_a_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    target = _make_user(db)
+
+    response = _send_reset(api, target, actor=manager)
+
+    assert response.status_code == 403
+    assert fake_mail.sent == []
+
+
+def test_sending_a_reset_link_keeps_sessions_and_completing_it_ends_them(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+    session = _login(api, target).json()["refresh_token"]
+
+    _send_reset(api, target, actor=admin)
+    after_send = _refresh(api, session)
+    rotated = after_send.json()["refresh_token"]
+    _set_password(api, token=token_from(fake_mail.sent[0]))
+    after_reset = _refresh(api, rotated)
+
+    assert after_send.status_code == 200
+    assert after_reset.status_code == 401
+
+
+def test_each_sent_reset_link_is_logged_by_user_id_without_the_address(
+    api: TestClient, db: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    admin = _make_user(db)
+    target = _make_user(db)
+
+    with caplog.at_level("INFO", logger="app.services.user_service"):
+        _send_reset(api, target, actor=admin)
+
+    sent = [record for record in caplog.records if "reset link sent" in record.getMessage()]
+    assert len(sent) == 1
+    assert str(target.id) in sent[0].getMessage()
+    assert not any(target.email in record.getMessage() for record in caplog.records)

@@ -105,7 +105,11 @@ class UserHasPassword(UserServiceError):
 
 
 class UserInactive(UserServiceError):
-    """An Invite for a deactivated user (answers 04 #3)."""
+    """An Invite or reset link for a deactivated user (answers 04 #3)."""
+
+
+class UserHasNoPassword(UserServiceError):
+    """A reset link for a user who has never set a password: an Invite is their way in."""
 
 
 def _visible(is_active: bool) -> Select[tuple[User]]:
@@ -315,6 +319,49 @@ def invite_user(
             brand_color=template.brand_color,
         )
         send_email(to=user.email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+
+    return user
+
+
+def send_password_reset(
+    db: Session, *, actor_role: UserRole, user_id: uuid.UUID, now: datetime
+) -> User:
+    """Issue the user a password reset link and email it, for an Admin helping them back in.
+
+    Same shape as `invite_user`: the row is locked, every check runs before anything is
+    written, and the link row and the send share a savepoint, so a `MailServiceError` reaches
+    the caller with no link kept. Sending signs nobody out; completing the reset does
+    (`set_password_with_link`).
+    """
+    user = _lock_user(db, user_id=user_id)
+
+    if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
+        raise RoleNotPermitted
+
+    if user.hashed_password is None:
+        raise UserHasNoPassword
+
+    if not user.is_active:
+        raise UserInactive
+
+    template = read_email_template(db, kind=TemplateKind.PASSWORD_RESET)
+
+    with db.begin_nested():
+        _link, token = issue_link(db, user=user, purpose=PasswordLinkPurpose.RESET, now=now)
+        rendered = render_email(
+            TemplateKind.PASSWORD_RESET,
+            subject=template.subject,
+            body=template.body,
+            values={
+                NAME_PLACEHOLDER: user.name,
+                LINK_PLACEHOLDER: public_url(f"{SET_PASSWORD_PATH}?token={token}"),
+            },
+            brand_color=template.brand_color,
+        )
+        send_email(to=user.email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+
+    # The id, never the address.
+    logger.info("user_service.send_password_reset: reset link sent to user %s", user.id)
 
     return user
 

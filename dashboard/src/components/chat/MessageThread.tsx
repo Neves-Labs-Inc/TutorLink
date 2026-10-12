@@ -4,6 +4,7 @@ import { Check, CheckCheck, CircleAlert, Clock, type LucideIcon } from 'lucide-r
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
+  countNewlyFailed,
   failedAnnouncement,
   formatMessageTimestamp,
   messageAlignment,
@@ -55,18 +56,6 @@ const STATUS_ICONS: Partial<Record<Message['status'], LucideIcon>> = {
   failed: CircleAlert,
 }
 
-// Only a message already on screen moving to `failed` counts: one loaded failed, or an echo
-// replacing an optimistic bubble (a new id), is not a live change and the composer already says so.
-const hasNewlyFailed = (previous: Message[], next: Message[]): boolean => {
-  const previousStatuses = new Map(previous.map((message) => [message.id, message.status]))
-
-  return next.some((message) => {
-    const before = previousStatuses.get(message.id)
-
-    return message.status === 'failed' && before !== undefined && before !== 'failed'
-  })
-}
-
 const NEAR_BOTTOM_PX = 100
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 
@@ -93,7 +82,8 @@ export const MessageThread = ({
   retry,
 }: MessageThreadProps) => {
   const [previousMessages, setPreviousMessages] = useState(messages)
-  const [failedCount, setFailedCount] = useState(0)
+  // `batch` counts failure updates (it drives the announcement toggle); `count` is the size of the latest.
+  const [failures, setFailures] = useState({ batch: 0, count: 0 })
   const scrollerRef = useRef<HTMLDivElement>(null)
   // Last layout measured before the next render; starts "at the bottom".
   const distanceFromBottomRef = useRef(0)
@@ -169,7 +159,8 @@ export const MessageThread = ({
 
   // Adjusted during render rather than in an effect, so the announcement lands with the update.
   if (messages !== previousMessages) {
-    if (hasNewlyFailed(previousMessages, messages)) setFailedCount((count) => count + 1)
+    const newlyFailed = countNewlyFailed(previousMessages, messages)
+    if (newlyFailed > 0) setFailures((current) => ({ batch: current.batch + 1, count: newlyFailed }))
     setPreviousMessages(messages)
   }
 
@@ -185,7 +176,7 @@ export const MessageThread = ({
     >
       {/* Stays mounted: swapping the node drops announcements in VoiceOver and NVDA. */}
       <p className="sr-only" aria-live="polite">
-        {failedAnnouncement(failedCount)}
+        {failedAnnouncement(failures.count, failures.batch)}
       </p>
 
       {loadState === 'loading' && (

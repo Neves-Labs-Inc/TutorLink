@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { QueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { api } from './api'
 import {
   applyMessageToPages,
   applyMessageUpdate,
   assembleThread,
+  countNewlyFailed,
   canMarkHandled,
   failedAnnouncement,
   messageAreaState,
@@ -226,24 +227,59 @@ describe('applyMessageToPages', () => {
 
     expect(queryClient.getQueryData<Page<Message>>(PAGE_KEY)?.items[0].status).toBe('delivered')
   })
+
+  it('fetches again after cancelling an in-flight fetch of an active query', async () => {
+    const queryClient = new QueryClient()
+    const delivered = message({ id: 'm-1', author_kind: 'admin', status: 'delivered' })
+    const resolvers: Array<(page: Page<Message>) => void> = []
+    const queryFn = vi.fn(() => new Promise<Page<Message>>((resolve) => resolvers.push(resolve)))
+    const observer = new QueryObserver(queryClient, { queryKey: PAGE_KEY, queryFn, retry: false })
+    const unsubscribe = observer.subscribe(() => {})
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(1))
+
+    await applyMessageToPages(queryClient, QUERY_PREFIX, delivered)
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(2))
+    // The server answers the second fetch with the update applied.
+    resolvers[1](pageOf([delivered]))
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryData<Page<Message>>(PAGE_KEY)?.items[0].status).toBe('delivered'),
+    )
+    unsubscribe()
+  })
 })
 
 describe('failedAnnouncement', () => {
   it('announces nothing before any failure', () => {
-    expect(failedAnnouncement(0)).toBe('')
+    expect(failedAnnouncement(0, 0)).toBe('')
   })
 
-  it('changes the live-region text on a second failure while saying the same words', () => {
-    const first = failedAnnouncement(1)
-    const second = failedAnnouncement(2)
-
-    expect(second).not.toBe(first)
-    expect(first.trim()).toBe('A message failed to send.')
-    expect(second.trim()).toBe('A message failed to send.')
+  it('says the singular copy for exactly one failed message', () => {
+    expect(failedAnnouncement(1, 1).trim()).toBe('A message failed to send.')
   })
 
-  it('changes the text again on a third failure', () => {
-    expect(failedAnnouncement(3)).not.toBe(failedAnnouncement(2))
+  it('says the count for a batch of several failed messages', () => {
+    expect(failedAnnouncement(3, 1).trim()).toBe('3 messages failed to send.')
+  })
+
+  it('changes the text between consecutive batches of the same size', () => {
+    expect(failedAnnouncement(2, 2)).not.toBe(failedAnnouncement(2, 1))
+    expect(failedAnnouncement(1, 3)).not.toBe(failedAnnouncement(1, 2))
+  })
+})
+
+describe('countNewlyFailed', () => {
+  it('counts every message already on screen that moved to failed', () => {
+    const before = [message({ id: 'a', status: 'queued' }), message({ id: 'b', status: 'queued' })]
+    const after = [message({ id: 'a', status: 'failed' }), message({ id: 'b', status: 'failed' })]
+
+    expect(countNewlyFailed(before, after)).toBe(2)
+  })
+
+  it('ignores messages loaded as failed and ones that were already failed', () => {
+    const before = [message({ id: 'a', status: 'failed' })]
+    const after = [message({ id: 'a', status: 'failed' }), message({ id: 'new', status: 'failed' })]
+
+    expect(countNewlyFailed(before, after)).toBe(0)
   })
 })
 

@@ -32,7 +32,13 @@ const columns: Column<Tutor>[] = [
   { id: 'name', header: 'Name', primary: true, cell: (tutor) => tutor.name },
   { id: 'email', header: 'Email', cell: (tutor) => tutor.email },
   { id: 'phone', header: 'Phone', hideOnMobile: true, cell: (tutor) => tutor.phone_number },
-  { id: 'subjects', header: 'Subjects', cell: (tutor) => subjectSummary(tutor.subjects) },
+  {
+    id: 'subjects',
+    header: 'Subjects',
+    // Subject names are admin-typed and may be one long unbroken word.
+    wrap: 'anywhere',
+    cell: (tutor) => subjectSummary(tutor.subjects),
+  },
   {
     id: 'status',
     header: 'Status',

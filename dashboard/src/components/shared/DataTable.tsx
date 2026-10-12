@@ -12,6 +12,8 @@ export type Column<T> = {
   primary?: boolean
   hideOnMobile?: boolean
   align?: 'start' | 'end'
+  // For unbroken user text (e.g. subject names): lets the cell break mid-word so the table can shrink.
+  wrap?: 'anywhere'
 }
 
 export type DataTableProps<T> = {
@@ -42,6 +44,10 @@ const END_BAR_WIDTH = 'w-16 ml-auto'
 // Cycled so neighbouring columns do not all look the same width.
 const TEXT_BAR_WIDTHS = ['w-24', 'w-16', 'w-20']
 const ERROR_FALLBACK = 'Something went wrong. Please try again.'
+// break-word keeps a column's min width at its longest word, so ordinary words never split.
+const CELL_WRAP = 'wrap-break-word'
+// anywhere drops the cell's min-content width; the floor stops the column collapsing to a sliver.
+const CELL_WRAP_ANYWHERE = 'min-w-40 wrap-anywhere'
 
 export const DataTable = <T,>({
   caption,
@@ -172,11 +178,13 @@ const TableLayout = <T,>({
               {columns.map((column) => (
                 <td
                   key={column.id}
-                  className={cn('px-4 py-3 align-middle', column.align === 'end' && 'text-end')}
+                  className={cn(
+                    'px-4 py-3 align-middle',
+                    column.wrap === 'anywhere' ? CELL_WRAP_ANYWHERE : CELL_WRAP,
+                    column.align === 'end' && 'text-end',
+                  )}
                 >
-                  {
-                    column.cell(row)
-                  }
+                  {column.cell(row)}
                 </td>
               ))}
             </tr>
@@ -196,7 +204,7 @@ const CardLayout = <T,>({ columns, rows, rowKey, onRowSelect }: LayoutProps<T>) 
           {...getSelectableProps(row, onRowSelect)}
         >
           <CardContent className="space-y-3">
-            <div className="text-sm font-medium text-foreground">
+            <div className="min-w-0 text-sm font-medium wrap-anywhere text-foreground">
               {columns[0].cell(row)}
             </div>
             <dl className="space-y-1.5">
@@ -204,8 +212,8 @@ const CardLayout = <T,>({ columns, rows, rowKey, onRowSelect }: LayoutProps<T>) 
                 .filter((column) => column.id !== columns[0].id && !column.hideOnMobile)
                 .map((column) => (
                   <div key={column.id} className="flex items-baseline justify-between gap-4">
-                    <dt className="text-xs text-muted-foreground">{column.header}</dt>
-                    <dd className="text-end text-sm text-foreground">{column.cell(row)}</dd>
+                    <dt className="shrink-0 text-xs text-muted-foreground">{column.header}</dt>
+                    <dd className="min-w-0 text-end text-sm wrap-anywhere text-foreground">{column.cell(row)}</dd>
                   </div>
                 ))}
             </dl>

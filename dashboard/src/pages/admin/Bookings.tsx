@@ -18,6 +18,7 @@ import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
 import SubjectCell from '@/lib/booking-presentation/SubjectCell'
@@ -108,6 +109,13 @@ export const Bookings = () => {
   const bookings = useQuery({
     ...bookingQueries.list({ ...bookingListParams(filters), page, page_size: DEFAULT_PAGE_SIZE }),
     enabled: !isCalendar,
+  })
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data: bookings.data,
+    isPlaceholderData: bookings.isPlaceholderData,
+    isFetching: bookings.isFetching,
   })
   const week = useQuery({
     ...bookingQueries.week(calendarListParams(filters, weekStart)),
@@ -302,7 +310,7 @@ export const Bookings = () => {
               columns={columns}
               rows={bookings.data?.items ?? []}
               rowKey={(booking) => booking.id}
-              status={queryStatus(bookings)}
+              status={outOfRange ? 'pending' : queryStatus(bookings)}
               errorMessage={errorDetail(bookings.error) ?? LOAD_FALLBACK_ERROR}
               onRetry={() => bookings.refetch()}
               emptyMessage={emptyBookingsMessage(filters.kind)}
@@ -310,11 +318,11 @@ export const Bookings = () => {
             />
 
             <Pager
-              page={page}
+              page={pagerPage}
               pageSize={DEFAULT_PAGE_SIZE}
-              total={bookings.data?.total ?? 0}
+              total={pagerTotal}
               onPageChange={setPage}
-              disabled={bookings.isPending}
+              disabled={bookings.isPending || outOfRange}
             />
           </div>
         )}

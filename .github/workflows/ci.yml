@@ -73,6 +73,10 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Component tests run in Vitest browser mode, which drives a real headless Chromium.
+      - name: Install Chromium for browser tests
+        run: npx playwright install --with-deps chromium
+
       - name: Test
         run: npm run test
 

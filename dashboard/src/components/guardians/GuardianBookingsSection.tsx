@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
 import SubjectCell from '@/lib/booking-presentation/SubjectCell'
@@ -61,9 +62,16 @@ export const GuardianBookingsSection = ({ guardianId }: GuardianBookingsSectionP
     to: filters.to === '' ? undefined : filters.to,
     page,
   }
-  const { data, isPending, isError, error, refetch } = useQuery(
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery(
     guardianQueries.bookings(guardianId, params),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
+  })
 
   const applyFilters = (next: HistoryFilters) => {
     setFilters(next)
@@ -131,18 +139,18 @@ export const GuardianBookingsSection = ({ guardianId }: GuardianBookingsSectionP
         columns={COLUMNS}
         rows={data?.items ?? []}
         rowKey={(booking) => booking.id}
-        status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+        status={isPending || outOfRange ? 'pending' : isError ? 'error' : 'ready'}
         errorMessage={errorDetail(error)}
         onRetry={() => refetch()}
         emptyMessage="No bookings match these filters."
         onRowSelect={(booking) => setSelectedBookingId(booking.id)}
       />
       <Pager
-        page={page}
+        page={pagerPage}
         pageSize={data?.page_size ?? DEFAULT_PAGE_SIZE}
-        total={data?.total ?? 0}
+        total={pagerTotal}
         onPageChange={setPage}
-        disabled={isPending}
+        disabled={isPending || outOfRange}
       />
       <BookingDetailPanel
         bookingId={selectedBookingId}

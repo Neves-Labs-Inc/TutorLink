@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { gradeLabel } from '@/lib/children/children'
 import { formatPhoneForDisplay } from '@/lib/guardians/guardians'
@@ -48,9 +49,16 @@ export const Guardians = () => {
     setPage(1)
   }
 
-  const { data, isPending, isError, error, refetch } = useQuery(
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery(
     householdQueries.list(householdListParams(search, page, DEFAULT_PAGE_SIZE)),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
+  })
 
   const households = data?.items ?? []
   const emptyMessage =
@@ -58,7 +66,7 @@ export const Guardians = () => {
 
   let content: ReactNode
 
-  if (isPending) {
+  if (isPending || outOfRange) {
     content = (
       <div className={cardGridClasses}>
         {LOADING_CARDS.map((card) => (
@@ -129,11 +137,11 @@ export const Guardians = () => {
 
       {data && (
         <Pager
-          page={page}
+          page={pagerPage}
           pageSize={data.page_size}
-          total={data.total}
+          total={pagerTotal}
           onPageChange={setPage}
-          disabled={isPending}
+          disabled={isPending || outOfRange}
         />
       )}
 

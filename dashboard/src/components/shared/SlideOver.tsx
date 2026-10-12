@@ -30,8 +30,15 @@ const contentClasses = cn(
   'motion-reduce:animate-none',
 )
 
-const closeButtonClasses =
-  'inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
+// 44px touch target on phones; the negative margins keep the glyph where the old 32px
+// button had it, level with a one-line title.
+const closeButtonClasses = cn(
+  'inline-flex size-11 -mt-1.5 -mr-1.5 shrink-0 items-center justify-center rounded-lg text-muted-foreground',
+  'transition-colors duration-150 ease-out motion-reduce:transition-none',
+  'hover:bg-muted hover:text-foreground active:translate-y-px',
+  'focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+  'md:mt-0 md:mr-0 md:size-8',
+)
 
 export const SlideOver = ({
   open,

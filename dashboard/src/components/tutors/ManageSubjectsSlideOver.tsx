@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft } from 'lucide-react'
 
@@ -104,6 +104,7 @@ export const ManageSubjectsSlideOver = ({
 }: ManageSubjectsSlideOverProps) => {
   const queryClient = useQueryClient()
   const addButtonRef = useRef<HTMLButtonElement>(null)
+  const saveButtonRef = useRef<HTMLButtonElement>(null)
   const shouldFocusAddRef = useRef(false)
 
   const [wasOpen, setWasOpen] = useState(open)
@@ -141,7 +142,16 @@ export const ManageSubjectsSlideOver = ({
     isFetching,
   })
 
-  // Focus lands after the list view has mounted, so the footer button exists.
+  // Layout effect: the form's focused Save is already gone, so focus would sit on <body>
+  // until a passive effect ran.
+  useLayoutEffect(() => {
+    if (view.kind === 'list' && shouldFocusAddRef.current) {
+      addButtonRef.current?.focus()
+    }
+  }, [view])
+
+  // A closing ConfirmDialog still traps focus until its passive cleanup and pulls it back to
+  // Confirm, so try again once that cleanup has run.
   useEffect(() => {
     if (view.kind === 'list' && shouldFocusAddRef.current) {
       shouldFocusAddRef.current = false
@@ -252,6 +262,11 @@ export const ManageSubjectsSlideOver = ({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    // aria-disabled doesn't block submit, so a second Enter or click lands here.
+    if (activeMutation.isPending) return
+
+    // Enter in a field submits too; that field is about to be disabled, which would drop focus.
+    saveButtonRef.current?.focus()
     const nextDescription = draft.description.trim() === '' ? null : draft.description
 
     if (editingSubject) {
@@ -299,10 +314,13 @@ export const ManageSubjectsSlideOver = ({
   const formFooter = (
     <div className="flex flex-wrap items-center gap-3">
       <Button
+        ref={saveButtonRef}
         type="submit"
         form={SUBJECT_FORM_ID}
-        className="h-11 md:h-8"
-        disabled={draft.name.trim() === '' || activeMutation.isPending}
+        className="h-11 md:h-8 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+        disabled={draft.name.trim() === ''}
+        // aria-disabled (not disabled) while saving, so keyboard focus stays on the button.
+        aria-disabled={activeMutation.isPending}
       >
         {activeMutation.isPending ? 'Saving…' : 'Save'}
       </Button>

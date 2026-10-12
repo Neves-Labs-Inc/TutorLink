@@ -188,7 +188,7 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
               {isReadOnly && <span className={pillClasses}>Locked</span>}
             </div>
             {isReadOnly ? (
-              <p className="font-mono text-sm">{timezone}</p>
+              <p className="min-w-0 font-mono text-sm wrap-anywhere">{timezone}</p>
             ) : (
               <div className="sm:max-w-sm">
                 <Select
@@ -229,7 +229,7 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
                 disabled={save.isPending}
                 onChange={(event) => setValue(setting.key, event.target.value)}
               />
-              <p className="font-mono text-xs text-muted-foreground">{setting.key}</p>
+              <p className="font-mono text-xs wrap-anywhere text-muted-foreground">{setting.key}</p>
             </div>
           ))}
         </CardContent>

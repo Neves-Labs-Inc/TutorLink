@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.enums import UserRole
 from app.models.user import User
 from app.security import create_access_token, hash_password
+from app.services.mail_templates import _text_shade
 from tests.fake_mail import FakeMail, SentEmail, token_from
 
 SETTINGS_URL = "/api/settings"
@@ -241,6 +242,10 @@ def test_the_invite_uses_the_saved_brand_colour(
     assert "background:#FFE066;" in email.html
     assert 'font-weight:bold;color:#FFE066;">TutorLink</p>' not in email.html
     assert 'style="color:#FFE066;word-break:break-all;"' not in email.html
+    shade = _text_shade("#FFE066")
+    assert shade != "#FFE066"
+    assert f'font-weight:bold;color:{shade};">TutorLink</p>' in email.html
+    assert f'style="color:{shade};word-break:break-all;"' in email.html
     assert "#74C8C9" not in email.html
     # A light colour gets the dark label.
     assert f"{DARK_LABEL}font-size:16px;font-weight:bold;" in email.html
@@ -265,6 +270,46 @@ def test_the_reset_email_uses_the_saved_brand_colour(
     assert "#74C8C9" not in email.html
     # A dark colour gets the white label.
     assert f"{WHITE_LABEL}font-size:16px;font-weight:bold;" in email.html
+
+
+BRAND_COLOR_PRESETS = {
+    "Turquoise": "#74C8C9",
+    "Lavender": "#CB9BC3",
+    "Beige/Gold": "#D6B990",
+    "Olive": "#C4BD82",
+}
+PRESET_COLORS = list(BRAND_COLOR_PRESETS.values())
+
+
+@pytest.mark.parametrize("preset", PRESET_COLORS)
+def test_the_invite_applies_each_brand_preset_and_its_text_shade(
+    api: TestClient, db: Session, fake_mail: FakeMail, preset: str
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_user(db, password=None)
+    _save(api, admin, {BRAND_COLOR: preset})
+
+    api.post(f"/api/users/{invitee.id}/invite", headers=_auth(admin))
+
+    (email,) = fake_mail.sent
+    assert email.html is not None
+    _assert_preset_and_shade(email.html, preset)
+
+
+@pytest.mark.parametrize("preset", PRESET_COLORS)
+def test_the_reset_email_applies_each_brand_preset_and_its_text_shade(
+    api: TestClient, db: Session, fake_mail: FakeMail, preset: str
+) -> None:
+    admin = _make_user(db)
+    user = _make_user(db)
+    _save(api, admin, {BRAND_COLOR: preset, RESET_BODY: "{link}\n\nOr open {link}"})
+
+    api.post(FORGOT_URL, json={"email": user.email})
+
+    (email,) = fake_mail.sent
+    assert email.html is not None
+    _assert_preset_and_shade(email.html, preset)
+    assert f'style="color:{_text_shade(preset)};">' in email.html
 
 
 def test_the_default_brand_colour_gets_the_dark_label(
@@ -441,6 +486,17 @@ def _payload(updates: dict[str, str]) -> dict[str, Any]:
 def _save(api: TestClient, admin: User, updates: dict[str, str]) -> None:
     response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_payload(updates))
     assert response.status_code == 200, response.json()
+
+
+def _assert_preset_and_shade(html: str, preset: str) -> None:
+    shade = _text_shade(preset)
+
+    assert f"background:{preset};" in html
+    assert f'font-weight:bold;color:{shade};">TutorLink</p>' in html
+    assert f'style="color:{shade};word-break:break-all;"' in html
+    # The raw preset is too light to read as text, so it must not colour any.
+    assert shade != preset
+    assert f"color:{preset};" not in html
 
 
 def _link_in(email: SentEmail) -> str:

@@ -431,7 +431,10 @@ const DeactivateChildDialog = ({ child, onOpenChange, onSuccess }: DeactivateChi
       body={body}
       confirmLabel="Deactivate"
       destructive
-      pending={mutation.isPending || countQuery.isFetching || count === null}
+      pending={mutation.isPending}
+      // Loading or failing to load the count only blocks Confirm; pending would also lock the
+      // way out (Cancel, Esc, outside click), forever if the count never loads.
+      confirmDisabled={countQuery.isFetching || count === null}
       errorMessage={mutation.isError ? (errorDetail(mutation.error) ?? DEACTIVATE_FALLBACK_ERROR) : null}
       onConfirm={handleConfirm}
     />

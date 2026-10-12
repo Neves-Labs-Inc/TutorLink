@@ -33,6 +33,7 @@ from app.services.user_service import (
     ProfileAlreadyLinked,
     RoleNotPermitted,
     TutorProfileInput,
+    UserHasNoPassword,
     UserHasPassword,
     UserInactive,
     UserNotFound,
@@ -41,6 +42,7 @@ from app.services.user_service import (
     get_user,
     invite_user,
     list_users,
+    send_password_reset,
     update_user,
 )
 
@@ -57,6 +59,9 @@ INVALID_PHONE_NUMBER_ERROR = "tutor.phone_number is not a phone number that can 
 USER_HAS_PASSWORD_ERROR = "That user already has a password"
 USER_INACTIVE_ERROR = "Deactivated users cannot be invited"
 INVITE_SEND_FAILED_ERROR = "Could not send the invite email. Try again."
+USER_HAS_NO_PASSWORD_ERROR = "That user has not set a password yet. Send an invite instead."
+USER_INACTIVE_RESET_ERROR = "Deactivated users cannot be sent a reset link"
+RESET_SEND_FAILED_ERROR = "Could not send the reset email. Try again."
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +210,28 @@ def invite(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
     db.commit()
 
     return _read_with_invite(db, invited, now=now)
+
+
+@router.post("/{user_id}/password-reset", status_code=status.HTTP_204_NO_CONTENT)
+def password_reset(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> None:
+    """Email the user a reset link, for one who is locked out. Their sessions stay until the
+    link is used. Nothing is committed unless the email went out."""
+    try:
+        send_password_reset(db, actor_role=user.role, user_id=user_id, now=datetime.now(UTC))
+    except UserNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
+    except RoleNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
+    except UserHasNoPassword as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, USER_HAS_NO_PASSWORD_ERROR) from exc
+    except UserInactive as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, USER_INACTIVE_RESET_ERROR) from exc
+    except MailServiceError as exc:
+        # The service unwound the link row. No address in the log.
+        logger.error("reset email for user %s not sent: %s", user_id, type(exc).__name__)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, RESET_SEND_FAILED_ERROR) from exc
+
+    db.commit()
 
 
 def _read_with_invite(db: Session, user: User, *, now: datetime | None = None) -> UserRead:

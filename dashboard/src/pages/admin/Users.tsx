@@ -17,6 +17,7 @@ import {
   createUser,
   deactivateUser,
   sendInvite,
+  sendPasswordReset,
   updateUser,
   userQueries,
   type User,
@@ -53,6 +54,7 @@ const LOAD_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const SAVE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const DEACTIVATE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
 const INVITE_FALLBACK_ERROR = 'Something went wrong. Please try again.'
+const RESET_FALLBACK_ERROR = 'Could not send the reset email. Try again.'
 // Every slide-over control is a 44px touch target on phones and the compact h-8 from md up.
 const CONTROL_HEIGHT_CLASSES = 'h-11 md:h-8'
 const TAP_ROW_CLASSES = 'min-h-11 md:min-h-0'
@@ -68,6 +70,8 @@ export const Users = () => {
   const { toast } = useToast()
   // The row's data when its invite was sent, so a failure can be tied to that exact state.
   const inviteRowKeys = useRef<Record<string, string>>({})
+  // Same for a reset link: the same row fields decide whether its failure still applies.
+  const resetRowKeys = useRef<Record<string, string>>({})
   const viewerRole = useAuthStore((state) => state.role) ?? ''
 
   const [page, setPage] = useState(1)
@@ -80,6 +84,8 @@ export const Users = () => {
   const [pendingInviteIds, setPendingInviteIds] = useState<ReadonlySet<string>>(new Set())
   // Keyed by user id; `rowKey` ties each message to the row data it was raised against.
   const [inviteErrors, setInviteErrors] = useState<Record<string, { message: string; rowKey: string }>>({})
+  const [pendingResetIds, setPendingResetIds] = useState<ReadonlySet<string>>(new Set())
+  const [resetErrors, setResetErrors] = useState<Record<string, { message: string; rowKey: string }>>({})
 
   const usersQuery = useQuery(
     userQueries.list({ is_active: !showInactive, page, page_size: DEFAULT_PAGE_SIZE }),
@@ -146,11 +152,42 @@ export const Users = () => {
       }),
   })
 
+  // The API answers 204, so the toast names the address from the row that was clicked.
+  const resetMutation = useMutation({
+    mutationFn: (user: User) => sendPasswordReset(user.id),
+    onSuccess: (_data, user) => {
+      setResetErrors((current) => omitKey(current, user.id))
+      toast(`Reset link sent to ${user.email}.`)
+    },
+    onError: (error, user) => {
+      setResetErrors((current) => ({
+        ...current,
+        [user.id]: {
+          message: errorDetail(error) ?? RESET_FALLBACK_ERROR,
+          rowKey: resetRowKeys.current[user.id] ?? '',
+        },
+      }))
+    },
+    onSettled: (_data, _error, user) =>
+      setPendingResetIds((current) => {
+        const next = new Set(current)
+        next.delete(user.id)
+        return next
+      }),
+  })
+
   const handleSendInvite = (user: User) => {
     inviteRowKeys.current[user.id] = inviteRowKey(user)
     setInviteErrors((current) => omitKey(current, user.id))
     setPendingInviteIds((current) => new Set(current).add(user.id))
     inviteMutation.mutate(user.id)
+  }
+
+  const handleSendReset = (user: User) => {
+    resetRowKeys.current[user.id] = inviteRowKey(user)
+    setResetErrors((current) => omitKey(current, user.id))
+    setPendingResetIds((current) => new Set(current).add(user.id))
+    resetMutation.mutate(user)
   }
 
   const closeForm = () => {
@@ -268,6 +305,25 @@ export const Users = () => {
                       : 'Send invite'}
                 </Button>
               )}
+              {user.has_password && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  // The label may wrap between md and lg, where the table is too narrow for it
+                  // on one line.
+                  className="h-11 md:h-auto md:min-h-7 md:whitespace-normal md:py-1 lg:h-7 lg:whitespace-nowrap aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                  // aria-disabled (not disabled) while sending, so keyboard focus stays on the button.
+                  aria-disabled={pendingResetIds.has(user.id)}
+                  aria-busy={pendingResetIds.has(user.id)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (!pendingResetIds.has(user.id)) handleSendReset(user)
+                  }}
+                >
+                  {pendingResetIds.has(user.id) ? 'Sending…' : 'Send reset link'}
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
@@ -284,6 +340,11 @@ export const Users = () => {
             {inviteErrors[user.id]?.rowKey === inviteRowKey(user) && (
               <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
                 {inviteErrors[user.id].message}
+              </p>
+            )}
+            {resetErrors[user.id]?.rowKey === inviteRowKey(user) && (
+              <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
+                {resetErrors[user.id].message}
               </p>
             )}
           </div>

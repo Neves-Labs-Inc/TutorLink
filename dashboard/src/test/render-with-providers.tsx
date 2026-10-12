@@ -7,15 +7,17 @@ type ProvidersProps = {
 }
 
 // A fresh client per render so cached results never leak between tests.
-function createTestQueryClient(): QueryClient {
+export function createTestQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   })
 }
 
-export function renderWithProviders(ui: ReactNode): Promise<RenderResult> {
-  const queryClient = createTestQueryClient()
-
+// Pass a client to observe it from the test (e.g. wait until no mutation is in flight).
+export function renderWithProviders(
+  ui: ReactNode,
+  queryClient: QueryClient = createTestQueryClient(),
+): Promise<RenderResult> {
   function Providers({ children }: ProvidersProps): ReactNode {
     return (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>

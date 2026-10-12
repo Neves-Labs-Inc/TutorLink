@@ -33,7 +33,8 @@ export const MessageComposer = ({ disabled, closedNotice = null, onSend }: Messa
   }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!shouldSubmitOnKey({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })) return
+    const { isComposing, keyCode } = event.nativeEvent
+    if (!shouldSubmitOnKey({ key: event.key, shiftKey: event.shiftKey, isComposing, keyCode })) return
 
     // Also stops Enter from inserting a newline when the reply is empty.
     event.preventDefault()

@@ -228,7 +228,7 @@ const SettingRow = ({ setting, value, onChange, disabled }: SettingRowProps) => 
   } else {
     control = (
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm text-foreground">{setting.value}</span>
+        <span className="min-w-0 font-mono text-sm wrap-anywhere text-foreground">{setting.value}</span>
         <span className={pillClasses}>Read-only</span>
       </div>
     )
@@ -241,7 +241,7 @@ const SettingRow = ({ setting, value, onChange, disabled }: SettingRowProps) => 
         {setting.is_developer_only && <span className={pillClasses}>Developer only</span>}
       </div>
       {control}
-      <p className="font-mono text-xs text-muted-foreground">{setting.key}</p>
+      <p className="font-mono text-xs wrap-anywhere text-muted-foreground">{setting.key}</p>
     </div>
   )
 }

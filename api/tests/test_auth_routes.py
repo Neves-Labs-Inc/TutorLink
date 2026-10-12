@@ -384,11 +384,16 @@ def test_an_email_change_through_the_api_kills_the_link(
 ) -> None:
     invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
     token = _invite(api, db, invitee, fake_mail)
+    # The invitee is an admin, and only a developer may edit another admin (#173).
+    developer = _make_user(db, email=f"dev-{uuid.uuid4().hex[:8]}@example.com")
+    developer.role = UserRole.DEVELOPER
+    db.flush()
+    developer_token = create_access_token(user_id=developer.id, role=developer.role, tutor_id=None)
 
     patched = api.patch(
         f"/api/users/{invitee.id}",
         json={"email": "moved@example.com"},
-        headers=_admin_auth(db),
+        headers={"Authorization": f"Bearer {developer_token}"},
     )
     response = _set_password(api, token=token)
 

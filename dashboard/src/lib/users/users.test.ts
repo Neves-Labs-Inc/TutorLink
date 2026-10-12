@@ -9,6 +9,7 @@ import {
   inviteExpiryTooltip,
   userFormErrors,
   createUserPayload,
+  rowPermissions,
   updateUserPayload,
   type UserDraft,
 } from './users'
@@ -280,5 +281,68 @@ describe('inviteExpiryTooltip', () => {
 
   it('is empty when there is no invite', () => {
     expect(inviteExpiryTooltip({ invite_expires_at: null })).toBe('')
+  })
+})
+
+describe('rowPermissions', () => {
+  const ALLOWED = {
+    canEdit: true,
+    canInvite: true,
+    canReset: true,
+    canDeactivate: true,
+    isSelf: false,
+    lockedReason: null,
+  }
+  const DEVELOPER_REASON = 'Only a developer can change a developer account.'
+  const PEER_ADMIN_REASON = "Only a developer can change another admin's account."
+
+  it('allows everything to a developer viewer, even on a developer or own row', () => {
+    expect(rowPermissions('developer', 'me', { id: 'other', role: 'admin' })).toEqual(ALLOWED)
+    expect(rowPermissions('developer', 'me', { id: 'other', role: 'developer' })).toEqual(ALLOWED)
+    expect(rowPermissions('developer', 'me', { id: 'me', role: 'developer' })).toEqual(ALLOWED)
+  })
+
+  it.each(['admin', 'manager', 'tutor', ''])(
+    'locks every action on a developer row for a %j viewer',
+    (viewerRole) => {
+      expect(rowPermissions(viewerRole, 'me', { id: 'dev', role: 'developer' })).toEqual({
+        canEdit: false,
+        canInvite: false,
+        canReset: false,
+        canDeactivate: false,
+        isSelf: false,
+        lockedReason: DEVELOPER_REASON,
+      })
+    },
+  )
+
+  it("locks edit, reset and deactivate on another admin's row but keeps invite", () => {
+    expect(rowPermissions('admin', 'me', { id: 'peer', role: 'admin' })).toEqual({
+      canEdit: false,
+      canInvite: true,
+      canReset: false,
+      canDeactivate: false,
+      isSelf: false,
+      lockedReason: PEER_ADMIN_REASON,
+    })
+  })
+
+  it('lets an admin edit, invite and reset on their own row but not deactivate', () => {
+    expect(rowPermissions('admin', 'me', { id: 'me', role: 'admin' })).toEqual({
+      canEdit: true,
+      canInvite: true,
+      canReset: true,
+      canDeactivate: false,
+      isSelf: true,
+      lockedReason: null,
+    })
+  })
+
+  it.each(['tutor', 'manager'])('allows everything on a %s row for an admin viewer', (role) => {
+    expect(rowPermissions('admin', 'me', { id: 'other', role })).toEqual(ALLOWED)
+  })
+
+  it('treats an anonymous viewer id as never matching a row', () => {
+    expect(rowPermissions('admin', null, { id: 'other', role: 'tutor' })).toEqual(ALLOWED)
   })
 })

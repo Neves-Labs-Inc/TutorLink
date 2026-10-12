@@ -88,6 +88,11 @@ def _make_user(
     return user
 
 
+def _make_tutor_user(db: Session, *, is_active: bool = True) -> User:
+    """A target an admin may still write to: since #173 another admin is developer-only."""
+    return _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id, is_active=is_active)
+
+
 def _auth(user: User) -> dict[str, str]:
     token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
     return {"Authorization": f"Bearer {token}"}
@@ -398,7 +403,7 @@ def test_unknown_id_is_404(api: TestClient, db: Session) -> None:
 
 def test_delete_is_a_soft_delete(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    victim = _make_user(db)
+    victim = _make_tutor_user(db)
 
     response = api.delete(f"/api/users/{victim.id}", headers=_auth(admin))
 
@@ -463,8 +468,8 @@ def test_a_password_in_the_create_body_is_ignored(api: TestClient, db: Session) 
 
 def test_a_password_in_a_patch_leaves_the_hash_alone(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
-    passwordless = _make_user(db)
+    target = _make_tutor_user(db)
+    passwordless = _make_tutor_user(db)
     passwordless.hashed_password = None
     db.flush()
 
@@ -875,8 +880,10 @@ def test_renaming_the_tutor_renames_the_account_and_back(api: TestClient, db: Se
 def test_admin_and_developer_run_a_managers_whole_lifecycle(
     api: TestClient, db: Session, actor_role: UserRole
 ) -> None:
-    """Create, edit, promote to admin, demote back, deactivate (#108)."""
+    """Create, edit, promote to admin, demote back, deactivate (#108). Once promoted the
+    manager is an admin, so a developer demotes them whoever the actor is (#173)."""
     actor = _make_user(db, role=actor_role)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
 
     created = api.post(
         "/api/users", headers=_auth(actor), json=_create_payload(role="manager", tutor=_profile())
@@ -885,7 +892,7 @@ def test_admin_and_developer_run_a_managers_whole_lifecycle(
     path = f"/api/users/{manager_id}"
     edited = api.patch(path, headers=_auth(actor), json={"name": "Lead"})
     promoted = api.patch(path, headers=_auth(actor), json={"role": "admin"})
-    demoted = api.patch(path, headers=_auth(actor), json={"role": "manager"})
+    demoted = api.patch(path, headers=_auth(developer), json={"role": "manager"})
     deactivated = api.delete(path, headers=_auth(actor))
 
     assert (created.status_code, created.json()["role"]) == (201, "manager")
@@ -929,8 +936,10 @@ def test_a_tutor_may_become_a_manager_or_an_admin_and_keeps_the_profile(
     api: TestClient, db: Session
 ) -> None:
     """Promotion keeps the profile, bookings, availability and subjects, so demotion restores
-    them; `tutor_id` stays on the user all the way."""
+    them; `tutor_id` stays on the user all the way. A developer demotes: the promoted user is
+    an admin by then (#173)."""
     admin = _make_user(db)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
     profile = _make_tutor(db)
     tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=profile.id)
     subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
@@ -952,7 +961,7 @@ def test_a_tutor_may_become_a_manager_or_an_admin_and_keeps_the_profile(
     promoted = api.patch(path, headers=_auth(admin), json={"role": "admin"})
     read = api.get(f"/api/tutors/{profile.id}", headers=_auth(admin)).json()
     availability = api.get(f"/api/tutors/{profile.id}/availability", headers=_auth(admin)).json()
-    demoted = api.patch(path, headers=_auth(admin), json={"role": "tutor"})
+    demoted = api.patch(path, headers=_auth(developer), json={"role": "tutor"})
 
     assert [(r.status_code, r.json()["role"]) for r in (manager, promoted, demoted)] == [
         (200, "manager"),
@@ -971,10 +980,10 @@ def test_a_user_without_a_profile_may_not_become_a_tutor_or_a_manager(
     api: TestClient, db: Session, role: str
 ) -> None:
     """The same refusal as a Tutor created without a profile: a `PATCH` never creates one."""
-    admin = _make_user(db)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
     target = _make_user(db, role=UserRole.ADMIN)
 
-    response = api.patch(f"/api/users/{target.id}", headers=_auth(admin), json={"role": role})
+    response = api.patch(f"/api/users/{target.id}", headers=_auth(developer), json={"role": role})
 
     assert response.status_code == 400
     assert response.json()["detail"] == INVALID_SHAPE_ERROR
@@ -1016,7 +1025,9 @@ CLOCK_SLACK = timedelta(minutes=1)
 
 
 def _make_invitee(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
-    user = _make_user(db, role=role, is_active=is_active)
+    has_profile = role in (UserRole.TUTOR, UserRole.MANAGER)
+    tutor_id = _make_tutor(db).id if has_profile else None
+    user = _make_user(db, role=role, tutor_id=tutor_id, is_active=is_active)
     user.hashed_password = None
     db.flush()
     return user
@@ -1103,7 +1114,7 @@ def test_a_user_with_a_password_cannot_be_invited(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
+    target = _make_tutor_user(db)
 
     response = api.post(f"/api/users/{target.id}/invite", headers=_auth(admin))
 
@@ -1198,7 +1209,7 @@ def test_a_failed_resend_keeps_the_earlier_link_live(
 
 def test_changing_the_email_revokes_every_live_link(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    invitee = _make_invitee(db)
+    invitee = _make_invitee(db, role=UserRole.TUTOR)
     headers = _auth(admin)
     api.post(f"/api/users/{invitee.id}/invite", headers=headers)
 
@@ -1215,7 +1226,7 @@ def test_echoing_the_same_email_in_any_casing_leaves_the_links_alone(
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
-    invitee = _make_invitee(db)
+    invitee = _make_invitee(db, role=UserRole.TUTOR)
     headers = _auth(admin)
     api.post(f"/api/users/{invitee.id}/invite", headers=headers)
 
@@ -1277,7 +1288,7 @@ def test_an_admin_emails_a_user_a_reset_link_that_sets_their_password(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
+    target = _make_tutor_user(db)
 
     response = _send_reset(api, target, actor=admin)
 
@@ -1300,7 +1311,7 @@ def test_a_second_reset_link_revokes_the_first(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
+    target = _make_tutor_user(db)
 
     first = _send_reset(api, target, actor=admin)
     second = _send_reset(api, target, actor=admin)
@@ -1315,7 +1326,7 @@ def test_a_failed_reset_send_is_502_and_keeps_no_link(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
+    target = _make_tutor_user(db)
     fake_mail.fail_next()
 
     response = _send_reset(api, target, actor=admin)
@@ -1346,7 +1357,7 @@ def test_a_deactivated_user_cannot_be_sent_a_reset_link(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    dormant = _make_user(db, is_active=False)
+    dormant = _make_tutor_user(db, is_active=False)
 
     response = _send_reset(api, dormant, actor=admin)
 
@@ -1360,7 +1371,7 @@ def test_a_user_without_a_password_is_pointed_to_an_invite(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    invitee = _make_invitee(db)
+    invitee = _make_invitee(db, role=UserRole.TUTOR)
 
     response = _send_reset(api, invitee, actor=admin)
 
@@ -1397,7 +1408,7 @@ def test_sending_a_reset_link_keeps_sessions_and_completing_it_ends_them(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
+    target = _make_tutor_user(db)
     session = _login(api, target).json()["refresh_token"]
 
     _send_reset(api, target, actor=admin)
@@ -1414,7 +1425,7 @@ def test_each_sent_reset_link_is_logged_by_user_id_without_the_address(
     api: TestClient, db: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
     admin = _make_user(db)
-    target = _make_user(db)
+    target = _make_tutor_user(db)
 
     with caplog.at_level("INFO", logger="app.services.user_service"):
         _send_reset(api, target, actor=admin)
@@ -1423,3 +1434,283 @@ def test_each_sent_reset_link_is_logged_by_user_id_without_the_address(
     assert len(sent) == 1
     assert str(target.id) in sent[0].getMessage()
     assert not any(target.email in record.getMessage() for record in caplog.records)
+
+
+# --- #173: peer admins are developer-only, and an admin can't demote or deactivate themselves --
+
+PEER_ADMIN_FORBIDDEN = "Only a developer may modify another admin's account"
+SELF_CHANGE_FORBIDDEN = "You cannot change your own role or deactivate your own account"
+
+
+def _snapshot(db: Session, user: User) -> tuple[object, ...]:
+    db.refresh(user)
+    links = tuple(
+        (link.id, link.used_at, link.revoked_at, link.expires_at) for link in _links(db, user)
+    )
+    return (user.email, user.name, user.role, user.is_active, user.hashed_password, links)
+
+
+def _peer_with_a_live_reset_link(api: TestClient, db: Session) -> User:
+    """A peer admin holding a live link, so a refused write can be seen not to revoke it."""
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    peer = _make_user(db)
+    assert _send_reset(api, peer, actor=developer).status_code == 204
+    return peer
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"email": "taken-over@example.com"},
+        {"name": "Someone Else"},
+        {"role": "tutor"},
+        {"is_active": False},
+    ],
+    ids=["email", "name", "role", "is_active"],
+)
+def test_an_admin_cannot_patch_a_peer_admin(
+    api: TestClient, db: Session, fake_mail: FakeMail, change: dict[str, object]
+) -> None:
+    admin = _make_user(db)
+    peer = _peer_with_a_live_reset_link(api, db)
+    fake_mail.sent.clear()
+    before = _snapshot(db, peer)
+
+    response = api.patch(f"/api/users/{peer.id}", headers=_auth(admin), json=change)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+    assert _snapshot(db, peer) == before
+    assert len(_live_links(db, peer)) == 1
+    assert fake_mail.sent == []
+
+
+def test_an_admin_cannot_patch_a_peer_admin_even_with_a_no_op(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    peer = _make_user(db)
+
+    response = api.patch(f"/api/users/{peer.id}", headers=_auth(admin), json={})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+
+
+def test_demoting_a_peer_admin_is_refused_at_the_first_step(api: TestClient, db: Session) -> None:
+    """The bypass: demote to tutor, edit the tutor, promote back. The first PATCH must fail."""
+    admin = _make_user(db)
+    peer = _make_user(db, role=UserRole.ADMIN, tutor_id=_make_tutor(db).id)
+
+    response = api.patch(f"/api/users/{peer.id}", headers=_auth(admin), json={"role": "tutor"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+    db.refresh(peer)
+    assert peer.role is UserRole.ADMIN
+
+
+def test_an_admin_cannot_deactivate_a_peer_admin(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    peer = _peer_with_a_live_reset_link(api, db)
+    fake_mail.sent.clear()
+    before = _snapshot(db, peer)
+
+    response = api.delete(f"/api/users/{peer.id}", headers=_auth(admin))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+    assert _snapshot(db, peer) == before
+    assert fake_mail.sent == []
+
+
+def test_an_admin_cannot_send_a_peer_admin_a_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    peer = _peer_with_a_live_reset_link(api, db)
+    fake_mail.sent.clear()
+    before = _snapshot(db, peer)
+
+    response = _send_reset(api, peer, actor=admin)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+    assert _snapshot(db, peer) == before
+    assert fake_mail.sent == []
+
+
+def test_an_admin_may_invite_a_peer_admin_who_never_set_a_password(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    peer = _make_invitee(db, role=UserRole.ADMIN)
+
+    response = api.post(f"/api/users/{peer.id}/invite", headers=_auth(admin))
+
+    assert response.status_code == 200
+    (email,) = fake_mail.sent
+    assert email.to == peer.email
+    assert len(_live_links(db, peer)) == 1
+
+
+def test_inviting_a_peer_admin_with_a_password_is_still_409(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    peer = _make_user(db)
+
+    response = api.post(f"/api/users/{peer.id}/invite", headers=_auth(admin))
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "That user already has a password"
+    assert fake_mail.sent == []
+
+
+def test_a_developer_may_do_everything_to_an_admin(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    headers = _auth(developer)
+    edited = _make_user(db)
+    invitee = _make_invitee(db, role=UserRole.ADMIN)
+    reset_target = _make_user(db)
+    deactivated = _make_user(db)
+
+    patched = api.patch(
+        f"/api/users/{edited.id}",
+        headers=headers,
+        json={"email": "moved@example.com", "name": "Moved Admin", "is_active": True},
+    )
+    invited = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+    reset = _send_reset(api, reset_target, actor=developer)
+    deleted = api.delete(f"/api/users/{deactivated.id}", headers=headers)
+
+    assert patched.status_code == 200
+    assert patched.json()["email"] == "moved@example.com"
+    assert invited.status_code == 200
+    assert reset.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["is_active"] is False
+    assert [email.to for email in fake_mail.sent] == [invitee.email, reset_target.email]
+
+
+@pytest.mark.parametrize("role", [UserRole.TUTOR, UserRole.MANAGER])
+def test_an_admin_still_runs_a_tutor_or_manager_account(
+    api: TestClient, db: Session, fake_mail: FakeMail, role: UserRole
+) -> None:
+    admin = _make_user(db)
+    headers = _auth(admin)
+    target = _make_user(db, role=role, tutor_id=_make_tutor(db).id)
+    invitee = _make_user(db, role=role, tutor_id=_make_tutor(db).id)
+    invitee.hashed_password = None
+    db.flush()
+
+    # The reset first: once promoted, the target is a peer admin.
+    reset = _send_reset(api, target, actor=admin)
+    patched = api.patch(
+        f"/api/users/{target.id}", headers=headers, json={"name": "Renamed", "role": "admin"}
+    )
+    invited = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+    deleted = api.delete(f"/api/users/{invitee.id}", headers=headers)
+
+    assert patched.status_code == 200
+    assert patched.json()["role"] == "admin"
+    assert reset.status_code == 204
+    assert invited.status_code == 200
+    assert deleted.status_code == 200
+
+
+def test_an_admin_may_still_create_an_admin(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post("/api/users", headers=_auth(admin), json=_create_payload(role="admin"))
+
+    assert response.status_code == 201
+    assert response.json()["role"] == "admin"
+
+
+def test_an_admin_may_change_their_own_email_and_name(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(
+        f"/api/users/{admin.id}",
+        headers=_auth(admin),
+        json={"email": "me-now@example.com", "name": "New Me"},
+    )
+
+    assert response.status_code == 200
+    db.refresh(admin)
+    assert admin.email == "me-now@example.com"
+    assert admin.name == "New Me"
+
+
+def test_an_admin_may_resave_their_own_form_unchanged(api: TestClient, db: Session) -> None:
+    """The dashboard sends every field, so an unchanged role and `is_active=true` must pass."""
+    admin = _make_user(db)
+
+    response = api.patch(
+        f"/api/users/{admin.id}",
+        headers=_auth(admin),
+        json={"email": admin.email, "name": "Same Me", "role": "admin", "is_active": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Same Me"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"role": "tutor"}, {"is_active": False}, {"name": "Sneaky", "is_active": False}],
+    ids=["role", "is_active", "name-and-is_active"],
+)
+def test_an_admin_cannot_change_their_own_role_or_deactivate_themselves(
+    api: TestClient, db: Session, change: dict[str, object]
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN, tutor_id=_make_tutor(db).id)
+    before = _snapshot(db, admin)
+
+    response = api.patch(f"/api/users/{admin.id}", headers=_auth(admin), json=change)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == SELF_CHANGE_FORBIDDEN
+    assert _snapshot(db, admin) == before
+
+
+def test_an_admin_cannot_delete_themselves(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    before = _snapshot(db, admin)
+
+    response = api.delete(f"/api/users/{admin.id}", headers=_auth(admin))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == SELF_CHANGE_FORBIDDEN
+    assert _snapshot(db, admin) == before
+
+
+def test_an_admin_may_still_send_themselves_a_reset_link(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+
+    response = _send_reset(api, admin, actor=admin)
+
+    assert response.status_code == 204
+    assert [email.to for email in fake_mail.sent] == [admin.email]
+
+
+def test_a_developer_may_still_change_their_own_role_and_deactivate_themselves(
+    api: TestClient, db: Session
+) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    other = _make_user(db, role=UserRole.DEVELOPER)
+
+    demoted = api.patch(
+        f"/api/users/{developer.id}", headers=_auth(developer), json={"role": "admin"}
+    )
+    deleted = api.delete(f"/api/users/{other.id}", headers=_auth(other))
+
+    assert demoted.status_code == 200
+    assert demoted.json()["role"] == "admin"
+    assert deleted.status_code == 200
+    assert deleted.json()["is_active"] is False

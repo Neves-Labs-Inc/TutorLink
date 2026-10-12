@@ -69,13 +69,23 @@ class TutorAccountForbidden(TutorServiceError):
     tried to change a login email."""
 
 
-def assert_may_write_person(*, actor_role: UserRole, tutor: Tutor) -> None:
+class TutorPeerAdminForbidden(TutorAccountForbidden):
+    """An admin writing to another admin's profile; only a developer may (#173)."""
+
+
+class TutorSelfChangeForbidden(TutorAccountForbidden):
+    """An admin deactivating themselves through their own profile (#173)."""
+
+
+def assert_may_write_person(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -> None:
     """The profile's person is also a login, so editing a profile edits an account.
 
     `/api/users` is admin-only and keeps Developers out of an Admin's reach; this is the same
     boundary seen from the Tutors page. A Manager may write Tutors and nobody else (not a peer
     Manager, not an Admin or Developer who kept a profile after promotion); an Admin may write
-    anyone but a Developer; a Developer may write anyone.
+    anyone but a Developer or another Admin; a Developer may write anyone. The peer-admin rule
+    is `user_service`'s (#173): an Admin who kept a profile after promotion is reachable here,
+    and an email change on it plus the public forgot-password flow would take the account over.
 
     A login email is narrower still: it is an Admin's to change (answers 04 #11), which
     `update_tutor` checks on top of this, since the address a password link goes to is the
@@ -88,6 +98,14 @@ def assert_may_write_person(*, actor_role: UserRole, tutor: Tutor) -> None:
 
     if target is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
         raise TutorAccountForbidden
+
+    if actor_role is UserRole.ADMIN and target is UserRole.ADMIN and tutor.user_id != actor_id:
+        raise TutorPeerAdminForbidden
+
+
+def _is_self_admin(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -> bool:
+    """An admin acting on their own profile, who may not deactivate themselves (#173)."""
+    return actor_role is UserRole.ADMIN and tutor.user_id == actor_id
 
 
 def matching_tutors(
@@ -282,6 +300,7 @@ def update_tutor(
     db: Session,
     *,
     actor_role: UserRole,
+    actor_id: uuid.UUID,
     tutor_id: uuid.UUID,
     name: str | None,
     email: str | None,
@@ -309,7 +328,11 @@ def update_tutor(
     and unwinding to the savepoint leaves the `Session` usable for the rest of the request.
     """
     tutor = get_tutor(db, tutor_id=tutor_id)
-    assert_may_write_person(actor_role=actor_role, tutor=tutor)
+    assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
+
+    if is_active is False and _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
+        raise TutorSelfChangeForbidden
+
     normalized_email = email.strip().lower() if email is not None else None
     email_changed = normalized_email is not None and normalized_email != tutor.user.email
 
@@ -367,7 +390,9 @@ def update_tutor(
     return tutor
 
 
-def deactivate_tutor(db: Session, *, actor_role: UserRole, tutor_id: uuid.UUID) -> Tutor:
+def deactivate_tutor(
+    db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, tutor_id: uuid.UUID
+) -> Tutor:
     """Soft delete of the person: `users.is_active` is the one flag that counts, so this is
     what stops the login, the offer surface and the Tutors list at once.
 
@@ -375,7 +400,11 @@ def deactivate_tutor(db: Session, *, actor_role: UserRole, tutor_id: uuid.UUID) 
     assignments would make deactivation irreversible.
     """
     tutor = get_tutor(db, tutor_id=tutor_id)
-    assert_may_write_person(actor_role=actor_role, tutor=tutor)
+    assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
+
+    if _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
+        raise TutorSelfChangeForbidden
+
     tutor.user.is_active = False
     db.flush()
 

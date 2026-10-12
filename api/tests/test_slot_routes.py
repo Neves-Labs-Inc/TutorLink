@@ -533,13 +533,15 @@ def test_a_promoted_admin_is_not_offered_until_demoted(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
     """Promotion keeps the profile but takes the person off the offer surface; demotion back
-    to Tutor restores it, with nothing re-created."""
+    to Tutor restores it, with nothing re-created. A developer demotes: by then the person is
+    an admin, and only a developer may edit another admin (#173)."""
     person = db.get_one(Tutor, world.tutor_id).user
+    developer = _make_user(db, role=UserRole.DEVELOPER)
     path = f"/api/users/{person.id}"
 
     promoted = api.patch(path, headers=_bearer(admin), json={"role": "admin"})
     while_admin = api.get(_url(world), headers=_bearer(admin))
-    demoted = api.patch(path, headers=_bearer(admin), json={"role": "tutor"})
+    demoted = api.patch(path, headers=_bearer(developer), json={"role": "tutor"})
     as_tutor_again = api.get(_url(world), headers=_bearer(admin))
 
     assert (promoted.status_code, demoted.status_code) == (200, 200)

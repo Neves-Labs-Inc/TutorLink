@@ -112,7 +112,7 @@ view that swap inside the one panel; saving or deactivating returns to the list 
 slide-over stays open.
 - List view: table of subject name, description, number of tutors teaching it, and active status,
   paged. A "Show inactive subjects" toggle. "Add subject" button; selecting a row opens its edit form
-- Form view (Add/Edit Subject): name, description, active toggle (edit only); Deactivate (active
+- Form view (Add/edit subject): name, description, active toggle (edit only); Deactivate (active
   subjects only, behind a confirm dialog; a soft deactivate, never a hard delete)
 - "number of tutors teaching it" is the `tutor_count` field on each `GET /api/subjects` item — active tutors only, one request, no second call per row.
 - After a change, the tutor list and the Subject filter refresh. Deactivating the subject selected in the Subject filter resets the filter to "All subjects"
@@ -127,7 +127,7 @@ slide-over stays open.
 
 **Forms:**
 - Add/Edit Tutor: name, email, phone, bio
-- Add Subject: subject dropdown + a single grade ceiling input
+- Add subject: subject dropdown + a single grade ceiling input
 - Add Availability Slot: day of week, start time, end time
 - Add Exception: date range picker, start time (optional), end time (optional), reason dropdown, notes
   - The times apply to **each day** in the range, not as one continuous absence. Label them so an admin

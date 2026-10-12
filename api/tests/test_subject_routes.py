@@ -303,6 +303,60 @@ def test_the_constraint_answers_a_patch_when_the_pre_check_does_not(
     assert api.get("/api/subjects", headers=headers).status_code == 200
 
 
+def test_post_a_case_variant_of_a_taken_name_is_409(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    _make_subject(db, name="Biology")
+
+    response = api.post("/api/subjects", headers=_auth(admin), json={"name": "biology"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A subject with that name already exists"
+
+
+def test_patch_to_a_padded_case_variant_of_a_taken_name_is_409(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    _make_subject(db, name="Biology")
+    other = _make_subject(db, name="Science")
+
+    response = api.patch(
+        f"/api/subjects/{other.id}", headers=_auth(admin), json={"name": " BIOLOGY "}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A subject with that name already exists"
+
+
+def test_renaming_a_subject_to_a_case_variant_of_its_own_name_succeeds(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name="Biology")
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}", headers=_auth(admin), json={"name": "biology"}
+    )
+
+    assert (response.status_code, response.json()["name"]) == (200, "biology")
+
+
+def test_the_constraint_answers_a_case_variant_when_the_pre_check_does_not(
+    api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin = _make_user(db)
+    _make_subject(db, name="Biology")
+    headers = _auth(admin)
+
+    monkeypatch.setattr(subject_service, "_name_taken", lambda *_, **__: False)
+
+    response = api.post("/api/subjects", headers=headers, json={"name": "BIOLOGY"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A subject with that name already exists"
+    assert api.get("/api/subjects", headers=headers).status_code == 200
+
+
 def test_delete_sets_is_active_false_and_the_row_survives(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     subject = _make_subject(db)
@@ -482,3 +536,118 @@ def test_a_spanish_name_over_128_characters_is_400_on_update(api: TestClient, db
     assert response.status_code == 400
     db.refresh(subject)
     assert subject.name_es == SPANISH_NAME
+
+
+# --- name: normalized and never blank ----------------------------------------------------------
+
+NORMALIZED_NAMES = {
+    "padded": (" Biology ", "Biology"),
+    "newline": ("Bio\nlogy", "Bio logy"),
+    "zero-width space": ("Bio\u200blogy", "Biology"),
+    "tab and line separator": ("Marine\t\u2028Biology", "Marine Biology"),
+}
+BLANK_NAMES = {
+    "spaces": "   ",
+    "invisible only": "\u200b\u200e\x00",
+    "line breaks": "\n\r\n",
+}
+
+
+@pytest.mark.parametrize(("raw", "stored"), NORMALIZED_NAMES.values(), ids=NORMALIZED_NAMES)
+def test_a_subject_name_is_stored_normalized(
+    api: TestClient, db: Session, raw: str, stored: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.post("/api/subjects", headers=_auth(admin), json={"name": raw})
+
+    assert (response.status_code, response.json()["name"]) == (201, stored)
+    assert db.get(Subject, uuid.UUID(response.json()["id"])).name == stored
+
+
+def test_a_renamed_subject_name_is_stored_normalized(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}", headers=_auth(admin), json={"name": "  Earth\n Science "}
+    )
+
+    assert (response.status_code, response.json()["name"]) == (200, "Earth Science")
+
+
+@pytest.mark.parametrize("name", BLANK_NAMES.values(), ids=BLANK_NAMES)
+def test_a_blank_name_is_400_on_create(api: TestClient, db: Session, name: str) -> None:
+    admin = _make_user(db)
+
+    response = api.post("/api/subjects", headers=_auth(admin), json={"name": name})
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("name:")
+
+
+@pytest.mark.parametrize("name", BLANK_NAMES.values(), ids=BLANK_NAMES)
+def test_a_blank_name_is_400_on_update_and_changes_nothing(
+    api: TestClient, db: Session, name: str
+) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name="Chemistry")
+
+    response = api.patch(f"/api/subjects/{subject.id}", headers=_auth(admin), json={"name": name})
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("name:")
+    db.refresh(subject)
+    assert subject.name == "Chemistry"
+
+
+def test_a_null_name_on_update_keeps_the_current_name(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name="Chemistry")
+
+    response = api.patch(f"/api/subjects/{subject.id}", headers=_auth(admin), json={"name": None})
+
+    assert (response.status_code, response.json()["name"]) == (200, "Chemistry")
+
+
+MAX_NAME_LENGTH = 128
+
+
+def test_a_name_over_128_characters_is_400_on_create(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/subjects", headers=_auth(admin), json={"name": "a" * (MAX_NAME_LENGTH + 1)}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("name:")
+
+
+def test_a_name_over_128_characters_is_400_on_update_and_changes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db, name="Chemistry")
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}",
+        headers=_auth(admin),
+        json={"name": "a" * (MAX_NAME_LENGTH + 1)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("name:")
+    db.refresh(subject)
+    assert subject.name == "Chemistry"
+
+
+def test_padding_around_a_128_character_name_does_not_count_toward_the_limit(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    name = "a" * MAX_NAME_LENGTH
+
+    response = api.post("/api/subjects", headers=_auth(admin), json={"name": f"  {name}\u200b  "})
+
+    assert (response.status_code, response.json()["name"]) == (201, name)

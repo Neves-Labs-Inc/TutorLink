@@ -9,9 +9,15 @@ export const spanishNameValue = (draft: string): string | null => {
   return trimmed === '' ? null : trimmed
 }
 
+export const subjectNameValue = (draft: string): string => draft.trim()
+
+const NAME_PREFIX = /^name:\s*/
+const NAME_LABEL = 'Name: '
 const NAME_ES_PREFIX = /^name_es:\s*/
 const NAME_ES_LABEL = 'Spanish name: '
 
 // The API's detail starts with the raw field key; Staff see the field's label instead.
 export const subjectErrorMessage = (detail: string | null): string | null =>
-  detail === null ? null : detail.replace(NAME_ES_PREFIX, NAME_ES_LABEL)
+  detail === null ? null : detail.replace(NAME_PREFIX, NAME_LABEL).replace(NAME_ES_PREFIX, NAME_ES_LABEL)
+
+export const isNameError = (detail: string | null): boolean => detail !== null && NAME_PREFIX.test(detail)

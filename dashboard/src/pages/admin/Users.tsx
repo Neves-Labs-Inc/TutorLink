@@ -10,6 +10,7 @@ import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { SlideOver } from '@/components/shared/SlideOver'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import {
@@ -83,6 +84,13 @@ export const Users = () => {
   const usersQuery = useQuery(
     userQueries.list({ is_active: !showInactive, page, page_size: DEFAULT_PAGE_SIZE }),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data: usersQuery.data,
+    isPlaceholderData: usersQuery.isPlaceholderData,
+    isFetching: usersQuery.isFetching,
+  })
 
   const invalidateUsers = () => queryClient.invalidateQueries({ queryKey: ['users'] })
 
@@ -312,7 +320,9 @@ export const Users = () => {
         columns={columns}
         rows={usersQuery.data?.items ?? []}
         rowKey={(user) => user.id}
-        status={usersQuery.isPending ? 'pending' : usersQuery.isError ? 'error' : 'ready'}
+        status={
+          usersQuery.isPending || outOfRange ? 'pending' : usersQuery.isError ? 'error' : 'ready'
+        }
         errorMessage={errorDetail(usersQuery.error) ?? LOAD_FALLBACK_ERROR}
         onRetry={() => usersQuery.refetch()}
         emptyMessage={showInactive ? 'No inactive users.' : 'No users yet.'}
@@ -320,11 +330,11 @@ export const Users = () => {
       />
 
       <Pager
-        page={page}
+        page={pagerPage}
         pageSize={DEFAULT_PAGE_SIZE}
-        total={usersQuery.data?.total ?? 0}
+        total={pagerTotal}
         onPageChange={setPage}
-        disabled={usersQuery.isPending}
+        disabled={usersQuery.isPending || outOfRange}
       />
 
       <SlideOver

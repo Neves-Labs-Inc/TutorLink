@@ -20,6 +20,7 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/hooks/useAuth'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import {
   EXCEPTION_REASONS,
@@ -80,13 +81,20 @@ const TimeOffView = ({ tutorId }: TimeOffViewProps) => {
   const [withdrawing, setWithdrawing] = useState<TutorException | null>(null)
 
   const today = todayLocalIso(new Date())
-  const { data, isPending, isError, error, refetch } = useQuery(
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery(
     exceptionQueries.forTutor(tutorId, {
       ...timeOffWindow(tab, today),
       page,
       page_size: DEFAULT_PAGE_SIZE,
     }),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
+  })
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: exceptionQueryKey(tutorId) })
@@ -207,7 +215,7 @@ const TimeOffView = ({ tutorId }: TimeOffViewProps) => {
             columns={columns}
             rows={rows}
             rowKey={(row) => row.id}
-            status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+            status={isPending || outOfRange ? 'pending' : isError ? 'error' : 'ready'}
             errorMessage={errorDetail(error) ?? FALLBACK_ERROR}
             onRetry={() => refetch()}
             emptyMessage={tab === 'upcoming' ? 'No upcoming time off.' : 'No past time off.'}
@@ -222,11 +230,11 @@ const TimeOffView = ({ tutorId }: TimeOffViewProps) => {
 
       {data && (
         <Pager
-          page={page}
+          page={pagerPage}
           pageSize={data.page_size}
-          total={data.total}
+          total={pagerTotal}
           onPageChange={setPage}
-          disabled={isPending}
+          disabled={isPending || outOfRange}
         />
       )}
 

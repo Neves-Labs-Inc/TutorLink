@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { locationLabel } from '@/lib/booking-presentation/bookingPresentation'
 import SubjectCell from '@/lib/booking-presentation/SubjectCell'
@@ -80,6 +81,13 @@ export const ChildDetail = () => {
   const bookings = useQuery({
     ...bookingQueries.list(childSessionParams(id, sessionState, page, today)),
     enabled: data !== undefined,
+  })
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data: bookings.data,
+    isPlaceholderData: bookings.isPlaceholderData,
+    isFetching: bookings.isFetching,
   })
 
   const initialChild = useMemo(
@@ -209,7 +217,7 @@ export const ChildDetail = () => {
             columns={COLUMNS}
             rows={bookings.data?.items ?? []}
             rowKey={(booking) => booking.id}
-            status={bookings.isPending ? 'pending' : bookings.isError ? 'error' : 'ready'}
+            status={bookings.isPending || outOfRange ? 'pending' : bookings.isError ? 'error' : 'ready'}
             errorMessage={errorDetail(bookings.error)}
             onRetry={() => bookings.refetch()}
             emptyMessage={
@@ -218,11 +226,11 @@ export const ChildDetail = () => {
             onRowSelect={(booking) => setSelectedBookingId(booking.id)}
           />
           <Pager
-            page={page}
+            page={pagerPage}
             pageSize={bookings.data?.page_size ?? DEFAULT_PAGE_SIZE}
-            total={bookings.data?.total ?? 0}
+            total={pagerTotal}
             onPageChange={setPage}
-            disabled={bookings.isPending}
+            disabled={bookings.isPending || outOfRange}
           />
         </section>
 

@@ -24,3 +24,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Vitest browser-mode failure artifacts
+__screenshots__
+.vitest-attachments

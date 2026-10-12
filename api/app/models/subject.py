@@ -1,7 +1,7 @@
 import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import DateTime, Index, String, Text, func, literal_column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -14,8 +14,12 @@ if TYPE_CHECKING:
 
 class Subject(HasID, HasActiveFlag, Base):
     __tablename__ = "subjects"
+    # Names are unique ignoring case; migration 0036 builds the same index.
+    __table_args__ = (
+        Index("uq_subjects_name_lower", func.lower(literal_column("name")), unique=True),
+    )
 
-    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
     # Shown to Spanish-speaking Guardians; NULL falls back to `name`.
     name_es: Mapped[str | None] = mapped_column(String(128), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

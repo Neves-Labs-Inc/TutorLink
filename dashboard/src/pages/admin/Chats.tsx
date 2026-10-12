@@ -7,6 +7,7 @@ import { Pager } from '@/components/shared/Pager'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { useConversationStream } from '@/hooks/use-conversation-stream/useConversationStream'
 import { errorDetail } from '@/lib/api'
 import { conversationListParams, EMPTY_FILTERS, type ConversationFilterState } from '@/lib/chatList'
@@ -40,9 +41,16 @@ export const Chats = () => {
     onMessageCreated: invalidateList,
   })
 
-  const { data, isPending, isError, error, refetch } = useQuery(
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery(
     conversationQueries.list(conversationListParams(filters, page, DEFAULT_PAGE_SIZE)),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
+  })
 
   const applyFilters = (next: ConversationFilterState) => {
     setFilters(next)
@@ -122,7 +130,7 @@ export const Chats = () => {
 
       <ConversationList
         conversations={data?.items ?? []}
-        status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+        status={isPending || outOfRange ? 'pending' : isError ? 'error' : 'ready'}
         errorMessage={errorDetail(error)}
         onRetry={() => refetch()}
         emptyMessage={emptyMessage}
@@ -132,11 +140,11 @@ export const Chats = () => {
 
       {data && (
         <Pager
-          page={page}
+          page={pagerPage}
           pageSize={data.page_size}
-          total={data.total}
+          total={pagerTotal}
           onPageChange={setPage}
-          disabled={isPending}
+          disabled={isPending || outOfRange}
         />
       )}
     </div>

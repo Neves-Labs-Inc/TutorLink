@@ -210,8 +210,9 @@ closing.
   `data-[state]`. The overlay fades. ConfirmDialog fades and zooms 95%. SlideOver fades and
   slides in from the right. All of them set `motion-reduce:animate-none`. The Toaster enters
   with `fade-in-0 slide-in-from-bottom-2` over 200ms `ease-out` and exits with `fade-out-0` over
-  150ms; swipe uses the Radix `--radix-toast-swipe-move-x` var. It sits at `z-[60]`, above
-  dialogs and slide-overs.
+  150ms; swipe uses the Radix `--radix-toast-swipe-move-x` var. Z-order: SlideOver overlay
+  `z-40`, content `z-50`; ConfirmDialog overlay and content both `z-50`, above a SlideOver because
+  it renders later in the DOM; Toaster `z-[60]`, above dialogs and slide-overs.
 - **Mobile nav drawer.** `transition-transform duration-200 ease-out`, with the backdrop on
   `transition-opacity duration-200 ease-out` and `motion-reduce:transition-none`.
 - **Rules for new work.** Motion is CSS only. Animate `transform` and `opacity`. Durations

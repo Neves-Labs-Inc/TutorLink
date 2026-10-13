@@ -87,6 +87,61 @@ export const editRoleOptions = (viewerRole: string, currentRole: string): RoleOp
     : [...options, { ...knownOption, disabled: true }]
 }
 
+export type RowPermissions = {
+  canEdit: boolean
+  canInvite: boolean
+  canReset: boolean
+  canDeactivate: boolean
+  isSelf: boolean
+  lockedReason: string | null
+}
+
+export const DEVELOPER_LOCKED_REASON = 'Only a developer can change a developer account.'
+export const PEER_ADMIN_LOCKED_REASON = "Only a developer can change another admin's account."
+
+// Presentation only, like `roleOptions`: the server refuses these writes whatever the page
+// offers (peer-admin, developer and self rules in `api/app/services/user_service.py`).
+export const rowPermissions = (
+  viewerRole: string,
+  viewerId: string | null,
+  row: { id: string; role: string },
+): RowPermissions => {
+  // Developers are exempt from the self rule, so for them their own row is just another row.
+  const isSelf = viewerRole !== 'developer' && viewerId !== null && row.id === viewerId
+  const allowed: RowPermissions = {
+    canEdit: true,
+    canInvite: true,
+    canReset: true,
+    canDeactivate: true,
+    isSelf,
+    lockedReason: null,
+  }
+  let permissions = allowed
+
+  if (viewerRole !== 'developer' && row.role === 'developer') {
+    permissions = {
+      ...allowed,
+      canEdit: false,
+      canInvite: false,
+      canReset: false,
+      canDeactivate: false,
+      lockedReason: DEVELOPER_LOCKED_REASON,
+    }
+  } else if (viewerRole === 'admin' && row.role === 'admin') {
+    permissions = isSelf
+      ? { ...allowed, canDeactivate: false }
+      : {
+          ...allowed,
+          canEdit: false,
+          canReset: false,
+          canDeactivate: false,
+          lockedReason: PEER_ADMIN_LOCKED_REASON,
+        }
+  }
+
+  return permissions
+}
+
 // Mirrors the API's PROFILE_ROLES: these roles are created together with their tutor profile.
 export const requiresProfile = (role: string): boolean => role === 'tutor' || role === 'manager'
 

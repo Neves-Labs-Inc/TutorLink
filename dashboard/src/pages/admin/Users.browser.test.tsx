@@ -7,6 +7,7 @@ import Toaster from '@/components/shared/Toaster'
 import type { User } from '@/lib/queries/users'
 import { Users } from '@/pages/admin/Users'
 import { renderWithProviders } from '@/test/render-with-providers'
+import { useAuthStore } from '@/stores/authStore'
 
 const DESKTOP_WIDTH = 1280
 const DESKTOP_HEIGHT = 800
@@ -104,9 +105,14 @@ const settleLayout = async () => {
 const userRow =(name: string) => page.getByRole('row', { name: new RegExp(name) })
 const resetButton = (name: string) => userRow(name).getByRole('button', { name: RESET_LABEL })
 
+const setViewer = (role: 'developer' | 'admin', userId: string) =>
+  useAuthStore.setState({ status: 'authenticated', role, userId })
+
 describe('Users password reset link', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    // The fixtures are admin rows, so a developer viewer keeps these tests about the reset link.
+    setViewer('developer', 'viewer-developer')
     await page.viewport(DESKTOP_WIDTH, DESKTOP_HEIGHT)
   })
 
@@ -215,5 +221,176 @@ describe('Users password reset link', () => {
     await resetButton(SIGNED_IN.name).click()
 
     await expect.element(userRow(SIGNED_IN.name).getByRole('alert')).toHaveTextContent(RESET_FALLBACK_ERROR)
+  })
+})
+
+const VIEWER_ID = 'viewer-admin'
+const PEER_REASON = "Only a developer can change another admin's account."
+const DEVELOPER_REASON = 'Only a developer can change a developer account.'
+const SELF_HELP = "You can't change your own role or deactivate your own account."
+const MOBILE_WIDTH = 375
+
+const peerAdmin: User = { ...baseUser, id: 'user-peer', name: 'Paula Peer', email: 'paula@example.com' }
+const peerAdminInvitable: User = {
+  ...peerAdmin,
+  id: 'user-peer-new',
+  name: 'Pedro Pending',
+  email: 'pedro@example.com',
+  has_password: false,
+}
+const developerRow: User = {
+  ...baseUser,
+  id: 'user-dev',
+  name: 'Dana Dev',
+  email: 'dana@example.com',
+  role: 'developer',
+  has_password: false,
+}
+const ownRow: User = { ...baseUser, id: VIEWER_ID, name: 'Olga Own', email: 'olga@example.com' }
+const tutorRow: User = { ...baseUser, id: 'user-tutor', name: 'Tito Tutor', email: 'tito@example.com', role: 'tutor' }
+
+const button = (name: string, label: string) => userRow(name).getByRole('button', { name: label })
+
+describe('Users locked rows', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    setViewer('admin', VIEWER_ID)
+    await page.viewport(DESKTOP_WIDTH, DESKTOP_HEIGHT)
+  })
+
+  it("disables reset and deactivate on another admin's row, with the reason, and fires nothing", async () => {
+    await renderUsers([peerAdmin])
+
+    for (const label of [RESET_LABEL, 'Deactivate']) {
+      const locked = button(peerAdmin.name, label)
+      await expect.element(locked).toHaveAttribute('aria-disabled', 'true')
+      await expect.element(locked).toHaveAttribute('title', PEER_REASON)
+      await expect.element(locked).toHaveAccessibleDescription(PEER_REASON)
+      // force: Playwright otherwise waits forever for an aria-disabled button to become enabled.
+      await locked.click({ force: true })
+    }
+
+    expect(usersApi.sendPasswordReset).not.toHaveBeenCalled()
+    expect(page.getByRole('heading', { name: 'Deactivate user' }).elements()).toHaveLength(0)
+    expect(page.getByRole('dialog').elements()).toHaveLength(0)
+  })
+
+  it("keeps invite working on another admin's row", async () => {
+    usersApi.sendInvite.mockResolvedValue({ ...peerAdminInvitable, invite_expires_at: '2026-10-20T00:00:00Z' })
+    await renderUsers([peerAdminInvitable])
+
+    const invite = button(peerAdminInvitable.name, 'Send invite')
+    await expect.element(invite).not.toHaveAttribute('aria-disabled', 'true')
+    await invite.click()
+
+    await expect.poll(() => usersApi.sendInvite.mock.calls.length).toBe(1)
+    expect(usersApi.sendInvite.mock.calls[0][0]).toBe(peerAdminInvitable.id)
+  })
+
+  it('disables invite, reset and deactivate on a developer row', async () => {
+    await renderUsers([{ ...developerRow, has_password: true, id: 'user-dev-pw', name: 'Dora Dev' }, developerRow])
+
+    for (const name of ['Dora Dev', developerRow.name]) {
+      for (const button of userRow(name).getByRole('button').elements()) {
+        expect(button.getAttribute('aria-disabled')).toBe('true')
+        expect(button.getAttribute('title')).toBe(DEVELOPER_REASON)
+      }
+    }
+    await expect.element(button(developerRow.name, 'Send invite')).toHaveAccessibleDescription(DEVELOPER_REASON)
+    expect(userRow(developerRow.name).getByRole('button').elements()).toHaveLength(2)
+  })
+
+  it('opens a peer admin row read-only with the reason and no Save', async () => {
+    await renderUsers([peerAdmin])
+
+    await userRow(peerAdmin.name).click()
+
+    const dialog = page.getByRole('dialog')
+    await expect.element(dialog.getByRole('heading', { name: 'View user' })).toBeVisible()
+    await expect.element(dialog).toHaveAccessibleDescription(PEER_REASON)
+    for (const label of ['Display name', 'Email', 'Role']) {
+      await expect.element(dialog.getByLabelText(label)).toBeDisabled()
+    }
+    await expect.element(dialog.getByRole('checkbox', { name: 'Active' })).toBeDisabled()
+    expect(dialog.getByRole('button', { name: 'Save' }).elements()).toHaveLength(0)
+
+    await dialog.getByText('Close', { exact: true }).click()
+    await expect.poll(() => page.getByRole('dialog').elements().length).toBe(0)
+  })
+
+  it('opens an inactive peer admin row read-only too', async () => {
+    await renderUsers([{ ...peerAdmin, is_active: false }])
+
+    await userRow(peerAdmin.name).click()
+
+    await expect.element(page.getByRole('heading', { name: 'View user' })).toBeVisible()
+    expect(page.getByRole('button', { name: 'Save' }).elements()).toHaveLength(0)
+  })
+
+  it('hides Deactivate on the own row and disables Role and Active in its form', async () => {
+    usersApi.updateUser.mockResolvedValue(ownRow)
+    await renderUsers([ownRow])
+
+    await expect.element(button(ownRow.name, RESET_LABEL)).not.toHaveAttribute('aria-disabled', 'true')
+    expect(userRow(ownRow.name).getByRole('button', { name: 'Deactivate' }).elements()).toHaveLength(0)
+
+    await userRow(ownRow.name).click()
+
+    const dialog = page.getByRole('dialog')
+    await expect.element(dialog.getByRole('heading', { name: 'Edit user' })).toBeVisible()
+    await expect.element(dialog.getByLabelText('Role')).toBeDisabled()
+    await expect.element(dialog.getByLabelText('Role')).toHaveAccessibleDescription(SELF_HELP)
+    await expect.element(dialog.getByRole('checkbox', { name: 'Active' })).toBeDisabled()
+    await expect.element(dialog.getByRole('checkbox', { name: 'Active' })).toHaveAccessibleDescription(SELF_HELP)
+    await expect.element(dialog.getByLabelText('Display name')).toBeEnabled()
+    await dialog.getByLabelText('Display name').fill('Olga Renamed')
+    await dialog.getByRole('button', { name: 'Save' }).click()
+
+    await expect.poll(() => usersApi.updateUser.mock.calls.length).toBe(1)
+    expect(usersApi.updateUser).toHaveBeenCalledWith(ownRow.id, {
+      email: ownRow.email,
+      name: 'Olga Renamed',
+      role: 'admin',
+      is_active: true,
+    })
+  })
+
+  it('leaves tutor rows fully actionable for an admin viewer', async () => {
+    await renderUsers([tutorRow])
+
+    for (const label of [RESET_LABEL, 'Deactivate']) {
+      await expect.element(button(tutorRow.name, label)).not.toHaveAttribute('aria-disabled', 'true')
+    }
+    await userRow(tutorRow.name).click()
+    await expect.element(page.getByRole('heading', { name: 'Edit user' })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: 'Save' })).toBeVisible()
+  })
+
+  it('leaves every row fully actionable for a developer viewer', async () => {
+    setViewer('developer', 'viewer-developer')
+    await renderUsers([peerAdmin, developerRow])
+
+    for (const label of [RESET_LABEL, 'Deactivate']) {
+      await expect.element(button(peerAdmin.name, label)).not.toHaveAttribute('aria-disabled', 'true')
+    }
+    await expect.element(button(developerRow.name, 'Send invite')).not.toHaveAttribute('aria-disabled', 'true')
+    await userRow(developerRow.name).click()
+    await expect.element(page.getByRole('heading', { name: 'Edit user' })).toBeVisible()
+    await expect.element(page.getByLabelText('Role')).toBeEnabled()
+  })
+
+  it('shows the reason line under the actions at 375px with no horizontal scroll', async () => {
+    await page.viewport(MOBILE_WIDTH, DESKTOP_HEIGHT)
+    await renderUsers([peerAdmin])
+
+    await expect.element(page.getByRole('button', { name: 'Deactivate' }).first()).toBeVisible()
+    await settleLayout()
+    // DataTable renders the card and table layouts side by side and hides one with CSS.
+    const visibleReasons = [...document.querySelectorAll(`#user-${peerAdmin.id}-locked-reason`)].filter(
+      (line) => line.getBoundingClientRect().width > 0,
+    )
+    expect(visibleReasons).toHaveLength(1)
+    expect(visibleReasons[0].textContent).toBe(PEER_REASON)
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(document.documentElement.clientWidth)
   })
 })

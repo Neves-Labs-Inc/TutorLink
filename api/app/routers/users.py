@@ -1,5 +1,7 @@
 """`/api/users` — admin only (a Manager is 403), and the one router that guards the developer
-boundary.
+boundary. Another admin's account sits behind the same boundary: an admin may invite a peer
+admin but not edit, deactivate or reset them, and may not change their own role or deactivate
+themselves (#173, see `user_service`).
 
 A thin HTTP shell over `user_service`, matching `auth.py`: the service raises domain
 exceptions, this maps them to status codes and owns the commit.
@@ -30,8 +32,10 @@ from app.services.tutor_service import TutorPhoneNumberTaken, TutorUniqueViolati
 from app.services.user_service import (
     EmailTaken,
     InvalidUserShape,
+    PeerAdminNotPermitted,
     ProfileAlreadyLinked,
     RoleNotPermitted,
+    SelfChangeNotPermitted,
     TutorProfileInput,
     UserHasNoPassword,
     UserHasPassword,
@@ -49,6 +53,8 @@ from app.services.user_service import (
 EMAIL_TAKEN_ERROR = "A user with that email already exists"
 USER_NOT_FOUND_ERROR = "User not found"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
+PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
+SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role or deactivate your own account"
 INVALID_SHAPE_ERROR = (
     "A tutor or manager account requires a tutor profile, any other role must have none"
 )
@@ -145,6 +151,7 @@ def update(
         updated = update_user(
             db,
             actor_role=user.role,
+            actor_id=user.id,
             user_id=user_id,
             email=payload.email,
             role=payload.role,
@@ -156,6 +163,10 @@ def update(
         raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
     except RoleNotPermitted as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
+    except PeerAdminNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
+    except SelfChangeNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
     except EmailTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN_ERROR) from exc
     except InvalidUserShape as exc:
@@ -172,11 +183,15 @@ def update(
 @router.delete("/{user_id}", response_model=UserRead)
 def soft_delete(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
     try:
-        deactivated = deactivate_user(db, actor_role=user.role, user_id=user_id)
+        deactivated = deactivate_user(db, actor_role=user.role, actor_id=user.id, user_id=user_id)
     except UserNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
     except RoleNotPermitted as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
+    except PeerAdminNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
+    except SelfChangeNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
 
     db.commit()
 
@@ -192,7 +207,12 @@ def invite(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
 
     try:
         invited = invite_user(
-            db, actor_role=user.role, actor_name=actor.name, user_id=user_id, now=now
+            db,
+            actor_role=user.role,
+            actor_id=user.id,
+            actor_name=actor.name,
+            user_id=user_id,
+            now=now,
         )
     except UserNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
@@ -217,11 +237,15 @@ def password_reset(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> N
     """Email the user a reset link, for one who is locked out. Their sessions stay until the
     link is used. Nothing is committed unless the email went out."""
     try:
-        send_password_reset(db, actor_role=user.role, user_id=user_id, now=datetime.now(UTC))
+        send_password_reset(
+            db, actor_role=user.role, actor_id=user.id, user_id=user_id, now=datetime.now(UTC)
+        )
     except UserNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
     except RoleNotPermitted as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
+    except PeerAdminNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
     except UserHasNoPassword as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, USER_HAS_NO_PASSWORD_ERROR) from exc
     except UserInactive as exc:

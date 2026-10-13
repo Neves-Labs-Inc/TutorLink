@@ -1016,8 +1016,9 @@ def test_no_token_is_401_not_403(api: TestClient, db: Session) -> None:
         (UserRole.MANAGER, UserRole.ADMIN, 403),
         (UserRole.MANAGER, UserRole.DEVELOPER, 403),
         (UserRole.ADMIN, UserRole.MANAGER, 200),
-        (UserRole.ADMIN, UserRole.ADMIN, 200),
+        (UserRole.ADMIN, UserRole.ADMIN, 403),
         (UserRole.ADMIN, UserRole.DEVELOPER, 403),
+        (UserRole.DEVELOPER, UserRole.ADMIN, 200),
         (UserRole.DEVELOPER, UserRole.DEVELOPER, 200),
     ],
     ids=lambda value: value.value if isinstance(value, UserRole) else str(value),
@@ -1025,7 +1026,8 @@ def test_no_token_is_401_not_403(api: TestClient, db: Session) -> None:
 def test_writing_a_profile_is_writing_its_account(
     api: TestClient, db: Session, actor_role: UserRole, target_role: UserRole, expected: int
 ) -> None:
-    """A Manager may write Tutors only; an Admin anyone but a Developer; a Developer anyone.
+    """A Manager may write Tutors only; an Admin anyone but a Developer or a peer Admin (#173);
+    a Developer anyone.
     The same boundary `/api/users` keeps, seen from the Tutors page — otherwise a Manager could
     rewrite or disable the login of a peer, an Admin or a Developer who kept a profile."""
     actor = _make_user(db, role=actor_role)
@@ -1209,3 +1211,105 @@ def test_an_admin_echoing_the_email_leaves_the_tutors_links_alone(
 
     assert response.status_code == 200
     assert len(_live_links(db, profile.user)) == 1
+
+
+# --- #173: a peer admin's profile is developer-only, and an admin can't deactivate themselves --
+
+PEER_ADMIN_FORBIDDEN = "Only a developer may modify another admin's account"
+SELF_CHANGE_FORBIDDEN = "You cannot change your own role or deactivate your own account"
+
+
+def _make_admin_with_profile(db: Session) -> User:
+    """An admin who kept their profile after promotion (#108), so `/api/tutors` reaches them."""
+    return _make_user(db, role=UserRole.ADMIN, tutor_id=_make_tutor(db).id)
+
+
+def _snapshot(db: Session, user: User) -> tuple[object, ...]:
+    db.refresh(user)
+    assert user.profile is not None
+    db.refresh(user.profile)
+    return (user.email, user.name, user.is_active, user.profile.phone_number, user.profile.bio)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"email": "taken-over@example.com"},
+        {"name": "Someone Else"},
+        {"is_active": False},
+        {"bio": "Rewritten"},
+    ],
+    ids=["email", "name", "is_active", "bio"],
+)
+def test_an_admin_cannot_patch_a_peer_admins_profile(
+    api: TestClient, db: Session, change: dict[str, object]
+) -> None:
+    """The #173 takeover through the Tutors page: an email change here, then the public
+    forgot-password flow, would hand the peer's account to the actor."""
+    admin = _make_user(db)
+    peer = _make_admin_with_profile(db)
+    _invite(db, peer)
+    before = _snapshot(db, peer)
+
+    response = api.patch(f"/api/tutors/{peer.profile_id}", headers=_auth(admin), json=change)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+    assert _snapshot(db, peer) == before
+    assert len(_live_links(db, peer)) == 1
+
+
+def test_an_admin_cannot_delete_a_peer_admins_profile(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    peer = _make_admin_with_profile(db)
+    before = _snapshot(db, peer)
+
+    response = api.delete(f"/api/tutors/{peer.profile_id}", headers=_auth(admin))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
+    assert _snapshot(db, peer) == before
+
+
+def test_a_developer_may_edit_and_delete_an_admins_profile(api: TestClient, db: Session) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    admin = _make_admin_with_profile(db)
+    path = f"/api/tutors/{admin.profile_id}"
+
+    patched = api.patch(path, headers=_auth(developer), json={"email": "moved@example.com"})
+    deleted = api.delete(path, headers=_auth(developer))
+
+    assert (patched.status_code, patched.json()["email"]) == (200, "moved@example.com")
+    assert deleted.status_code == 200
+    db.refresh(admin)
+    assert admin.is_active is False
+
+
+def test_an_admin_may_edit_their_own_profile(api: TestClient, db: Session) -> None:
+    admin = _make_admin_with_profile(db)
+
+    response = api.patch(
+        f"/api/tutors/{admin.profile_id}",
+        headers=_auth(admin),
+        json={"email": "me-now@example.com", "name": "New Me", "bio": "Hi", "is_active": True},
+    )
+
+    assert response.status_code == 200
+    db.refresh(admin)
+    assert (admin.email, admin.name, admin.is_active) == ("me-now@example.com", "New Me", True)
+
+
+def test_an_admin_cannot_deactivate_themselves_through_their_profile(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_admin_with_profile(db)
+    path = f"/api/tutors/{admin.profile_id}"
+    before = _snapshot(db, admin)
+
+    patched = api.patch(path, headers=_auth(admin), json={"name": "Sneaky", "is_active": False})
+    deleted = api.delete(path, headers=_auth(admin))
+
+    assert (patched.status_code, deleted.status_code) == (403, 403)
+    assert patched.json()["detail"] == SELF_CHANGE_FORBIDDEN
+    assert deleted.json()["detail"] == SELF_CHANGE_FORBIDDEN
+    assert _snapshot(db, admin) == before

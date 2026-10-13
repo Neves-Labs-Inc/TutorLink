@@ -32,6 +32,7 @@ import {
   requiresProfile,
   roleLabel,
   roleOptions,
+  rowPermissions,
   updateUserPayload,
   userFormErrors,
   type UserDraft,
@@ -58,9 +59,24 @@ const RESET_FALLBACK_ERROR = 'Could not send the reset email. Try again.'
 // Every slide-over control is a 44px touch target on phones and the compact h-8 from md up.
 const CONTROL_HEIGHT_CLASSES = 'h-11 md:h-8'
 const TAP_ROW_CLASSES = 'min-h-11 md:min-h-0'
+const SELF_HELP_TEXT = "You can't change your own role or deactivate your own account."
+// A permission-locked button stays hoverable (for its title) and focusable, but looks and acts inert.
+const LOCKED_BUTTON_CLASSES =
+  'aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-background aria-disabled:active:translate-y-0 dark:aria-disabled:hover:bg-transparent'
 
 const inviteRowKey = (user: User): string =>
   `${user.is_active}|${user.has_password}|${user.invite_expires_at}`
+
+const lockedReasonId = (user: User): string => `user-${user.id}-locked-reason`
+
+const lockedButtonProps = (user: User, isLocked: boolean, reason: string | null) =>
+  isLocked
+    ? {
+        'aria-disabled': true,
+        'aria-describedby': lockedReasonId(user),
+        title: reason ?? undefined,
+      }
+    : {}
 
 const omitKey = <T,>(record: Record<string, T>, key: string): Record<string, T> =>
   Object.fromEntries(Object.entries(record).filter(([entryKey]) => entryKey !== key))
@@ -73,6 +89,7 @@ export const Users = () => {
   // Same for a reset link: the same row fields decide whether its failure still applies.
   const resetRowKeys = useRef<Record<string, string>>({})
   const viewerRole = useAuthStore((state) => state.role) ?? ''
+  const viewerId = useAuthStore((state) => state.userId)
 
   const [page, setPage] = useState(1)
   const [showInactive, setShowInactive] = useState(false)
@@ -281,77 +298,116 @@ export const Users = () => {
       id: 'actions',
       header: 'Actions',
       align: 'end',
-      cell: (user) =>
-        user.is_active && (
-          <div>
-            <div className="flex flex-wrap items-center justify-end gap-2 lg:flex-nowrap">
-              {accessBadge(user) !== null && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-11 md:h-7"
-                  disabled={pendingInviteIds.has(user.id)}
-                  aria-busy={pendingInviteIds.has(user.id)}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    handleSendInvite(user)
-                  }}
+      cell: (user) => {
+        const permissions = rowPermissions(viewerRole, viewerId, user)
+        const showInvite = accessBadge(user) !== null
+        const showReset = user.has_password
+        // Your own row never offers Deactivate: the server refuses it, so it isn't worth a locked button.
+        const showDeactivate = !permissions.isSelf
+        const isInviteLocked = !permissions.canInvite
+        const isResetLocked = !permissions.canReset
+        const isDeactivateLocked = !permissions.canDeactivate
+        const hasLockedButton =
+          (showInvite && isInviteLocked) ||
+          (showReset && isResetLocked) ||
+          (showDeactivate && isDeactivateLocked)
+
+        return (
+          user.is_active && (
+            <div>
+              <div className="flex flex-wrap items-center justify-end gap-2 lg:flex-nowrap">
+                {showInvite && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn('h-11 md:h-7', isInviteLocked && LOCKED_BUTTON_CLASSES)}
+                    disabled={!isInviteLocked && pendingInviteIds.has(user.id)}
+                    aria-busy={pendingInviteIds.has(user.id)}
+                    {...lockedButtonProps(user, isInviteLocked, permissions.lockedReason)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (!isInviteLocked) handleSendInvite(user)
+                    }}
+                  >
+                    {pendingInviteIds.has(user.id)
+                      ? 'Sending…'
+                      : accessBadge(user) === 'invited'
+                        ? 'Resend'
+                        : 'Send invite'}
+                  </Button>
+                )}
+                {showReset && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    // The label may wrap between md and lg, where the table is too narrow for it
+                    // on one line.
+                    className={cn(
+                      'h-11 md:h-auto md:min-h-7 md:whitespace-normal md:py-1 lg:h-7 lg:whitespace-nowrap',
+                      isResetLocked
+                        ? LOCKED_BUTTON_CLASSES
+                        : 'aria-disabled:pointer-events-none aria-disabled:opacity-50',
+                    )}
+                    // aria-disabled (not disabled) while sending, so keyboard focus stays on the button.
+                    aria-disabled={pendingResetIds.has(user.id)}
+                    aria-busy={pendingResetIds.has(user.id)}
+                    {...lockedButtonProps(user, isResetLocked, permissions.lockedReason)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (!isResetLocked && !pendingResetIds.has(user.id)) handleSendReset(user)
+                    }}
+                  >
+                    {pendingResetIds.has(user.id) ? 'Sending…' : 'Send reset link'}
+                  </Button>
+                )}
+                {showDeactivate && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn('h-11 md:h-7', isDeactivateLocked && LOCKED_BUTTON_CLASSES)}
+                    {...lockedButtonProps(user, isDeactivateLocked, permissions.lockedReason)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (!isDeactivateLocked) setDeactivateTarget(user)
+                    }}
+                  >
+                    Deactivate
+                  </Button>
+                )}
+              </div>
+              {hasLockedButton && permissions.lockedReason !== null && (
+                // Visible on cards, where a title never shows on touch; screen-reader only in the table.
+                <p
+                  id={lockedReasonId(user)}
+                  className="ml-auto mt-1.5 max-w-[18rem] text-end text-xs text-muted-foreground md:sr-only"
                 >
-                  {pendingInviteIds.has(user.id)
-                    ? 'Sending…'
-                    : accessBadge(user) === 'invited'
-                      ? 'Resend'
-                      : 'Send invite'}
-                </Button>
+                  {permissions.lockedReason}
+                </p>
               )}
-              {user.has_password && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  // The label may wrap between md and lg, where the table is too narrow for it
-                  // on one line.
-                  className="h-11 md:h-auto md:min-h-7 md:whitespace-normal md:py-1 lg:h-7 lg:whitespace-nowrap aria-disabled:pointer-events-none aria-disabled:opacity-50"
-                  // aria-disabled (not disabled) while sending, so keyboard focus stays on the button.
-                  aria-disabled={pendingResetIds.has(user.id)}
-                  aria-busy={pendingResetIds.has(user.id)}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    if (!pendingResetIds.has(user.id)) handleSendReset(user)
-                  }}
-                >
-                  {pendingResetIds.has(user.id) ? 'Sending…' : 'Send reset link'}
-                </Button>
+              {inviteErrors[user.id]?.rowKey === inviteRowKey(user) && (
+                <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
+                  {inviteErrors[user.id].message}
+                </p>
               )}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-11 md:h-7"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  setDeactivateTarget(user)
-                }}
-              >
-                Deactivate
-              </Button>
+              {resetErrors[user.id]?.rowKey === inviteRowKey(user) && (
+                <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
+                  {resetErrors[user.id].message}
+                </p>
+              )}
             </div>
-            {inviteErrors[user.id]?.rowKey === inviteRowKey(user) && (
-              <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
-                {inviteErrors[user.id].message}
-              </p>
-            )}
-            {resetErrors[user.id]?.rowKey === inviteRowKey(user) && (
-              <p role="alert" className="ml-auto mt-1.5 max-w-[18rem] text-end text-sm font-medium text-destructive">
-                {resetErrors[user.id].message}
-              </p>
-            )}
-          </div>
-        ),
+          )
+        )
+      },
     },
   ]
 
+  const editPermissions =
+    editingUser === null ? null : rowPermissions(viewerRole, viewerId, editingUser)
+  const isReadOnly = formMode === 'edit' && editPermissions !== null && !editPermissions.canEdit
+  const isSelfEdit = formMode === 'edit' && editPermissions?.isSelf === true
   const mutation = formMode === 'edit' ? updateMutation : createMutation
   const saveErrorMessage = mutation.isError ? (errorDetail(mutation.error) ?? SAVE_FALLBACK_ERROR) : null
 
@@ -403,15 +459,18 @@ export const Users = () => {
         onOpenChange={(open) => {
           if (!open) closeForm()
         }}
-        title={formMode === 'edit' ? 'Edit user' : 'Add user'}
+        title={isReadOnly ? 'View user' : formMode === 'edit' ? 'Edit user' : 'Add user'}
+        description={isReadOnly ? (editPermissions?.lockedReason ?? undefined) : undefined}
         footer={
           <div className="flex justify-end gap-3">
             <Button type="button" variant="outline" onClick={closeForm}>
-              Cancel
+              {isReadOnly ? 'Close' : 'Cancel'}
             </Button>
-            <Button type="button" onClick={handleSubmit} disabled={mutation.isPending}>
-              {mutation.isPending ? 'Saving…' : 'Save'}
-            </Button>
+            {!isReadOnly && (
+              <Button type="button" onClick={handleSubmit} disabled={mutation.isPending}>
+                {mutation.isPending ? 'Saving…' : 'Save'}
+              </Button>
+            )}
           </div>
         }
       >
@@ -421,6 +480,8 @@ export const Users = () => {
           onChange={handleFormChange}
           onRoleChange={handleRoleChange}
           viewerRole={viewerRole}
+          readOnly={isReadOnly}
+          isSelf={isSelfEdit}
           editingRole={editingUser?.role ?? null}
           validationErrors={validationErrors}
           saveErrorMessage={saveErrorMessage}
@@ -463,6 +524,8 @@ type UserFormProps = {
   onChange: (form: FormState) => void
   onRoleChange: (role: string) => void
   viewerRole: string
+  readOnly: boolean
+  isSelf: boolean
   editingRole: string | null
   validationErrors: string[]
   saveErrorMessage: string | null
@@ -474,6 +537,8 @@ const UserForm = ({
   onChange,
   onRoleChange,
   viewerRole,
+  readOnly,
+  isSelf,
   editingRole,
   validationErrors,
   saveErrorMessage,
@@ -483,6 +548,7 @@ const UserForm = ({
     editingRole === null ? roleOptions(viewerRole) : editRoleOptions(viewerRole, editingRole)
   const nameError = displayNameError(form.displayName)
   const isDisplayNameInvalid = nameError !== null && validationErrors.includes(nameError)
+  const isRoleLocked = readOnly || isSelf
   const isPhoneInvalid = validationErrors.includes(PHONE_REQUIRED_ERROR)
   let content: ReactNode = null
 
@@ -508,6 +574,7 @@ const UserForm = ({
           autoComplete="off"
           className={CONTROL_HEIGHT_CLASSES}
           value={form.displayName}
+          disabled={readOnly}
           aria-invalid={isDisplayNameInvalid}
           aria-describedby="user-display-name-help"
           onChange={(event) => onChange({ ...form, displayName: event.target.value })}
@@ -524,6 +591,7 @@ const UserForm = ({
           className={CONTROL_HEIGHT_CLASSES}
           type="email"
           value={form.email}
+          disabled={readOnly}
           onChange={(event) => onChange({ ...form, email: event.target.value })}
         />
       </div>
@@ -534,6 +602,8 @@ const UserForm = ({
           id="user-role"
           className={CONTROL_HEIGHT_CLASSES}
           value={form.role}
+          disabled={isRoleLocked}
+          aria-describedby={isSelf && !readOnly ? 'user-self-help' : undefined}
           onChange={(event) => onRoleChange(event.target.value)}
         >
           {roleSelectOptions.map((option) => (
@@ -577,14 +647,28 @@ const UserForm = ({
       )}
 
       {mode === 'edit' && (
-        <label className={cn('flex items-center gap-2 text-sm text-foreground', TAP_ROW_CLASSES)}>
-          <input
-            type="checkbox"
-            checked={form.isActive}
-            onChange={(event) => onChange({ ...form, isActive: event.target.checked })}
-          />
-          Active
-        </label>
+        <>
+          <label
+            className={cn(
+              'flex items-center gap-2 text-sm text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50',
+              TAP_ROW_CLASSES,
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={form.isActive}
+              disabled={isRoleLocked}
+              aria-describedby={isSelf && !readOnly ? 'user-self-help' : undefined}
+              onChange={(event) => onChange({ ...form, isActive: event.target.checked })}
+            />
+            Active
+          </label>
+          {isSelf && !readOnly && (
+            <p id="user-self-help" className="text-xs text-muted-foreground">
+              {SELF_HELP_TEXT}
+            </p>
+          )}
+        </>
       )}
     </div>
   )

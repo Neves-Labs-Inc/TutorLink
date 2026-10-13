@@ -7,6 +7,20 @@ boundary.
 change anyone's role to `developer`, and may not write to an existing developer account at all
 (email, name, role, active flag, and later invites). A developer may do all of it.
 
+**Peer admins are developer-only too (#173).** An admin may not update, deactivate or send a
+reset link to another admin. Otherwise an admin could set a peer's email to an address they
+control, send a reset link there and take the account over. The check reads the target's
+*current* role, so demoting the peer to Tutor, editing them and promoting them back is refused at
+its first step. An Invite to a peer admin is allowed: it only works for an account that has never
+had a password, and goes to an address the inviter can no longer change, so it is no takeover;
+and it keeps "admins create admins" workable. Promoting a Tutor or Manager to Admin is still
+allowed, since that target is not an admin yet.
+
+**An admin may not change their own role or deactivate themselves.** Their own email and name are
+theirs to edit, and re-sending an unchanged role with `is_active=true` passes (the dashboard sends
+every field). With peer admins out of reach, an admin demoting or deactivating themselves could
+leave the office with no admin at all. Developers are exempt.
+
 **Nobody sets a password here.** Accounts are created with no password (`hashed_password` is
 NULL) and get one through an Invite: `invite_user` emails a single-use link, and a user shows
 as Invited while that link is live. The send happens before the caller commits, inside a
@@ -90,6 +104,14 @@ class EmailTaken(UserServiceError):
 
 class RoleNotPermitted(UserServiceError):
     """The actor may not create, become, or modify this role."""
+
+
+class PeerAdminNotPermitted(UserServiceError):
+    """An admin writing to another admin's account; only a developer may (#173)."""
+
+
+class SelfChangeNotPermitted(UserServiceError):
+    """An admin changing their own role or deactivating themselves (#173)."""
 
 
 class ProfileAlreadyLinked(UserServiceError):
@@ -212,6 +234,7 @@ def update_user(
     db: Session,
     *,
     actor_role: UserRole,
+    actor_id: uuid.UUID,
     user_id: uuid.UUID,
     email: str | None,
     role: UserRole | None,
@@ -226,12 +249,18 @@ def update_user(
     """
     user = _lock_user(db, user_id=user_id)
 
-    # Both directions. An admin may not promote anyone to developer (#13), and may not write to
-    # an existing developer at all.
-    if actor_role is not UserRole.DEVELOPER and (
-        role is UserRole.DEVELOPER or user.role is UserRole.DEVELOPER
-    ):
+    # An admin may not promote anyone to developer (#13); the target's side is checked below.
+    if role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
         raise RoleNotPermitted
+
+    _assert_may_write(actor_role=actor_role, actor_id=actor_id, target=user)
+
+    is_self_admin = actor_role is UserRole.ADMIN and user.id == actor_id
+    changes_own_role = role is not None and role is not user.role
+
+    if is_self_admin and (changes_own_role or is_active is False):
+        logger.warning("user_service.update_user: admin %s changing own role or active", actor_id)
+        raise SelfChangeNotPermitted
 
     # Validated before anything is written, so a refused name leaves the row untouched.
     name = normalize_name(name) if name is not None else None
@@ -265,13 +294,22 @@ def update_user(
     return user
 
 
-def deactivate_user(db: Session, *, actor_role: UserRole, user_id: uuid.UUID) -> User:
-    """Soft delete. Same boundary as `update_user`: an admin cannot deactivate a developer,
-    because locking the super-user out is the same breach as editing them."""
-    user = get_user(db, user_id=user_id)
+def deactivate_user(
+    db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, user_id: uuid.UUID
+) -> User:
+    """Soft delete. Same boundary as `update_user`: an admin cannot deactivate a developer or a
+    peer admin, because locking someone out is the same breach as editing them, and cannot
+    deactivate themselves.
 
-    if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
-        raise RoleNotPermitted
+    The row is locked like `update_user`'s, so a concurrent promotion cannot land between the
+    role check and the write."""
+    user = _lock_user(db, user_id=user_id)
+
+    _assert_may_write(actor_role=actor_role, actor_id=actor_id, target=user)
+
+    if actor_role is UserRole.ADMIN and user.id == actor_id:
+        logger.warning("user_service.deactivate_user: admin %s deactivating self", actor_id)
+        raise SelfChangeNotPermitted
 
     user.is_active = False
     db.flush()
@@ -280,7 +318,13 @@ def deactivate_user(db: Session, *, actor_role: UserRole, user_id: uuid.UUID) ->
 
 
 def invite_user(
-    db: Session, *, actor_role: UserRole, actor_name: str, user_id: uuid.UUID, now: datetime
+    db: Session,
+    *,
+    actor_role: UserRole,
+    actor_id: uuid.UUID,
+    actor_name: str,
+    user_id: uuid.UUID,
+    now: datetime,
 ) -> User:
     """Issue the user a single-use Invite link and email it, naming `actor_name` as the sender.
 
@@ -294,8 +338,8 @@ def invite_user(
     """
     user = _lock_user(db, user_id=user_id)
 
-    if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
-        raise RoleNotPermitted
+    # A peer admin may be invited: see the module docstring.
+    _assert_may_write(actor_role=actor_role, actor_id=actor_id, target=user, allows_peer_admin=True)
 
     if user.hashed_password is not None:
         raise UserHasPassword
@@ -324,7 +368,7 @@ def invite_user(
 
 
 def send_password_reset(
-    db: Session, *, actor_role: UserRole, user_id: uuid.UUID, now: datetime
+    db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, user_id: uuid.UUID, now: datetime
 ) -> User:
     """Issue the user a password reset link and email it, for an Admin helping them back in.
 
@@ -335,8 +379,7 @@ def send_password_reset(
     """
     user = _lock_user(db, user_id=user_id)
 
-    if user.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
-        raise RoleNotPermitted
+    _assert_may_write(actor_role=actor_role, actor_id=actor_id, target=user)
 
     if user.hashed_password is None:
         raise UserHasNoPassword
@@ -381,6 +424,23 @@ def _lock_user(db: Session, *, user_id: uuid.UUID) -> User:
         raise UserNotFound
 
     return user
+
+
+def _assert_may_write(
+    *, actor_role: UserRole, actor_id: uuid.UUID, target: User, allows_peer_admin: bool = False
+) -> None:
+    """The developer boundary, then the peer-admin rule, both on the target's current role.
+    `allows_peer_admin` is for the Invite only (see the module docstring)."""
+    if target.role is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
+        raise RoleNotPermitted
+
+    is_peer_admin = (
+        actor_role is UserRole.ADMIN and target.role is UserRole.ADMIN and target.id != actor_id
+    )
+
+    if is_peer_admin and not allows_peer_admin:
+        logger.warning("user_service: admin %s refused a write to admin %s", actor_id, target.id)
+        raise PeerAdminNotPermitted
 
 
 def _assert_create_shape(*, role: UserRole, has_profile_input: bool) -> None:

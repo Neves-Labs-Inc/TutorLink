@@ -78,7 +78,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("PATCH", "/api/exceptions/{exception_id}"): Access.STAFF,
     ("POST", "/api/subjects"): Access.STAFF,
     ("PATCH", "/api/subjects/{subject_id}"): Access.STAFF,
-    # Guardian, Home and Subject are Office; a type with a stricter rule checks it itself.
+    # Guardian, Home and Subject are Office; Staff is Admin-only, checked by its handler.
     ("POST", "/api/archive"): Access.STAFF,
     ("POST", "/api/restore"): Access.STAFF,
     ("GET", "/api/clients"): Access.STAFF,
@@ -102,7 +102,6 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("PATCH", "/api/homes/{home_id}"): Access.STAFF,
     ("POST", "/api/tutors"): Access.STAFF,
     ("PATCH", "/api/tutors/{tutor_id}"): Access.STAFF,
-    ("DELETE", "/api/tutors/{tutor_id}"): Access.STAFF,
     ("POST", "/api/tutors/{tutor_id}/subjects"): Access.STAFF,
     ("DELETE", "/api/tutors/{tutor_id}/subjects/{subject_id}"): Access.STAFF,
     ("POST", "/api/tutors/{tutor_id}/availability"): Access.STAFF,
@@ -133,7 +132,6 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("GET", "/api/users/{user_id}"): Access.ADMIN,
     ("POST", "/api/users"): Access.ADMIN,
     ("PATCH", "/api/users/{user_id}"): Access.ADMIN,
-    ("DELETE", "/api/users/{user_id}"): Access.ADMIN,
     ("POST", "/api/users/{user_id}/invite"): Access.ADMIN,
     ("POST", "/api/users/{user_id}/password-reset"): Access.ADMIN,
     ("GET", "/api/settings"): Access.ADMIN,

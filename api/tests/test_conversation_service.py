@@ -701,14 +701,14 @@ def test_a_guardians_turn_waits_behind_an_approval_and_neither_deadlocks(
     approval_locked = threading.Event()
     errors: list[Exception] = []
     seen_active: list[bool] = []
-    update_child = child_service.update_child
+    set_child_archived = child_service.set_child_archived
 
-    def update_child_after_a_pause(db: Session, **fields: Any) -> Child:
+    def set_child_archived_after_a_pause(db: Session, **fields: Any) -> list[uuid.UUID]:
         approval_locked.set()
         time.sleep(0.4)
-        return update_child(db, **fields)
+        return set_child_archived(db, **fields)
 
-    monkeypatch.setattr(child_service, "update_child", update_child_after_a_pause)
+    monkeypatch.setattr(child_service, "set_child_archived", set_child_archived_after_a_pause)
 
     def approval() -> None:
         try:

@@ -5,9 +5,9 @@ boundary.
 
 **The developer boundary is three rules.** An admin may not create a `developer`, may not
 change anyone's role to `developer`, and may not write to an existing developer account at all
-(email, name, role, active flag, and later invites). A developer may do all of it.
+(email, name, role, archive, and later invites). A developer may do all of it.
 
-**Peer admins are developer-only too (#173).** An admin may not update, deactivate or send a
+**Peer admins are developer-only too (#173).** An admin may not update, archive or send a
 reset link to another admin. Otherwise an admin could set a peer's email to an address they
 control, send a reset link there and take the account over. The check reads the target's
 *current* role, so demoting the peer to Tutor, editing them and promoting them back is refused at
@@ -16,10 +16,11 @@ had a password, and goes to an address the inviter can no longer change, so it i
 and it keeps "admins create admins" workable. Promoting a Tutor or Manager to Admin is still
 allowed, since that target is not an admin yet.
 
-**An admin may not change their own role or deactivate themselves.** Their own email and name are
-theirs to edit, and re-sending an unchanged role while staying active passes (the dashboard sends
-every field). With peer admins out of reach, an admin demoting or deactivating themselves could
-leave the office with no admin at all. Developers are exempt.
+**An admin may not change their own role.** Their own email and name are theirs to edit, and
+re-sending an unchanged role passes (the dashboard sends every field). With peer admins out of
+reach, an admin demoting themselves could leave the office with no admin at all. Developers are
+exempt. Archiving a Staff member (yourself included) is `archive_service`'s, which takes the same
+boundary through `lock_writable_user`.
 
 **Nobody sets a password here.** Accounts are created with no password (`hashed_password` is
 NULL) and get one through an Invite: `invite_user` emails a single-use link, and a user shows
@@ -28,7 +29,7 @@ savepoint with the link row, so a refused send leaves no link behind (answers 04
 only ever shows when a mail went out. Changing a user's email revokes every live link they
 hold, since each was sent to the old address.
 Managers are ordinary accounts on this boundary: an admin or developer creates, edits, promotes,
-demotes and deactivates them (#108). A Manager never reaches this module, since `/api/users` is
+demotes and archives them (#108). A Manager never reaches this module, since `/api/users` is
 admin-only.
 
 **Every account has a Display name**, given on create and never derived. It is the one name
@@ -112,7 +113,7 @@ class PeerAdminNotPermitted(UserServiceError):
 
 
 class SelfChangeNotPermitted(UserServiceError):
-    """An admin changing their own role or deactivating themselves (#173)."""
+    """An admin changing their own role (#173)."""
 
 
 class ProfileAlreadyLinked(UserServiceError):
@@ -128,7 +129,7 @@ class UserHasPassword(UserServiceError):
 
 
 class UserInactive(UserServiceError):
-    """An Invite or reset link for a deactivated user (answers 04 #3)."""
+    """An Invite or reset link for an archived user (answers 04 #3)."""
 
 
 class UserHasNoPassword(UserServiceError):
@@ -254,7 +255,6 @@ def update_user(
     user_id: uuid.UUID,
     email: str | None,
     role: UserRole | None,
-    is_archived: bool | None,
     name: str | None,
     now: datetime,
 ) -> User:
@@ -274,8 +274,8 @@ def update_user(
     is_self_admin = actor_role is UserRole.ADMIN and user.id == actor_id
     changes_own_role = role is not None and role is not user.role
 
-    if is_self_admin and (changes_own_role or is_archived is True):
-        logger.warning("user_service.update_user: admin %s changing own role or active", actor_id)
+    if is_self_admin and changes_own_role:
+        logger.warning("user_service.update_user: admin %s changing own role", actor_id)
         raise SelfChangeNotPermitted
 
     # Validated before anything is written, so a refused name leaves the row untouched.
@@ -302,33 +302,24 @@ def update_user(
         _assert_role_fits_profile(role=role, has_profile=user.profile is not None)
         user.role = role
 
-    if is_archived is not None:
-        user.is_archived = is_archived
-
     db.flush()
 
     return user
 
 
-def deactivate_user(
+def lock_writable_user(
     db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, user_id: uuid.UUID
 ) -> User:
-    """Soft delete. Same boundary as `update_user`: an admin cannot deactivate a developer or a
-    peer admin, because locking someone out is the same breach as editing them, and cannot
-    deactivate themselves.
+    """The user, locked for the transaction, once the actor is known to be allowed to write them:
+    the developer boundary and the peer-admin rule (#173), read from the target's current role.
 
-    The row is locked like `update_user`'s, so a concurrent promotion cannot land between the
-    role check and the write."""
+    For a caller outside this module that changes the account (`archive_service`'s Staff
+    archive). Locked like `update_user`, so a concurrent promotion cannot land between the role
+    check and the write. Raises `UserNotFound`, `RoleNotPermitted` or `PeerAdminNotPermitted`.
+    """
     user = _lock_user(db, user_id=user_id)
 
     _assert_may_write(actor_role=actor_role, actor_id=actor_id, target=user)
-
-    if actor_role is UserRole.ADMIN and user.id == actor_id:
-        logger.warning("user_service.deactivate_user: admin %s deactivating self", actor_id)
-        raise SelfChangeNotPermitted
-
-    user.is_archived = True
-    db.flush()
 
     return user
 

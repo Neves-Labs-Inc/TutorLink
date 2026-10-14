@@ -70,8 +70,6 @@ class ChildUpdate(BaseModel):
     grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)
     school_name: str | None = None
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
-    is_active: bool | None = None
-    expected_cancellations: int | None = Field(default=None, ge=0)
 
 
 class StaffRef(BaseModel):

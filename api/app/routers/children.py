@@ -8,9 +8,8 @@ Children are reached through the client surface, which the RBAC table
 Nothing here queries a tutor-owned table and no route takes `TutorScope`. These are the two
 write routes; the reads of `/api/children` live in `children_read.py`.
 
-`PATCH` with `is_active: false` cancels the child's upcoming sessions in the same transaction as
-the deactivation, which is why the one `db.commit()` below must stay the only one: a refusal or a
-failure part-way through the cancellations leaves nothing written (P7C-O).
+Archiving a child, which cancels its upcoming sessions, is `POST /api/archive`, not a route
+here (see `archive_service`).
 """
 
 import uuid
@@ -22,7 +21,6 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.child import Child
-from app.schemas.archived import to_archived
 from app.schemas.child import ChildCreate, ChildRead, ChildUpdate
 from app.services.child_service import (
     DATE_OF_BIRTH_EARLIEST,
@@ -30,7 +28,6 @@ from app.services.child_service import (
     HomeRemovalHasUpcomingBookings,
     InvalidChildLinks,
     InvalidDateOfBirth,
-    UpcomingSessionsChanged,
     create_child,
     update_child,
 )
@@ -43,7 +40,6 @@ INVALID_LINKS_ERROR = (
 INVALID_DATE_OF_BIRTH_ERROR = (
     f"date_of_birth must be a real date between {DATE_OF_BIRTH_EARLIEST.isoformat()} and today"
 )
-UPCOMING_SESSIONS_CHANGED_ERROR = "Upcoming sessions changed; review them and confirm again"
 HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR = (
     "Child has upcoming bookings at a home being removed; cancel or move them first"
 )
@@ -91,8 +87,6 @@ def update(
             grade_level=payload.grade_level,
             school_name=payload.school_name,
             notes=payload.notes,
-            is_archived=to_archived(payload.is_active),
-            expected_cancellations=payload.expected_cancellations,
         )
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
@@ -104,8 +98,6 @@ def update(
         raise HTTPException(
             status.HTTP_409_CONFLICT, HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR
         ) from exc
-    except UpcomingSessionsChanged as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, UPCOMING_SESSIONS_CHANGED_ERROR) from exc
 
     db.commit()
 

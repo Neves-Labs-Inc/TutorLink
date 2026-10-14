@@ -814,15 +814,15 @@ def test_an_archived_tutor_as_staff_is_422_and_writes_nothing(
 def test_a_reactivated_child_can_be_booked_again(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """Reactivation goes through `PATCH /api/children/{id}`, the path an admin actually takes
+    """Restoring goes through `POST /api/restore`, the path an admin actually takes
     (P7C-P), rather than flipping the column behind the service's back."""
     family.child.is_archived = True
     db.flush()
     user = _make_user(db)
     refused = _post(api, user, family)
 
-    reactivated = api.patch(
-        f"/api/children/{family.child.id}", json={"is_active": True}, headers=_auth(user)
+    reactivated = api.post(
+        "/api/restore", json={"type": "child", "id": str(family.child.id)}, headers=_auth(user)
     )
     accepted = _post(api, user, family)
 

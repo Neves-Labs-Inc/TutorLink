@@ -265,18 +265,6 @@ def test_a_password_in_a_patch_is_ignored_and_a_developer_is_still_refused(
     assert not verify_password("hijacked-pw-123", developer.hashed_password)
 
 
-def test_an_admin_cannot_deactivate_a_developer(api: TestClient, db: Session) -> None:
-    """The same breach in the other direction: locking the super-user out."""
-    admin = _make_user(db)
-    developer = _make_user(db, role=UserRole.DEVELOPER)
-
-    response = api.delete(f"/api/users/{developer.id}", headers=_auth(admin))
-
-    assert response.status_code == 403
-    db.refresh(developer)
-    assert developer.is_archived is False
-
-
 def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
     developer = _make_user(db, role=UserRole.DEVELOPER)
     other = _make_user(db, role=UserRole.DEVELOPER)
@@ -401,15 +389,32 @@ def test_unknown_id_is_404(api: TestClient, db: Session) -> None:
     assert response.status_code == 404
 
 
-def test_delete_is_a_soft_delete(api: TestClient, db: Session) -> None:
+def test_the_removed_delete_route_is_405(api: TestClient, db: Session) -> None:
+    """Archiving a Staff member is `POST /api/archive` now; the soft delete is gone."""
     admin = _make_user(db)
     victim = _make_tutor_user(db)
 
     response = api.delete(f"/api/users/{victim.id}", headers=_auth(admin))
 
+    assert response.status_code == 405
+    db.refresh(victim)
+    assert victim.is_archived is False
+
+
+@pytest.mark.parametrize("is_archived", [False, True])
+def test_is_active_on_patch_has_no_effect(api: TestClient, db: Session, is_archived: bool) -> None:
+    admin = _make_user(db)
+    target = _make_tutor_user(db, is_archived=is_archived)
+
+    response = api.patch(
+        f"/api/users/{target.id}",
+        headers=_auth(admin),
+        json={"name": "Still Here", "is_active": is_archived},
+    )
+
     assert response.status_code == 200
-    assert response.json()["archived"] is True
-    assert db.get(User, victim.id) is not None
+    assert response.json()["archived"] is is_archived
+    assert response.json()["name"] == "Still Here"
 
 
 def test_password_never_comes_back(api: TestClient, db: Session) -> None:
@@ -882,7 +887,7 @@ def test_renaming_the_tutor_renames_the_account_and_back(api: TestClient, db: Se
 def test_admin_and_developer_run_a_managers_whole_lifecycle(
     api: TestClient, db: Session, actor_role: UserRole
 ) -> None:
-    """Create, edit, promote to admin, demote back, deactivate (#108). Once promoted the
+    """Create, edit, promote to admin, demote back, archive (#108). Once promoted the
     manager is an admin, so a developer demotes them whoever the actor is (#173)."""
     actor = _make_user(db, role=actor_role)
     developer = _make_user(db, role=UserRole.DEVELOPER)
@@ -895,13 +900,13 @@ def test_admin_and_developer_run_a_managers_whole_lifecycle(
     edited = api.patch(path, headers=_auth(actor), json={"name": "Lead"})
     promoted = api.patch(path, headers=_auth(actor), json={"role": "admin"})
     demoted = api.patch(path, headers=_auth(developer), json={"role": "manager"})
-    deactivated = api.delete(path, headers=_auth(actor))
+    archived = _archive_staff(api, manager_id, actor=actor)
 
     assert (created.status_code, created.json()["role"]) == (201, "manager")
     assert (edited.status_code, edited.json()["name"]) == (200, "Lead")
     assert (promoted.status_code, promoted.json()["role"]) == (200, "admin")
     assert (demoted.status_code, demoted.json()["role"]) == (200, "manager")
-    assert (deactivated.status_code, deactivated.json()["archived"]) == (200, True)
+    assert (archived.status_code, archived.json()["archived"]) == (200, True)
 
 
 def test_a_manager_is_created_with_a_profile_and_listed_by_tutors(
@@ -1000,7 +1005,6 @@ def test_a_user_without_a_profile_may_not_become_a_tutor_or_a_manager(
         ("GET", "/api/users/{id}", None),
         ("POST", "/api/users", "create"),
         ("PATCH", "/api/users/{id}", {"name": "Hijack"}),
-        ("DELETE", "/api/users/{id}", None),
         ("GET", "/api/settings", None),
         ("PATCH", "/api/settings", {"updates": [{"key": "reminder_hour", "value": "5"}]}),
     ],
@@ -1128,7 +1132,7 @@ def test_a_user_with_a_password_cannot_be_invited(
     assert _links(db, target) == []
 
 
-def test_a_deactivated_user_cannot_be_invited(
+def test_an_archived_user_cannot_be_invited(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
@@ -1137,7 +1141,7 @@ def test_a_deactivated_user_cannot_be_invited(
     response = api.post(f"/api/users/{dormant.id}/invite", headers=_auth(admin))
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "Deactivated users cannot be invited"
+    assert response.json()["detail"] == "Archived users cannot be invited"
     assert fake_mail.sent == []
     assert _links(db, dormant) == []
 
@@ -1357,7 +1361,7 @@ def test_only_a_developer_may_send_a_developer_a_reset_link(
     assert len(fake_mail.sent) == 1
 
 
-def test_a_deactivated_user_cannot_be_sent_a_reset_link(
+def test_an_archived_user_cannot_be_sent_a_reset_link(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
@@ -1366,7 +1370,7 @@ def test_a_deactivated_user_cannot_be_sent_a_reset_link(
     response = _send_reset(api, dormant, actor=admin)
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "Deactivated users cannot be sent a reset link"
+    assert response.json()["detail"] == "Archived users cannot be sent a reset link"
     assert fake_mail.sent == []
     assert _links(db, dormant) == []
 
@@ -1443,7 +1447,7 @@ def test_each_sent_reset_link_is_logged_by_user_id_without_the_address(
 # --- #173: peer admins are developer-only, and an admin can't demote or deactivate themselves --
 
 PEER_ADMIN_FORBIDDEN = "Only a developer may modify another admin's account"
-SELF_CHANGE_FORBIDDEN = "You cannot change your own role or deactivate your own account"
+SELF_CHANGE_FORBIDDEN = "You cannot change your own role"
 
 
 def _snapshot(db: Session, user: User) -> tuple[object, ...]:
@@ -1512,22 +1516,6 @@ def test_demoting_a_peer_admin_is_refused_at_the_first_step(api: TestClient, db:
     assert peer.role is UserRole.ADMIN
 
 
-def test_an_admin_cannot_deactivate_a_peer_admin(
-    api: TestClient, db: Session, fake_mail: FakeMail
-) -> None:
-    admin = _make_user(db)
-    peer = _peer_with_a_live_reset_link(api, db)
-    fake_mail.sent.clear()
-    before = _snapshot(db, peer)
-
-    response = api.delete(f"/api/users/{peer.id}", headers=_auth(admin))
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
-    assert _snapshot(db, peer) == before
-    assert fake_mail.sent == []
-
-
 def test_an_admin_cannot_send_a_peer_admin_a_reset_link(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
@@ -1579,23 +1567,19 @@ def test_a_developer_may_do_everything_to_an_admin(
     edited = _make_user(db)
     invitee = _make_invitee(db, role=UserRole.ADMIN)
     reset_target = _make_user(db)
-    deactivated = _make_user(db)
 
     patched = api.patch(
         f"/api/users/{edited.id}",
         headers=headers,
-        json={"email": "moved@example.com", "name": "Moved Admin", "is_active": True},
+        json={"email": "moved@example.com", "name": "Moved Admin"},
     )
     invited = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
     reset = _send_reset(api, reset_target, actor=developer)
-    deleted = api.delete(f"/api/users/{deactivated.id}", headers=headers)
 
     assert patched.status_code == 200
     assert patched.json()["email"] == "moved@example.com"
     assert invited.status_code == 200
     assert reset.status_code == 204
-    assert deleted.status_code == 200
-    assert deleted.json()["archived"] is True
     assert [email.to for email in fake_mail.sent] == [invitee.email, reset_target.email]
 
 
@@ -1616,13 +1600,13 @@ def test_an_admin_still_runs_a_tutor_or_manager_account(
         f"/api/users/{target.id}", headers=headers, json={"name": "Renamed", "role": "admin"}
     )
     invited = api.post(f"/api/users/{invitee.id}/invite", headers=headers)
-    deleted = api.delete(f"/api/users/{invitee.id}", headers=headers)
+    archived = _archive_staff(api, invitee.id, actor=admin)
 
     assert patched.status_code == 200
     assert patched.json()["role"] == "admin"
     assert reset.status_code == 204
     assert invited.status_code == 200
-    assert deleted.status_code == 200
+    assert archived.status_code == 200
 
 
 def test_an_admin_may_still_create_an_admin(api: TestClient, db: Session) -> None:
@@ -1650,13 +1634,13 @@ def test_an_admin_may_change_their_own_email_and_name(api: TestClient, db: Sessi
 
 
 def test_an_admin_may_resave_their_own_form_unchanged(api: TestClient, db: Session) -> None:
-    """The dashboard sends every field, so an unchanged role and `is_active=true` must pass."""
+    """The dashboard sends every field, so an unchanged role must pass."""
     admin = _make_user(db)
 
     response = api.patch(
         f"/api/users/{admin.id}",
         headers=_auth(admin),
-        json={"email": admin.email, "name": "Same Me", "role": "admin", "is_active": True},
+        json={"email": admin.email, "name": "Same Me", "role": "admin"},
     )
 
     assert response.status_code == 200
@@ -1665,27 +1649,16 @@ def test_an_admin_may_resave_their_own_form_unchanged(api: TestClient, db: Sessi
 
 @pytest.mark.parametrize(
     "change",
-    [{"role": "tutor"}, {"is_active": False}, {"name": "Sneaky", "is_active": False}],
-    ids=["role", "is_active", "name-and-is_active"],
+    [{"role": "tutor"}, {"name": "Sneaky", "role": "manager"}],
+    ids=["role", "name-and-role"],
 )
-def test_an_admin_cannot_change_their_own_role_or_deactivate_themselves(
+def test_an_admin_cannot_change_their_own_role(
     api: TestClient, db: Session, change: dict[str, object]
 ) -> None:
     admin = _make_user(db, role=UserRole.ADMIN, tutor_id=_make_tutor(db).id)
     before = _snapshot(db, admin)
 
     response = api.patch(f"/api/users/{admin.id}", headers=_auth(admin), json=change)
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == SELF_CHANGE_FORBIDDEN
-    assert _snapshot(db, admin) == before
-
-
-def test_an_admin_cannot_delete_themselves(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    before = _snapshot(db, admin)
-
-    response = api.delete(f"/api/users/{admin.id}", headers=_auth(admin))
 
     assert response.status_code == 403
     assert response.json()["detail"] == SELF_CHANGE_FORBIDDEN
@@ -1703,21 +1676,15 @@ def test_an_admin_may_still_send_themselves_a_reset_link(
     assert [email.to for email in fake_mail.sent] == [admin.email]
 
 
-def test_a_developer_may_still_change_their_own_role_and_deactivate_themselves(
-    api: TestClient, db: Session
-) -> None:
+def test_a_developer_may_still_change_their_own_role(api: TestClient, db: Session) -> None:
     developer = _make_user(db, role=UserRole.DEVELOPER)
-    other = _make_user(db, role=UserRole.DEVELOPER)
 
     demoted = api.patch(
         f"/api/users/{developer.id}", headers=_auth(developer), json={"role": "admin"}
     )
-    deleted = api.delete(f"/api/users/{other.id}", headers=_auth(other))
 
     assert demoted.status_code == 200
     assert demoted.json()["role"] == "admin"
-    assert deleted.status_code == 200
-    assert deleted.json()["archived"] is True
 
 
 # --- sign-in state ---------------------------------------------------------------------------
@@ -1778,7 +1745,7 @@ def test_an_archived_invited_user_reads_invited_and_is_filterable(
     invitee = _make_invitee(db, role=UserRole.TUTOR)
     headers = _auth(admin)
     api.post(f"/api/users/{invitee.id}/invite", headers=headers)
-    api.delete(f"/api/users/{invitee.id}", headers=headers)
+    _archive_staff(api, invitee.id, actor=admin)
 
     body = api.get("/api/users?archived=true&sign_in_state=invited", headers=headers).json()
 
@@ -1815,3 +1782,9 @@ def test_a_bogus_sign_in_state_filter_is_422(api: TestClient, db: Session) -> No
     response = api.get("/api/users?sign_in_state=sideways", headers=_auth(admin))
 
     assert response.status_code == 422
+
+
+def _archive_staff(api: TestClient, user_id: object, *, actor: User) -> Response:
+    return api.post(
+        "/api/archive", headers=_auth(actor), json={"type": "staff", "id": str(user_id)}
+    )

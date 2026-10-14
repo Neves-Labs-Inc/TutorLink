@@ -502,15 +502,18 @@ def test_a_retired_subject_is_never_offered(
     assert _windows(response) == []
 
 
-def test_a_deactivated_tutor_is_never_offered(
+def test_an_archived_tutor_is_never_offered(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
-    """Through the Tutors page: deactivating the profile deactivates the person (#130)."""
-    deleted = api.delete(f"/api/tutors/{world.tutor_id}", headers=_bearer(admin))
+    """Archiving the Staff member takes their profile off the offer surface (#130)."""
+    person = db.get_one(Tutor, world.tutor_id).user
+    archived = api.post(
+        "/api/archive", headers=_bearer(admin), json={"type": "staff", "id": str(person.id)}
+    )
 
     response = api.get(_url(world), headers=_bearer(admin))
 
-    assert deleted.status_code == 200
+    assert archived.status_code == 200
     assert _windows(response) == []
 
 

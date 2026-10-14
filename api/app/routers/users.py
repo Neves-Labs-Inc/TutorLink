@@ -1,7 +1,7 @@
 """`/api/users` — admin only (a Manager is 403), and the one router that guards the developer
 boundary. Another admin's account sits behind the same boundary: an admin may invite a peer
-admin but not edit, deactivate or reset them, and may not change their own role or deactivate
-themselves (#173, see `user_service`).
+admin but not edit or reset them, and may not change their own role (#173, see `user_service`).
+Archiving and restoring a Staff member is `POST /api/archive` with `type: "staff"`.
 
 A thin HTTP shell over `user_service`, matching `auth.py`: the service raises domain
 exceptions, this maps them to status codes and owns the commit.
@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.user import User
 from app.dependencies import AdminPrincipal
-from app.schemas.archived import to_archived
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.user import TutorProfileCreate, UserCreate, UserRead, UserUpdate
 from app.services.mail_service import MailServiceError
@@ -44,7 +43,6 @@ from app.services.user_service import (
     UserInactive,
     UserNotFound,
     create_user,
-    deactivate_user,
     get_user,
     invite_user,
     list_users,
@@ -57,7 +55,7 @@ USER_NOT_FOUND_ERROR = "User not found"
 INVALID_SIGN_IN_STATE_ERROR = "sign_in_state must be one of: not_invited, invited, active"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
 PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
-SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role or deactivate your own account"
+SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role"
 INVALID_SHAPE_ERROR = (
     "A tutor or manager account requires a tutor profile, any other role must have none"
 )
@@ -66,10 +64,10 @@ TUTOR_PHONE_NUMBER_TAKEN_ERROR = "A tutor with that phone number already exists"
 TUTOR_UNIQUE_VIOLATION_ERROR = "A tutor with that email or phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "tutor.phone_number is not a phone number that can be dialled"
 USER_HAS_PASSWORD_ERROR = "That user already has a password"
-USER_INACTIVE_ERROR = "Deactivated users cannot be invited"
+USER_INACTIVE_ERROR = "Archived users cannot be invited"
 INVITE_SEND_FAILED_ERROR = "Could not send the invite email. Try again."
 USER_HAS_NO_PASSWORD_ERROR = "That user has not set a password yet. Send an invite instead."
-USER_INACTIVE_RESET_ERROR = "Deactivated users cannot be sent a reset link"
+USER_INACTIVE_RESET_ERROR = "Archived users cannot be sent a reset link"
 RESET_SEND_FAILED_ERROR = "Could not send the reset email. Try again."
 
 logger = logging.getLogger(__name__)
@@ -176,7 +174,6 @@ def update(
             user_id=user_id,
             email=payload.email,
             role=payload.role,
-            is_archived=to_archived(payload.is_active),
             name=payload.name,
             now=datetime.now(UTC),
         )
@@ -199,24 +196,6 @@ def update(
     db.commit()
 
     return _read_with_invite(db, updated)
-
-
-@router.delete("/{user_id}", response_model=UserRead)
-def soft_delete(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
-    try:
-        deactivated = deactivate_user(db, actor_role=user.role, actor_id=user.id, user_id=user_id)
-    except UserNotFound as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
-    except RoleNotPermitted as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
-    except PeerAdminNotPermitted as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
-    except SelfChangeNotPermitted as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
-
-    db.commit()
-
-    return _read_with_invite(db, deactivated)
 
 
 @router.post("/{user_id}/invite", response_model=UserRead)

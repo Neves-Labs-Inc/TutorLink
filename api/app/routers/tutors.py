@@ -12,9 +12,9 @@ asking for an id that does not exist get 403 rather than a 404 that discloses no
 The write routes take `OfficePrincipal` and deliberately **not** `TutorScope`: they are
 Office-only, they have no filter to apply, and an unread scope would turn every one of them into
 a 500 the moment it touched `tutors`. A profile edit is an account edit (one record per person),
-so `PATCH` and `DELETE` also apply `tutor_service.assert_may_write_person`: a Manager may write
-Tutors only, a Developer's account is a Developer's to write, and so is another Admin's (#173);
-an Admin may not deactivate themselves here either. A login email is narrower
+so `PATCH` also applies `tutor_service.assert_may_write_person`: a Manager may write Tutors
+only, a Developer's account is a Developer's to write, and so is another Admin's (#173).
+Archiving a Staff member is `POST /api/archive` with `type: "staff"`. A login email is narrower
 still: only an Admin or Developer may change one, so a Manager's `PATCH` carrying `email` is 403.
 
 `POST /{tutor_id}/subjects` and its `DELETE` live in `routers/tutor_subjects.py`, which mounts
@@ -32,7 +32,6 @@ from app.db import get_db
 from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.models.tutor import Tutor
-from app.schemas.archived import to_archived
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.tutor import TutorCreate, TutorRead, TutorSubjectRead, TutorUpdate
 from app.services.name_rules import InvalidName
@@ -40,13 +39,11 @@ from app.services.phone_service import InvalidPhoneNumber
 from app.services.tutor_service import (
     TutorAccountForbidden,
     TutorPeerAdminForbidden,
-    TutorSelfChangeForbidden,
     TutorEmailTaken,
     TutorNotFound,
     TutorPhoneNumberTaken,
     TutorUniqueViolation,
     create_tutor,
-    deactivate_tutor,
     get_tutor,
     list_tutors,
     update_tutor,
@@ -60,7 +57,6 @@ INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dia
 ACCOUNT_FORBIDDEN_ERROR = "Not permitted to change that person's account"
 # The same words `/api/users` answers with for the same rules (#173).
 PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
-SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role or deactivate your own account"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -175,15 +171,12 @@ def update(
             email=payload.email,
             phone_number=payload.phone_number,
             bio=payload.bio,
-            is_archived=to_archived(payload.is_active),
             now=datetime.now(UTC),
         )
     except TutorNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
     except TutorPeerAdminForbidden as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
-    except TutorSelfChangeForbidden as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
     except TutorAccountForbidden as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, ACCOUNT_FORBIDDEN_ERROR) from exc
     except InvalidName as exc:
@@ -200,23 +193,3 @@ def update(
     db.commit()
 
     return _read(updated)
-
-
-@router.delete("/{tutor_id}", response_model=TutorRead)
-def soft_delete(tutor_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> TutorRead:
-    try:
-        deactivated = deactivate_tutor(
-            db, actor_role=user.role, actor_id=user.id, tutor_id=tutor_id
-        )
-    except TutorNotFound as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
-    except TutorPeerAdminForbidden as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
-    except TutorSelfChangeForbidden as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
-    except TutorAccountForbidden as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, ACCOUNT_FORBIDDEN_ERROR) from exc
-
-    db.commit()
-
-    return _read(deactivated)

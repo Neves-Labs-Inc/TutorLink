@@ -78,4 +78,3 @@ class UserUpdate(BaseModel):
     email: Email | None = None
     name: str | None = None
     role: UserRole | None = None
-    is_active: bool | None = None

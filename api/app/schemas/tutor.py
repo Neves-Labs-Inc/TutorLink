@@ -47,4 +47,3 @@ class TutorUpdate(BaseModel):
     email: Email | None = None
     phone_number: str | None = None
     bio: str | None = None
-    is_active: bool | None = None

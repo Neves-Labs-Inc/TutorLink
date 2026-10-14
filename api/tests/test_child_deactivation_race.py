@@ -54,12 +54,11 @@ from app.models.home import ChildHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
-from app.routers import children as children_router
 from app.routers.booking_writes import REFERENCE_NOT_FOUND_ERROR
-from app.routers.children import UPCOMING_SESSIONS_CHANGED_ERROR
 from app.security import create_access_token, hash_password
-from app.services import booking_status_service, booking_write_service
+from app.services import booking_status_service, booking_write_service, child_service
 from app.services.archive_service import (
+    UPCOMING_SESSIONS_CHANGED_ERROR,
     HOME_HAS_UPCOMING_BOOKINGS_ERROR,
     ArchiveResult,
     ArchiveService,
@@ -153,15 +152,15 @@ def test_a_booking_behind_an_open_deactivation_waits_then_is_refused(
     booked: list[Response] = []
     deactivated: list[Response] = []
     a_elapsed: list[float] = []
-    update_child = children_router.update_child
+    set_child_archived = child_service.set_child_archived
 
-    def update_then_hold(*args: Any, **kwargs: Any) -> Child:
-        child = update_child(*args, **kwargs)
+    def archive_then_hold(*args: Any, **kwargs: Any) -> list[uuid.UUID]:
+        cancelled = set_child_archived(*args, **kwargs)
         b_locked.set()
         time.sleep(HOLD_SECONDS)
-        return child
+        return cancelled
 
-    monkeypatch.setattr(children_router, "update_child", update_then_hold)
+    monkeypatch.setattr(child_service, "set_child_archived", archive_then_hold)
 
     def deactivate() -> None:
         deactivated.append(_deactivate(session_per_request_api, world, expected=1))
@@ -491,10 +490,10 @@ def _post_booking(
 
 
 def _deactivate(api: TestClient, world: World, *, expected: int) -> Response:
-    return api.patch(
-        f"/api/children/{world.child_id}",
+    return api.post(
+        "/api/archive",
         headers=_auth(world.admin),
-        json={"is_active": False, "expected_cancellations": expected},
+        json={"type": "child", "id": str(world.child_id), "expected_cancellations": expected},
     )
 
 

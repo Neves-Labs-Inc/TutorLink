@@ -12,9 +12,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import OfficePrincipal
+from app.dependencies import CurrentUser, OfficePrincipal
 from app.schemas.archive import ArchiveRead, ArchiveTarget
-from app.services.archive_service import ArchiveResult, ArchiveService
+from app.services.archive_service import Actor, ArchiveResult, ArchiveService
 
 DbSession = Annotated[Session, Depends(get_db)]
 TargetBody = Annotated[ArchiveTarget, Body()]
@@ -24,12 +24,16 @@ router = APIRouter(prefix="/api", tags=["archive"])
 
 @router.post("/archive", response_model=ArchiveRead)
 def archive(target: TargetBody, user: OfficePrincipal, db: DbSession) -> ArchiveRead | JSONResponse:
-    return _respond(db, target, ArchiveService(db).archive(target))
+    return _respond(db, target, ArchiveService(db).archive(_actor(user), target))
 
 
 @router.post("/restore", response_model=ArchiveRead)
 def restore(target: TargetBody, user: OfficePrincipal, db: DbSession) -> ArchiveRead | JSONResponse:
-    return _respond(db, target, ArchiveService(db).restore(target))
+    return _respond(db, target, ArchiveService(db).restore(_actor(user), target))
+
+
+def _actor(user: CurrentUser) -> Actor:
+    return Actor(id=user.id, role=user.role)
 
 
 def _respond(

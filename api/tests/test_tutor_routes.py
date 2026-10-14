@@ -386,10 +386,9 @@ def test_no_tutor_token_request_reaches_the_unapplied_scope_guard(
         api.get(f"/api/tutors/{other.id}", headers=headers).status_code,
         api.post("/api/tutors", headers=headers, json=_payload()).status_code,
         api.patch(f"/api/tutors/{own.id}", headers=headers, json={"bio": "self-serve"}).status_code,
-        api.delete(f"/api/tutors/{own.id}", headers=headers).status_code,
     ]
 
-    assert statuses == [200, 200, 200, 200, 200, 403, 403, 403, 403]
+    assert statuses == [200, 200, 200, 200, 200, 403, 403, 403]
 
 
 def test_no_failure_escapes_the_agreed_status_codes(api: TestClient, db: Session) -> None:
@@ -406,7 +405,6 @@ def test_no_failure_escapes_the_agreed_status_codes(api: TestClient, db: Session
         api.post("/api/tutors", headers=_auth(admin), json=_payload(email=profile.user.email)),
         api.post("/api/tutors", headers=_auth(tutor_user), json=_payload()),
         api.patch(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin), json={"bio": "x"}),
-        api.delete(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin)),
     ]
 
     assert {response.status_code for response in responses} <= ALLOWED_FAILURE_CODES
@@ -706,29 +704,32 @@ def test_create_makes_a_person_who_cannot_sign_in_yet(api: TestClient, db: Sessi
     }.items() <= next(row for row in listed if row["id"] == str(tutor.user_id)).items()
 
 
-@pytest.mark.parametrize("how", ["delete", "patch"])
-def test_deactivating_a_tutor_deactivates_the_person(
-    api: TestClient, db: Session, how: str
-) -> None:
-    """`users.is_archived` is the one flag (#130): the login stops on the very next request."""
+def test_the_removed_delete_route_is_405(api: TestClient, db: Session) -> None:
+    """Archiving a Staff member is `POST /api/archive` now; the soft delete is gone."""
     admin = _make_user(db)
     profile = _make_tutor(db)
-    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile.id)
 
-    before = api.get("/api/tutors", headers=_auth(tutor_user))
-    if how == "delete":
-        response = api.delete(f"/api/tutors/{profile.id}", headers=_auth(admin))
-    else:
-        response = api.patch(
-            f"/api/tutors/{profile.id}", headers=_auth(admin), json={"is_active": False}
-        )
-    after = api.get("/api/tutors", headers=_auth(tutor_user))
+    response = api.delete(f"/api/tutors/{profile.id}", headers=_auth(admin))
 
-    assert before.status_code == 200
-    assert (response.status_code, response.json()["archived"]) == (200, True)
-    db.refresh(tutor_user)
-    assert tutor_user.is_archived is True
-    assert after.status_code == 401
+    assert response.status_code == 405
+    db.refresh(profile.user)
+    assert profile.user.is_archived is False
+
+
+@pytest.mark.parametrize("is_archived", [False, True])
+def test_is_active_on_patch_has_no_effect(api: TestClient, db: Session, is_archived: bool) -> None:
+    admin = _make_user(db)
+    profile = _make_tutor(db, is_archived=is_archived)
+
+    response = api.patch(
+        f"/api/tutors/{profile.id}",
+        headers=_auth(admin),
+        json={"bio": "Still here", "is_active": is_archived},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is is_archived
+    assert response.json()["bio"] == "Still here"
 
 
 @pytest.mark.parametrize(
@@ -925,56 +926,12 @@ def test_patch_with_an_unparseable_phone_number_is_400(api: TestClient, db: Sess
     assert response.status_code == 400
 
 
-def test_patch_can_reactivate_a_deactivated_tutor(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    dormant = _make_tutor(db, is_archived=True)
-
-    response = api.patch(
-        f"/api/tutors/{dormant.id}", headers=_auth(admin), json={"is_active": True}
-    )
-
-    assert response.status_code == 200
-    assert response.json()["archived"] is False
-
-
 def test_patch_an_unknown_id_is_404(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
     response = api.patch(
         f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin), json={"bio": "Nobody"}
     )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Tutor not found"
-
-
-def test_delete_is_a_soft_delete_that_keeps_the_row_and_its_assignments(
-    api: TestClient, db: Session
-) -> None:
-    """Deactivation must stay reversible, so nothing but `is_active` moves — `tutor_count` on
-    `GET /api/subjects` already accounts for it (REQ-031.3)."""
-    admin = _make_user(db)
-    tutor = _make_tutor(db)
-    subject = _make_subject(db, name="Algebra")
-    _assign(db, tutor, subject, 8)
-
-    response = api.delete(f"/api/tutors/{tutor.id}", headers=_auth(admin))
-
-    assert response.status_code == 200
-    assert response.json()["archived"] is True
-    assert [row["name"] for row in response.json()["subjects"]] == ["Algebra"]
-    db.refresh(tutor)
-    assert tutor.user.is_archived is True
-    assert (
-        db.scalars(select(TutorSubject).where(TutorSubject.tutor_id == tutor.id)).first()
-        is not None
-    )
-
-
-def test_delete_an_unknown_id_is_404(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-
-    response = api.delete(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin))
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Tutor not found"
@@ -990,11 +947,9 @@ def test_a_tutor_token_is_refused_on_every_write(api: TestClient, db: Session) -
 
     created = api.post("/api/tutors", headers=headers, json=_payload())
     patched = api.patch(f"/api/tutors/{profile.id}", headers=headers, json={"bio": "self-serve"})
-    deleted = api.delete(f"/api/tutors/{profile.id}", headers=headers)
 
-    assert [response.status_code for response in (created, patched, deleted)] == [403, 403, 403]
+    assert [response.status_code for response in (created, patched)] == [403, 403]
     db.refresh(profile)
-    assert profile.user.is_archived is False
     assert profile.bio is None
 
 
@@ -1036,14 +991,11 @@ def test_writing_a_profile_is_writing_its_account(
     db.flush()
 
     # No `email`: a login email is an Admin's to change, whoever the target is (see below).
-    patched = api.patch(
-        f"/api/tutors/{profile.id}", headers=_auth(actor), json={"is_active": False}
-    )
-    deleted = api.delete(f"/api/tutors/{profile.id}", headers=_auth(actor))
+    patched = api.patch(f"/api/tutors/{profile.id}", headers=_auth(actor), json={"bio": "Edited"})
 
-    assert (patched.status_code, deleted.status_code) == (expected, expected)
-    db.refresh(profile.user)
-    assert profile.user.is_archived is (expected != 403)
+    assert patched.status_code == expected
+    db.refresh(profile)
+    assert (profile.bio == "Edited") is (expected != 403)
 
 
 @pytest.mark.parametrize("name", ["", "   ", "x" * 256, "Ana\nPay to IBAN X", "Ana\u200bLopez"])
@@ -1085,11 +1037,10 @@ def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
     tutor_id = created.json()["id"]
     listed = api.get("/api/tutors", headers=headers)
     patched = api.patch(f"/api/tutors/{tutor_id}", headers=headers, json={"bio": "Rewritten"})
-    deleted = api.delete(f"/api/tutors/{tutor_id}", headers=headers)
 
-    statuses = [response.status_code for response in (created, listed, patched, deleted)]
+    statuses = [response.status_code for response in (created, listed, patched)]
 
-    assert statuses == [201, 200, 200, 200]
+    assert statuses == [201, 200, 200]
 
 
 # --- a login email is an Admin's to change ---------------------------------------------------
@@ -1213,10 +1164,9 @@ def test_an_admin_echoing_the_email_leaves_the_tutors_links_alone(
     assert len(_live_links(db, profile.user)) == 1
 
 
-# --- #173: a peer admin's profile is developer-only, and an admin can't deactivate themselves --
+# --- #173: a peer admin's profile is developer-only --------------------------------------------
 
 PEER_ADMIN_FORBIDDEN = "Only a developer may modify another admin's account"
-SELF_CHANGE_FORBIDDEN = "You cannot change your own role or deactivate your own account"
 
 
 def _make_admin_with_profile(db: Session) -> User:
@@ -1236,10 +1186,9 @@ def _snapshot(db: Session, user: User) -> tuple[object, ...]:
     [
         {"email": "taken-over@example.com"},
         {"name": "Someone Else"},
-        {"is_active": False},
         {"bio": "Rewritten"},
     ],
-    ids=["email", "name", "is_active", "bio"],
+    ids=["email", "name", "bio"],
 )
 def test_an_admin_cannot_patch_a_peer_admins_profile(
     api: TestClient, db: Session, change: dict[str, object]
@@ -1259,30 +1208,14 @@ def test_an_admin_cannot_patch_a_peer_admins_profile(
     assert len(_live_links(db, peer)) == 1
 
 
-def test_an_admin_cannot_delete_a_peer_admins_profile(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    peer = _make_admin_with_profile(db)
-    before = _snapshot(db, peer)
-
-    response = api.delete(f"/api/tutors/{peer.profile_id}", headers=_auth(admin))
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == PEER_ADMIN_FORBIDDEN
-    assert _snapshot(db, peer) == before
-
-
-def test_a_developer_may_edit_and_delete_an_admins_profile(api: TestClient, db: Session) -> None:
+def test_a_developer_may_edit_an_admins_profile(api: TestClient, db: Session) -> None:
     developer = _make_user(db, role=UserRole.DEVELOPER)
     admin = _make_admin_with_profile(db)
     path = f"/api/tutors/{admin.profile_id}"
 
     patched = api.patch(path, headers=_auth(developer), json={"email": "moved@example.com"})
-    deleted = api.delete(path, headers=_auth(developer))
 
     assert (patched.status_code, patched.json()["email"]) == (200, "moved@example.com")
-    assert deleted.status_code == 200
-    db.refresh(admin)
-    assert admin.is_archived is True
 
 
 def test_an_admin_may_edit_their_own_profile(api: TestClient, db: Session) -> None:
@@ -1291,25 +1224,9 @@ def test_an_admin_may_edit_their_own_profile(api: TestClient, db: Session) -> No
     response = api.patch(
         f"/api/tutors/{admin.profile_id}",
         headers=_auth(admin),
-        json={"email": "me-now@example.com", "name": "New Me", "bio": "Hi", "is_active": True},
+        json={"email": "me-now@example.com", "name": "New Me", "bio": "Hi"},
     )
 
     assert response.status_code == 200
     db.refresh(admin)
     assert (admin.email, admin.name, admin.is_archived) == ("me-now@example.com", "New Me", False)
-
-
-def test_an_admin_cannot_deactivate_themselves_through_their_profile(
-    api: TestClient, db: Session
-) -> None:
-    admin = _make_admin_with_profile(db)
-    path = f"/api/tutors/{admin.profile_id}"
-    before = _snapshot(db, admin)
-
-    patched = api.patch(path, headers=_auth(admin), json={"name": "Sneaky", "is_active": False})
-    deleted = api.delete(path, headers=_auth(admin))
-
-    assert (patched.status_code, deleted.status_code) == (403, 403)
-    assert patched.json()["detail"] == SELF_CHANGE_FORBIDDEN
-    assert deleted.json()["detail"] == SELF_CHANGE_FORBIDDEN
-    assert _snapshot(db, admin) == before

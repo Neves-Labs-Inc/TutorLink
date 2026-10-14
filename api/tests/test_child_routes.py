@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from httpx import Response
 from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability
@@ -44,12 +45,10 @@ from app.models.home import ChildHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
-from app.routers.children import (
-    HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR,
-    UPCOMING_SESSIONS_CHANGED_ERROR,
-)
+from app.routers.children import HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR
 from app.security import create_access_token, hash_password
 from app.services import broadcast_service, child_service, twilio_service
+from app.services.archive_service import CHILD_NOT_FOUND_ERROR, UPCOMING_SESSIONS_CHANGED_ERROR
 
 PASSWORD = "correct horse battery staple"
 DATE_OF_BIRTH = "2014-05-02"
@@ -232,6 +231,20 @@ def _seed_sessions(api: TestClient, db: Session, admin: User) -> Sessions:
         yesterday=book(YESTERDAY, FIFTEEN),
         already_cancelled=book(TOMORROW, FIFTEEN, BookingStatus.CANCELLED),
         other_childs=_book(db, child_id=other_child_id, home_id=home.id, on=TOMORROW, start=NINE),
+    )
+
+
+def _archive_child(api: TestClient, user: User, child_id: uuid.UUID, **fields: int) -> Response:
+    return api.post(
+        "/api/archive",
+        headers=_auth(user),
+        json={"type": "child", "id": str(child_id), **fields},
+    )
+
+
+def _restore_child(api: TestClient, user: User, child_id: uuid.UUID) -> Response:
+    return api.post(
+        "/api/restore", headers=_auth(user), json={"type": "child", "id": str(child_id)}
     )
 
 
@@ -860,7 +873,7 @@ def test_patch_refuses_an_implausible_date_of_birth_and_writes_nothing(
 
 
 def test_a_child_has_no_delete_route(api: TestClient, db: Session) -> None:
-    """Deactivation is `PATCH {"is_active": false}` (CW); the frozen contract lists no DELETE."""
+    """Archiving a child is `POST /api/archive`; the frozen contract lists no DELETE."""
     admin = _make_user(db)
     body = api.post(
         "/api/children",
@@ -888,12 +901,15 @@ def test_deactivating_a_child_with_no_upcoming_sessions_ignores_the_count(
     admin = _make_user(db)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
 
-    response = api.patch(
-        f"/api/children/{child_id}", headers=_auth(admin), json={"is_active": False, **extra}
-    )
+    response = _archive_child(api, admin, child_id, **extra)
 
     assert response.status_code == 200
-    assert response.json()["archived"] is True
+    assert response.json() == {
+        "type": "child",
+        "id": str(child_id),
+        "archived": True,
+        "cancelled_booking_ids": [],
+    }
     assert _child(db, child_id).is_archived is True
 
 
@@ -907,12 +923,11 @@ def test_reactivating_a_child_touches_no_booking(
     _child(db, child_id).is_archived = True
     db.flush()
 
-    response = api.patch(
-        f"/api/children/{child_id}", headers=_auth(admin), json={"is_active": True}
-    )
+    response = _restore_child(api, admin, child_id)
 
     assert response.status_code == 200
     assert response.json()["archived"] is False
+    assert response.json()["cancelled_booking_ids"] == []
     assert _child(db, child_id).is_archived is False
     assert _status(db, upcoming) is BookingStatus.CONFIRMED
 
@@ -928,11 +943,11 @@ def test_deactivating_an_already_inactive_child_cancels_nothing(
     _child(db, child_id).is_archived = True
     db.flush()
 
-    response = api.patch(
-        f"/api/children/{child_id}", headers=_auth(admin), json={"is_active": False}
-    )
+    response = _archive_child(api, admin, child_id)
 
     assert response.status_code == 200
+    assert response.json()["archived"] is True
+    assert response.json()["cancelled_booking_ids"] == []
     assert _status(db, upcoming) is BookingStatus.CONFIRMED
 
 
@@ -942,14 +957,14 @@ def test_deactivation_cancels_exactly_the_sessions_that_start_after_now(
     admin = _make_user(db)
     sessions = _seed_sessions(api, db, admin)
 
-    response = api.patch(
-        f"/api/children/{sessions.child_id}",
-        headers=_auth(admin),
-        json={"is_active": False, "expected_cancellations": 2},
-    )
+    response = _archive_child(api, admin, sessions.child_id, expected_cancellations=2)
 
     assert response.status_code == 200
     assert response.json()["archived"] is True
+    assert response.json()["cancelled_booking_ids"] == [
+        str(sessions.this_afternoon),
+        str(sessions.tomorrow),
+    ]
     assert _child(db, sessions.child_id).is_archived is True
     assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
     assert _status(db, sessions.this_afternoon) is BookingStatus.CANCELLED
@@ -970,17 +985,12 @@ def test_a_deactivation_count_that_does_not_match_is_409_and_applies_nothing(
     admin = _make_user(db)
     sessions = _seed_sessions(api, db, admin)
 
-    response = api.patch(
-        f"/api/children/{sessions.child_id}",
-        headers=_auth(admin),
-        json={"is_active": False, "name": "X", **extra},
-    )
+    response = _archive_child(api, admin, sessions.child_id, **extra)
 
     child = _child(db, sessions.child_id)
     assert response.status_code == 409
     assert response.json() == {"detail": UPCOMING_SESSIONS_CHANGED_ERROR}
     assert child.is_archived is False
-    assert child.name == "Tommy Doe"
     assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED
     assert _status(db, sessions.this_afternoon) is BookingStatus.PENDING
 
@@ -994,11 +1004,7 @@ def test_a_deactivation_sends_nothing_to_anyone(
     admin = _make_user(db)
     sessions = _seed_sessions(api, db, admin)
 
-    response = api.patch(
-        f"/api/children/{sessions.child_id}",
-        headers=_auth(admin),
-        json={"is_active": False, "expected_cancellations": 2},
-    )
+    response = _archive_child(api, admin, sessions.child_id, expected_cancellations=2)
 
     assert response.status_code == 200
     assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
@@ -1074,44 +1080,6 @@ def test_a_booking_that_is_not_upcoming_does_not_block_removing_its_home(
     assert set(_home_links(db, child_id)) == {second.id}
 
 
-def test_the_home_unlink_guard_is_checked_before_the_deactivation_count(
-    api: TestClient, db: Session, frozen_now: None
-) -> None:
-    admin = _make_user(db)
-    first, second = _make_home(db), _make_home(db)
-    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[first, second])
-    upcoming = _book(db, child_id=child_id, home_id=first.id, on=TOMORROW, start=NINE)
-
-    response = api.patch(
-        f"/api/children/{child_id}",
-        headers=_auth(admin),
-        json={"home_ids": [str(second.id)], "is_active": False},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"detail": HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR}
-    assert _status(db, upcoming) is BookingStatus.CONFIRMED
-
-
-def test_the_date_of_birth_is_checked_before_the_deactivation_count(
-    api: TestClient, db: Session, frozen_now: None
-) -> None:
-    admin = _make_user(db)
-    sessions = _seed_sessions(api, db, admin)
-
-    response = api.patch(
-        f"/api/children/{sessions.child_id}",
-        headers=_auth(admin),
-        json={"is_active": False, "date_of_birth": "2100-01-01"},
-    )
-
-    assert response.status_code == 400
-    assert response.json() == {"detail": INVALID_DATE_OF_BIRTH_ERROR}
-    assert _child(db, sessions.child_id).is_archived is False
-    assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED
-    assert _status(db, sessions.this_afternoon) is BookingStatus.PENDING
-
-
 def test_an_inactive_child_can_still_be_edited(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
@@ -1125,26 +1093,105 @@ def test_an_inactive_child_can_still_be_edited(api: TestClient, db: Session) -> 
     assert response.json()["archived"] is True
 
 
-def test_a_tutor_cannot_deactivate_a_child(api: TestClient, db: Session) -> None:
+def test_a_tutor_cannot_archive_a_child(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
 
-    response = api.patch(
-        f"/api/children/{child_id}", headers=_auth(tutor), json={"is_active": False}
-    )
+    response = _archive_child(api, tutor, child_id)
 
     assert response.status_code == 403
     assert isinstance(response.json()["detail"], str)
     assert _child(db, child_id).is_archived is False
 
 
-def test_patch_with_no_token_is_401(api: TestClient, db: Session) -> None:
+def test_archive_with_no_token_is_401(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
 
-    response = api.patch(f"/api/children/{child_id}", json={"is_active": False})
+    response = api.post("/api/archive", json={"type": "child", "id": str(child_id)})
 
     assert response.status_code == 401
     assert isinstance(response.json()["detail"], str)
     assert _child(db, child_id).is_archived is False
+
+
+def test_restoring_a_child_works_with_every_guardian_and_home_archived(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    guardian, home = _make_guardian(db), _make_home(db)
+    child_id = _create_child(api, admin, guardians=[guardian], homes=[home])
+    guardian.is_archived = True
+    home.is_archived = True
+    _child(db, child_id).is_archived = True
+    db.flush()
+
+    response = _restore_child(api, admin, child_id)
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
+    assert _child(db, child_id).is_archived is False
+
+
+def test_restoring_a_child_leaves_its_cancelled_sessions_cancelled(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    sessions = _seed_sessions(api, db, admin)
+    _archive_child(api, admin, sessions.child_id, expected_cancellations=2)
+
+    response = _restore_child(api, admin, sessions.child_id)
+
+    assert response.status_code == 200
+    assert _child(db, sessions.child_id).is_archived is False
+    assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
+    assert _status(db, sessions.this_afternoon) is BookingStatus.CANCELLED
+
+
+def test_restoring_an_active_child_is_a_no_op_200(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = _restore_child(api, admin, child_id)
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
+    assert response.json()["cancelled_booking_ids"] == []
+
+
+def test_archiving_an_unknown_child_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = _archive_child(api, admin, uuid.uuid4())
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": CHILD_NOT_FOUND_ERROR}
+
+
+def test_a_negative_expected_cancellations_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
+
+    response = _archive_child(api, admin, child_id, expected_cancellations=-1)
+
+    assert response.status_code == 400
+    assert _child(db, child_id).is_archived is False
+
+
+def test_patch_no_longer_acts_on_is_active_or_expected_cancellations(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    sessions = _seed_sessions(api, db, admin)
+
+    response = api.patch(
+        f"/api/children/{sessions.child_id}",
+        headers=_auth(admin),
+        json={"is_active": False, "expected_cancellations": 2, "name": "Renamed"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
+    assert _child(db, sessions.child_id).is_archived is False
+    assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED

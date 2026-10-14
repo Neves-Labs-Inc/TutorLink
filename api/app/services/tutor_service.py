@@ -73,10 +73,6 @@ class TutorPeerAdminForbidden(TutorAccountForbidden):
     """An admin writing to another admin's profile; only a developer may (#173)."""
 
 
-class TutorSelfChangeForbidden(TutorAccountForbidden):
-    """An admin deactivating themselves through their own profile (#173)."""
-
-
 def assert_may_write_person(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -> None:
     """The profile's person is also a login, so editing a profile edits an account.
 
@@ -101,11 +97,6 @@ def assert_may_write_person(*, actor_role: UserRole, actor_id: uuid.UUID, tutor:
 
     if actor_role is UserRole.ADMIN and target is UserRole.ADMIN and tutor.user_id != actor_id:
         raise TutorPeerAdminForbidden
-
-
-def _is_self_admin(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -> bool:
-    """An admin acting on their own profile, who may not deactivate themselves (#173)."""
-    return actor_role is UserRole.ADMIN and tutor.user_id == actor_id
 
 
 def matching_tutors(
@@ -306,10 +297,9 @@ def update_tutor(
     email: str | None,
     phone_number: str | None,
     bio: str | None,
-    is_archived: bool | None,
     now: datetime,
 ) -> Tutor:
-    """`name`, `email` and `is_archived` are the person's and are written to the user; a chosen
+    """`name` and `email` are the person's and are written to the user; a chosen
     name clears `name_is_default`. `phone_number` and `bio` are the profile's. The actor must
     be allowed to write this person (`assert_may_write_person`), checked before any edit.
 
@@ -329,11 +319,6 @@ def update_tutor(
     """
     tutor = get_tutor(db, tutor_id=tutor_id)
     assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
-
-    if is_archived is True and _is_self_admin(
-        actor_role=actor_role, actor_id=actor_id, tutor=tutor
-    ):
-        raise TutorSelfChangeForbidden
 
     normalized_email = email.strip().lower() if email is not None else None
     email_changed = normalized_email is not None and normalized_email != tutor.user.email
@@ -379,35 +364,11 @@ def update_tutor(
             if bio is not None:
                 tutor.bio = bio
 
-            if is_archived is not None:
-                tutor.user.is_archived = is_archived
-
             db.flush()
     except IntegrityError as exc:
         raise TutorUniqueViolation from exc
 
     if email_changed:
         revoke_links_for_user(db, user_id=tutor.user_id, now=now)
-
-    return tutor
-
-
-def deactivate_tutor(
-    db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, tutor_id: uuid.UUID
-) -> Tutor:
-    """Soft delete of the person: `users.is_archived` is the one flag that counts, so this is
-    what stops the login, the offer surface and the Tutors list at once.
-
-    It does not touch `tutor_subjects`, `tutor_availability` or `bookings`: deleting the
-    assignments would make deactivation irreversible.
-    """
-    tutor = get_tutor(db, tutor_id=tutor_id)
-    assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
-
-    if _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
-        raise TutorSelfChangeForbidden
-
-    tutor.user.is_archived = True
-    db.flush()
 
     return tutor

@@ -15,23 +15,23 @@ per `BUSINESS_TIMEZONE`), which a test freezes through `clock.business_now`. `no
 and blank is stored as NULL. On update, an absent `notes` or `date_of_birth` is left alone, a
 blank `notes` clears it, and `date_of_birth` cannot be cleared (A-47).
 
-**Deactivation cancels the child's upcoming sessions, after a count check (P7C-O, OQ-59).**
+**Archiving cancels the child's upcoming sessions, after a count check (P7C-O, OQ-59).**
 "Upcoming" is `upcoming_live_bookings(now)` (P7C-T), `now` the business wall-clock from
 `clock.business_now` (`BUSINESS_TIMEZONE`).
-`is_archived: true` on an active child selects those bookings `FOR UPDATE`; if there are any and
+`set_child_archived` on an active child selects those bookings `FOR UPDATE`; if there are any and
 `expected_cancellations` — the number the admin was shown and confirmed — differs from how many
-there are now, `UpcomingSessionsChanged` refuses the whole update. Otherwise each one goes to
+there are now, `UpcomingSessionsChanged` refuses the whole archive. Otherwise each one goes to
 `cancelled` through `booking_status_service.change_status`, the one transition authority, in the
 same transaction as the deactivation. Nothing is sent to anyone: no WhatsApp, no tutor notice,
 no broadcast — nothing here may import `twilio_service`, `broadcast_service` or the bot.
-Reactivation cancels nothing, and deactivating a child that is already inactive is a no-op on
+Restore cancels nothing, and archiving a child that is already archived is a no-op on
 its bookings.
 
 **Home-unlink guard (A-62, OQ-61).** A `home_ids` set that drops a home at which the child has an
 upcoming live booking is `HomeRemovalHasUpcomingBookings`: the session would otherwise point at a
 home the child no longer has.
 
-**Lock order is conversation → child → bookings (P7C-S).** `update_child` takes the child row
+**Lock order is conversation → child → bookings (P7C-S).** `update_child` and `set_child_archived` take the child row
 `FOR UPDATE` before anything else, and `booking_write_service._resolve` reads it `FOR SHARE`, so
 a deactivation and a concurrent booking of the same child serialise: booking first, and the
 count here sees the new session and refuses; deactivation first, and the booking sees the child
@@ -40,10 +40,10 @@ commit is a live session on an inactive child that nobody confirmed and nobody i
 `populate_existing` makes the locked read replace whatever the session had cached, which is the
 stale value the lock exists to avoid (`conversation_service._locked`).
 
-Check order is the contract (`docs/api-design.md`, `PATCH /api/children/{id}`): unknown child →
-date of birth → link ids → home-unlink guard → deactivation count → write. Every refusal is
-raised before the first write, and the caller's single commit is what makes the cancellations
-and the deactivation land together or not at all.
+`update_child` check order is the contract (`docs/api-design.md`, `PATCH /api/children/{id}`):
+unknown child → date of birth → link ids → home-unlink guard → write. Every refusal is raised
+before the first write; the caller's single commit makes an archive's cancellations and flag
+land together or not at all.
 """
 
 import datetime
@@ -139,8 +139,6 @@ def update_child(
     grade_level: int | None,
     school_name: str | None,
     notes: str | None,
-    is_archived: bool | None,
-    expected_cancellations: int | None,
 ) -> Child:
     child = db.get(Child, child_id, with_for_update=True, populate_existing=True)
 
@@ -156,21 +154,6 @@ def update_child(
 
     if homes is not None:
         _assert_no_upcoming_booking_at_removed_home(db, child_id=child.id, wanted=homes, now=now)
-
-    if is_archived is True and not child.is_archived:
-        cancellations = _confirmed_cancellations(
-            db, child_id=child.id, expected=expected_cancellations, now=now
-        )
-    else:
-        cancellations = []
-
-    for booking_id in cancellations:
-        booking_status_service.change_status(
-            db, booking_id=booking_id, target=BookingStatus.CANCELLED
-        )
-
-    if is_archived is not None:
-        child.is_archived = is_archived
 
     if name is not None:
         child.name = name
@@ -210,6 +193,37 @@ def update_child(
     _expire_link_sets(db, child)
 
     return child
+
+
+def set_child_archived(
+    db: Session, *, child_id: uuid.UUID, is_archived: bool, expected_cancellations: int | None
+) -> list[uuid.UUID]:
+    """Archive or restore a child; answers the ids of the bookings an archive cancelled.
+
+    Only a real archive (of an active child) counts and cancels; a repeat of either call is a
+    no-op that ignores `expected_cancellations`. Restore clears the flag and cancels nothing.
+    """
+    child = db.get(Child, child_id, with_for_update=True, populate_existing=True)
+
+    if child is None:
+        raise ChildNotFound
+
+    cancellations: list[uuid.UUID] = []
+
+    if is_archived and not child.is_archived:
+        cancellations = _confirmed_cancellations(
+            db, child_id=child.id, expected=expected_cancellations, now=clock.business_now()
+        )
+
+    for booking_id in cancellations:
+        booking_status_service.change_status(
+            db, booking_id=booking_id, target=BookingStatus.CANCELLED
+        )
+
+    child.is_archived = is_archived
+    db.flush()
+
+    return cancellations
 
 
 def _assert_plausible(date_of_birth: datetime.date) -> None:

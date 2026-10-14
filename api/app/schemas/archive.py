@@ -8,6 +8,13 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 
+class ChildTarget(BaseModel):
+    type: Literal["child"]
+    id: uuid.UUID
+    # The number of upcoming sessions the admin was shown; only an archive reads it.
+    expected_cancellations: int | None = Field(default=None, ge=0)
+
+
 class GuardianTarget(BaseModel):
     type: Literal["guardian"]
     id: uuid.UUID
@@ -23,7 +30,21 @@ class SubjectTarget(BaseModel):
     id: uuid.UUID
 
 
-ArchiveTarget = Annotated[GuardianTarget | HomeTarget | SubjectTarget, Field(discriminator="type")]
+StaffWarningCode = Literal["archived_staff_bookings"]
+
+
+class StaffTarget(BaseModel):
+    """A Staff member is a `users` row, so `id` is the user's id, not a profile's."""
+
+    type: Literal["staff"]
+    id: uuid.UUID
+    confirm_warnings: list[StaffWarningCode] = []
+
+
+ArchiveTarget = Annotated[
+    ChildTarget | GuardianTarget | HomeTarget | SubjectTarget | StaffTarget,
+    Field(discriminator="type"),
+]
 
 
 class ArchiveRead(BaseModel):

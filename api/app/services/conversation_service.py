@@ -49,7 +49,7 @@ the guardian (OQ-72).
 **Lock order is conversation → child** (P7D-E, the order `child_service` documents as P7C-S).
 The webhook's inbound insert flushes `last_message_at`, which locks the conversation row before
 the bot reads any child; `resolve_reactivation` locks the conversation first and only then the
-child, through `child_service.update_child`. Taken the other way round, an approval racing a
+child, through `child_service.set_child_archived`. Taken the other way round, an approval racing a
 guardian's turn on the same conversation could deadlock.
 
 **WhatsApp's 24-hour window is measured from the Guardian's latest `client` message only**
@@ -659,8 +659,8 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
     """End the pending reactivation request: `approve` reactivates the child, deny does not.
 
     The conversation row is locked first and the child only afterwards, inside
-    `child_service.update_child` — the webhook's order, so an approval racing a guardian's turn
-    waits rather than deadlocks (P7D-E). Approving a child that is already active is a no-op on
+    `child_service.set_child_archived` — the webhook's order, so an approval racing a guardian's
+    turn waits rather than deadlocks (P7D-E). Approving a child that is already active is a no-op on
     the child and still ends the request.
 
     The flag is cleared only while it is still `reactivation_request` (REQ-131.2): a later
@@ -674,18 +674,8 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
         raise NoReactivationPending(f"conversation {conversation_id} has no request pending")
 
     if approve:
-        child_service.update_child(
-            db,
-            child_id=child_id,
-            guardian_ids=None,
-            home_ids=None,
-            name=None,
-            date_of_birth=None,
-            grade_level=None,
-            school_name=None,
-            notes=None,
-            is_archived=False,
-            expected_cancellations=None,
+        child_service.set_child_archived(
+            db, child_id=child_id, is_archived=False, expected_cancellations=None
         )
 
     conversation.reactivation_child_id = None

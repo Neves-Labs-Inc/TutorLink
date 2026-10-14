@@ -44,7 +44,7 @@ class ChildRead(BaseModel):
     grade_level: int | None
     school_name: str
     notes: str | None
-    is_active: bool
+    archived: bool
     guardian_ids: list[uuid.UUID]
     home_ids: list[uuid.UUID]
 
@@ -92,7 +92,7 @@ class ChildLevelRead(BaseModel):
     subject_id: uuid.UUID
     name: str
     # The subject's flag: a level outlives its subject's deactivation and is shown muted.
-    is_active: bool
+    archived: bool
     level: int
     set_by: StaffRef
     updated_at: datetime.datetime
@@ -102,7 +102,7 @@ class ChildHomeRef(BaseModel):
     id: uuid.UUID
     label: str | None
     address: str
-    is_active: bool
+    archived: bool
 
 
 class ChildHomeRead(ChildHomeRef):
@@ -125,7 +125,7 @@ class ChildSummary(BaseModel):
     name: str
     grade_level: int | None
     school_name: str
-    is_active: bool
+    archived: bool
     guardians: list[NamedRef]
     homes: list[ChildHomeRef]
     next_session: NextSession | None
@@ -137,7 +137,7 @@ class ChildGuardianRead(BaseModel):
     id: uuid.UUID
     name: str
     phone_number: str
-    is_active: bool
+    archived: bool
 
 
 class ChildDetail(BaseModel):
@@ -147,7 +147,7 @@ class ChildDetail(BaseModel):
     grade_level: int | None
     school_name: str
     notes: str | None
-    is_active: bool
+    archived: bool
     upcoming_session_count: int
     guardians: list[ChildGuardianRead]
     homes: list[ChildHomeRead]

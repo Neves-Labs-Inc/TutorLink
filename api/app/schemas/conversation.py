@@ -61,7 +61,7 @@ class UserRef(BaseModel):
 class ReactivationChildRef(BaseModel):
     id: uuid.UUID
     name: str
-    is_active: bool
+    archived: bool
 
 
 class ReactivationRequestRead(BaseModel):

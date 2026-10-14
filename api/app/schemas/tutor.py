@@ -31,7 +31,7 @@ class TutorRead(BaseModel):
     email: str
     phone_number: str
     bio: str | None
-    is_active: bool
+    archived: bool
     subjects: list[TutorSubjectRead]
 
 

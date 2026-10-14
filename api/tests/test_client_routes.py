@@ -147,20 +147,20 @@ def test_deactivated_clients_are_hidden_until_asked_for(api: TestClient, db: Ses
     headers = _auth(admin)
 
     default = api.get("/api/clients", headers=headers).json()
-    asked = api.get("/api/clients?is_active=false", headers=headers).json()
+    asked = api.get("/api/clients?archived=true", headers=headers).json()
 
     assert [row["name"] for row in default["items"]] == ["Active One"]
     assert [row["id"] for row in asked["items"]] == [str(dormant.id)]
     assert asked["total"] == 1
 
 
-def test_malformed_is_active_query_is_400_not_422(api: TestClient, db: Session) -> None:
+def test_malformed_archived_query_is_400_not_422(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
-    response = api.get("/api/clients?is_active=maybe", headers=_auth(admin))
+    response = api.get("/api/clients?archived=maybe", headers=_auth(admin))
 
     assert response.status_code == 400
-    assert "is_active" in response.json()["detail"]
+    assert "archived" in response.json()["detail"]
 
 
 @pytest.mark.parametrize(
@@ -260,7 +260,7 @@ def test_phone_number_lookup_does_not_special_case_the_is_active_default(
     headers = _auth(admin)
 
     default = api.get(f"/api/clients?phone_number={PHONE}", headers=headers).json()
-    asked = api.get(f"/api/clients?phone_number={PHONE}&is_active=false", headers=headers).json()
+    asked = api.get(f"/api/clients?phone_number={PHONE}&archived=true", headers=headers).json()
 
     assert default["total"] == 0
     assert asked["total"] == 1
@@ -285,7 +285,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "label": "Mum's",
             "address": "123 Main St",
             "access_code": "1234",
-            "is_active": True,
+            "archived": False,
         }
     ]
     assert body["children"] == [
@@ -296,7 +296,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "grade_level": 7,
             "school_name": "Lincoln Middle School",
             "notes": "Peanut allergy",
-            "is_active": True,
+            "archived": False,
         }
     ]
 
@@ -340,7 +340,7 @@ def test_a_deactivated_client_is_still_readable_by_id(api: TestClient, db: Sessi
     response = api.get(f"/api/clients/{dormant.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
 
 
 def test_an_unknown_client_id_is_404(api: TestClient, db: Session) -> None:
@@ -366,7 +366,7 @@ def test_post_creates_the_client_and_normalises_the_number(api: TestClient, db: 
 
     assert response.status_code == 201
     assert response.json()["phone_number"] == PHONE
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
     stored = db.scalars(select(Guardian).where(Guardian.phone_number == PHONE)).one()
     assert stored.name == "Jane Doe"
 
@@ -393,7 +393,7 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
             "label": "Mum's",
             "address": "123 Main St",
             "access_code": "1234",
-            "is_active": True,
+            "archived": False,
         }
     ]
 
@@ -578,9 +578,9 @@ def test_patch_deactivates_and_reactivates(api: TestClient, db: Session) -> None
     listed_while_dormant = api.get("/api/clients", headers=headers).json()
     reactivated = api.patch(f"/api/clients/{client.id}", headers=headers, json={"is_active": True})
 
-    assert deactivated.json()["is_active"] is False
+    assert deactivated.json()["archived"] is True
     assert listed_while_dormant["total"] == 0
-    assert reactivated.json()["is_active"] is True
+    assert reactivated.json()["archived"] is False
     assert api.get("/api/clients", headers=headers).json()["total"] == 1
 
 

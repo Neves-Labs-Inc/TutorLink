@@ -134,6 +134,62 @@ def schedule(db: Session) -> Schedule:
     )
 
 
+def _archived_and_live(db: Session, kind: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """Ids of one archived and one live row of the resource behind `kind`."""
+    if kind == "users":
+        archived, live = _make_user(db), _make_user(db)
+        archived.is_archived = True
+    elif kind == "tutors":
+        archived, live = _make_tutor(db), _make_tutor(db)
+        archived.user.is_archived = True
+    elif kind == "children":
+        archived, live = (_make_child(db, guardians=[]) for _ in range(2))
+        archived.is_archived = True
+    elif kind == "clients":
+        archived, live = _make_client(db), _make_client(db)
+        archived.is_archived = True
+    else:
+        archived, live = _make_subject(db), _make_subject(db)
+        archived.is_archived = True
+    db.flush()
+
+    return archived.id, live.id
+
+
+@pytest.mark.parametrize("kind", ["users", "tutors", "children", "clients", "subjects"])
+def test_a_list_hides_archived_rows_unless_archived_is_true(
+    api: TestClient, db: Session, kind: str
+) -> None:
+    admin = _make_user(db)
+    archived_id, live_id = _archived_and_live(db, kind)
+    params = {"page_size": 100}
+
+    default = api.get(f"/api/{kind}", params=params, headers=_auth(admin)).json()
+    archived = api.get(
+        f"/api/{kind}", params={**params, "archived": "true"}, headers=_auth(admin)
+    ).json()
+
+    default_ids = {row["id"] for row in default["items"]}
+    archived_ids = {row["id"] for row in archived["items"]}
+    assert (str(live_id) in default_ids, str(archived_id) in default_ids) == (True, False)
+    assert (str(archived_id) in archived_ids, str(live_id) in archived_ids) == (True, False)
+    assert all(row["archived"] is True for row in archived["items"])
+    assert all("is_active" not in row for row in default["items"])
+
+
+@pytest.mark.parametrize("kind", ["users", "tutors", "children", "clients", "subjects"])
+def test_a_list_no_longer_recognises_is_active(api: TestClient, db: Session, kind: str) -> None:
+    admin = _make_user(db)
+    archived_id, live_id = _archived_and_live(db, kind)
+
+    body = api.get(
+        f"/api/{kind}", params={"is_active": "false", "page_size": 100}, headers=_auth(admin)
+    ).json()
+
+    ids = {row["id"] for row in body["items"]}
+    assert (str(live_id) in ids, str(archived_id) in ids) == (True, False)
+
+
 def test_tutor_q_matches_a_case_differing_substring_of_the_name(
     api: TestClient, db: Session, roster: Roster
 ) -> None:
@@ -318,17 +374,17 @@ def test_the_by_id_response_returns_every_home_and_reports_the_flag_the_count_fi
     api: TestClient, db: Session, household: Household
 ) -> None:
     """`docs/api-design.md:69` keeps nested homes outside the collection `is_active` rule, so the
-    two numbers differ by design; `HomeRead.is_active` is what makes three cards above a count of
+    two numbers differ by design; `HomeRead.archived` is what makes three cards above a count of
     two readable rather than a §11 drift."""
     admin = _make_user(db)
     headers = _auth(admin)
 
     listed = api.get("/api/clients", params={"q": "Full House"}, headers=headers).json()
     detail = api.get(f"/api/clients/{household.full.id}", headers=headers).json()
-    flags = sorted(home["is_active"] for home in detail["homes"])
+    flags = sorted(home["archived"] for home in detail["homes"])
 
     assert listed["items"][0]["home_count"] == 2
-    assert flags == [False, True, True]
+    assert flags == [False, False, True]
 
 
 def test_total_counts_guardians_not_the_rows_their_links_multiply_into(

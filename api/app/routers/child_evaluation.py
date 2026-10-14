@@ -126,7 +126,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
     return ChildLevelRead(
         subject_id=row.subject_id,
         name=row.subject.name,
-        is_active=not row.subject.is_archived,
+        archived=row.subject.is_archived,
         level=row.level,
         set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,

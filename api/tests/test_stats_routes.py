@@ -336,7 +336,7 @@ def test_active_tutor_count_equals_the_tutor_list_total(
 
     body = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()
     listed = api.get("/api/tutors?is_active=true", headers=_auth(admin)).json()
-    deactivated = api.get("/api/tutors?is_active=false", headers=_auth(admin)).json()
+    deactivated = api.get("/api/tutors?archived=true", headers=_auth(admin)).json()
 
     assert body["active_tutor_count"] == listed["total"] == ACTIVE_TUTOR_TOTAL
     assert body["active_tutor_count"] > DEFAULT_PAGE_SIZE
@@ -350,7 +350,7 @@ def test_active_client_count_equals_the_client_list_total(
 
     body = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()
     listed = api.get("/api/clients?is_active=true", headers=_auth(admin)).json()
-    deactivated = api.get("/api/clients?is_active=false", headers=_auth(admin)).json()
+    deactivated = api.get("/api/clients?archived=true", headers=_auth(admin)).json()
 
     assert body["active_client_count"] == listed["total"] == ACTIVE_CLIENT_TOTAL
     assert body["active_client_count"] > DEFAULT_PAGE_SIZE

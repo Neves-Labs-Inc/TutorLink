@@ -59,6 +59,7 @@ from app.routers.booking_writes import (
     LIVE_EVALUATION_EXISTS_ERROR,
     OUTSIDE_AVAILABILITY_ERROR,
     REFERENCE_NOT_FOUND_ERROR,
+    STAFF_ARCHIVED_ERROR,
     STAFF_ROLE_NOT_ALLOWED_ERROR,
     UNCONFIRMED_WARNINGS_ERROR,
     WARNING_MESSAGES,
@@ -772,7 +773,7 @@ def test_an_id_that_names_no_row_is_400(
     assert _count(db) == 0
 
 
-@pytest.mark.parametrize("reference", ["tutor", "subject", "home", "guardian", "child"])
+@pytest.mark.parametrize("reference", ["subject", "home", "guardian", "child"])
 def test_a_reference_an_admin_has_retired_is_400(
     api: TestClient, db: Session, family: Family, reference: str
 ) -> None:
@@ -797,6 +798,19 @@ def test_a_reference_an_admin_has_retired_is_400(
     assert _count(db) == 0
 
 
+def test_an_archived_tutor_as_staff_is_422_and_writes_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    _retire(family.tutor)
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    _assert_detail(response, 422, STAFF_ARCHIVED_ERROR)
+    assert _count(db) == 0
+
+
 def test_a_reactivated_child_can_be_booked_again(
     api: TestClient, db: Session, family: Family
 ) -> None:
@@ -814,7 +828,7 @@ def test_a_reactivated_child_can_be_booked_again(
 
     _assert_detail(refused, 400, REFERENCE_NOT_FOUND_ERROR)
     assert reactivated.status_code == 200
-    assert reactivated.json()["is_active"] is True
+    assert reactivated.json()["archived"] is False
     assert accepted.status_code == 201
     assert _count(db) == 1
 
@@ -1193,7 +1207,7 @@ def test_a_developer_as_staff_is_400(api: TestClient, db: Session, family: Famil
     assert _count(db) == 0
 
 
-def test_an_inactive_admin_as_staff_is_400(api: TestClient, db: Session, family: Family) -> None:
+def test_an_archived_admin_as_staff_is_422(api: TestClient, db: Session, family: Family) -> None:
     admin = _make_user(db, role=UserRole.ADMIN)
     admin.is_archived = True
     db.flush()
@@ -1201,7 +1215,7 @@ def test_an_inactive_admin_as_staff_is_400(api: TestClient, db: Session, family:
 
     response = _post_evaluation(api, user, family, admin)
 
-    _assert_detail(response, 400, REFERENCE_NOT_FOUND_ERROR)
+    _assert_detail(response, 422, STAFF_ARCHIVED_ERROR)
     assert _count(db) == 0
 
 

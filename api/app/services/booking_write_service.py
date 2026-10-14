@@ -175,6 +175,11 @@ class BookingReferenceNotFound(BookingWriteError):
     (REQ-044.24) — 400. See `_resolve` for why a soft-deleted row is this and not a 422."""
 
 
+class StaffArchived(BookingWriteError):
+    """The Staff member being assigned is archived — 422. Only a *new* assignment is refused:
+    an edit keeping the booking's current Staff member never raises this."""
+
+
 class StaffRoleNotAllowed(BookingWriteError):
     """The Staff member's role does not take this kind of booking (#130) — 422."""
 
@@ -377,6 +382,7 @@ def replace_booking(
         now=now,
         confirm_warnings=confirm_warnings,
         exclude_booking_id=row.id,
+        current_staff_id=row.user_id,
         skip_window=is_past,
         before_rules=lambda: _check_live(_lock(db, row)),
     )
@@ -416,6 +422,7 @@ def _validate(
     confirm_warnings: frozenset[WarningCode] | None,
     exclude_booking_id: uuid.UUID | None,
     skip_window: bool,
+    current_staff_id: uuid.UUID | None = None,
     before_rules: Callable[[], None] = lambda: None,
 ) -> None:
     """The one rule pipeline, for a create and for an edit.
@@ -432,7 +439,7 @@ def _validate(
     """
     _check_shape(request)
     settings = scheduling_service.load_scheduling_settings(db)
-    staff = _resolve_staff(db, request=request)
+    staff = _resolve_staff(db, request=request, current_staff_id=current_staff_id)
     _check_role(request, role=staff.role)
     context = _resolve(
         db,
@@ -770,14 +777,20 @@ def _check_role(request: BookingRequest, *, role: UserRole) -> None:
         raise BookingShapeInvalid
 
 
-def _resolve_staff(db: Session, *, request: BookingRequest) -> User:
-    """The Staff member, as a person. A missing, inactive or unbookable (Developer) user is a
-    reference failure like any other retired row (#130); `users.is_archived` is the only flag
-    that decides whether a Tutor or Manager is active."""
+def _resolve_staff(
+    db: Session, *, request: BookingRequest, current_staff_id: uuid.UUID | None
+) -> User:
+    """The Staff member, as a person. A missing or unbookable (Developer) user is a reference
+    failure like any other retired row (#130). An archived one is `StaffArchived`, unless the
+    edit keeps the booking's current Staff member (`current_staff_id`): that is no assignment,
+    and an archive must not pin the booking in place. `users.is_archived` is the only flag
+    that decides whether a Tutor or Manager is archived."""
     staff = db.get(User, request.user_id)
 
-    if staff is None or staff.is_archived or staff.role not in BOOKABLE_ROLES:
+    if staff is None or staff.role not in BOOKABLE_ROLES:
         raise BookingReferenceNotFound
+    if staff.is_archived and staff.id != current_staff_id:
+        raise StaffArchived
 
     return staff
 

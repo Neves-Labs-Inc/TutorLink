@@ -163,11 +163,11 @@ def test_list_returns_the_page_envelope_with_the_pinned_item_shape(
                         "id": str(jane.id),
                         "name": "Jane Doe",
                         "phone_number": "+12025550123",
-                        "is_active": True,
+                        "archived": False,
                     }
                 ],
                 "children": [
-                    {"id": str(tommy.id), "name": "Tommy Doe", "grade_level": 7, "is_active": True}
+                    {"id": str(tommy.id), "name": "Tommy Doe", "grade_level": 7, "archived": False}
                 ],
             }
         ],
@@ -264,7 +264,7 @@ def test_a_guardian_with_no_children_is_a_household_of_one(api: TestClient, db: 
                     "id": str(solo.id),
                     "name": "Solo Guardian",
                     "phone_number": solo.phone_number,
-                    "is_active": True,
+                    "archived": False,
                 }
             ],
             "children": [],
@@ -286,9 +286,9 @@ def test_inactive_members_are_included_carrying_their_flag_and_is_active_is_not_
     assert flagged == default
     assert default["total"] == 2
     active, dormant = default["items"]
-    assert active["guardians"][0]["is_active"] is True
-    assert active["children"][0]["is_active"] is False
-    assert dormant["guardians"][0]["is_active"] is False
+    assert active["guardians"][0]["archived"] is False
+    assert active["children"][0]["archived"] is True
+    assert dormant["guardians"][0]["archived"] is True
 
 
 # --- search -----------------------------------------------------------------------------------

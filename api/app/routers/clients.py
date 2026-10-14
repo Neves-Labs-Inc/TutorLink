@@ -60,7 +60,7 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 def list_all(
     user: OfficePrincipal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     phone_number: str | None = None,
     q: str | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -69,7 +69,7 @@ def list_all(
     try:
         clients, total = list_clients(
             db,
-            is_archived=not is_active,
+            is_archived=archived,
             phone_number=phone_number,
             q=q,
             limit=page_size,
@@ -149,7 +149,7 @@ def _summary(row: ClientWithCounts) -> ClientSummary:
         id=row.client.id,
         name=row.client.name,
         phone_number=row.client.phone_number,
-        is_active=not row.client.is_archived,
+        archived=row.client.is_archived,
         home_count=row.home_count,
         child_count=row.child_count,
     )
@@ -170,7 +170,7 @@ def _to_read(detail: ClientDetail) -> ClientRead:
         id=detail.client.id,
         name=detail.client.name,
         phone_number=detail.client.phone_number,
-        is_active=not detail.client.is_archived,
+        archived=detail.client.is_archived,
         homes=[HomeRead.model_validate(home) for home in detail.homes],
         children=[ChildRead.model_validate(child) for child in detail.children],
         language=None if conversation is None else conversation.language,

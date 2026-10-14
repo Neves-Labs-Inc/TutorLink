@@ -56,7 +56,7 @@ router = APIRouter(prefix="/api/children", tags=["children"])
 def list_all(
     user: OfficePrincipal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     q: str | None = None,
     awaiting_evaluation: bool = False,
     evaluable: bool = False,
@@ -65,7 +65,7 @@ def list_all(
 ) -> Page[ChildSummary]:
     rows, total = list_children(
         db,
-        is_archived=not is_active,
+        is_archived=archived,
         q=q,
         limit=page_size,
         offset=(page - 1) * page_size,
@@ -97,11 +97,11 @@ def _summary(row: ChildRow) -> ChildSummary:
         name=row.child.name,
         grade_level=row.child.grade_level,
         school_name=row.child.school_name,
-        is_active=not row.child.is_archived,
+        archived=row.child.is_archived,
         guardians=[NamedRef(id=guardian.id, name=guardian.name) for guardian in row.guardians],
         homes=[
             ChildHomeRef(
-                id=home.id, label=home.label, address=home.address, is_active=not home.is_archived
+                id=home.id, label=home.label, address=home.address, archived=home.is_archived
             )
             for home in row.homes
         ],
@@ -134,14 +134,14 @@ def _detail(row: ChildDetailRow) -> ChildDetail:
         grade_level=row.child.grade_level,
         school_name=row.child.school_name,
         notes=row.child.notes,
-        is_active=not row.child.is_archived,
+        archived=row.child.is_archived,
         upcoming_session_count=row.upcoming_session_count,
         guardians=[
             ChildGuardianRead(
                 id=guardian.id,
                 name=guardian.name,
                 phone_number=guardian.phone_number,
-                is_active=not guardian.is_archived,
+                archived=guardian.is_archived,
             )
             for guardian in row.guardians
         ],
@@ -151,7 +151,7 @@ def _detail(row: ChildDetailRow) -> ChildDetail:
                 label=home.label,
                 address=home.address,
                 access_code=home.access_code,
-                is_active=not home.is_archived,
+                archived=home.is_archived,
             )
             for home in row.homes
         ],
@@ -164,7 +164,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
     return ChildLevelRead(
         subject_id=row.subject_id,
         name=row.subject.name,
-        is_active=not row.subject.is_archived,
+        archived=row.subject.is_archived,
         level=row.level,
         set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,

@@ -59,7 +59,7 @@ class SubjectRead(BaseModel):
     name: str
     name_es: str | None
     description: str | None
-    is_active: bool
+    archived: bool
     tutor_count: int
 
 

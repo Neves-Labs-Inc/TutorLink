@@ -72,6 +72,7 @@ from app.services.booking_write_service import (
     LeadTimeNotMet,
     LiveEvaluationExists,
     OutsideAvailability,
+    StaffArchived,
     StaffRoleNotAllowed,
     TutorGradeCeilingExceeded,
     UnconfirmedWarnings,
@@ -92,6 +93,7 @@ HOME_NOT_LINKED_ERROR = "That home is not one of the child's homes"
 GUARDIAN_NOT_LINKED_ERROR = "That guardian is not linked to the child"
 DATE_OUT_OF_WINDOW_ERROR = "That date is in the past or beyond the booking window"
 LEAD_TIME_NOT_MET_ERROR = "That start time is too soon to be booked"
+STAFF_ARCHIVED_ERROR = "That Staff member is archived"
 STAFF_ROLE_NOT_ALLOWED_ERROR = "That Staff member's role cannot take this kind of booking"
 BOOKING_SHAPE_INVALID_ERROR = (
     "The subject, availability range and home must match the booking's kind and location"
@@ -122,6 +124,7 @@ _STATUS_BY_ERROR: tuple[tuple[type[BookingWriteError], int, str], ...] = (
     (TutorGradeCeilingExceeded, status.HTTP_422_UNPROCESSABLE_CONTENT, GRADE_CEILING_ERROR),
     (HomeNotLinkedToChild, status.HTTP_422_UNPROCESSABLE_CONTENT, HOME_NOT_LINKED_ERROR),
     (GuardianNotLinkedToChild, status.HTTP_422_UNPROCESSABLE_CONTENT, GUARDIAN_NOT_LINKED_ERROR),
+    (StaffArchived, status.HTTP_422_UNPROCESSABLE_CONTENT, STAFF_ARCHIVED_ERROR),
     (StaffRoleNotAllowed, status.HTTP_422_UNPROCESSABLE_CONTENT, STAFF_ROLE_NOT_ALLOWED_ERROR),
     (BookingShapeInvalid, status.HTTP_422_UNPROCESSABLE_CONTENT, BOOKING_SHAPE_INVALID_ERROR),
     (

@@ -169,7 +169,7 @@ def test_linking_an_existing_guardian_to_one_of_two_homes(api: TestClient, db: S
     )
 
     assert status_code == 201
-    assert "is_active" in body
+    assert "archived" in body
     assert set(body["guardian_ids"]) == {str(first.id), str(second.id)}
     assert set(body["home_ids"]) == {str(mums.id), str(dads.id)}
     assert _guardian_home_ids(db, second.id) == [dads.id]
@@ -212,7 +212,7 @@ def test_linking_to_an_inactive_child_is_allowed(api: TestClient, db: Session) -
     status_code, body = _link(api, admin, child.id, {"guardian_id": str(second.id)})
 
     assert status_code == 201
-    assert body["is_active"] is False
+    assert body["archived"] is True
     assert str(second.id) in body["guardian_ids"]
 
 

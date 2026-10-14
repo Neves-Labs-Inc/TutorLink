@@ -75,7 +75,7 @@ def _read(tutor: Tutor) -> TutorRead:
         email=tutor.user.email,
         phone_number=tutor.phone_number,
         bio=tutor.bio,
-        is_active=not tutor.user.is_archived,
+        archived=tutor.user.is_archived,
         subjects=[
             TutorSubjectRead(
                 subject_id=assignment.subject_id,
@@ -91,7 +91,7 @@ def _read(tutor: Tutor) -> TutorRead:
 def list_all(
     scope: TutorScope,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     subject_id: uuid.UUID | None = None,
     grade_level: Annotated[int | None, Query(ge=LOWEST_GRADE, le=HIGHEST_GRADE)] = None,
     q: str | None = None,
@@ -104,7 +104,7 @@ def list_all(
     # this route automatically. Declaring a second would shadow the scoped one.
     tutors, total = list_tutors(
         db,
-        is_archived=not is_active,
+        is_archived=archived,
         tutor_id=scope.tutor_id,
         subject_id=subject_id,
         grade_level=grade_level,

@@ -35,6 +35,8 @@ from app.routers.booking_writes import (
     DATE_OUT_OF_WINDOW_ERROR,
     HOME_NOT_LINKED_ERROR,
     LEAD_TIME_NOT_MET_ERROR,
+    REFERENCE_NOT_FOUND_ERROR,
+    STAFF_ARCHIVED_ERROR,
     STAFF_ROLE_NOT_ALLOWED_ERROR,
 )
 from app.services import booking_write_service
@@ -382,6 +384,52 @@ def test_a_future_booking_moved_beyond_the_window_is_400(
     response = _put(api, user, booking, family, scheduled_date=far.isoformat())
 
     _assert_detail(response, 400, DATE_OUT_OF_WINDOW_ERROR)
+
+
+def test_moving_to_an_archived_staff_member_is_422_and_changes_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    admin.is_archived = True
+    db.flush()
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, user_id=str(admin.id), availability_id=None)
+
+    _assert_detail(response, 422, STAFF_ARCHIVED_ERROR)
+    assert _row(db, booking.id).user_id == family.tutor.user_id
+
+
+def test_an_unknown_or_developer_staff_member_is_still_400(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    user = _make_user(db)
+
+    unknown = _put(api, user, booking, family, user_id=str(uuid.uuid4()))
+    not_bookable = _put(api, user, booking, family, user_id=str(developer.id), availability_id=None)
+
+    _assert_detail(unknown, 400, REFERENCE_NOT_FOUND_ERROR)
+    _assert_detail(not_bookable, 400, REFERENCE_NOT_FOUND_ERROR)
+
+
+def test_a_booking_whose_staff_member_was_archived_can_still_be_rescheduled(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Keeping the same `user_id` is not an assignment, so the archive is not re-judged."""
+    booking = _book(db, family)
+    family.tutor.user.is_archived = True
+    db.flush()
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert response.status_code == 200
+    row = _row(db, booking.id)
+    assert row.user_id == family.tutor.user_id
+    assert row.start_time == datetime.time(10, 0)
 
 
 # --- what an edit keeps: the booking guardian is neither accepted nor re-judged -------------

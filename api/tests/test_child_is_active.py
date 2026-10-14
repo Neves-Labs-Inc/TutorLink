@@ -143,7 +143,7 @@ def test_post_children_returns_is_active_true(api: TestClient, db: Session) -> N
     )
 
     assert response.status_code == 201
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
 
 
 def test_get_client_nests_the_childs_is_active(api: TestClient, db: Session) -> None:
@@ -167,7 +167,7 @@ def test_get_client_nests_the_childs_is_active(api: TestClient, db: Session) -> 
     response = api.get(f"/api/clients/{guardian.id}", headers=_auth(admin))
 
     nested = next(row for row in response.json()["children"] if row["id"] == str(child_id))
-    assert nested["is_active"] is True
+    assert nested["archived"] is False
 
 
 def test_upcoming_live_bookings(db: Session) -> None:

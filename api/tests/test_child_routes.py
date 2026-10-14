@@ -601,7 +601,7 @@ def test_the_response_carries_exactly_the_documented_keys(api: TestClient, db: S
         "grade_level",
         "school_name",
         "notes",
-        "is_active",
+        "archived",
         "guardian_ids",
         "home_ids",
     }
@@ -893,7 +893,7 @@ def test_deactivating_a_child_with_no_upcoming_sessions_ignores_the_count(
     )
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
     assert _child(db, child_id).is_archived is True
 
 
@@ -912,7 +912,7 @@ def test_reactivating_a_child_touches_no_booking(
     )
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
     assert _child(db, child_id).is_archived is False
     assert _status(db, upcoming) is BookingStatus.CONFIRMED
 
@@ -949,7 +949,7 @@ def test_deactivation_cancels_exactly_the_sessions_that_start_after_now(
     )
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
     assert _child(db, sessions.child_id).is_archived is True
     assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
     assert _status(db, sessions.this_afternoon) is BookingStatus.CANCELLED
@@ -1122,7 +1122,7 @@ def test_an_inactive_child_can_still_be_edited(api: TestClient, db: Session) -> 
 
     assert response.status_code == 200
     assert response.json()["notes"] == "x"
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
 
 
 def test_a_tutor_cannot_deactivate_a_child(api: TestClient, db: Session) -> None:

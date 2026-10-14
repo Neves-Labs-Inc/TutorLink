@@ -99,19 +99,19 @@ def test_deactivated_subjects_are_hidden_until_asked_for(api: TestClient, db: Se
     headers = _auth(admin)
 
     default = api.get("/api/subjects", headers=headers).json()
-    asked = api.get("/api/subjects?is_active=false", headers=headers).json()
+    asked = api.get("/api/subjects?archived=true", headers=headers).json()
 
     assert dormant.name not in [row["name"] for row in default["items"]]
     assert [row["name"] for row in asked["items"]] == [dormant.name]
 
 
-def test_malformed_is_active_query_is_400_not_422(api: TestClient, db: Session) -> None:
+def test_malformed_archived_query_is_400_not_422(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
-    response = api.get("/api/subjects?is_active=maybe", headers=_auth(admin))
+    response = api.get("/api/subjects?archived=maybe", headers=_auth(admin))
 
     assert response.status_code == 400
-    assert "is_active" in response.json()["detail"]
+    assert "archived" in response.json()["detail"]
 
 
 def test_a_tutor_may_read_the_list(api: TestClient, db: Session) -> None:
@@ -212,7 +212,7 @@ def test_a_deactivated_subject_still_reports_its_real_tutor_count(
     headers = _auth(admin)
 
     api.delete(f"/api/subjects/{subject.id}", headers=headers)
-    body = api.get("/api/subjects?is_active=false", headers=headers).json()
+    body = api.get("/api/subjects?archived=true", headers=headers).json()
 
     assert body["items"][0]["tutor_count"] == 1
 
@@ -364,7 +364,7 @@ def test_delete_sets_is_active_false_and_the_row_survives(api: TestClient, db: S
     response = api.delete(f"/api/subjects/{subject.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
     assert db.get(Subject, subject.id) is not None
 
 

@@ -81,12 +81,12 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 def list_all(
     user: AdminPrincipal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[UserRead]:
     users, total = list_users(
-        db, is_archived=not is_active, limit=page_size, offset=(page - 1) * page_size
+        db, is_archived=archived, limit=page_size, offset=(page - 1) * page_size
     )
     # One query for the page, not one per row.
     expiries = live_invite_expiries(db, user_ids=[row.id for row in users], now=datetime.now(UTC))
@@ -272,7 +272,7 @@ def _read(user: User, *, invite_expires_at: datetime | None) -> UserRead:
         name=user.name,
         role=user.role,
         tutor_id=user.profile_id,
-        is_active=not user.is_archived,
+        archived=user.is_archived,
         has_password=user.hashed_password is not None,
         invite_expires_at=invite_expires_at,
     )

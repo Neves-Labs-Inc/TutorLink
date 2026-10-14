@@ -103,18 +103,18 @@ def test_deactivated_children_are_hidden_until_asked_for(
     headers = _auth(admin)
 
     default = api.get(f"/api/children?q={token}", headers=headers).json()
-    inactive = api.get(f"/api/children?q={token}&is_active=false", headers=headers).json()
+    inactive = api.get(f"/api/children?q={token}&archived=true", headers=headers).json()
 
     assert [row["id"] for row in default["items"]] == [str(active.id)]
     assert default["total"] == 1
     assert [row["id"] for row in inactive["items"]] == [str(dormant.id)]
-    assert inactive["items"][0]["is_active"] is False
+    assert inactive["items"][0]["archived"] is True
     assert inactive["total"] == 1
 
 
 @pytest.mark.parametrize(
     "query",
-    ["is_active=maybe", "page=0", "page_size=0", "page_size=101"],
+    ["archived=maybe", "page=0", "page_size=0", "page_size=101"],
 )
 def test_malformed_list_query_is_400_not_422(api: TestClient, db: Session, query: str) -> None:
     admin = _make_user(db)
@@ -193,7 +193,7 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
             "id": str(active_home.id),
             "label": "Mum's",
             "address": active_home.address,
-            "is_active": True,
+            "archived": False,
         }
     ]
     assert set(row) == {
@@ -201,7 +201,7 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
         "name",
         "grade_level",
         "school_name",
-        "is_active",
+        "archived",
         "guardians",
         "homes",
         "next_session",
@@ -225,12 +225,12 @@ def test_detail_nests_every_guardian_and_every_home(
 
     assert response.status_code == 200
     assert body["guardians"] == [
-        {"id": str(amy.id), "name": "Amy Doe", "phone_number": amy.phone_number, "is_active": True},
+        {"id": str(amy.id), "name": "Amy Doe", "phone_number": amy.phone_number, "archived": False},
         {
             "id": str(zed.id),
             "name": "Zed Doe",
             "phone_number": zed.phone_number,
-            "is_active": False,
+            "archived": True,
         },
     ]
     assert body["homes"] == [
@@ -239,14 +239,14 @@ def test_detail_nests_every_guardian_and_every_home(
             "label": "Dad's",
             "address": older.address,
             "access_code": "1234",
-            "is_active": False,
+            "archived": True,
         },
         {
             "id": str(newer.id),
             "label": "Mum's",
             "address": newer.address,
             "access_code": "1234",
-            "is_active": True,
+            "archived": False,
         },
     ]
 
@@ -456,7 +456,7 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
     body = response.json()
 
     assert response.status_code == 200
-    assert body["is_active"] is False
+    assert body["archived"] is True
     assert body["notes"] == "Peanut allergy"
     assert body["date_of_birth"] == "2014-05-02"
     assert set(body) == {
@@ -466,7 +466,7 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
         "grade_level",
         "school_name",
         "notes",
-        "is_active",
+        "archived",
         "upcoming_session_count",
         "guardians",
         "homes",

@@ -147,7 +147,7 @@ def test_deactivated_users_are_hidden_until_asked_for(api: TestClient, db: Sessi
     headers = _auth(admin)
 
     default = api.get("/api/users", headers=headers).json()
-    asked = api.get("/api/users?is_active=false", headers=headers).json()
+    asked = api.get("/api/users?archived=true", headers=headers).json()
 
     assert dormant.email not in [row["email"] for row in default["items"]]
     assert [row["email"] for row in asked["items"]] == [dormant.email]
@@ -161,7 +161,7 @@ def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
         _make_user(db, is_archived=True)
     headers = _auth(admin)
 
-    asked = api.get("/api/users?is_active=false&page_size=1", headers=headers).json()
+    asked = api.get("/api/users?archived=true&page_size=1", headers=headers).json()
 
     assert len(asked["items"]) == 1
     assert asked["total"] == 2
@@ -177,16 +177,16 @@ def test_a_deactivated_user_is_still_readable_by_id(api: TestClient, db: Session
     response = api.get(f"/api/users/{dormant.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
 
 
-def test_malformed_is_active_query_is_400_not_422(api: TestClient, db: Session) -> None:
+def test_malformed_archived_query_is_400_not_422(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
-    response = api.get("/api/users?is_active=sideways", headers=_auth(admin))
+    response = api.get("/api/users?archived=sideways", headers=_auth(admin))
 
     assert response.status_code == 400
-    assert "is_active" in response.json()["detail"]
+    assert "archived" in response.json()["detail"]
 
 
 def test_a_tutor_is_refused(api: TestClient, db: Session) -> None:
@@ -408,7 +408,7 @@ def test_delete_is_a_soft_delete(api: TestClient, db: Session) -> None:
     response = api.delete(f"/api/users/{victim.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
     assert db.get(User, victim.id) is not None
 
 
@@ -899,7 +899,7 @@ def test_admin_and_developer_run_a_managers_whole_lifecycle(
     assert (edited.status_code, edited.json()["name"]) == (200, "Lead")
     assert (promoted.status_code, promoted.json()["role"]) == (200, "admin")
     assert (demoted.status_code, demoted.json()["role"]) == (200, "manager")
-    assert (deactivated.status_code, deactivated.json()["is_active"]) == (200, False)
+    assert (deactivated.status_code, deactivated.json()["archived"]) == (200, True)
 
 
 def test_a_manager_is_created_with_a_profile_and_listed_by_tutors(
@@ -1593,7 +1593,7 @@ def test_a_developer_may_do_everything_to_an_admin(
     assert invited.status_code == 200
     assert reset.status_code == 204
     assert deleted.status_code == 200
-    assert deleted.json()["is_active"] is False
+    assert deleted.json()["archived"] is True
     assert [email.to for email in fake_mail.sent] == [invitee.email, reset_target.email]
 
 
@@ -1715,4 +1715,4 @@ def test_a_developer_may_still_change_their_own_role_and_deactivate_themselves(
     assert demoted.status_code == 200
     assert demoted.json()["role"] == "admin"
     assert deleted.status_code == 200
-    assert deleted.json()["is_active"] is False
+    assert deleted.json()["archived"] is True

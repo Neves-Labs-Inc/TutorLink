@@ -41,7 +41,7 @@ BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
 CHILD_NOT_LINKED_ERROR = "child_ids must name children linked to this client"
 UPCOMING_BOOKINGS_ERROR = "Home has upcoming bookings; cancel or move them first"
 
-HOME_READ_KEYS = {"id", "label", "address", "access_code", "is_active"}
+HOME_READ_KEYS = {"id", "label", "address", "access_code", "archived"}
 
 NOW = datetime.datetime(2031, 3, 4, 12, 0)
 TODAY = NOW.date()
@@ -81,7 +81,7 @@ def test_add_home_links_the_client_and_every_named_child(api: TestClient, db: Se
     assert body["label"] == "Dad's"
     assert body["address"] == "9 Elm St"
     assert body["access_code"] == "4321"
-    assert body["is_active"] is True
+    assert body["archived"] is False
 
     home_id = uuid.UUID(body["id"])
     assert _guardian_home_ids(db, client) == [home_id]
@@ -235,7 +235,7 @@ def test_patch_access_code_changes_only_that_field(api: TestClient, db: Session)
         "label": "Mum's",
         "address": "123 Main St",
         "access_code": "0000",
-        "is_active": True,
+        "archived": False,
     }
 
 
@@ -359,7 +359,7 @@ def test_deactivating_a_home_with_no_upcoming_live_booking_succeeds(
     response = _patch(api, admin, home.id, {"is_active": False})
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
     assert _reloaded(db, home).is_archived is True
 
 
@@ -376,7 +376,7 @@ def test_a_booking_at_another_home_does_not_block_deactivation(
     response = _patch(api, admin, home.id, {"is_active": False})
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
 
 
 def test_patch_reactivates_a_deactivated_home(api: TestClient, db: Session) -> None:
@@ -386,7 +386,7 @@ def test_patch_reactivates_a_deactivated_home(api: TestClient, db: Session) -> N
     response = _patch(api, admin, home.id, {"is_active": True})
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
     assert _reloaded(db, home).is_archived is False
 
 

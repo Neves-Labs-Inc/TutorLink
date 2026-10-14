@@ -30,7 +30,7 @@ class UserRead(BaseModel):
     role: UserRole
     # Derived: the user's profile id, or null for a user with none. Read-only on every route.
     tutor_id: uuid.UUID | None
-    is_active: bool
+    archived: bool
     # Whether the account can sign in by password; the hash itself is never exposed.
     has_password: bool
     # Always null until invites exist; declared now so the read shape stays stable.

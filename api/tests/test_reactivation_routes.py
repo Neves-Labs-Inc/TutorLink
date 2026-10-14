@@ -79,7 +79,7 @@ def test_the_detail_names_the_child_a_pending_request_is_for(api: TestClient, db
 
     assert body["flag_reason"] == "reactivation_request"
     assert body["reactivation_request"] == {
-        "child": {"id": str(child.id), "name": child.name, "is_active": False}
+        "child": {"id": str(child.id), "name": child.name, "archived": True}
     }
 
 

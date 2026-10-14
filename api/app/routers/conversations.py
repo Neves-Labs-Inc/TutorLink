@@ -450,9 +450,7 @@ def _reactivation_request(child: Child | None) -> ReactivationRequestRead | None
         request = None
     else:
         request = ReactivationRequestRead(
-            child=ReactivationChildRef(
-                id=child.id, name=child.name, is_active=not child.is_archived
-            )
+            child=ReactivationChildRef(id=child.id, name=child.name, archived=child.is_archived)
         )
 
     return request

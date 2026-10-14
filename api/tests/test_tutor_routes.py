@@ -182,7 +182,7 @@ def test_deactivated_tutors_are_hidden_until_asked_for(api: TestClient, db: Sess
     headers = _auth(admin)
 
     default = api.get("/api/tutors", headers=headers).json()
-    asked = api.get("/api/tutors?is_active=false", headers=headers).json()
+    asked = api.get("/api/tutors?archived=true", headers=headers).json()
 
     assert _ids(default) == [str(live.id)]
     assert _ids(asked) == [str(dormant.id)]
@@ -196,7 +196,7 @@ def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
     for _ in range(3):
         _make_tutor(db, is_archived=True)
 
-    asked = api.get("/api/tutors?is_active=false&page_size=1", headers=_auth(admin)).json()
+    asked = api.get("/api/tutors?archived=true&page_size=1", headers=_auth(admin)).json()
 
     assert len(asked["items"]) == 1
     assert asked["total"] == 3
@@ -235,13 +235,13 @@ def test_a_deactivated_tutor_is_still_readable_by_id(api: TestClient, db: Sessio
     response = api.get(f"/api/tutors/{dormant.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
 
 
 @pytest.mark.parametrize(
     ("query", "field"),
     [
-        ("is_active=maybe", "is_active"),
+        ("archived=maybe", "archived"),
         ("grade_level=eight", "grade_level"),
         ("subject_id=not-a-uuid", "subject_id"),
         ("page=0", "page"),
@@ -381,7 +381,7 @@ def test_no_tutor_token_request_reaches_the_unapplied_scope_guard(
         api.get("/api/tutors", headers=headers).status_code,
         api.get(f"/api/tutors?subject_id={subject.id}&grade_level=8", headers=headers).status_code,
         api.get(f"/api/tutors?tutor_id={own.id}", headers=headers).status_code,
-        api.get("/api/tutors?is_active=false", headers=headers).status_code,
+        api.get("/api/tutors?archived=true", headers=headers).status_code,
         api.get(f"/api/tutors/{own.id}", headers=headers).status_code,
         api.get(f"/api/tutors/{other.id}", headers=headers).status_code,
         api.post("/api/tutors", headers=headers, json=_payload()).status_code,
@@ -399,7 +399,7 @@ def test_no_failure_escapes_the_agreed_status_codes(api: TestClient, db: Session
 
     responses = [
         api.get("/api/tutors"),
-        api.get("/api/tutors?is_active=maybe", headers=_auth(admin)),
+        api.get("/api/tutors?archived=maybe", headers=_auth(admin)),
         api.get(f"/api/tutors/{uuid.uuid4()}", headers=_auth(admin)),
         api.get(f"/api/tutors/{uuid.uuid4()}", headers=_auth(tutor_user)),
         api.post("/api/tutors", headers=_auth(admin), json=_payload(phone_number="12345")),
@@ -638,7 +638,7 @@ def test_read_one_does_not_embed_availability(api: TestClient, db: Session) -> N
         "email",
         "phone_number",
         "bio",
-        "is_active",
+        "archived",
         "subjects",
     }
 
@@ -677,7 +677,7 @@ def test_create_returns_201_and_canonicalises_email_and_phone(api: TestClient, d
     assert body["email"] == "ada@example.com"
     assert body["phone_number"] == "+12025550187"
     assert body["bio"] == "Analytical engines"
-    assert body["is_active"] is True
+    assert body["archived"] is False
     assert body["subjects"] == []
     assert db.get(Tutor, uuid.UUID(body["id"])) is not None
 
@@ -725,7 +725,7 @@ def test_deactivating_a_tutor_deactivates_the_person(
     after = api.get("/api/tutors", headers=_auth(tutor_user))
 
     assert before.status_code == 200
-    assert (response.status_code, response.json()["is_active"]) == (200, False)
+    assert (response.status_code, response.json()["archived"]) == (200, True)
     db.refresh(tutor_user)
     assert tutor_user.is_archived is True
     assert after.status_code == 401
@@ -934,7 +934,7 @@ def test_patch_can_reactivate_a_deactivated_tutor(api: TestClient, db: Session) 
     )
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
 
 
 def test_patch_an_unknown_id_is_404(api: TestClient, db: Session) -> None:
@@ -961,7 +961,7 @@ def test_delete_is_a_soft_delete_that_keeps_the_row_and_its_assignments(
     response = api.delete(f"/api/tutors/{tutor.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
     assert [row["name"] for row in response.json()["subjects"]] == ["Algebra"]
     db.refresh(tutor)
     assert tutor.user.is_archived is True

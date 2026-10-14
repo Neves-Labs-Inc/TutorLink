@@ -36,7 +36,7 @@ def _read(row: SubjectWithCount) -> SubjectRead:
         name=row.subject.name,
         name_es=row.subject.name_es,
         description=row.subject.description,
-        is_active=not row.subject.is_archived,
+        archived=row.subject.is_archived,
         tutor_count=row.tutor_count,
     )
 
@@ -45,12 +45,12 @@ def _read(row: SubjectWithCount) -> SubjectRead:
 def list_all(
     user: Principal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[SubjectRead]:
     subjects, total = list_subjects(
-        db, is_archived=not is_active, limit=page_size, offset=(page - 1) * page_size
+        db, is_archived=archived, limit=page_size, offset=(page - 1) * page_size
     )
 
     return Page[SubjectRead](

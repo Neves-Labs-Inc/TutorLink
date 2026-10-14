@@ -38,7 +38,7 @@ def test_setting_a_level_records_it_and_who_set_it(api: TestClient, db: Session)
     [row] = detail["levels"]
     assert row["subject_id"] == str(math.id)
     assert row["name"] == math.name
-    assert row["is_active"] is True
+    assert row["archived"] is False
     assert row["level"] == 5
     assert row["set_by"] == {"id": str(admin.id), "name": "Marta"}
     assert row["updated_at"] is not None
@@ -153,7 +153,7 @@ def test_an_existing_level_on_a_retired_subject_shows_inactive_and_stays_editabl
     removed = api.delete(_level_url(child, math), headers=_auth(admin))
 
     assert edited.status_code == 200
-    assert (row["level"], row["is_active"]) == (4, False)
+    assert (row["level"], row["archived"]) == (4, True)
     assert removed.status_code == 204
 
 

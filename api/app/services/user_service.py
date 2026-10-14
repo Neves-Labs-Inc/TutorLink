@@ -74,6 +74,7 @@ from app.services.mail_templates import (
 from app.services.name_rules import normalize_name
 from app.services.password_link_service import issue_link, revoke_links_for_user
 from app.services.settings_service import read_email_template
+from app.services.sign_in_state import SignInState, sign_in_state_expression
 from app.services.tutor_service import PROFILE_ROLES, create_profile
 
 SET_PASSWORD_PATH = "/set-password"
@@ -134,12 +135,22 @@ class UserHasNoPassword(UserServiceError):
     """A reset link for a user who has never set a password: an Invite is their way in."""
 
 
-def _visible(is_archived: bool) -> Select[tuple[User]]:
-    return select(User).where(User.is_archived.is_(is_archived))
+def _visible(is_archived: bool, sign_in_state: SignInState | None = None) -> Select[tuple[User]]:
+    query = select(User).where(User.is_archived.is_(is_archived))
+
+    if sign_in_state is not None:
+        query = query.where(sign_in_state_expression() == sign_in_state.value)
+
+    return query
 
 
 def list_users(
-    db: Session, *, is_archived: bool, limit: int, offset: int
+    db: Session,
+    *,
+    is_archived: bool,
+    sign_in_state: SignInState | None = None,
+    limit: int,
+    offset: int,
 ) -> tuple[list[User], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -147,10 +158,13 @@ def list_users(
     resource (#21). `total` counts matches rather than returned rows — that difference is what
     the page envelope exists to report.
     """
-    total = db.scalar(select(func.count()).select_from(_visible(is_archived).subquery())) or 0
+    total = (
+        db.scalar(select(func.count()).select_from(_visible(is_archived, sign_in_state).subquery()))
+        or 0
+    )
     users = list(
         db.scalars(
-            _visible(is_archived)
+            _visible(is_archived, sign_in_state)
             .options(selectinload(User.profile))
             .order_by(User.email)
             .limit(limit)

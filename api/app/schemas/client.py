@@ -92,4 +92,3 @@ class ClientUpdate(BaseModel):
     # resource. A client with two homes has no single one for a flat field to mean.
     name: str | None = None
     phone_number: str | None = None
-    is_active: bool | None = None

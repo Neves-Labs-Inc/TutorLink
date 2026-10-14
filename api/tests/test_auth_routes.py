@@ -326,7 +326,7 @@ def test_an_invite_link_sets_the_password_and_signs_the_user_in(
     assert "Path=/auth" in set_cookie
     assert claims.subject == invitee.id
     assert claims.role is UserRole.ADMIN
-    assert read_back["has_password"] is True
+    assert read_back["sign_in_state"] == "active"
     assert read_back["invite_expires_at"] is None
     assert login.status_code == 200
 

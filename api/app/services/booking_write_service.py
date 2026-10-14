@@ -826,8 +826,8 @@ def _resolve(
 
     **The child and the home are read `FOR SHARE`** (P7C-S), because each has a deactivation
     that decides on the bookings it can see: `child_service.update_child` locks the child
-    `FOR UPDATE` and cancels the upcoming bookings it counted, and `home_service.update_home`
-    locks the home `FOR UPDATE` and refuses while one is upcoming. An unlocked read here would
+    `FOR UPDATE` and cancels the upcoming bookings it counted, and `archive_service`'s Home
+    archive locks the home `FOR UPDATE` and refuses while one is upcoming. An unlocked read here would
     let a booking commit behind either decision — a live session on an inactive child that the
     admin never confirmed, or at a home the guard just let go. With the share lock each pair
     serialises: a deactivation already under way makes this wait and then see the row inactive;
@@ -840,8 +840,8 @@ def _resolve(
     **Lock order is conversation → child → home → bookings**, and nothing in this module may
     lock a booking before these reads. Neither deactivation can close a cycle against it:
     `update_child` takes the child and then bookings, and reaches a home only through the key
-    share an inserted `child_homes` row takes, after the child; `update_home` takes only the home
-    and waits on nothing else. The child is kept out of `retirable` because the rules need it
+    share an inserted `child_homes` row takes, after the child; the Home archive takes only the
+    home and waits on nothing else. The child is kept out of `retirable` because the rules need it
     too; the home stays in it, read locked.
     """
     child = db.get(Child, request.child_id, with_for_update={"read": True}, populate_existing=True)

@@ -29,6 +29,7 @@ from app.services.mail_service import MailServiceError
 from app.services.name_rules import InvalidName
 from app.services.password_link_service import live_invite_expiries, live_invite_expiry
 from app.services.phone_service import InvalidPhoneNumber
+from app.services.sign_in_state import SignInState, sign_in_states
 from app.services.tutor_service import TutorPhoneNumberTaken, TutorUniqueViolation
 from app.services.user_service import (
     EmailTaken,
@@ -53,6 +54,7 @@ from app.services.user_service import (
 
 EMAIL_TAKEN_ERROR = "A user with that email already exists"
 USER_NOT_FOUND_ERROR = "User not found"
+INVALID_SIGN_IN_STATE_ERROR = "sign_in_state must be one of: not_invited, invited, active"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
 PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
 SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role or deactivate your own account"
@@ -82,17 +84,35 @@ def list_all(
     user: AdminPrincipal,
     db: DbSession,
     archived: bool = False,
+    sign_in_state: str | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[UserRead]:
+    try:
+        wanted_state = None if sign_in_state is None else SignInState(sign_in_state)
+    except ValueError as exc:
+        # 422, not the app-wide 400 for a malformed query: the value is well-formed but unknown.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_SIGN_IN_STATE_ERROR
+        ) from exc
+
     users, total = list_users(
-        db, is_archived=archived, limit=page_size, offset=(page - 1) * page_size
+        db,
+        is_archived=archived,
+        sign_in_state=wanted_state,
+        limit=page_size,
+        offset=(page - 1) * page_size,
     )
-    # One query for the page, not one per row.
-    expiries = live_invite_expiries(db, user_ids=[row.id for row in users], now=datetime.now(UTC))
+    # One query each for the page, not one per row.
+    ids = [row.id for row in users]
+    expiries = live_invite_expiries(db, user_ids=ids, now=datetime.now(UTC))
+    states = sign_in_states(db, user_ids=ids)
 
     return Page[UserRead](
-        items=[_read(row, invite_expires_at=expiries.get(row.id)) for row in users],
+        items=[
+            _read(row, sign_in_state=states[row.id], invite_expires_at=expiries.get(row.id))
+            for row in users
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -141,7 +161,7 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
 
     db.commit()
 
-    return _read(created, invite_expires_at=None)
+    return _read_with_invite(db, created)
 
 
 @router.patch("/{user_id}", response_model=UserRead)
@@ -262,10 +282,14 @@ def password_reset(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> N
 def _read_with_invite(db: Session, user: User, *, now: datetime | None = None) -> UserRead:
     expiry = live_invite_expiry(db, user_id=user.id, now=now or datetime.now(UTC))
 
-    return _read(user, invite_expires_at=expiry)
+    state = sign_in_states(db, user_ids=[user.id])[user.id]
+
+    return _read(user, sign_in_state=state, invite_expires_at=expiry)
 
 
-def _read(user: User, *, invite_expires_at: datetime | None) -> UserRead:
+def _read(
+    user: User, *, sign_in_state: SignInState, invite_expires_at: datetime | None
+) -> UserRead:
     return UserRead(
         id=user.id,
         email=user.email,
@@ -273,7 +297,7 @@ def _read(user: User, *, invite_expires_at: datetime | None) -> UserRead:
         role=user.role,
         tutor_id=user.profile_id,
         archived=user.is_archived,
-        has_password=user.hashed_password is not None,
+        sign_in_state=sign_in_state,
         invite_expires_at=invite_expires_at,
     )
 

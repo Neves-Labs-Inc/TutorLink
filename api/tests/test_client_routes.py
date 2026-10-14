@@ -568,24 +568,40 @@ def test_patching_the_phone_number_moves_that_column_and_nothing_else(
     assert [row["id"] for row in body["children"]] == [str(child.id)]
 
 
-def test_patch_deactivates_and_reactivates(api: TestClient, db: Session) -> None:
-    """The only deactivation path there is — REQ-032.9, and why there is no DELETE."""
+def test_archive_and_restore_move_the_client_out_of_and_back_into_the_list(
+    api: TestClient, db: Session
+) -> None:
     admin = _make_user(db)
     client = _make_client(db)
     headers = _auth(admin)
+    target = {"type": "guardian", "id": str(client.id)}
 
-    deactivated = api.patch(f"/api/clients/{client.id}", headers=headers, json={"is_active": False})
-    listed_while_dormant = api.get("/api/clients", headers=headers).json()
-    reactivated = api.patch(f"/api/clients/{client.id}", headers=headers, json={"is_active": True})
+    archived = api.post("/api/archive", headers=headers, json=target)
+    listed_while_archived = api.get("/api/clients", headers=headers).json()
+    restored = api.post("/api/restore", headers=headers, json=target)
 
-    assert deactivated.json()["archived"] is True
-    assert listed_while_dormant["total"] == 0
-    assert reactivated.json()["archived"] is False
+    assert archived.json()["archived"] is True
+    assert listed_while_archived["total"] == 0
+    assert restored.json()["archived"] is False
     assert api.get("/api/clients", headers=headers).json()["total"] == 1
 
 
+def test_patch_ignores_is_active(api: TestClient, db: Session) -> None:
+    """Archive and Restore are `POST /api/archive` and `/api/restore`, not this."""
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    response = api.patch(
+        f"/api/clients/{client.id}", headers=_auth(admin), json={"is_active": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
+    assert api.get("/api/clients", headers=_auth(admin)).json()["total"] == 1
+
+
 def test_delete_is_not_offered(api: TestClient, db: Session) -> None:
-    """Deactivation is `PATCH {"is_active": false}`; the frozen contract lists no DELETE."""
+    """Archive is `POST /api/archive`; the frozen contract lists no DELETE."""
     admin = _make_user(db)
     client = _make_client(db)
 

@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
-from app.schemas.archived import to_archived
 from app.schemas.client import (
     ChildRead,
     ClientCreate,
@@ -31,6 +30,7 @@ from app.schemas.client import (
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.client_service import (
+    CLIENT_NOT_FOUND_ERROR,
     ActingUserNotFound,
     ClientDetail,
     ClientNotFound,
@@ -45,7 +45,6 @@ from app.services.client_service import (
 )
 from app.services.phone_service import InvalidPhoneNumber
 
-CLIENT_NOT_FOUND_ERROR = "Client not found"
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
 ACTING_USER_NOT_FOUND_ERROR = "Your account no longer exists; sign in again"
@@ -125,7 +124,6 @@ def update(
             client_id=client_id,
             name=payload.name,
             phone_number=payload.phone_number,
-            is_archived=to_archived(payload.is_active),
             acting_user_id=user.id,
         )
     except ClientNotFound as exc:

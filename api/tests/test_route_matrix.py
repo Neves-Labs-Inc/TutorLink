@@ -78,7 +78,9 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("PATCH", "/api/exceptions/{exception_id}"): Access.STAFF,
     ("POST", "/api/subjects"): Access.STAFF,
     ("PATCH", "/api/subjects/{subject_id}"): Access.STAFF,
-    ("DELETE", "/api/subjects/{subject_id}"): Access.STAFF,
+    # Guardian, Home and Subject are Office; a type with a stricter rule checks it itself.
+    ("POST", "/api/archive"): Access.STAFF,
+    ("POST", "/api/restore"): Access.STAFF,
     ("GET", "/api/clients"): Access.STAFF,
     ("GET", "/api/clients/{client_id}"): Access.STAFF,
     ("POST", "/api/clients"): Access.STAFF,

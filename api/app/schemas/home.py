@@ -26,4 +26,3 @@ class HomeUpdate(BaseModel):
     label: str | None = Field(default=None, max_length=HOME_FIELD_MAX_LENGTH)
     address: str | None = None
     access_code: str | None = Field(default=None, max_length=HOME_FIELD_MAX_LENGTH)
-    is_active: bool | None = None

@@ -1,17 +1,14 @@
 """`POST /api/clients/{id}/homes` and `PATCH /api/homes/{id}` over HTTP — REQ-102.
 
-The deactivation guard carries the weight here. The business clock (`clock.business_now`) is
-frozen at 12:00, so "later today" and "earlier today" are real cases rather than whatever the
-wall clock happens to make them: a live booking at 14:00 today blocks, one at 09:00 today does
-not. Every refusal also re-reads the row, because a 409 whose body is right but whose
-other fields were applied anyway is the failure A-49 exists to prevent.
+Archiving a Home, and its upcoming-bookings guard, is `tests/test_archive_routes.py`. Every
+refusal here re-reads the row, because a 400 whose body is right but whose other fields were
+applied anyway is the failure A-49 exists to prevent.
 
 Every negative case asserts the exact `{"detail": "..."}` body, not merely the status.
 """
 
 import datetime
 import uuid
-from collections.abc import Callable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,7 +20,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.enums import UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import ChildHome, GuardianHome, Home
 from app.models.subject import Subject
@@ -39,21 +36,11 @@ CLIENT_NOT_FOUND_ERROR = "Client not found"
 HOME_NOT_FOUND_ERROR = "Home not found"
 BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
 CHILD_NOT_LINKED_ERROR = "child_ids must name children linked to this client"
-UPCOMING_BOOKINGS_ERROR = "Home has upcoming bookings; cancel or move them first"
 
 HOME_READ_KEYS = {"id", "label", "address", "access_code", "archived"}
 
-NOW = datetime.datetime(2031, 3, 4, 12, 0)
-TODAY = NOW.date()
-TOMORROW = TODAY + datetime.timedelta(days=1)
-YESTERDAY = TODAY - datetime.timedelta(days=1)
-
 NINE = datetime.time(9, 0)
-TEN = datetime.time(10, 0)
-ELEVEN = datetime.time(11, 0)
 TWELVE = datetime.time(12, 0)
-FOURTEEN = datetime.time(14, 0)
-FIFTEEN = datetime.time(15, 0)
 
 
 # --- POST /api/clients/{id}/homes -----------------------------------------------------------
@@ -296,111 +283,31 @@ def test_patch_access_code_over_64_characters_is_400(api: TestClient, db: Sessio
     assert _reloaded(db, home).access_code == "1234"
 
 
-@pytest.mark.parametrize(
-    ("on", "start", "end", "status"),
-    [
-        (TOMORROW, TEN, ELEVEN, BookingStatus.CONFIRMED),
-        (TOMORROW, TEN, ELEVEN, BookingStatus.PENDING),
-        (TODAY, FOURTEEN, FIFTEEN, BookingStatus.CONFIRMED),
-    ],
-    ids=["confirmed_tomorrow", "pending_tomorrow", "confirmed_later_today"],
-)
-def test_deactivating_a_home_with_an_upcoming_live_booking_is_409_and_applies_nothing(
-    api: TestClient,
-    db: Session,
-    freeze_business_clock: Callable[[datetime.datetime], None],
-    on: datetime.date,
-    start: datetime.time,
-    end: datetime.time,
-    status: BookingStatus,
-) -> None:
-    freeze_business_clock(NOW)
-    admin = _make_user(db)
-    home = _make_home(db, client=_make_client(db))
-    _book(db, home=home, on=on, start=start, end=end, status=status)
-
-    response = _patch(api, admin, home.id, {"is_active": False, "label": "X"})
-
-    _assert_detail(response, 409, UPCOMING_BOOKINGS_ERROR)
-    reloaded = _reloaded(db, home)
-    assert reloaded.is_archived is False
-    assert reloaded.label == "Mum's"
-
-
-@pytest.mark.parametrize(
-    ("on", "start", "end", "status"),
-    [
-        (TOMORROW, TEN, ELEVEN, BookingStatus.CANCELLED),
-        (YESTERDAY, TEN, ELEVEN, BookingStatus.CONFIRMED),
-        (TODAY, NINE, TEN, BookingStatus.CONFIRMED),
-        (TODAY, TWELVE, FOURTEEN, BookingStatus.CONFIRMED),
-    ],
-    ids=[
-        "cancelled_tomorrow",
-        "confirmed_yesterday",
-        "confirmed_earlier_today",
-        "confirmed_starting_exactly_now",
-    ],
-)
-def test_deactivating_a_home_with_no_upcoming_live_booking_succeeds(
-    api: TestClient,
-    db: Session,
-    freeze_business_clock: Callable[[datetime.datetime], None],
-    on: datetime.date,
-    start: datetime.time,
-    end: datetime.time,
-    status: BookingStatus,
-) -> None:
-    freeze_business_clock(NOW)
-    admin = _make_user(db)
-    home = _make_home(db, client=_make_client(db))
-    _book(db, home=home, on=on, start=start, end=end, status=status)
-
-    response = _patch(api, admin, home.id, {"is_active": False})
-
-    assert response.status_code == 200
-    assert response.json()["archived"] is True
-    assert _reloaded(db, home).is_archived is True
-
-
-def test_a_booking_at_another_home_does_not_block_deactivation(
-    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
-) -> None:
-    freeze_business_clock(NOW)
-    admin = _make_user(db)
-    client = _make_client(db)
-    home = _make_home(db, client=client)
-    other = _make_home(db, client=client)
-    _book(db, home=other, on=TOMORROW, start=TEN, end=ELEVEN, status=BookingStatus.CONFIRMED)
-
-    response = _patch(api, admin, home.id, {"is_active": False})
-
-    assert response.status_code == 200
-    assert response.json()["archived"] is True
-
-
-def test_patch_reactivates_a_deactivated_home(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    home = _make_home(db, client=_make_client(db), is_archived=True)
-
-    response = _patch(api, admin, home.id, {"is_active": True})
-
-    assert response.status_code == 200
-    assert response.json()["archived"] is False
-    assert _reloaded(db, home).is_archived is False
-
-
 def test_patch_leaves_every_link_in_place(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     client = _make_client(db)
     home = _make_home(db, client=client)
     child = _make_child(db, guardians=[client], homes=[home])
 
-    response = _patch(api, admin, home.id, {"is_active": False, "address": "10 Elm St"})
+    response = _patch(api, admin, home.id, {"address": "10 Elm St"})
 
     assert response.status_code == 200
     assert _guardian_home_ids(db, client) == [home.id]
     assert _child_home_pairs(db, home.id) == {(child.id, home.id)}
+
+
+@pytest.mark.parametrize("is_active", [False, True])
+def test_patch_ignores_is_active(api: TestClient, db: Session, is_active: bool) -> None:
+    """Archive and Restore moved to `POST /api/archive` and `/api/restore`."""
+    admin = _make_user(db)
+    home = _make_home(db, client=_make_client(db), is_archived=is_active)
+
+    response = _patch(api, admin, home.id, {"is_active": is_active, "label": "X"})
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is is_active
+    assert _reloaded(db, home).is_archived is is_active
+    assert _reloaded(db, home).label == "X"
 
 
 def test_patch_an_unknown_home_is_404(api: TestClient, db: Session) -> None:
@@ -411,11 +318,11 @@ def test_patch_an_unknown_home_is_404(api: TestClient, db: Session) -> None:
     _assert_detail(response, 404, HOME_NOT_FOUND_ERROR)
 
 
-def test_a_deactivated_home_is_refused_by_post_bookings_and_bookable_once_reactivated(
+def test_an_archived_home_is_refused_by_post_bookings_and_bookable_once_restored(
     api: TestClient, db: Session
 ) -> None:
     """The existing `booking_write_service` retirement rule, asserted once — not re-implemented.
-    Reactivating proves the refusal came from the home and nothing else in the payload."""
+    Restoring proves the refusal came from the home and nothing else in the payload."""
     admin = _make_user(db)
     client = _make_client(db)
     home = _make_home(db, client=client)
@@ -438,12 +345,14 @@ def test_a_deactivated_home_is_refused_by_post_bookings_and_bookable_once_reacti
         "end_time": "11:00:00",
     }
 
-    assert _patch(api, admin, home.id, {"is_active": False}).status_code == 200
+    target = {"type": "home", "id": str(home.id)}
+
+    assert api.post("/api/archive", json=target, headers=_auth(admin)).status_code == 200
     refused = api.post("/api/bookings", json=payload, headers=_auth(admin))
     _assert_detail(refused, 400, REFERENCE_NOT_FOUND_ERROR)
     assert _booking_count(db, home) == 0
 
-    assert _patch(api, admin, home.id, {"is_active": True}).status_code == 200
+    assert api.post("/api/restore", json=target, headers=_auth(admin)).status_code == 200
     accepted = api.post("/api/bookings", json=payload, headers=_auth(admin))
     assert accepted.status_code == 201
     assert _booking_count(db, home) == 1
@@ -499,7 +408,6 @@ def test_the_shared_literals_match_the_routers_that_already_declare_them() -> No
     assert client_homes.BLANK_HOME_DETAILS_ERROR == BLANK_HOME_DETAILS_ERROR
     assert client_homes.CHILD_NOT_LINKED_ERROR == CHILD_NOT_LINKED_ERROR
     assert homes.HOME_NOT_FOUND_ERROR == HOME_NOT_FOUND_ERROR
-    assert homes.HOME_HAS_UPCOMING_BOOKINGS_ERROR == UPCOMING_BOOKINGS_ERROR
 
 
 # --- helpers --------------------------------------------------------------------------------
@@ -668,33 +576,3 @@ def _make_child(
     db.flush()
 
     return child
-
-
-def _book(
-    db: Session,
-    *,
-    home: Home,
-    on: datetime.date,
-    start: datetime.time,
-    end: datetime.time,
-    status: BookingStatus,
-) -> Booking:
-    tutor = _make_tutor(db)
-    client = _make_client(db)
-    booking = Booking(
-        child_id=_make_child(db, guardians=[client], homes=[home]).id,
-        user_id=tutor.user_id,
-        kind=BookingKind.REGULAR,
-        location=BookingLocation.HOME,
-        subject_id=_make_subject(db).id,
-        availability_id=_make_availability(db, tutor=tutor, weekday=on.weekday()).id,
-        home_id=home.id,
-        scheduled_date=on,
-        start_time=start,
-        end_time=end,
-        status=status,
-    )
-    db.add(booking)
-    db.flush()
-
-    return booking

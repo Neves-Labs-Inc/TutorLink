@@ -8,21 +8,19 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal, Principal
-from app.schemas.archived import to_archived
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.subject import SubjectCreate, SubjectRead, SubjectUpdate
 from app.services.subject_service import (
     KEEP,
+    SUBJECT_NOT_FOUND_ERROR,
     SubjectNameTaken,
     SubjectNotFound,
     SubjectWithCount,
     create_subject,
-    deactivate_subject,
     list_subjects,
     update_subject,
 )
 
-SUBJECT_NOT_FOUND_ERROR = "Subject not found"
 SUBJECT_NAME_TAKEN_ERROR = "A subject with that name already exists"
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -85,7 +83,6 @@ def update(
             subject_id=subject_id,
             name=payload.name,
             description=payload.description,
-            is_archived=to_archived(payload.is_active),
             # Left out keeps the stored name; `null` or blank clears it.
             name_es=payload.name_es if "name_es" in payload.model_fields_set else KEEP,
         )
@@ -97,15 +94,3 @@ def update(
     db.commit()
 
     return _read(updated)
-
-
-@router.delete("/{subject_id}", response_model=SubjectRead)
-def soft_delete(subject_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> SubjectRead:
-    try:
-        deactivated = deactivate_subject(db, subject_id=subject_id)
-    except SubjectNotFound as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, SUBJECT_NOT_FOUND_ERROR) from exc
-
-    db.commit()
-
-    return _read(deactivated)

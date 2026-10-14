@@ -427,7 +427,7 @@ def test_password_never_comes_back(api: TestClient, db: Session) -> None:
 
     assert "password" not in body
     assert "hashed_password" not in body
-    assert body["has_password"] is False
+    assert "has_password" not in body
     assert PASSWORD not in str(body)
 
 
@@ -447,7 +447,8 @@ def test_every_created_role_has_no_password_and_no_invite_yet(
 
     body = response.json()
     assert response.status_code == 201
-    assert body["has_password"] is False
+    assert "has_password" not in body
+    assert body["sign_in_state"] == "not_invited"
     assert body["invite_expires_at"] is None
     assert db.get_one(User, uuid.UUID(body["id"])).hashed_password is None
 
@@ -462,7 +463,7 @@ def test_a_password_in_the_create_body_is_ignored(api: TestClient, db: Session) 
     )
 
     assert response.status_code == 201
-    assert response.json()["has_password"] is False
+    assert response.json()["sign_in_state"] == "not_invited"
     assert db.get_one(User, uuid.UUID(response.json()["id"])).hashed_password is None
 
 
@@ -490,17 +491,18 @@ def test_a_password_in_a_patch_leaves_the_hash_alone(api: TestClient, db: Sessio
     assert passwordless.hashed_password is None
 
 
-def test_the_list_says_who_has_a_password(api: TestClient, db: Session) -> None:
+def test_the_list_says_who_is_active(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     passwordless = _make_user(db)
     passwordless.hashed_password = None
     db.flush()
 
     items = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
-    by_id = {item["id"]: item["has_password"] for item in items}
+    by_id = {item["id"]: item["sign_in_state"] for item in items}
 
-    assert by_id[str(admin.id)] is True
-    assert by_id[str(passwordless.id)] is False
+    assert by_id[str(admin.id)] == "active"
+    assert by_id[str(passwordless.id)] == "not_invited"
+    assert all("has_password" not in item for item in items)
 
 
 # --- the two ways a tutor account names its profile -----------------------------------------
@@ -1070,7 +1072,7 @@ def test_inviting_a_user_without_a_login_emails_a_single_use_link(
     assert response.status_code == 200
     body = response.json()
     assert body["id"] == str(invitee.id)
-    assert body["has_password"] is False
+    assert body["sign_in_state"] == "invited"
     expires_at = datetime.fromisoformat(body["invite_expires_at"])
     expected = datetime.now(UTC) + timedelta(days=INVITE_DAYS)
     assert abs(expires_at - expected) < CLOCK_SLACK
@@ -1189,7 +1191,7 @@ def test_a_failed_send_keeps_no_link_and_the_user_is_not_invited(
     assert _links(db, invitee) == []
     shown = api.get(f"/api/users/{invitee.id}", headers=headers).json()
     assert shown["invite_expires_at"] is None
-    assert shown["has_password"] is False
+    assert shown["sign_in_state"] == "not_invited"
 
 
 def test_a_failed_resend_keeps_the_earlier_link_live(
@@ -1716,3 +1718,100 @@ def test_a_developer_may_still_change_their_own_role_and_deactivate_themselves(
     assert demoted.json()["role"] == "admin"
     assert deleted.status_code == 200
     assert deleted.json()["archived"] is True
+
+
+# --- sign-in state ---------------------------------------------------------------------------
+
+
+def _state_of(api: TestClient, headers: dict[str, str], user: User) -> dict[str, object]:
+    return api.get(f"/api/users/{user.id}", headers=headers).json()
+
+
+def test_a_lapsed_invite_still_reads_invited_without_an_expiry(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+    (link,) = _links(db, invitee)
+    link.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.flush()
+
+    body = _state_of(api, headers, invitee)
+
+    assert body["sign_in_state"] == "invited"
+    assert body["invite_expires_at"] is None
+
+
+def test_a_revoked_invite_still_reads_invited_without_an_expiry(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db, role=UserRole.TUTOR)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    changed = api.patch(
+        f"/api/users/{invitee.id}", headers=headers, json={"email": "elsewhere@example.com"}
+    ).json()
+
+    assert changed["sign_in_state"] == "invited"
+    assert changed["invite_expires_at"] is None
+
+
+def test_a_user_with_a_password_and_a_live_reset_link_reads_active(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    target = _make_tutor_user(db)
+    headers = _auth(admin)
+    api.post(f"/api/users/{target.id}/password-reset", headers=headers)
+
+    assert _state_of(api, headers, target)["sign_in_state"] == "active"
+
+
+def test_an_archived_invited_user_reads_invited_and_is_filterable(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db, role=UserRole.TUTOR)
+    headers = _auth(admin)
+    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+    api.delete(f"/api/users/{invitee.id}", headers=headers)
+
+    body = api.get("/api/users?archived=true&sign_in_state=invited", headers=headers).json()
+
+    assert [item["id"] for item in body["items"]] == [str(invitee.id)]
+    assert body["items"][0]["sign_in_state"] == "invited"
+    assert body["total"] == 1
+
+
+def test_the_list_filters_by_sign_in_state_with_a_matching_total(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    invited = [_make_invitee(db) for _ in range(3)]
+    never = _make_invitee(db)
+    headers = _auth(admin)
+    for invitee in invited:
+        api.post(f"/api/users/{invitee.id}/invite", headers=headers)
+
+    def ids_for(state: str, extra: str = "") -> tuple[set[str], int]:
+        body = api.get(f"/api/users?sign_in_state={state}{extra}", headers=headers).json()
+        return {item["id"] for item in body["items"]}, body["total"]
+
+    assert ids_for("invited") == ({str(user.id) for user in invited}, 3)
+    assert ids_for("not_invited") == ({str(never.id)}, 1)
+    assert ids_for("active") == ({str(admin.id)}, 1)
+    page, total = ids_for("invited", "&page_size=2")
+    assert len(page) == 2
+    assert total == 3
+
+
+def test_a_bogus_sign_in_state_filter_is_422(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get("/api/users?sign_in_state=sideways", headers=_auth(admin))
+
+    assert response.status_code == 422

@@ -11,6 +11,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.config import get_settings
 from app.db import SessionLocal
 from app.routers import (
+    archive,
     auth,
     availability,
     booking_status,
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(exceptions.router)
     app.include_router(settings.router)
     app.include_router(subjects.router)
+    app.include_router(archive.router)
     app.include_router(clients.router)
     app.include_router(client_bookings.router)
     app.include_router(client_reminders.router)

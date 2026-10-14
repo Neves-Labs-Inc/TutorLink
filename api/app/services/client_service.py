@@ -44,6 +44,8 @@ from app.services.phone_service import normalize_phone_number
 
 logger = logging.getLogger(__name__)
 
+CLIENT_NOT_FOUND_ERROR = "Client not found"
+
 # The Staff-only line a number change leaves in the Guardian's thread; numbers as stored.
 NUMBER_CHANGE_NOTE = "Number changed from {previous} to {current} by {staff}"
 
@@ -204,10 +206,9 @@ def update_client(
     client_id: uuid.UUID,
     name: str | None,
     phone_number: str | None,
-    is_archived: bool | None,
     acting_user_id: uuid.UUID,
 ) -> ClientDetail:
-    """The only deactivation and reactivation path there is; `is_archived` moves either way.
+    """Archive and Restore are `archive_service`'s, not this.
 
     The duplicate check excludes this client, so a `PATCH` echoing back the number already
     stored — in any format, since both sides are normalised first — is a no-op on that field
@@ -260,7 +261,7 @@ def update_client(
     # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`):
     # assigned above the block, the UPDATE would run outside the savepoint and a constraint
     # violation would deactivate the whole request's transaction, leaving the `Session`
-    # unusable even though this raises the right error. Nothing in the block but three
+    # unusable even though this raises the right error. Nothing in the block but two
     # in-memory assignments and the flush, so no other failure can be mislabelled. The
     # constraint is matched by the exception, never by its name — see `create_client`.
     try:
@@ -270,9 +271,6 @@ def update_client(
 
             if name is not None:
                 client.name = name
-
-            if is_archived is not None:
-                client.is_archived = is_archived
 
             db.flush()
     except IntegrityError as exc:

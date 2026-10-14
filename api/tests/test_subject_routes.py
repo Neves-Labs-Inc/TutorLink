@@ -126,7 +126,7 @@ def test_a_tutor_may_read_the_list(api: TestClient, db: Session) -> None:
     assert "tutor_count" in response.json()["items"][0]
 
 
-@pytest.mark.parametrize("method", ["post", "patch", "delete"])
+@pytest.mark.parametrize("method", ["post", "patch"])
 def test_a_tutor_is_refused_every_write(api: TestClient, db: Session, method: str) -> None:
     tutor = _make_tutor(db).user
     tutor.hashed_password = hash_password(PASSWORD)
@@ -136,12 +136,10 @@ def test_a_tutor_is_refused_every_write(api: TestClient, db: Session, method: st
 
     if method == "post":
         response = api.post("/api/subjects", headers=headers, json={"name": "New"})
-    elif method == "patch":
+    else:
         response = api.patch(
             f"/api/subjects/{subject.id}", headers=headers, json={"name": "Renamed"}
         )
-    else:
-        response = api.delete(f"/api/subjects/{subject.id}", headers=headers)
 
     assert response.status_code == 403
 
@@ -162,11 +160,9 @@ def test_a_developer_token_reaches_every_write_route(api: TestClient, db: Sessio
     updated = api.patch(
         f"/api/subjects/{subject_id}", headers=headers, json={"description": "core"}
     )
-    deleted = api.delete(f"/api/subjects/{subject_id}", headers=headers)
 
     assert created.status_code == 201
     assert updated.status_code == 200
-    assert deleted.status_code == 200
 
 
 # --- REQ-031.2/.3: `tutor_count` -------------------------------------------------------------
@@ -203,7 +199,7 @@ def test_tutor_count_is_zero_and_present_with_no_assignments(api: TestClient, db
     assert body["items"][0]["tutor_count"] == 0
 
 
-def test_a_deactivated_subject_still_reports_its_real_tutor_count(
+def test_an_archived_subject_still_reports_its_real_tutor_count(
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
@@ -211,7 +207,7 @@ def test_a_deactivated_subject_still_reports_its_real_tutor_count(
     _assign(db, tutor=_make_tutor(db), subject=subject)
     headers = _auth(admin)
 
-    api.delete(f"/api/subjects/{subject.id}", headers=headers)
+    api.post("/api/archive", headers=headers, json={"type": "subject", "id": str(subject.id)})
     body = api.get("/api/subjects?archived=true", headers=headers).json()
 
     assert body["items"][0]["tutor_count"] == 1
@@ -357,15 +353,33 @@ def test_the_constraint_answers_a_case_variant_when_the_pre_check_does_not(
     assert api.get("/api/subjects", headers=headers).status_code == 200
 
 
-def test_delete_sets_is_active_false_and_the_row_survives(api: TestClient, db: Session) -> None:
+def test_delete_is_gone(api: TestClient, db: Session) -> None:
+    """Archive is `POST /api/archive`; the row survives either way."""
     admin = _make_user(db)
     subject = _make_subject(db)
 
     response = api.delete(f"/api/subjects/{subject.id}", headers=_auth(admin))
 
+    assert response.status_code == 405
+    db.expire_all()
+    assert db.get_one(Subject, subject.id).is_archived is False
+
+
+def test_patch_ignores_is_active(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    subject = _make_subject(db)
+
+    response = api.patch(
+        f"/api/subjects/{subject.id}",
+        headers=_auth(admin),
+        json={"is_active": False, "description": "core"},
+    )
+
     assert response.status_code == 200
-    assert response.json()["archived"] is True
-    assert db.get(Subject, subject.id) is not None
+    assert response.json()["archived"] is False
+    assert response.json()["description"] == "core"
+    db.expire_all()
+    assert db.get_one(Subject, subject.id).is_archived is False
 
 
 def test_unknown_id_is_404(api: TestClient, db: Session) -> None:

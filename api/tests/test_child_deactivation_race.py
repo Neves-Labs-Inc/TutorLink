@@ -20,9 +20,9 @@ deactivation no longer waits and cancels one session while a second commits behi
 because the booking's foreign key only waits for the deactivation and then inserts a live session
 for an inactive child.
 
-The same two orders are run against `PATCH /api/homes/{id}`, whose guard refuses while a booking
-at the home is upcoming: booking first, the guard waits and then sees it (409); deactivation
-first, the booking waits and then sees the home inactive (400). They book at `spare_home_id`, a
+The same two orders are run against a Home's `POST /api/archive`, whose guard refuses while a
+booking at the home is upcoming: booking first, the guard waits and then sees it (409); archive
+first, the booking waits and then sees the home archived (400). They book at `spare_home_id`, a
 second home of the child with nothing on it, so the guard has nothing to find but the racing
 booking. Without the home's `FOR SHARE` they fail the same two ways.
 
@@ -55,12 +55,15 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.routers import children as children_router
-from app.routers import homes as homes_router
 from app.routers.booking_writes import REFERENCE_NOT_FOUND_ERROR
 from app.routers.children import UPCOMING_SESSIONS_CHANGED_ERROR
-from app.routers.homes import HOME_HAS_UPCOMING_BOOKINGS_ERROR
 from app.security import create_access_token, hash_password
 from app.services import booking_status_service, booking_write_service
+from app.services.archive_service import (
+    HOME_HAS_UPCOMING_BOOKINGS_ERROR,
+    ArchiveResult,
+    ArchiveService,
+)
 
 HOLD_SECONDS = 0.5
 NINE = datetime.time(9, 0)
@@ -260,7 +263,10 @@ def test_a_home_deactivation_behind_an_open_booking_waits_then_sees_it(
     assert booked[0].status_code == 201
     assert b_elapsed[0] >= HOLD_SECONDS * 0.8
     assert deactivated[0].status_code == 409
-    assert deactivated[0].json() == {"detail": HOME_HAS_UPCOMING_BOOKINGS_ERROR}
+    assert deactivated[0].json() == {
+        "detail": HOME_HAS_UPCOMING_BOOKINGS_ERROR,
+        "booking_ids": [booked[0].json()["id"]],
+    }
     with committed_sessions() as session:
         assert session.get_one(Home, world.spare_home_id).is_archived is False
         assert _statuses_at(session, world.spare_home_id) == [BookingStatus.CONFIRMED]
@@ -276,15 +282,15 @@ def test_a_booking_behind_an_open_home_deactivation_waits_then_is_refused(
     booked: list[Response] = []
     deactivated: list[Response] = []
     a_elapsed: list[float] = []
-    update_home = homes_router.update_home
+    archive = ArchiveService.archive
 
-    def update_then_hold(*args: Any, **kwargs: Any) -> Home:
-        home = update_home(*args, **kwargs)
+    def archive_then_hold(*args: Any, **kwargs: Any) -> ArchiveResult:
+        result = archive(*args, **kwargs)
         b_locked.set()
         time.sleep(HOLD_SECONDS)
-        return home
+        return result
 
-    monkeypatch.setattr(homes_router, "update_home", update_then_hold)
+    monkeypatch.setattr(ArchiveService, "archive", archive_then_hold)
 
     def deactivate() -> None:
         deactivated.append(_deactivate_home(session_per_request_api, world))
@@ -493,8 +499,10 @@ def _deactivate(api: TestClient, world: World, *, expected: int) -> Response:
 
 
 def _deactivate_home(api: TestClient, world: World) -> Response:
-    return api.patch(
-        f"/api/homes/{world.spare_home_id}", headers=_auth(world.admin), json={"is_active": False}
+    return api.post(
+        "/api/archive",
+        headers=_auth(world.admin),
+        json={"type": "home", "id": str(world.spare_home_id)},
     )
 
 

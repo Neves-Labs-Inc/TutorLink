@@ -12,6 +12,8 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 
+SUBJECT_NOT_FOUND_ERROR = "Subject not found"
+
 
 class Keep(enum.Enum):
     """An update argument the caller left out, as opposed to `None`, which clears it."""
@@ -118,7 +120,6 @@ def update_subject(
     subject_id: uuid.UUID,
     name: str | None,
     description: str | None,
-    is_archived: bool | None,
     name_es: str | None | Keep = KEEP,
 ) -> SubjectWithCount:
     found = _get_with_count(db, subject_id=subject_id)
@@ -145,19 +146,8 @@ def update_subject(
             if description is not None:
                 subject.description = description
 
-            if is_archived is not None:
-                subject.is_archived = is_archived
-
             db.flush()
     except IntegrityError as exc:
         raise SubjectNameTaken from exc
 
     return SubjectWithCount(subject=subject, tutor_count=found.tutor_count)
-
-
-def deactivate_subject(db: Session, *, subject_id: uuid.UUID) -> SubjectWithCount:
-    found = _get_with_count(db, subject_id=subject_id)
-    found.subject.is_archived = True
-    db.flush()
-
-    return found

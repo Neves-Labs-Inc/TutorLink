@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import AfterValidator, BaseModel
 
 from app.models.enums import UserRole
+from app.services.sign_in_state import SignInState
 
 
 def _looks_like_an_email(value: str) -> str:
@@ -31,9 +32,9 @@ class UserRead(BaseModel):
     # Derived: the user's profile id, or null for a user with none. Read-only on every route.
     tutor_id: uuid.UUID | None
     archived: bool
-    # Whether the account can sign in by password; the hash itself is never exposed.
-    has_password: bool
-    # Always null until invites exist; declared now so the read shape stays stable.
+    # Computed on read, never stored; the password hash itself is never exposed.
+    sign_in_state: SignInState
+    # The live Invite's expiry; null when none is live, even for an `invited` user.
     invite_expires_at: datetime | None
 
 

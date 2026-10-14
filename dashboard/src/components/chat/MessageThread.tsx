@@ -1,12 +1,14 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Check, CheckCheck, CircleAlert, Clock, type LucideIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
+  countNewlyFailed,
   failedAnnouncement,
   formatMessageTimestamp,
   messageAlignment,
+  type MessageAreaState,
   messageStatusLabel,
   systemLineLabel,
 } from '@/lib/chatThread'
@@ -19,6 +21,10 @@ export type MessageThreadProps = {
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
+  loadState: MessageAreaState
+  loadError: string
+  onRetryLoad: () => void
+  olderFailed: boolean
   lastSentId: string | null
   isWindowOpen: boolean
   retry: NoticeRetry
@@ -50,18 +56,6 @@ const STATUS_ICONS: Partial<Record<Message['status'], LucideIcon>> = {
   failed: CircleAlert,
 }
 
-// Only a message already on screen moving to `failed` counts: one loaded failed, or an echo
-// replacing an optimistic bubble (a new id), is not a live change and the composer already says so.
-const hasNewlyFailed = (previous: Message[], next: Message[]): boolean => {
-  const previousStatuses = new Map(previous.map((message) => [message.id, message.status]))
-
-  return next.some((message) => {
-    const before = previousStatuses.get(message.id)
-
-    return message.status === 'failed' && before !== undefined && before !== 'failed'
-  })
-}
-
 const NEAR_BOTTOM_PX = 100
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 
@@ -79,12 +73,17 @@ export const MessageThread = ({
   hasMore,
   loadingMore,
   onLoadMore,
+  loadState,
+  loadError,
+  onRetryLoad,
+  olderFailed,
   lastSentId,
   isWindowOpen,
   retry,
 }: MessageThreadProps) => {
   const [previousMessages, setPreviousMessages] = useState(messages)
-  const [failedCount, setFailedCount] = useState(0)
+  // `batch` counts failure updates (it drives the announcement toggle); `count` is the size of the latest.
+  const [failures, setFailures] = useState({ batch: 0, count: 0 })
   const scrollerRef = useRef<HTMLDivElement>(null)
   // Last layout measured before the next render; starts "at the bottom".
   const distanceFromBottomRef = useRef(0)
@@ -141,9 +140,27 @@ export const MessageThread = ({
     distanceFromBottomRef.current = distance
   }
 
+  // The button unmounts once the last older page lands; if it held focus, hand it to the region
+  // instead of letting it drop to body.
+  const loadOlderHasFocusRef = useRef(false)
+
+  useEffect(() => {
+    if (hasMore || !loadOlderHasFocusRef.current) return
+
+    loadOlderHasFocusRef.current = false
+    scrollerRef.current?.focus({ preventScroll: true })
+  }, [hasMore])
+
+  const handleRetryLoad = () => {
+    // The button unmounts under the skeleton, so move focus to the region first.
+    scrollerRef.current?.focus({ preventScroll: true })
+    onRetryLoad()
+  }
+
   // Adjusted during render rather than in an effect, so the announcement lands with the update.
   if (messages !== previousMessages) {
-    if (hasNewlyFailed(previousMessages, messages)) setFailedCount((count) => count + 1)
+    const newlyFailed = countNewlyFailed(previousMessages, messages)
+    if (newlyFailed > 0) setFailures((current) => ({ batch: current.batch + 1, count: newlyFailed }))
     setPreviousMessages(messages)
   }
 
@@ -151,35 +168,108 @@ export const MessageThread = ({
     <div
       ref={scrollerRef}
       onScroll={handleScroll}
-      className="flex flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-4 py-4"
+      tabIndex={0}
+      role="region"
+      aria-label="Messages"
+      aria-busy={loadState === 'loading' ? true : undefined}
+      className="flex flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-4 py-4 ring-inset focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
     >
       {/* Stays mounted: swapping the node drops announcements in VoiceOver and NVDA. */}
       <p className="sr-only" aria-live="polite">
-        {failedAnnouncement(failedCount)}
+        {failedAnnouncement(failures.count, failures.batch)}
       </p>
 
-      {hasMore && (
-        <div className="flex justify-center">
-          <Button type="button" variant="outline" size="sm" disabled={loadingMore} onClick={onLoadMore}>
-            {loadingMore ? 'Loading…' : 'Load older messages'}
+      {loadState === 'loading' && (
+        <>
+          <span className="sr-only">Loading messages…</span>
+          <ThreadSkeleton />
+        </>
+      )}
+
+      {loadState === 'error' && (
+        <div className="m-auto flex max-w-sm flex-col items-center gap-3 px-2 text-center animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none">
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {loadError}
+          </p>
+          <Button type="button" variant="outline" className="h-11 md:h-8" onClick={handleRetryLoad}>
+            Try again
           </Button>
         </div>
       )}
 
-      {messages.length === 0 ? (
-        <p className="m-auto text-sm text-muted-foreground">No messages yet.</p>
-      ) : (
-        messages.map((message) =>
-          isBubbleMessage(message) ? (
-            <MessageBubble key={message.id} message={message} />
-          ) : (
-            <SystemLine key={message.id} message={message} isWindowOpen={isWindowOpen} retry={retry} />
-          ),
-        )
+      {loadState === 'empty' && <p className="m-auto text-sm text-muted-foreground">No messages yet.</p>}
+
+      {loadState === 'ready' && (
+        <>
+          {hasMore && (
+            <div className="flex flex-col items-center gap-1">
+              {/* aria-disabled (not disabled) while loading, so keyboard focus stays on the button. */}
+              <Button
+                onFocus={() => {
+                  loadOlderHasFocusRef.current = true
+                }}
+                onBlur={() => {
+                  loadOlderHasFocusRef.current = false
+                }}
+                type="button"
+                variant="outline"
+                size="sm"
+                className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                aria-disabled={loadingMore}
+                onClick={loadingMore ? undefined : onLoadMore}
+              >
+                {loadingMore ? 'Loading…' : 'Load older messages'}
+              </Button>
+              {olderFailed && !loadingMore && (
+                <p
+                  role="alert"
+                  className="text-sm font-medium text-destructive animate-in fade-in-0 duration-150 ease-out motion-reduce:animate-none"
+                >
+                  Couldn&apos;t load older messages.
+                </p>
+              )}
+            </div>
+          )}
+
+          {messages.map((message) =>
+            isBubbleMessage(message) ? (
+              <MessageBubble key={message.id} message={message} />
+            ) : (
+              <SystemLine key={message.id} message={message} isWindowOpen={isWindowOpen} retry={retry} />
+            ),
+          )}
+        </>
       )}
     </div>
   )
 }
+
+type SkeletonBubbleSpec = { align: 'start' | 'end'; height: 'h-9' | 'h-14'; width: string }
+
+const SKELETON_BUBBLES: SkeletonBubbleSpec[] = [
+  { align: 'start', height: 'h-9', width: 'w-2/3 sm:w-2/5' },
+  { align: 'start', height: 'h-14', width: 'w-3/4 sm:w-1/2' },
+  { align: 'end', height: 'h-9', width: 'w-1/2 sm:w-1/3' },
+  { align: 'start', height: 'h-9', width: 'w-3/5 sm:w-1/3' },
+  { align: 'end', height: 'h-14', width: 'w-2/3 sm:w-2/5' },
+]
+
+const SKELETON_BAR = 'rounded-lg bg-muted animate-pulse motion-reduce:animate-none'
+
+const ThreadSkeleton = () => (
+  <div aria-hidden="true" className="mt-auto flex flex-col gap-3">
+    {SKELETON_BUBBLES.map((bubble, index) => (
+      <SkeletonBubble key={index} {...bubble} />
+    ))}
+  </div>
+)
+
+const SkeletonBubble = ({ align, height, width }: SkeletonBubbleSpec) => (
+  <div className={cn('flex flex-col gap-1', align === 'end' ? 'items-end' : 'items-start')}>
+    <div className={cn(SKELETON_BAR, height, width)} />
+    <div className={cn(SKELETON_BAR, 'h-3 w-12')} />
+  </div>
+)
 
 const MessageBubble = ({ message }: { message: BubbleMessage }) => {
   const alignment = messageAlignment(message.author_kind)

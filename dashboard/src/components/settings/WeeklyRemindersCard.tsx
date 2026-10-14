@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import { useSettingsFocus } from '@/hooks/useSettingsFocus'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -105,14 +106,23 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
   const templateSettings = TEMPLATE_KEYS.flatMap((key) => settings.filter((setting) => setting.key === key))
   const setValue = (key: string, value: string) => setDraft((current) => ({ ...current, [key]: value }))
 
+  const { saveRef, savedRef, focusSave, markDiscarded } = useSettingsFocus({
+    status: save.status,
+    isSaveEnabled: updates.length > 0,
+    firstFieldId: 'reminder-weekday',
+  })
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (save.isPending) return
+    focusSave()
     save.mutate(updates)
   }
 
   const handleDiscard = () => {
     setDraft({})
     save.reset()
+    markDiscarded()
   }
 
   return (
@@ -178,7 +188,7 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
               {isReadOnly && <span className={pillClasses}>Locked</span>}
             </div>
             {isReadOnly ? (
-              <p className="font-mono text-sm">{timezone}</p>
+              <p className="min-w-0 font-mono text-sm wrap-anywhere">{timezone}</p>
             ) : (
               <div className="sm:max-w-sm">
                 <Select
@@ -219,7 +229,7 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
                 disabled={save.isPending}
                 onChange={(event) => setValue(setting.key, event.target.value)}
               />
-              <p className="font-mono text-xs text-muted-foreground">{setting.key}</p>
+              <p className="font-mono text-xs wrap-anywhere text-muted-foreground">{setting.key}</p>
             </div>
           ))}
         </CardContent>
@@ -230,7 +240,14 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <Button type="submit" className="h-11 md:h-8" disabled={updates.length === 0 || save.isPending}>
+            <Button
+              ref={saveRef}
+              type="submit"
+              className="h-11 md:h-8 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              disabled={updates.length === 0}
+              // aria-disabled (not disabled) while saving, so keyboard focus stays on the button.
+              aria-disabled={save.isPending}
+            >
               {save.isPending ? 'Saving…' : 'Save changes'}
             </Button>
             <Button
@@ -248,7 +265,14 @@ export const WeeklyRemindersCard = ({ page, role }: WeeklyRemindersCardProps) =>
               </span>
             )}
             {save.isSuccess && updates.length === 0 && (
-              <span className={cn('text-sm text-muted-foreground duration-150', FADE_IN)}>Saved.</span>
+              <span
+                ref={savedRef}
+                role="status"
+                tabIndex={-1}
+                className={cn('text-sm text-muted-foreground outline-none duration-150', FADE_IN)}
+              >
+                Saved.
+              </span>
             )}
           </div>
         </CardFooter>

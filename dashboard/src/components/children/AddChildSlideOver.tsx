@@ -44,6 +44,7 @@ export const AddChildSlideOver = ({
   const [uncheckedHomeIds, setUncheckedHomeIds] = useState<Set<string>>(new Set())
   const [draft, setDraft] = useState<ChildDraft>(EMPTY_CHILD_DRAFT)
   const [submitted, setSubmitted] = useState(false)
+  const [announcement, setAnnouncement] = useState('')
 
   const guardianDetailQueries = useQueries({
     queries: guardians.map((guardian) => guardianQueries.detail(guardian.id)),
@@ -74,6 +75,7 @@ export const AddChildSlideOver = ({
   const resetAndClose = () => {
     setGuardians(initialGuardiansFor(fixedGuardian))
     setPickerValue(null)
+    setAnnouncement('')
     setUncheckedHomeIds(new Set())
     setDraft(EMPTY_CHILD_DRAFT)
     setSubmitted(false)
@@ -107,12 +109,14 @@ export const AddChildSlideOver = ({
   const handlePickGuardian = (option: SearchPickerOption | null) => {
     if (option !== null) {
       setGuardians((current) => [...current, { id: option.id, name: option.label }])
+      setAnnouncement(`${option.label} added.`)
     }
 
     setPickerValue(null)
   }
 
   const handleRemoveGuardian = (guardianId: string) => {
+    setAnnouncement('')
     setGuardians((current) => current.filter((guardian) => guardian.id !== guardianId))
   }
 
@@ -275,13 +279,17 @@ export const AddChildSlideOver = ({
           </ul>
           <SearchPicker
             id="add-child-guardian-picker"
-            queryKeyPrefix={['guardians', 'picker']}
+            queryKeyPrefix={['guardians', 'picker', guardians.map((guardian) => guardian.id)]}
             search={searchGuardians}
             value={pickerValue}
             onChange={handlePickGuardian}
             disabled={busy}
             placeholder="Search guardians by name"
+            clearOnSelect
           />
+          <p className="sr-only" role="status" aria-live="polite">
+            {announcement}
+          </p>
         </div>
 
         <div className="space-y-2">

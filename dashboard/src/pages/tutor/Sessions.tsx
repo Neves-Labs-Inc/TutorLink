@@ -16,6 +16,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/useAuth'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import {
   bookingViewFromSearchParams,
@@ -119,6 +120,13 @@ const SessionList = () => {
   const sessions = useQuery({
     ...bookingQueries.list({ ...params, page, page_size: DEFAULT_PAGE_SIZE }),
     enabled: !isCalendar,
+  })
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data: sessions.data,
+    isPlaceholderData: sessions.isPlaceholderData,
+    isFetching: sessions.isFetching,
   })
   const weekDays = weekDaysIso(weekStart)
   const week = useQuery({
@@ -256,7 +264,7 @@ const SessionList = () => {
             columns={columns}
             rows={rows}
             rowKey={(booking) => booking.id}
-            status={sessions.isPending ? 'pending' : sessions.isError ? 'error' : 'ready'}
+            status={sessions.isPending || outOfRange ? 'pending' : sessions.isError ? 'error' : 'ready'}
             errorMessage={errorDetail(sessions.error) ?? LOAD_FALLBACK_ERROR}
             onRetry={() => sessions.refetch()}
             emptyMessage={emptyMessage}
@@ -266,11 +274,11 @@ const SessionList = () => {
           {/* The total is the server's count of the windowed query; the name search narrows the rows
               on screen and leaves it alone, which is what `searchHintLabel` says out loud. */}
           <Pager
-            page={page}
+            page={pagerPage}
             pageSize={DEFAULT_PAGE_SIZE}
-            total={sessions.data?.total ?? 0}
+            total={pagerTotal}
             onPageChange={setPage}
-            disabled={sessions.isPending}
+            disabled={sessions.isPending || outOfRange}
           />
         </div>
       )}

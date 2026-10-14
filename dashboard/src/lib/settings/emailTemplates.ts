@@ -81,7 +81,10 @@ export const validateBrandColor = (value: string): string | null =>
   BRAND_COLOR_PATTERN.test(value) ? null : BRAND_COLOR_ERROR
 
 // The API stores the colour uppercase, so comparisons and payloads use that form.
-export const normalizeBrandColor = (value: string): string => value.toUpperCase()
+// A pasted CSS declaration carries whitespace and a `;`, neither of which is ever valid hex.
+export const cleanBrandColor = (value: string): string => value.replaceAll(';', '').trim()
+
+export const normalizeBrandColor = (value: string): string => cleanBrandColor(value).toUpperCase()
 
 export const isPresetSelected = (preset: BrandColorPreset, draftColor: string): boolean =>
   preset.hex === normalizeBrandColor(draftColor)
@@ -118,11 +121,14 @@ export const validateTemplate = (
     return { field: 'body', message: `The body can be at most ${MAX_BODY_LENGTH} characters.` }
   }
 
-  const unknown = [...findPlaceholders(subject), ...findPlaceholders(body)].find(
-    (name) => !section.placeholders.includes(name),
-  )
-  if (unknown !== undefined) {
-    return { field: 'body', message: unknownPlaceholderMessage(section, unknown) }
+  const isUnknown = (name: string): boolean => !section.placeholders.includes(name)
+  const unknownInSubject = findPlaceholders(subject).find(isUnknown)
+  if (unknownInSubject !== undefined) {
+    return { field: 'subject', message: unknownPlaceholderMessage(section, unknownInSubject) }
+  }
+  const unknownInBody = findPlaceholders(body).find(isUnknown)
+  if (unknownInBody !== undefined) {
+    return { field: 'body', message: unknownPlaceholderMessage(section, unknownInBody) }
   }
   if (!findPlaceholders(body).includes(REQUIRED_PLACEHOLDER)) {
     return { field: 'body', message: `The body must include {${REQUIRED_PLACEHOLDER}}.` }

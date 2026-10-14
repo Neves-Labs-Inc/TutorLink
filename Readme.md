@@ -158,6 +158,16 @@ ngrok http 8000
 
 Set the resulting URL as your Twilio WhatsApp webhook: `https://<your-ngrok-url>/webhook/whatsapp`
 
+### Dashboard tests
+
+`npm run test` in `dashboard/` runs two Vitest projects: logic tests (`*.test.ts`) in Node, and component tests (`*.browser.test.tsx`) in a real headless Chromium through Vitest browser mode. Install that browser once per machine before the first run:
+
+```bash
+cd dashboard
+npm install
+npx playwright install chromium
+```
+
 ---
 
 ## Environment Variables

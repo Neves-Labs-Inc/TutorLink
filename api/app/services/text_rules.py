@@ -1,5 +1,6 @@
-"""The one rule for short, single-line text that Staff type and the Guardian later reads on
-WhatsApp: Display names (in Takeover notices) and Spanish Subject names (in bot replies).
+"""The rules for short, single-line text that Staff type: `clean_single_line` for what the
+Guardian later reads on WhatsApp (Display names in Takeover notices, Spanish Subject names in
+bot replies), and `normalize_single_line` for names that must only look like one line.
 
 Pure: no database and no framework, so a service and a request schema can both apply it.
 """
@@ -29,3 +30,22 @@ def clean_single_line(raw: str) -> str:
         raise HiddenCharacters
 
     return " ".join(raw.split())
+
+
+def _is_dropped(char: str) -> bool:
+    # Whitespace among the hidden characters (newline, tab, U+2028...) is left for `split()` to
+    # turn into a space; the rest (zero-width, bidi, NUL) would otherwise glue onto a word.
+    return unicodedata.category(char) in HIDDEN_CHARACTER_CATEGORIES and not char.isspace()
+
+
+def normalize_single_line(raw: str) -> str:
+    """`raw` with hidden characters silently removed, trimmed, and each whitespace run
+    (line breaks included) collapsed to one space.
+
+    The lenient sibling of `clean_single_line`: nothing is refused, so "Bio\\nlogy" becomes
+    "Bio logy" and a zero-width space inside a word disappears. The result may be empty;
+    whether blank is allowed is the caller's rule.
+    """
+    visible = "".join(char for char in raw if not _is_dropped(char))
+
+    return " ".join(visible.split())

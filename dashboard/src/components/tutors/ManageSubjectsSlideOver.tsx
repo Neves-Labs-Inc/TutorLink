@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft } from 'lucide-react'
 
@@ -11,6 +11,7 @@ import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
 import { SlideOver } from '@/components/shared/SlideOver'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import {
@@ -21,7 +22,13 @@ import {
   type Subject,
   type SubjectUpdate,
 } from '@/lib/queries/subjects'
-import { spanishNameDisplay, spanishNameValue, subjectErrorMessage } from '@/lib/subjects/subjects'
+import {
+  isNameError,
+  spanishNameDisplay,
+  spanishNameValue,
+  subjectErrorMessage,
+  subjectNameValue,
+} from '@/lib/subjects/subjects'
 import { cn } from '@/lib/utils'
 
 type SubjectDraft = {
@@ -97,6 +104,7 @@ export const ManageSubjectsSlideOver = ({
 }: ManageSubjectsSlideOverProps) => {
   const queryClient = useQueryClient()
   const addButtonRef = useRef<HTMLButtonElement>(null)
+  const saveButtonRef = useRef<HTMLButtonElement>(null)
   const shouldFocusAddRef = useRef(false)
 
   const [wasOpen, setWasOpen] = useState(open)
@@ -122,12 +130,28 @@ export const ManageSubjectsSlideOver = ({
     }
   }
 
-  const { data, isPending, isPlaceholderData, isError, error, refetch } = useQuery({
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery({
     ...subjectQueries.list({ is_active: !showInactive, page, page_size: DEFAULT_PAGE_SIZE }),
     enabled: open,
   })
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
+  })
 
-  // Focus lands after the list view has mounted, so the footer button exists.
+  // Layout effect: the form's focused Save is already gone, so focus would sit on <body>
+  // until a passive effect ran.
+  useLayoutEffect(() => {
+    if (view.kind === 'list' && shouldFocusAddRef.current) {
+      addButtonRef.current?.focus()
+    }
+  }, [view])
+
+  // A closing ConfirmDialog still traps focus until its passive cleanup and pulls it back to
+  // Confirm, so try again once that cleanup has run.
   useEffect(() => {
     if (view.kind === 'list' && shouldFocusAddRef.current) {
       shouldFocusAddRef.current = false
@@ -140,38 +164,65 @@ export const ManageSubjectsSlideOver = ({
     await queryClient.invalidateQueries({ queryKey: ['subjects'] })
   }
 
+  // Every open and every exit of the form starts a new session, so a save that resolves
+  // after its form is gone (Back, Cancel, close, another form) can tell it is stale.
+  const formSessionRef = useRef(0)
+  const startFormSession = () => {
+    formSessionRef.current += 1
+  }
+  const isCurrentFormSession = (session: number) => session === formSessionRef.current
+
   const returnToList = () => {
+    startFormSession()
     shouldFocusAddRef.current = true
     setView(LIST_VIEW)
   }
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      startFormSession()
+    }
+    onOpenChange(nextOpen)
+  }
+
+  // onMutate's return value is the session the save started in; onSuccess receives it back.
+  // A useMutation onSuccess still runs after reset(), so the data refresh always happens.
   const createMutation = useMutation({
     mutationFn: createSubject,
-    onSuccess: async () => {
+    onMutate: () => formSessionRef.current,
+    onSuccess: async (_saved, _vars, session) => {
       await refreshSubjectsAndTutors()
-      setDraft(EMPTY_DRAFT)
-      returnToList()
+      if (isCurrentFormSession(session)) {
+        setDraft(EMPTY_DRAFT)
+        returnToList()
+      }
     },
   })
 
   const updateMutation = useMutation({
     mutationFn: (vars: UpdateVars) => updateSubject(vars.id, vars.data),
-    onSuccess: async (_saved, vars) => {
+    onMutate: () => formSessionRef.current,
+    onSuccess: async (_saved, vars, session) => {
       await refreshSubjectsAndTutors()
       if (vars.wasActive && !vars.data.is_active) {
         onSubjectDeactivated?.(vars.id)
       }
-      returnToList()
+      if (isCurrentFormSession(session)) {
+        returnToList()
+      }
     },
   })
 
   const deactivateMutation = useMutation({
     mutationFn: deactivateSubject,
-    onSuccess: async (_saved, subjectId) => {
+    onMutate: () => formSessionRef.current,
+    onSuccess: async (_saved, subjectId, session) => {
       await refreshSubjectsAndTutors()
       onSubjectDeactivated?.(subjectId)
-      setConfirmOpen(false)
-      returnToList()
+      if (isCurrentFormSession(session)) {
+        setConfirmOpen(false)
+        returnToList()
+      }
     },
   })
 
@@ -179,11 +230,13 @@ export const ManageSubjectsSlideOver = ({
   const activeMutation = editingSubject ? updateMutation : createMutation
   const subjects = data?.items ?? []
   // The API's detail starts with the field name, so a name_es problem can mark that field.
+  const nameError = activeMutation.isError && isNameError(errorDetail(activeMutation.error))
   const nameEsError = activeMutation.isError && (errorDetail(activeMutation.error) ?? '').startsWith('name_es')
   const { title, description } = viewCopy(view)
 
   const openCreate = () => {
     setDraft(EMPTY_DRAFT)
+    startFormSession()
     createMutation.reset()
     updateMutation.reset()
     setView({ kind: 'form', subject: null })
@@ -196,6 +249,7 @@ export const ManageSubjectsSlideOver = ({
       description: subject.description ?? '',
       is_active: subject.is_active,
     })
+    startFormSession()
     createMutation.reset()
     updateMutation.reset()
     setView({ kind: 'form', subject })
@@ -208,13 +262,18 @@ export const ManageSubjectsSlideOver = ({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    // aria-disabled doesn't block submit, so a second Enter or click lands here.
+    if (activeMutation.isPending) return
+
+    // Enter in a field submits too; that field is about to be disabled, which would drop focus.
+    saveButtonRef.current?.focus()
     const nextDescription = draft.description.trim() === '' ? null : draft.description
 
     if (editingSubject) {
       updateMutation.mutate({
         id: editingSubject.id,
         data: {
-          name: draft.name,
+          name: subjectNameValue(draft.name),
           name_es: spanishNameValue(draft.nameEs),
           description: nextDescription,
           is_active: draft.is_active },
@@ -222,7 +281,7 @@ export const ManageSubjectsSlideOver = ({
       })
     } else {
       createMutation.mutate({
-        name: draft.name,
+        name: subjectNameValue(draft.name),
         name_es: spanishNameValue(draft.nameEs),
         description: nextDescription,
       })
@@ -255,10 +314,13 @@ export const ManageSubjectsSlideOver = ({
   const formFooter = (
     <div className="flex flex-wrap items-center gap-3">
       <Button
+        ref={saveButtonRef}
         type="submit"
         form={SUBJECT_FORM_ID}
-        className="h-11 md:h-8"
-        disabled={draft.name.trim() === '' || activeMutation.isPending}
+        className="h-11 md:h-8 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+        disabled={draft.name.trim() === ''}
+        // aria-disabled (not disabled) while saving, so keyboard focus stays on the button.
+        aria-disabled={activeMutation.isPending}
       >
         {activeMutation.isPending ? 'Saving…' : 'Save'}
       </Button>
@@ -291,10 +353,10 @@ export const ManageSubjectsSlideOver = ({
       </Label>
 
       <div
-        aria-busy={isPlaceholderData}
+        aria-busy={isPlaceholderData || outOfRange}
         className={cn(
           'space-y-4 transition-opacity duration-150 ease-out motion-reduce:transition-none',
-          isPlaceholderData && 'opacity-60',
+          (isPlaceholderData || outOfRange) && 'opacity-60',
         )}
       >
         <DataTable
@@ -302,7 +364,7 @@ export const ManageSubjectsSlideOver = ({
           columns={columns}
           rows={subjects}
           rowKey={(row) => row.id}
-          status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+          status={isPending || outOfRange ? 'pending' : isError ? 'error' : 'ready'}
           errorMessage={errorDetail(error)}
           onRetry={() => refetch()}
           emptyMessage={showInactive ? 'No inactive subjects.' : 'No active subjects.'}
@@ -310,11 +372,11 @@ export const ManageSubjectsSlideOver = ({
         />
         {data && (
           <Pager
-            page={page}
+            page={pagerPage}
             pageSize={data.page_size}
-            total={data.total}
+            total={pagerTotal}
             onPageChange={setPage}
-            disabled={isPending || isPlaceholderData}
+            disabled={isPending || isPlaceholderData || outOfRange}
           />
         )}
       </div>
@@ -341,6 +403,7 @@ export const ManageSubjectsSlideOver = ({
             value={draft.name}
             autoFocus
             disabled={activeMutation.isPending}
+            aria-invalid={nameError || undefined}
             onChange={(event) => setDraft({ ...draft, name: event.target.value })}
           />
         </div>
@@ -393,7 +456,7 @@ export const ManageSubjectsSlideOver = ({
     <>
       <SlideOver
         open={open}
-        onOpenChange={onOpenChange}
+        onOpenChange={handleOpenChange}
         title={title}
         description={description}
         footer={view.kind === 'list' ? listFooter : formFooter}

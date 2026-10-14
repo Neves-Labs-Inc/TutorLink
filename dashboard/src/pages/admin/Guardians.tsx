@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { gradeLabel } from '@/lib/children/children'
 import { formatPhoneForDisplay } from '@/lib/guardians/guardians'
@@ -48,9 +49,16 @@ export const Guardians = () => {
     setPage(1)
   }
 
-  const { data, isPending, isError, error, refetch } = useQuery(
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery(
     householdQueries.list(householdListParams(search, page, DEFAULT_PAGE_SIZE)),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
+  })
 
   const households = data?.items ?? []
   const emptyMessage =
@@ -58,17 +66,15 @@ export const Guardians = () => {
 
   let content: ReactNode
 
-  if (isPending) {
+  if (isPending || outOfRange) {
     content = (
-      <div className={cardGridClasses}>
-        {LOADING_CARDS.map((card) => (
-          <Card key={card}>
-            <CardContent aria-busy="true" className="space-y-3">
-              <div className="h-8 animate-pulse rounded-lg bg-muted" />
-              <div className="h-8 animate-pulse rounded-lg bg-muted" />
-            </CardContent>
-          </Card>
-        ))}
+      <div aria-busy="true">
+        <span className="sr-only">Loading guardians…</span>
+        <div className={cardGridClasses}>
+          {LOADING_CARDS.map((card) => (
+            <HouseholdCardSkeleton key={card} />
+          ))}
+        </div>
       </div>
     )
   } else if (isError) {
@@ -121,19 +127,26 @@ export const Guardians = () => {
         />
       </div>
 
-      {data && (
+      {data ? (
         <p className="text-sm text-muted-foreground">{householdCountLabel(data.total)}</p>
+      ) : (
+        // Holds the count's line while loading so the grid doesn't jump when it arrives.
+        isPending && (
+          <div aria-hidden="true">
+            <SkeletonLine className="w-24" />
+          </div>
+        )
       )}
 
       {content}
 
       {data && (
         <Pager
-          page={page}
+          page={pagerPage}
           pageSize={data.page_size}
-          total={data.total}
+          total={pagerTotal}
           onPageChange={setPage}
-          disabled={isPending}
+          disabled={isPending || outOfRange}
         />
       )}
 
@@ -145,6 +158,44 @@ export const Guardians = () => {
     </div>
   )
 }
+
+const SKELETON_BAR = 'animate-pulse rounded-lg bg-muted motion-reduce:animate-none'
+
+type SkeletonLineProps = { size?: 'sm' | 'xs'; className: string }
+
+// Bar inside a line box as tall as the text it replaces: text-sm = 20px, text-xs = 16px.
+const SkeletonLine = ({ size = 'sm', className }: SkeletonLineProps) => (
+  <div className={cn('flex items-center', size === 'sm' ? 'h-5' : 'h-4')}>
+    <div className={cn(SKELETON_BAR, size === 'sm' ? 'h-4' : 'h-3', className)} />
+  </div>
+)
+
+// Mirrors a one-guardian, one-child HouseholdCard so the swap causes no layout shift.
+const HouseholdCardSkeleton = () => (
+  <Card aria-hidden="true">
+    <CardContent className="space-y-4">
+      <div className="space-y-2">
+        <SkeletonLine size="xs" className="w-14" />
+        <ul className="space-y-2">
+          <li>
+            <SkeletonLine className="w-32" />
+            <SkeletonLine className="w-28" />
+          </li>
+        </ul>
+      </div>
+
+      <div className="space-y-2">
+        <SkeletonLine size="xs" className="w-12" />
+        <ul className="space-y-2">
+          <li className="flex flex-wrap items-center gap-2">
+            <SkeletonLine className="w-24" />
+            <SkeletonLine className="w-14" />
+          </li>
+        </ul>
+      </div>
+    </CardContent>
+  </Card>
+)
 
 type HouseholdCardProps = { household: Household }
 

@@ -59,3 +59,7 @@ export const sendInvite = async (userId: string): Promise<User> => {
 
   return response.data
 }
+
+export const sendPasswordReset = async (userId: string): Promise<void> => {
+  await api.post(`/api/users/${userId}/password-reset`)
+}

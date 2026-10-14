@@ -203,14 +203,16 @@ closing.
   buttons. Nav uses `hover:bg-sidebar-accent`. Links use `hover:underline` or `hover:text-foreground`.
 - **Press.** Buttons use `active:translate-y-px` (built into `buttonVariants`).
 - **Clickable card.** A card that opens one record uses a stretched link: the record's own name `Link` carries `data-card-target` and `after:absolute after:inset-0 after:rounded-xl after:content-['']`, and the `Card` gets `relative cursor-pointer transition-colors duration-150 ease-out motion-reduce:transition-none hover:bg-muted has-[a[data-card-target]:active]:bg-accent` plus a whole-card focus ring (`has-[a[data-card-target]:focus-visible]:ring-3 has-[a[data-card-target]:focus-visible]:ring-ring/50`, link `focus-visible:outline-none`). Other links on the card get `relative z-10`, the text-link focus outline, and a 4px hit margin (`before:absolute before:-inset-1 before:content-['']`). No chevron, no `onClick`, no `tabIndex`. Reference: `HouseholdCard` in `pages/admin/Guardians.tsx`.
+- **Clickable row.** When DataTable gets `onRowSelect`, each `tr` and mobile `Card` gets `tabIndex=0`, Enter/Space selects (Space `preventDefault`), and `cursor-pointer transition-colors duration-150 ease-out motion-reduce:transition-none hover:bg-muted active:bg-accent focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50` (`ring-inset` on `tr`, since the table card clips). Events starting in an interactive descendant are ignored by the row. Prefer the stretched-link Clickable card for new card lists that navigate. Use this for DataTable only.
 - **Disabled.** `disabled:opacity-50 disabled:pointer-events-none`.
 - **Colour changes.** `transition-colors` at the Tailwind default (150ms).
 - **Overlays.** Dialogs and slide-overs use `tw-animate-css` enter/exit on Radix
   `data-[state]`. The overlay fades. ConfirmDialog fades and zooms 95%. SlideOver fades and
   slides in from the right. All of them set `motion-reduce:animate-none`. The Toaster enters
   with `fade-in-0 slide-in-from-bottom-2` over 200ms `ease-out` and exits with `fade-out-0` over
-  150ms; swipe uses the Radix `--radix-toast-swipe-move-x` var. It sits at `z-[60]`, above
-  dialogs and slide-overs.
+  150ms; swipe uses the Radix `--radix-toast-swipe-move-x` var. Z-order: SlideOver overlay
+  `z-40`, content `z-50`; ConfirmDialog overlay and content both `z-50`, above a SlideOver because
+  it renders later in the DOM; Toaster `z-[60]`, above dialogs and slide-overs.
 - **Mobile nav drawer.** `transition-transform duration-200 ease-out`, with the backdrop on
   `transition-opacity duration-200 ease-out` and `motion-reduce:transition-none`.
 - **Rules for new work.** Motion is CSS only. Animate `transform` and `opacity`. Durations
@@ -235,15 +237,12 @@ closing.
    These are grandfathered under R1 until a cleanup ticket fixes them.
 2. **Loading is not structural.** The pulse bars are generic, not shaped like the content.
    R2 replaces them surface by surface as tickets touch them.
-3. **Clickable rows are mouse-only.** The DataTable `<tr onClick>` and mobile `Card onClick` have
-   no keyboard access, focus ring, or pressed state. Mobile cards have no hover or press feedback.
 4. **Hand-rolled tabs.** The ChildDetail session tabs are buttons with no focus-visible style.
    The inactive tab has no hover fill.
    Fixed for new tablists: use `SegmentedTabs`. The ChildDetail Sessions and TimeOff tablists
    still hand-roll and move over in a later cleanup.
 5. **Two backdrop colours.** Dialogs use `bg-black/60`; the nav drawer uses `bg-foreground/60`.
 6. **Exits as slow as enters.** The tw-animate defaults use the same duration both ways.
-7. **Commented-out code.** `DataTable` has a `PrimaryCell` comment.
 8. **Duplicated dark tokens.** Dark values are copied into two blocks, so it is easy to update one and miss the other.
 9. `text-[0.8rem]` in Button `sm` (shadcn upstream; leave it).
 

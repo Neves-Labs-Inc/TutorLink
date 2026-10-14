@@ -11,6 +11,7 @@ import { DataTable, type Column } from '@/components/shared/DataTable'
 import { Pager } from '@/components/shared/Pager'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ManageSubjectsSlideOver } from '@/components/tutors/ManageSubjectsSlideOver'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/queries/page'
 import { subjectQueries } from '@/lib/queries/subjects'
@@ -31,7 +32,13 @@ const columns: Column<Tutor>[] = [
   { id: 'name', header: 'Name', primary: true, cell: (tutor) => tutor.name },
   { id: 'email', header: 'Email', cell: (tutor) => tutor.email },
   { id: 'phone', header: 'Phone', hideOnMobile: true, cell: (tutor) => tutor.phone_number },
-  { id: 'subjects', header: 'Subjects', cell: (tutor) => subjectSummary(tutor.subjects) },
+  {
+    id: 'subjects',
+    header: 'Subjects',
+    // Subject names are admin-typed and may be one long unbroken word.
+    wrap: 'anywhere',
+    cell: (tutor) => subjectSummary(tutor.subjects),
+  },
   {
     id: 'status',
     header: 'Status',
@@ -67,6 +74,13 @@ export const Tutors = () => {
       }),
     ),
   )
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data: tutorsQuery.data,
+    isPlaceholderData: tutorsQuery.isPlaceholderData,
+    isFetching: tutorsQuery.isFetching,
+  })
   const subjectsQuery = useQuery(subjectQueries.list({ page_size: SUBJECT_OPTIONS_PAGE_SIZE }))
 
   // const createMutation = useMutation({
@@ -183,7 +197,9 @@ export const Tutors = () => {
         columns={columns}
         rows={tutorsQuery.data?.items ?? []}
         rowKey={(tutor) => tutor.id}
-        status={tutorsQuery.isPending ? 'pending' : tutorsQuery.isError ? 'error' : 'ready'}
+        status={
+          tutorsQuery.isPending || outOfRange ? 'pending' : tutorsQuery.isError ? 'error' : 'ready'
+        }
         errorMessage={errorDetail(tutorsQuery.error) ?? LOAD_FALLBACK_ERROR}
         onRetry={() => tutorsQuery.refetch()}
         emptyMessage="No tutors match these filters."
@@ -191,11 +207,11 @@ export const Tutors = () => {
       />
 
       <Pager
-        page={page}
+        page={pagerPage}
         pageSize={DEFAULT_PAGE_SIZE}
-        total={tutorsQuery.data?.total ?? 0}
+        total={pagerTotal}
         onPageChange={setPage}
-        disabled={tutorsQuery.isPending}
+        disabled={tutorsQuery.isPending || outOfRange}
       />
 
       <ManageSubjectsSlideOver

@@ -3,14 +3,29 @@ from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator, Field
 
-from app.services.text_rules import HiddenCharacters, clean_single_line
+from app.services.text_rules import HiddenCharacters, clean_single_line, normalize_single_line
 
+# The `subjects.name` column width.
+MAX_NAME_LENGTH = 128
 # The `subjects.name_es` column width.
 MAX_NAME_ES_LENGTH = 128
 NAME_ES_CHARACTERS_ERROR = (
     "must not contain control or invisible characters "
     "(line breaks, tabs, zero-width or text-direction characters)"
 )
+NAME_BLANK_ERROR = "must not be blank"
+
+
+def _normalize_name(raw: object) -> object:
+    """The Subject's English name, normalized so two names that look alike compare alike."""
+    if not isinstance(raw, str):
+        return raw
+
+    normalized = normalize_single_line(raw)
+    if not normalized:
+        raise ValueError(NAME_BLANK_ERROR)
+
+    return normalized
 
 
 def _clean_spanish_name(raw: object) -> object:
@@ -26,6 +41,12 @@ def _clean_spanish_name(raw: object) -> object:
 
     return cleaned or None
 
+
+# `None` passes through, so `SubjectUpdate` can keep the current name.
+# Checked after normalization, so trimmed spaces and dropped hidden characters don't count.
+SubjectName = Annotated[
+    Annotated[str, Field(max_length=MAX_NAME_LENGTH)], BeforeValidator(_normalize_name)
+]
 
 SpanishName = Annotated[
     Annotated[str, Field(max_length=MAX_NAME_ES_LENGTH)] | None,
@@ -43,15 +64,16 @@ class SubjectRead(BaseModel):
 
 
 class SubjectCreate(BaseModel):
-    name: str
+    name: SubjectName
     name_es: SpanishName = None
     description: str | None = None
 
 
 class SubjectUpdate(BaseModel):
-    """Omitting `name_es` keeps it; `null` or a blank string clears it."""
+    """Omitting `name` or sending `null` keeps it. Omitting `name_es` keeps it; `null` or a
+    blank string clears it."""
 
-    name: str | None = None
+    name: SubjectName | None = None
     name_es: SpanishName = None
     description: str | None = None
     is_active: bool | None = None

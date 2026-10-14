@@ -13,7 +13,8 @@ The write routes take `OfficePrincipal` and deliberately **not** `TutorScope`: t
 Office-only, they have no filter to apply, and an unread scope would turn every one of them into
 a 500 the moment it touched `tutors`. A profile edit is an account edit (one record per person),
 so `PATCH` and `DELETE` also apply `tutor_service.assert_may_write_person`: a Manager may write
-Tutors only, and a Developer's account is a Developer's to write. A login email is narrower
+Tutors only, a Developer's account is a Developer's to write, and so is another Admin's (#173);
+an Admin may not deactivate themselves here either. A login email is narrower
 still: only an Admin or Developer may change one, so a Manager's `PATCH` carrying `email` is 403.
 
 `POST /{tutor_id}/subjects` and its `DELETE` live in `routers/tutor_subjects.py`, which mounts
@@ -37,6 +38,8 @@ from app.services.name_rules import InvalidName
 from app.services.phone_service import InvalidPhoneNumber
 from app.services.tutor_service import (
     TutorAccountForbidden,
+    TutorPeerAdminForbidden,
+    TutorSelfChangeForbidden,
     TutorEmailTaken,
     TutorNotFound,
     TutorPhoneNumberTaken,
@@ -54,6 +57,9 @@ PHONE_NUMBER_TAKEN_ERROR = "A tutor with that phone number already exists"
 UNIQUE_VIOLATION_ERROR = "A tutor with that email or phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
 ACCOUNT_FORBIDDEN_ERROR = "Not permitted to change that person's account"
+# The same words `/api/users` answers with for the same rules (#173).
+PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
+SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role or deactivate your own account"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -162,6 +168,7 @@ def update(
         updated = update_tutor(
             db,
             actor_role=user.role,
+            actor_id=user.id,
             tutor_id=tutor_id,
             name=payload.name,
             email=payload.email,
@@ -172,6 +179,10 @@ def update(
         )
     except TutorNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
+    except TutorPeerAdminForbidden as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
+    except TutorSelfChangeForbidden as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
     except TutorAccountForbidden as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, ACCOUNT_FORBIDDEN_ERROR) from exc
     except InvalidName as exc:
@@ -193,9 +204,15 @@ def update(
 @router.delete("/{tutor_id}", response_model=TutorRead)
 def soft_delete(tutor_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> TutorRead:
     try:
-        deactivated = deactivate_tutor(db, actor_role=user.role, tutor_id=tutor_id)
+        deactivated = deactivate_tutor(
+            db, actor_role=user.role, actor_id=user.id, tutor_id=tutor_id
+        )
     except TutorNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TUTOR_NOT_FOUND_ERROR) from exc
+    except TutorPeerAdminForbidden as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, PEER_ADMIN_FORBIDDEN_ERROR) from exc
+    except TutorSelfChangeForbidden as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, SELF_CHANGE_FORBIDDEN_ERROR) from exc
     except TutorAccountForbidden as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, ACCOUNT_FORBIDDEN_ERROR) from exc
 

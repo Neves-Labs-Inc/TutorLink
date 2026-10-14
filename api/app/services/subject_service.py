@@ -56,7 +56,9 @@ def _count_expr() -> Select[tuple[int]]:
 
 
 def _name_taken(db: Session, *, name: str, exclude_id: uuid.UUID | None) -> bool:
-    statement = select(Subject.id).where(Subject.name == name)
+    # Postgres `lower()` on both sides, so the pre-check folds case exactly as the
+    # `lower(name)` unique index does (Python's `str.lower` may differ outside ASCII).
+    statement = select(Subject.id).where(func.lower(Subject.name) == func.lower(name))
 
     if exclude_id is not None:
         statement = statement.where(Subject.id != exclude_id)
@@ -127,11 +129,11 @@ def update_subject(
 
     # The edits are applied *inside* the savepoint because `begin_nested` flushes whatever is
     # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`): assigned
-    # above the block, the UPDATE would run outside the savepoint and a `UNIQUE (subjects.name)`
-    # violation would deactivate the whole request's transaction, leaving the `Session` unusable
-    # even though this raises the right error. Nothing in the block but in-memory
-    # assignments and the flush, so no other failure can be mislabelled a duplicate name. The
-    # constraint is matched by the exception, never by its name.
+    # above the block, the UPDATE would run outside the savepoint and a violation of the
+    # `lower(subjects.name)` unique index would deactivate the whole request's transaction,
+    # leaving the `Session` unusable even though this raises the right error. Nothing in the
+    # block but in-memory assignments and the flush, so no other failure can be mislabelled a
+    # duplicate name. The constraint is matched by the exception, never by its name.
     try:
         with db.begin_nested():
             if name is not None:

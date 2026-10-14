@@ -62,10 +62,17 @@ describe('validateTemplate', () => {
     ['Hello', ' \n ', 'body', "The body can't be empty."],
     ['Hello', `${'a'.repeat(5000)}{link}`, 'body', 'The body can be at most 5000 characters.'],
     ['Hello', 'Open {link} {nmae}', 'body', 'Unknown placeholder {nmae}. Use {name}, {actor_name} or {link}.'],
-    ['Hi {oops}', body, 'body', 'Unknown placeholder {oops}. Use {name}, {actor_name} or {link}.'],
+    ['Hi {oops}', body, 'subject', 'Unknown placeholder {oops}. Use {name}, {actor_name} or {link}.'],
     ['Hello', 'No link here', 'body', 'The body must include {link}.'],
   ])('invite: subject %j body %j fails with the message', (subject, text, field, message) => {
     expect(validateTemplate(invite, subject, text)).toEqual({ field, message })
+  })
+
+  it('reports an unknown placeholder in the subject before one in the body', () => {
+    expect(validateTemplate(invite, 'Hi {oops}', 'Open {link} {nmae}')).toEqual({
+      field: 'subject',
+      message: 'Unknown placeholder {oops}. Use {name}, {actor_name} or {link}.',
+    })
   })
 
   it('lists only name and link for password reset', () => {
@@ -179,6 +186,10 @@ describe('validateBrandColor', () => {
 describe('normalizeBrandColor', () => {
   it('uppercases the hex', () => {
     expect(normalizeBrandColor('#cb9bc3')).toBe('#CB9BC3')
+  })
+
+  it.each(['#74c8c9; ', ' #74C8C9 ', '#74C8C9;'])('cleans the pasted %j to #74C8C9', (pasted) => {
+    expect(normalizeBrandColor(pasted)).toBe('#74C8C9')
   })
 })
 

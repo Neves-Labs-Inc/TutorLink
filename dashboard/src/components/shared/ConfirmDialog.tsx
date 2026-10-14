@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react'
 import { Dialog } from 'radix-ui'
 
 import { Button } from '@/components/ui/button'
@@ -54,19 +54,40 @@ export const ConfirmDialog = ({
     }
   }, [open])
 
+  // A trigger the confirmed action removed can't take focus; the caller places it instead.
   const restoreTriggerFocus = (event: Event) => {
     event.preventDefault()
-    triggerRef.current?.focus()
+    if (triggerRef.current?.isConnected) {
+      triggerRef.current.focus()
+    }
+  }
+
+  // No way out mid-request: Cancel is disabled, so Esc and outside clicks are too.
+  const keepOpenWhilePending = (event: Event) => {
+    if (pending) event.preventDefault()
+  }
+
+  // Blocking the dismiss doesn't stop mousedown on the overlay from moving focus to <body>.
+  const keepFocusWhilePending = (event: MouseEvent<HTMLDivElement>) => {
+    if (pending) event.preventDefault()
+  }
+
+  const handleConfirm = () => {
+    if (pending) return
+    onConfirm()
   }
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className={dialogOverlayClasses} />
+        <Dialog.Overlay className={dialogOverlayClasses} onMouseDown={keepFocusWhilePending} />
         <Dialog.Content
           className={dialogContentClasses}
           onOpenAutoFocus={focusCancel}
           onCloseAutoFocus={restoreTriggerFocus}
+          onEscapeKeyDown={keepOpenWhilePending}
+          onPointerDownOutside={keepOpenWhilePending}
+          onInteractOutside={keepOpenWhilePending}
         >
           <div className="space-y-1.5">
             <Dialog.Title className="font-heading text-lg font-semibold tracking-tight">
@@ -96,8 +117,11 @@ export const ConfirmDialog = ({
             <Button
               type="button"
               variant={destructive ? 'destructive' : 'default'}
-              disabled={pending || confirmDisabled}
-              onClick={onConfirm}
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              disabled={confirmDisabled}
+              // aria-disabled (not disabled) while pending, so keyboard focus stays on the button.
+              aria-disabled={pending}
+              onClick={handleConfirm}
             >
               {pending ? 'Working…' : confirmLabel}
             </Button>

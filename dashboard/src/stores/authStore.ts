@@ -7,6 +7,7 @@ type AuthState = {
   status: AuthStatus
   accessToken: string | null
   role: Role | null
+  userId: string | null
   tutorId: string | null
   setSession: (session: { accessToken: string }) => void
   clearSession: () => void
@@ -19,6 +20,7 @@ const ANONYMOUS = {
   status: 'anonymous',
   accessToken: null,
   role: null,
+  userId: null,
   tutorId: null,
 } as const
 
@@ -28,8 +30,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   status: 'loading',
   accessToken: null,
   role: null,
+  userId: null,
   tutorId: null,
-  // The token is the single source of truth for the session: role and tutorId are decoded
+  // The token is the single source of truth for the session: role, userId and tutorId are decoded
   // from it rather than passed in, so the store cannot disagree with the bearer token that
   // the server will actually see. A token that will not decode is not a half-session — it
   // lands in exactly the same state as a logged-out user.
@@ -39,7 +42,13 @@ export const useAuthStore = create<AuthState>((set) => ({
     if (claims === null) {
       set(ANONYMOUS)
     } else {
-      set({ status: 'authenticated', accessToken, role: claims.role, tutorId: claims.tutorId })
+      set({
+        status: 'authenticated',
+        accessToken,
+        role: claims.role,
+        userId: claims.sub,
+        tutorId: claims.tutorId,
+      })
     }
   },
   clearSession: () => set(ANONYMOUS),

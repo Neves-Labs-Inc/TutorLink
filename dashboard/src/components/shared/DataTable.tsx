@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { isFromInteractiveDescendant } from '@/lib/isFromInteractiveDescendant'
 import { cn } from '@/lib/utils'
 
 export type Column<T> = {
@@ -11,6 +12,8 @@ export type Column<T> = {
   primary?: boolean
   hideOnMobile?: boolean
   align?: 'start' | 'end'
+  // For unbroken user text (e.g. subject names): lets the cell break mid-word so the table can shrink.
+  wrap?: 'anywhere'
 }
 
 export type DataTableProps<T> = {
@@ -41,6 +44,10 @@ const END_BAR_WIDTH = 'w-16 ml-auto'
 // Cycled so neighbouring columns do not all look the same width.
 const TEXT_BAR_WIDTHS = ['w-24', 'w-16', 'w-20']
 const ERROR_FALLBACK = 'Something went wrong. Please try again.'
+// break-word keeps a column's min width at its longest word, so ordinary words never split.
+const CELL_WRAP = 'wrap-break-word'
+// anywhere drops the cell's min-content width; the floor stops the column collapsing to a sliver.
+const CELL_WRAP_ANYWHERE = 'min-w-40 wrap-anywhere'
 
 export const DataTable = <T,>({
   caption,
@@ -109,6 +116,28 @@ export const DataTable = <T,>({
   return content
 }
 
+// No role="button": on a tr it would erase the table row semantics.
+const getSelectableProps = <T,>(row: T, onRowSelect?: (row: T) => void) => {
+  if (!onRowSelect) return {}
+
+  return {
+    tabIndex: 0,
+    onClick: (e: MouseEvent<HTMLElement>) => {
+      if (isFromInteractiveDescendant(e.target, e.currentTarget)) return
+      onRowSelect(row)
+    },
+    onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      if (isFromInteractiveDescendant(e.target, e.currentTarget)) return
+      // Stops Space from scrolling the page, and Enter from clicking twice.
+      e.preventDefault()
+      // A held key must open the row once, not on every repeat.
+      if (e.repeat) return
+      onRowSelect(row)
+    },
+  }
+}
+
 const TableLayout = <T,>({
   caption,
   columns,
@@ -138,15 +167,24 @@ const TableLayout = <T,>({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={rowKey(row)} className={cn('border-b border-border last:border-b-0', onRowSelect && 'hover:bg-muted hover:cursor-pointer')} onClick={() => onRowSelect?.(row)}>
+            <tr
+              key={rowKey(row)}
+              className={cn(
+                'border-b border-border last:border-b-0',
+                onRowSelect && SELECTABLE_ROW,
+              )}
+              {...getSelectableProps(row, onRowSelect)}
+            >
               {columns.map((column) => (
                 <td
                   key={column.id}
-                  className={cn('px-4 py-3 align-middle', column.align === 'end' && 'text-end')}
+                  className={cn(
+                    'px-4 py-3 align-middle',
+                    column.wrap === 'anywhere' ? CELL_WRAP_ANYWHERE : CELL_WRAP,
+                    column.align === 'end' && 'text-end',
+                  )}
                 >
-                  {
-                    column.cell(row)
-                  }
+                  {column.cell(row)}
                 </td>
               ))}
             </tr>
@@ -161,10 +199,12 @@ const CardLayout = <T,>({ columns, rows, rowKey, onRowSelect }: LayoutProps<T>) 
   <ul className="space-y-3 md:hidden">
     {rows.map((row) => (
       <li key={rowKey(row)}>
-        <Card onClick={() => onRowSelect?.(row)}>
+        <Card
+          className={cn(onRowSelect && SELECTABLE_CARD)}
+          {...getSelectableProps(row, onRowSelect)}
+        >
           <CardContent className="space-y-3">
-            <div className="text-sm font-medium text-foreground">
-              {/* <PrimaryCell column={columns[0]} row={row} /> */}
+            <div className="min-w-0 text-sm font-medium wrap-anywhere text-foreground">
               {columns[0].cell(row)}
             </div>
             <dl className="space-y-1.5">
@@ -172,8 +212,8 @@ const CardLayout = <T,>({ columns, rows, rowKey, onRowSelect }: LayoutProps<T>) 
                 .filter((column) => column.id !== columns[0].id && !column.hideOnMobile)
                 .map((column) => (
                   <div key={column.id} className="flex items-baseline justify-between gap-4">
-                    <dt className="text-xs text-muted-foreground">{column.header}</dt>
-                    <dd className="text-end text-sm text-foreground">{column.cell(row)}</dd>
+                    <dt className="shrink-0 text-xs text-muted-foreground">{column.header}</dt>
+                    <dd className="min-w-0 text-end text-sm wrap-anywhere text-foreground">{column.cell(row)}</dd>
                   </div>
                 ))}
             </dl>
@@ -187,6 +227,11 @@ const CardLayout = <T,>({ columns, rows, rowKey, onRowSelect }: LayoutProps<T>) 
 type SkeletonProps<T> = { columns: Column<T>[] }
 
 type SkeletonLineProps = { size?: 'sm' | 'xs'; className: string }
+
+const SELECTABLE_ROW =
+  'cursor-pointer transition-colors duration-150 ease-out motion-reduce:transition-none hover:bg-muted active:bg-accent focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-inset focus-visible:ring-ring/50'
+const SELECTABLE_CARD =
+  'cursor-pointer transition-colors duration-150 ease-out motion-reduce:transition-none hover:bg-muted active:bg-accent focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
 
 const SKELETON_BAR = 'rounded-lg bg-muted animate-pulse motion-reduce:animate-none'
 

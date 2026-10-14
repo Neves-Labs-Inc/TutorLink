@@ -12,6 +12,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useClampedPage } from '@/hooks/useClampedPage'
 import { errorDetail } from '@/lib/api'
 import {
   AWAITING_EMPTY,
@@ -141,7 +142,7 @@ export const Children = () => {
       awaitingEvaluation: isAwaiting,
     }),
   )
-  const { data, isPending, isError, error, refetch } = useQuery({
+  const { data, isPending, isPlaceholderData, isFetching, isError, error, refetch } = useQuery({
     ...listOptions,
     // Keep the old page while paging or searching, but never show the other tab's rows.
     placeholderData: (previous, previousQuery) => {
@@ -151,6 +152,13 @@ export const Children = () => {
         ? keepPreviousData(previous)
         : undefined
     },
+  })
+  const { pagerPage, pagerTotal, outOfRange } = useClampedPage({
+    page,
+    setPage,
+    data,
+    isPlaceholderData,
+    isFetching,
   })
   // The tab count ignores the search, so it reads the same on both tabs.
   const awaitingCount = useQuery(
@@ -286,7 +294,7 @@ export const Children = () => {
             columns={awaitingColumns(backState)}
             rows={children.map(awaitingRow)}
             rowKey={(row) => row.id}
-            status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+            status={isPending || outOfRange ? 'pending' : isError ? 'error' : 'ready'}
             errorMessage={errorDetail(error) ?? LOAD_FALLBACK_ERROR}
             onRetry={() => refetch()}
             emptyMessage={emptyMessage}
@@ -298,7 +306,7 @@ export const Children = () => {
             columns={columns}
             rows={children}
             rowKey={(row) => row.id}
-            status={isPending ? 'pending' : isError ? 'error' : 'ready'}
+            status={isPending || outOfRange ? 'pending' : isError ? 'error' : 'ready'}
             errorMessage={errorDetail(error) ?? LOAD_FALLBACK_ERROR}
             onRetry={() => refetch()}
             emptyMessage={emptyMessage}
@@ -308,11 +316,11 @@ export const Children = () => {
 
         {data && (
           <Pager
-            page={page}
+            page={pagerPage}
             pageSize={data.page_size}
-            total={data.total}
+            total={pagerTotal}
             onPageChange={setPage}
-            disabled={isPending}
+            disabled={isPending || outOfRange}
           />
         )}
       </div>
@@ -423,7 +431,10 @@ const DeactivateChildDialog = ({ child, onOpenChange, onSuccess }: DeactivateChi
       body={body}
       confirmLabel="Deactivate"
       destructive
-      pending={mutation.isPending || countQuery.isFetching || count === null}
+      pending={mutation.isPending}
+      // Loading or failing to load the count only blocks Confirm; pending would also lock the
+      // way out (Cancel, Esc, outside click), forever if the count never loads.
+      confirmDisabled={countQuery.isFetching || count === null}
       errorMessage={mutation.isError ? (errorDetail(mutation.error) ?? DEACTIVATE_FALLBACK_ERROR) : null}
       onConfirm={handleConfirm}
     />

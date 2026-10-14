@@ -1,4 +1,12 @@
-import { startTransition, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  startTransition,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 
@@ -17,6 +25,8 @@ type SearchPickerProps = {
   placeholder?: string
   disabled?: boolean
   emptyMessage?: string
+  // Multi-select hosts keep the pick elsewhere: empty the input after a pick instead of showing its label.
+  clearOnSelect?: boolean
 }
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -32,6 +42,7 @@ export const SearchPicker = ({
   placeholder,
   disabled,
   emptyMessage,
+  clearOnSelect = false,
 }: SearchPickerProps) => {
   const listboxId = `${id}-listbox`
   const [inputValue, setInputValue] = useState(value?.label ?? '')
@@ -40,7 +51,7 @@ export const SearchPicker = ({
   const [open, setOpen] = useState(false)
   const [highlighted, setHighlighted] = useState(-1)
   const [syncedValue, setSyncedValue] = useState(value)
-  const skipNextBlurRevert = useRef(false)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   if (syncedValue !== value) {
     setSyncedValue(value)
@@ -78,7 +89,14 @@ export const SearchPicker = ({
 
   const selectOption = (option: SearchPickerOption) => {
     onChange(option)
-    setInputValue(option.label)
+    setInputValue(clearOnSelect ? '' : option.label)
+
+    if (clearOnSelect) {
+      // '' (not null) so the next keystroke fetches straight away instead of flashing "No matches."
+      setTerm('')
+      setDebouncedTerm('')
+    }
+
     setOpen(false)
     setHighlighted(-1)
   }
@@ -89,11 +107,6 @@ export const SearchPicker = ({
   }
 
   const handleBlur = () => {
-    if (skipNextBlurRevert.current) {
-      skipNextBlurRevert.current = false
-      return
-    }
-
     // A transition commits after the browser has moved focus to the next element.
     // Removing the listbox synchronously, while focus is on <body>, makes Radix
     // FocusScope (dialogs, sheets) pull focus back to its container and break Tab order.
@@ -111,11 +124,19 @@ export const SearchPicker = ({
     setTerm(next)
   }
 
+  // Clicks inside the picker keep focus on the input, so it never blurs (and reverts)
+  // and a host dialog never pulls focus back to its container.
+  const keepInputFocus = (event: MouseEvent) => {
+    event.preventDefault()
+  }
+
   const handleClear = () => {
     onChange(null)
     setInputValue('')
+    setOpen(true)
     setTerm('')
     setDebouncedTerm('')
+    inputRef.current?.focus()
   }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -155,9 +176,7 @@ export const SearchPicker = ({
         id={buildOptionId(id, option.id)}
         role="option"
         aria-selected={index === highlighted}
-        onMouseDown={() => {
-          skipNextBlurRevert.current = true
-        }}
+        onMouseDown={keepInputFocus}
         onMouseEnter={() => setHighlighted(index)}
         onClick={() => selectOption(option)}
         className={cn(optionRowClasses, index === highlighted && 'bg-accent text-accent-foreground')}
@@ -172,6 +191,7 @@ export const SearchPicker = ({
     <div className="relative">
       <div className="relative">
         <Input
+          ref={inputRef}
           id={id}
           role="combobox"
           aria-expanded={open}
@@ -193,9 +213,7 @@ export const SearchPicker = ({
             type="button"
             aria-label="Clear"
             disabled={disabled}
-            onMouseDown={() => {
-              skipNextBlurRevert.current = true
-            }}
+            onMouseDown={keepInputFocus}
             onClick={handleClear}
             className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
           >

@@ -1,12 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
-import { QueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { api } from './api'
 import {
   applyMessageToPages,
   applyMessageUpdate,
   assembleThread,
+  countNewlyFailed,
   canMarkHandled,
   failedAnnouncement,
+  messageAreaState,
+  olderPageState,
   canTransfer,
   isTakeoverOffered,
   isTransferOffered,
@@ -224,24 +227,59 @@ describe('applyMessageToPages', () => {
 
     expect(queryClient.getQueryData<Page<Message>>(PAGE_KEY)?.items[0].status).toBe('delivered')
   })
+
+  it('fetches again after cancelling an in-flight fetch of an active query', async () => {
+    const queryClient = new QueryClient()
+    const delivered = message({ id: 'm-1', author_kind: 'admin', status: 'delivered' })
+    const resolvers: Array<(page: Page<Message>) => void> = []
+    const queryFn = vi.fn(() => new Promise<Page<Message>>((resolve) => resolvers.push(resolve)))
+    const observer = new QueryObserver(queryClient, { queryKey: PAGE_KEY, queryFn, retry: false })
+    const unsubscribe = observer.subscribe(() => {})
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(1))
+
+    await applyMessageToPages(queryClient, QUERY_PREFIX, delivered)
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(2))
+    // The server answers the second fetch with the update applied.
+    resolvers[1](pageOf([delivered]))
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryData<Page<Message>>(PAGE_KEY)?.items[0].status).toBe('delivered'),
+    )
+    unsubscribe()
+  })
 })
 
 describe('failedAnnouncement', () => {
   it('announces nothing before any failure', () => {
-    expect(failedAnnouncement(0)).toBe('')
+    expect(failedAnnouncement(0, 0)).toBe('')
   })
 
-  it('changes the live-region text on a second failure while saying the same words', () => {
-    const first = failedAnnouncement(1)
-    const second = failedAnnouncement(2)
-
-    expect(second).not.toBe(first)
-    expect(first.trim()).toBe('A message failed to send.')
-    expect(second.trim()).toBe('A message failed to send.')
+  it('says the singular copy for exactly one failed message', () => {
+    expect(failedAnnouncement(1, 1).trim()).toBe('A message failed to send.')
   })
 
-  it('changes the text again on a third failure', () => {
-    expect(failedAnnouncement(3)).not.toBe(failedAnnouncement(2))
+  it('says the count for a batch of several failed messages', () => {
+    expect(failedAnnouncement(3, 1).trim()).toBe('3 messages failed to send.')
+  })
+
+  it('changes the text between consecutive batches of the same size', () => {
+    expect(failedAnnouncement(2, 2)).not.toBe(failedAnnouncement(2, 1))
+    expect(failedAnnouncement(1, 3)).not.toBe(failedAnnouncement(1, 2))
+  })
+})
+
+describe('countNewlyFailed', () => {
+  it('counts every message already on screen that moved to failed', () => {
+    const before = [message({ id: 'a', status: 'queued' }), message({ id: 'b', status: 'queued' })]
+    const after = [message({ id: 'a', status: 'failed' }), message({ id: 'b', status: 'failed' })]
+
+    expect(countNewlyFailed(before, after)).toBe(2)
+  })
+
+  it('ignores messages loaded as failed and ones that were already failed', () => {
+    const before = [message({ id: 'a', status: 'failed' })]
+    const after = [message({ id: 'a', status: 'failed' }), message({ id: 'new', status: 'failed' })]
+
+    expect(countNewlyFailed(before, after)).toBe(0)
   })
 })
 
@@ -733,5 +771,75 @@ describe('window-dependent takeover decisions', () => {
     )
     expect(takeoverClosedNotice(closed)).toBe(TAKEOVER_CLOSED_NOTICE)
     expect(takeoverClosedNotice(open)).toBeNull()
+  })
+})
+
+describe('messageAreaState', () => {
+  const page = (
+    overrides: Partial<{ hasData: boolean; isPending: boolean; isFetching: boolean; isError: boolean }>,
+  ) => ({
+    isPending: false,
+    hasData: false,
+    isFetching: false,
+    isError: false,
+    ...overrides,
+  })
+
+  it('is loading while the first page is fetching without data', () => {
+    expect(messageAreaState(page({ isFetching: true }), 0)).toBe('loading')
+  })
+
+  it('is loading while the first page is pending but not fetching (paused offline)', () => {
+    expect(messageAreaState(page({ isPending: true }), 0)).toBe('loading')
+  })
+
+  it('stays loading when a pending message exists before the page lands', () => {
+    expect(messageAreaState(page({ isFetching: true }), 1)).toBe('loading')
+  })
+
+  it('is loading again during a retry refetch rather than showing the stale error', () => {
+    expect(messageAreaState(page({ isFetching: true, isError: true }), 0)).toBe('loading')
+  })
+
+  it('is error when the first page failed and is idle', () => {
+    expect(messageAreaState(page({ isError: true }), 0)).toBe('error')
+  })
+
+  it('is empty only after a successful load with no messages', () => {
+    expect(messageAreaState(page({ hasData: true }), 0)).toBe('empty')
+  })
+
+  it('is ready when the load succeeded with no items but a pending message exists', () => {
+    expect(messageAreaState(page({ hasData: true }), 1)).toBe('ready')
+  })
+
+  it('is ready when messages loaded, even while a background refetch runs', () => {
+    expect(messageAreaState(page({ hasData: true, isFetching: true }), 3)).toBe('ready')
+  })
+})
+
+describe('olderPageState', () => {
+  it('is idle when no cursor page was requested', () => {
+    expect(olderPageState(null)).toBe('idle')
+  })
+
+  it('is fetching while the newest cursor page loads', () => {
+    expect(olderPageState({ isPending: false, hasData: false, isFetching: true, isError: false })).toBe('fetching')
+  })
+
+  it('is fetching during a retry of a failed cursor page', () => {
+    expect(olderPageState({ isPending: false, hasData: false, isFetching: true, isError: true })).toBe('fetching')
+  })
+
+  it('is error when the newest cursor page failed', () => {
+    expect(olderPageState({ isPending: false, hasData: false, isFetching: false, isError: true })).toBe('error')
+  })
+
+  it('is idle when a landed cursor page only failed a background refetch', () => {
+    expect(olderPageState({ isPending: false, hasData: true, isFetching: false, isError: true })).toBe('idle')
+  })
+
+  it('is idle once the cursor page landed', () => {
+    expect(olderPageState({ isPending: false, hasData: true, isFetching: false, isError: false })).toBe('idle')
   })
 })

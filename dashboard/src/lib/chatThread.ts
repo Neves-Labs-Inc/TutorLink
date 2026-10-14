@@ -183,12 +183,26 @@ export const assembleThread = (paged: Message[], pending: Message[]): Message[] 
 const FAILED_ANNOUNCEMENT = 'A message failed to send.'
 const NO_BREAK_SPACE = '\u00A0'
 
-// Screen readers only speak a live region when its text changes, so every other failure carries a
-// trailing no-break space: each one is announced, with the same spoken words.
-export const failedAnnouncement = (failedCount: number): string => {
+// Only a message already on screen moving to `failed` counts: one loaded failed, or an echo
+// replacing an optimistic bubble (a new id), is not a live change and the composer already says so.
+export const countNewlyFailed = (previous: Message[], next: Message[]): number => {
+  const previousStatuses = new Map(previous.map((message) => [message.id, message.status]))
+
+  return next.filter((message) => {
+    const before = previousStatuses.get(message.id)
+
+    return message.status === 'failed' && before !== undefined && before !== 'failed'
+  }).length
+}
+
+// Screen readers only speak a live region when its text changes, so every other batch carries a
+// trailing no-break space: two same-size batches in a row are both announced, with the same words.
+export const failedAnnouncement = (failedCount: number, batch: number): string => {
   if (failedCount === 0) return ''
 
-  return failedCount % 2 === 0 ? `${FAILED_ANNOUNCEMENT}${NO_BREAK_SPACE}` : FAILED_ANNOUNCEMENT
+  const words = failedCount === 1 ? FAILED_ANNOUNCEMENT : `${failedCount} messages failed to send.`
+
+  return batch % 2 === 0 ? `${words}${NO_BREAK_SPACE}` : words
 }
 
 // The send the socket refused stays on screen as "Failed to send", so the unsent text can still
@@ -436,4 +450,27 @@ export const systemLineLabel = (
   }
 
   return { text, isFailed, canRetry }
+}
+
+export type MessageAreaState = 'loading' | 'error' | 'empty' | 'ready'
+
+export type PageStatus = { hasData: boolean; isPending: boolean; isFetching: boolean; isError: boolean }
+
+// `messageCount` is the assembled thread (loaded + pending/optimistic), so a pending send is content.
+export const messageAreaState = (firstPage: PageStatus, messageCount: number): MessageAreaState => {
+  // isPending covers a paused (offline) fetch, which is not isFetching.
+  if (!firstPage.hasData && (firstPage.isPending || firstPage.isFetching)) return 'loading'
+  if (!firstPage.hasData && firstPage.isError) return 'error'
+  if (firstPage.hasData && messageCount === 0) return 'empty'
+  return 'ready'
+}
+
+export type OlderPageState = 'idle' | 'fetching' | 'error'
+
+// `lastPage` is the newest cursor page, or null when only the first page is requested.
+export const olderPageState = (lastPage: PageStatus | null): OlderPageState => {
+  if (lastPage === null) return 'idle'
+  if (lastPage.isFetching) return 'fetching'
+  if (lastPage.isError && !lastPage.hasData) return 'error'
+  return 'idle'
 }

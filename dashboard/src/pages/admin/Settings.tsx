@@ -15,11 +15,13 @@ import { EmailTemplatesCard, EmailTemplatesSkeleton } from '@/components/setting
 import { hasAllEmailTemplates } from '@/lib/settings/emailTemplates'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useSettingsFocus } from '@/hooks/useSettingsFocus'
 import { errorDetail } from '@/lib/api'
 import { settingQueries, updateSettings } from '@/lib/queries/settings'
 import { generalSettings } from '@/lib/settings/reminders'
 import { pendingUpdates, settingControl, settingLabel, type Setting } from '@/lib/settings/settings'
 import { cn } from '@/lib/utils'
+import { CONTROL_HEIGHT, FADE_IN } from '@/components/settings/emailTemplateClasses'
 import { useAuthStore } from '@/stores/authStore'
 
 type SettingRowProps = {
@@ -56,16 +58,25 @@ export const Settings = () => {
   // The reminder keys have their own card and form, so one save never submits the other.
   const settings = generalSettings(allSettings)
   const updates = pendingUpdates(settings, draft)
+  const firstEditable = settings.find((setting) => settingControl(setting.value_type) === 'integer')
+  const { saveRef, savedRef, focusSave, markDiscarded } = useSettingsFocus({
+    status: save.status,
+    isSaveEnabled: updates.length > 0,
+    firstFieldId: firstEditable ? `setting-${firstEditable.key}` : null,
+  })
   let content: ReactNode
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (save.isPending) return
+    focusSave()
     save.mutate(updates)
   }
 
   const handleDiscard = () => {
     setDraft({})
     save.reset()
+    markDiscarded()
   }
 
   if (isPending) {
@@ -81,7 +92,7 @@ export const Settings = () => {
             {LOADING_ROWS.map((row) => (
               <div key={row} className="space-y-1.5">
                 <div className={cn(bar, 'h-4 w-32')} />
-                <div className={cn(bar, 'h-10 w-full')} />
+                <div className={cn(bar, 'h-11 w-full md:h-10')} />
                 <div className={cn(bar, 'h-3 w-40')} />
               </div>
             ))}
@@ -142,12 +153,20 @@ export const Settings = () => {
                 </p>
               )}
               <div className="flex flex-wrap items-center gap-3">
-                <Button type="submit" disabled={updates.length === 0 || save.isPending}>
+                <Button
+                  ref={saveRef}
+                  type="submit"
+                  className="h-11 md:h-8 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                  disabled={updates.length === 0}
+                  // aria-disabled (not disabled) while saving, so keyboard focus stays on the button.
+                  aria-disabled={save.isPending}
+                >
                   {save.isPending ? 'Saving…' : 'Save changes'}
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
+                  className="h-11 md:h-8"
                   disabled={updates.length === 0 || save.isPending}
                   onClick={handleDiscard}
                 >
@@ -159,7 +178,14 @@ export const Settings = () => {
                   </span>
                 )}
                 {save.isSuccess && updates.length === 0 && (
-                  <span className="text-sm text-muted-foreground">Saved.</span>
+                  <span
+                    ref={savedRef}
+                    role="status"
+                    tabIndex={-1}
+                    className={cn('text-sm text-muted-foreground outline-none duration-150', FADE_IN)}
+                  >
+                    Saved.
+                  </span>
                 )}
               </div>
             </CardFooter>
@@ -196,13 +222,13 @@ const SettingRow = ({ setting, value, onChange, disabled }: SettingRowProps) => 
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="h-10"
+        className={CONTROL_HEIGHT}
       />
     )
   } else {
     control = (
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm text-foreground">{setting.value}</span>
+        <span className="min-w-0 font-mono text-sm wrap-anywhere text-foreground">{setting.value}</span>
         <span className={pillClasses}>Read-only</span>
       </div>
     )
@@ -215,7 +241,7 @@ const SettingRow = ({ setting, value, onChange, disabled }: SettingRowProps) => 
         {setting.is_developer_only && <span className={pillClasses}>Developer only</span>}
       </div>
       {control}
-      <p className="font-mono text-xs text-muted-foreground">{setting.key}</p>
+      <p className="font-mono text-xs wrap-anywhere text-muted-foreground">{setting.key}</p>
     </div>
   )
 }

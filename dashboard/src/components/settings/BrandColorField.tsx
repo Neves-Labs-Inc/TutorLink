@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   BRAND_COLOR_PRESETS,
+  cleanBrandColor,
   isPresetSelected,
   normalizeBrandColor,
 } from "@/lib/settings/emailTemplates";
@@ -24,7 +25,9 @@ type BrandColorFieldProps = {
 const FIELD_ID = "email-brand-color";
 const HINT_ID = `${FIELD_ID}-hint`;
 const ERROR_ID = `${FIELD_ID}-error`;
-const HEX_MAX_LENGTH = 7;
+// Room for a pasted CSS declaration like "#74C8C9; "; onChange cleans it down to 7.
+// Case is left as typed: rewriting it mid-edit would move the caret to the end.
+const HEX_MAX_LENGTH = 32;
 
 const SWATCH_CLASSES =
   "w-14 shrink-0 cursor-pointer rounded-lg border border-input bg-transparent p-1 transition-colors duration-150 ease-out outline-none hover:bg-muted focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none [&::-moz-color-swatch]:rounded-md [&::-moz-color-swatch]:border-none [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-none [&::-webkit-color-swatch-wrapper]:p-0";
@@ -71,7 +74,9 @@ export default function BrandColorField({
           disabled={disabled}
           aria-invalid={error !== null}
           aria-describedby={error ? `${ERROR_ID} ${HINT_ID}` : HINT_ID}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) =>
+            onChange(cleanBrandColor(event.target.value))
+          }
         />
         <div
           role="group"

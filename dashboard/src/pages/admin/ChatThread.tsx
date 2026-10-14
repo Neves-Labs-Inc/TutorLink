@@ -40,8 +40,11 @@ import {
   takeoverClosedNotice,
   takeoverConversation,
   transferConfirmBody,
+  messageAreaState,
+  olderPageState,
   type FocusPlace,
   type FocusRequest,
+  type PageStatus,
   type RefusedAction,
 } from '@/lib/chatThread'
 import {
@@ -305,7 +308,24 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
   const hasMore = thread.length < total
   const loadingMore = pages[pages.length - 1]?.isFetching ?? false
 
+  const pageStatusOf = (page: (typeof pages)[number]): PageStatus => ({
+    hasData: page.data !== undefined,
+    isPending: page.isPending,
+    isFetching: page.isFetching,
+    isError: page.isError,
+  })
+  const loadState = messageAreaState(pageStatusOf(pages[0]), thread.length)
+  const olderPage = pages.length > 1 ? pages[pages.length - 1] : null
+  const olderFailed = olderPageState(olderPage === null ? null : pageStatusOf(olderPage)) === 'error'
+
   const handleLoadMore = () => {
+    // A failed older page retries itself; appending another cursor would duplicate it.
+    // A page that failed a background refetch still has data, so it advances like a healthy one.
+    if (olderPage !== null && olderFailed) {
+      void olderPage.refetch()
+      return
+    }
+
     const cursor = oldestCreatedAt(paged)
 
     if (cursor !== null) setCursors((current) => [...current, cursor])
@@ -411,6 +431,10 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
             hasMore={hasMore}
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
+            loadState={loadState}
+            loadError={errorDetail(pages[0].error) ?? LOAD_FALLBACK_ERROR}
+            onRetryLoad={() => void pages[0].refetch()}
+            olderFailed={olderFailed}
             lastSentId={lastSentId}
             isWindowOpen={detail.is_window_open}
             retry={{

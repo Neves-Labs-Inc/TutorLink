@@ -802,7 +802,7 @@ def test_a_reactivated_child_can_be_booked_again(
 ) -> None:
     """Reactivation goes through `PATCH /api/children/{id}`, the path an admin actually takes
     (P7C-P), rather than flipping the column behind the service's back."""
-    family.child.is_active = False
+    family.child.is_archived = True
     db.flush()
     user = _make_user(db)
     refused = _post(api, user, family)
@@ -1195,7 +1195,7 @@ def test_a_developer_as_staff_is_400(api: TestClient, db: Session, family: Famil
 
 def test_an_inactive_admin_as_staff_is_400(api: TestClient, db: Session, family: Family) -> None:
     admin = _make_user(db, role=UserRole.ADMIN)
-    admin.is_active = False
+    admin.is_archived = True
     db.flush()
     user = _make_user(db)
 
@@ -1641,7 +1641,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password("booking-write-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -1649,7 +1649,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("booking-write-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user
@@ -1671,7 +1671,7 @@ def _retire(row: object) -> None:
     """Soft-delete a reference. A Tutor is retired through their user: `tutors.is_active` decides
     nothing (#130)."""
     target = row.user if isinstance(row, Tutor) else row
-    target.is_active = False  # type: ignore[attr-defined]
+    target.is_archived = True  # type: ignore[attr-defined]
 
 
 def _count(db: Session) -> int:

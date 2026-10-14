@@ -122,7 +122,7 @@ def test_add_home_accepts_an_inactive_child_linked_to_the_client(
     """07C A2 delta 3: a home can be prepared before a child returns."""
     admin = _make_user(db)
     client = _make_client(db)
-    child = _make_child(db, guardians=[client], is_active=False)
+    child = _make_child(db, guardians=[client], is_archived=True)
 
     response = _add(api, admin, client.id, child_ids=[str(child.id)])
     home_id = uuid.UUID(response.json()["id"])
@@ -323,7 +323,7 @@ def test_deactivating_a_home_with_an_upcoming_live_booking_is_409_and_applies_no
 
     _assert_detail(response, 409, UPCOMING_BOOKINGS_ERROR)
     reloaded = _reloaded(db, home)
-    assert reloaded.is_active is True
+    assert reloaded.is_archived is False
     assert reloaded.label == "Mum's"
 
 
@@ -360,7 +360,7 @@ def test_deactivating_a_home_with_no_upcoming_live_booking_succeeds(
 
     assert response.status_code == 200
     assert response.json()["is_active"] is False
-    assert _reloaded(db, home).is_active is False
+    assert _reloaded(db, home).is_archived is True
 
 
 def test_a_booking_at_another_home_does_not_block_deactivation(
@@ -381,13 +381,13 @@ def test_a_booking_at_another_home_does_not_block_deactivation(
 
 def test_patch_reactivates_a_deactivated_home(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    home = _make_home(db, client=_make_client(db), is_active=False)
+    home = _make_home(db, client=_make_client(db), is_archived=True)
 
     response = _patch(api, admin, home.id, {"is_active": True})
 
     assert response.status_code == 200
     assert response.json()["is_active"] is True
-    assert _reloaded(db, home).is_active is True
+    assert _reloaded(db, home).is_archived is False
 
 
 def test_patch_leaves_every_link_in_place(api: TestClient, db: Session) -> None:
@@ -574,7 +574,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -582,7 +582,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user
@@ -630,15 +630,15 @@ def _auth(user: User) -> dict[str, str]:
 
 def _make_client(db: Session) -> Guardian:
     suffix = uuid.uuid4().hex[:12]
-    client = Guardian(name=f"Client {suffix}", phone_number=f"+1{suffix[:10]}", is_active=True)
+    client = Guardian(name=f"Client {suffix}", phone_number=f"+1{suffix[:10]}", is_archived=False)
     db.add(client)
     db.flush()
 
     return client
 
 
-def _make_home(db: Session, *, client: Guardian, is_active: bool = True) -> Home:
-    home = Home(label="Mum's", address="123 Main St", access_code="1234", is_active=is_active)
+def _make_home(db: Session, *, client: Guardian, is_archived: bool = False) -> Home:
+    home = Home(label="Mum's", address="123 Main St", access_code="1234", is_archived=is_archived)
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=home.id))
@@ -652,14 +652,14 @@ def _make_child(
     *,
     guardians: list[Guardian],
     homes: list[Home] | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> Child:
     child = Child(
         name=f"Child {uuid.uuid4().hex[:12]}",
         date_of_birth=datetime.date(2014, 5, 2),
         grade_level=7,
         school_name="Lincoln Middle School",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()

@@ -96,7 +96,7 @@ def household(db: Session) -> Household:
     empty = _make_client(db, name="Empty Nest", phone_number=FOREIGN_PHONE)
     for _ in range(2):
         _make_home(db, guardian=full)
-    _make_home(db, guardian=full, is_active=False)
+    _make_home(db, guardian=full, is_archived=True)
     for _ in range(3):
         _make_child(db, guardians=[full])
 
@@ -207,7 +207,7 @@ def test_tutor_q_composes_with_the_is_active_filter(
     api: TestClient, db: Session, roster: Roster
 ) -> None:
     admin = _make_user(db)
-    roster.brook.user.is_active = False
+    roster.brook.user.is_archived = True
     db.flush()
 
     body = api.get("/api/tutors", params={"q": "nadia"}, headers=_auth(admin)).json()
@@ -304,7 +304,7 @@ def test_client_items_carry_the_home_and_child_counts(
 def test_a_deactivated_home_is_not_counted_but_every_linked_child_is(
     api: TestClient, db: Session, household: Household
 ) -> None:
-    """`homes` carries `is_active`; `children` has no such column, so there is nothing to filter
+    """`homes` carries `is_archived`; `children` has no such column, so there is nothing to filter
     a child on and none is filtered."""
     admin = _make_user(db)
 
@@ -509,7 +509,7 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
         name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()
@@ -569,8 +569,8 @@ def _make_client(
     return guardian
 
 
-def _make_home(db: Session, *, guardian: Guardian, is_active: bool = True) -> Home:
-    home = Home(address="1 Test Street", access_code="0000", is_active=is_active)
+def _make_home(db: Session, *, guardian: Guardian, is_archived: bool = False) -> Home:
+    home = Home(address="1 Test Street", access_code="0000", is_archived=is_archived)
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=guardian.id, home_id=home.id))

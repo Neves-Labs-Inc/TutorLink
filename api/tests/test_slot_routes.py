@@ -493,7 +493,7 @@ def test_a_retired_subject_is_never_offered(
     """#44 item 1 in its original direction: a soft-deleted `subject` must yield no qualified
     tutors here, the same empty `Page` a subject nobody is assigned to already yields, rather
     than a booking `POST /api/bookings` now refuses with a 400."""
-    db.get_one(Subject, world.subject_id).is_active = False
+    db.get_one(Subject, world.subject_id).is_archived = True
     db.flush()
 
     response = api.get(_url(world), headers=_bearer(admin))
@@ -670,7 +670,7 @@ def test_a_retired_subject_offered_by_neither_surface(
     """The divergence #44 item 1 exists to close: the same retired `subject_id` the offer
     surface now declines to offer must also be the one `POST /api/bookings` refuses, so the
     two surfaces cannot drift apart again without both of these assertions failing."""
-    db.get_one(Subject, world.subject_id).is_active = False
+    db.get_one(Subject, world.subject_id).is_archived = True
     db.flush()
 
     offered = api.get(_url(world), headers=_bearer(admin))

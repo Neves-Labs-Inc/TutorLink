@@ -25,7 +25,7 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
         name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()
@@ -187,7 +187,7 @@ def test_assign_with_a_retired_subject_is_400(api: TestClient, db: Session) -> N
     admin = _make_user(db)
     tutor = _make_tutor(db)
     subject = _make_subject(db)
-    subject.is_active = False
+    subject.is_archived = True
     db.flush()
 
     response = api.post(
@@ -268,7 +268,7 @@ def test_delete_still_works_after_the_subject_is_retired(api: TestClient, db: Se
         headers=headers,
         json={"subject_id": str(subject.id), "max_grade_level": 8},
     )
-    subject.is_active = False
+    subject.is_archived = True
     db.flush()
 
     response = api.delete(f"/api/tutors/{tutor.id}/subjects/{subject.id}", headers=headers)
@@ -313,7 +313,7 @@ def test_delete_does_not_deactivate_or_delete_the_tutor_or_subject(
     db.refresh(tutor)
     db.refresh(subject)
     assert tutor.is_active is True
-    assert subject.is_active is True
+    assert subject.is_archived is False
 
 
 def test_a_subject_may_be_assigned_to_two_tutors_and_a_tutor_may_hold_two_subjects(

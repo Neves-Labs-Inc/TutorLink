@@ -110,7 +110,7 @@ def _is_self_admin(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -
 
 def matching_tutors(
     *,
-    is_active: bool,
+    is_archived: bool,
     tutor_id: uuid.UUID | None,
     subject_id: uuid.UUID | None,
     grade_level: int | None,
@@ -119,7 +119,7 @@ def matching_tutors(
 ) -> Select[tuple[Tutor]]:
     """The filtered tutor query, as `EXISTS` rather than a join.
 
-    `is_active` and `q` are the person's: the query joins `users`, since `tutors.is_active`
+    `is_archived` and `q` are the person's: the query joins `users`, since `tutors.is_active`
     decides nothing (#130) and the name lives on the user.
 
     `grade_level` is a **ceiling** comparison — `max_grade_level >= grade_level` — so a tutor
@@ -136,7 +136,7 @@ def matching_tutors(
     Public: `stats_service` is its second consumer, per CONSTITUTION §11.
     """
     statement = (
-        select(Tutor).join(User, User.id == Tutor.user_id).where(User.is_active.is_(is_active))
+        select(Tutor).join(User, User.id == Tutor.user_id).where(User.is_archived.is_(is_archived))
     )
     pattern = _substring_pattern(q)
 
@@ -199,7 +199,7 @@ def _phone_number_taken(db: Session, *, phone_number: str, exclude_id: uuid.UUID
 def list_tutors(
     db: Session,
     *,
-    is_active: bool,
+    is_archived: bool,
     tutor_id: uuid.UUID | None,
     subject_id: uuid.UUID | None,
     grade_level: int | None,
@@ -215,7 +215,7 @@ def list_tutors(
     yields an empty page rather than a 404.
     """
     filtered = matching_tutors(
-        is_active=is_active,
+        is_archived=is_archived,
         tutor_id=tutor_id,
         subject_id=subject_id,
         grade_level=grade_level,
@@ -236,7 +236,7 @@ def list_tutors(
 
 
 def get_tutor(db: Session, *, tutor_id: uuid.UUID) -> Tutor:
-    """Fetch by id, ignoring `is_active` — a deactivated tutor fetched by id is a 200 (#21)."""
+    """Fetch by id, ignoring `is_archived` — an archived tutor fetched by id is a 200 (#21)."""
     tutor = db.scalars(
         select(Tutor).where(Tutor.id == tutor_id).options(SUBJECTS_LOADED, USER_LOADED)
     ).first()
@@ -263,7 +263,7 @@ def create_tutor(
         name_is_default=False,
         hashed_password=None,
         role=UserRole.TUTOR,
-        is_active=True,
+        is_archived=False,
     )
 
     return create_profile(db, user=user, phone_number=phone_number, bio=bio)
@@ -306,10 +306,10 @@ def update_tutor(
     email: str | None,
     phone_number: str | None,
     bio: str | None,
-    is_active: bool | None,
+    is_archived: bool | None,
     now: datetime,
 ) -> Tutor:
-    """`name`, `email` and `is_active` are the person's and are written to the user; a chosen
+    """`name`, `email` and `is_archived` are the person's and are written to the user; a chosen
     name clears `name_is_default`. `phone_number` and `bio` are the profile's. The actor must
     be allowed to write this person (`assert_may_write_person`), checked before any edit.
 
@@ -330,7 +330,9 @@ def update_tutor(
     tutor = get_tutor(db, tutor_id=tutor_id)
     assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
 
-    if is_active is False and _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
+    if is_archived is True and _is_self_admin(
+        actor_role=actor_role, actor_id=actor_id, tutor=tutor
+    ):
         raise TutorSelfChangeForbidden
 
     normalized_email = email.strip().lower() if email is not None else None
@@ -377,8 +379,8 @@ def update_tutor(
             if bio is not None:
                 tutor.bio = bio
 
-            if is_active is not None:
-                tutor.user.is_active = is_active
+            if is_archived is not None:
+                tutor.user.is_archived = is_archived
 
             db.flush()
     except IntegrityError as exc:
@@ -393,7 +395,7 @@ def update_tutor(
 def deactivate_tutor(
     db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, tutor_id: uuid.UUID
 ) -> Tutor:
-    """Soft delete of the person: `users.is_active` is the one flag that counts, so this is
+    """Soft delete of the person: `users.is_archived` is the one flag that counts, so this is
     what stops the login, the offer surface and the Tutors list at once.
 
     It does not touch `tutor_subjects`, `tutor_availability` or `bookings`: deleting the
@@ -405,7 +407,7 @@ def deactivate_tutor(
     if _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
         raise TutorSelfChangeForbidden
 
-    tutor.user.is_active = False
+    tutor.user.is_archived = True
     db.flush()
 
     return tutor

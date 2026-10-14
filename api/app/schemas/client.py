@@ -24,14 +24,13 @@ validator, because the canonical form depends on a `system_settings` row and a v
 import datetime
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from app.models.enums import Language
+from app.schemas.archived import ReadFromArchivedRow
 
 
-class HomeRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class HomeRead(ReadFromArchivedRow):
     id: uuid.UUID
     label: str | None
     address: str
@@ -39,9 +38,7 @@ class HomeRead(BaseModel):
     is_active: bool
 
 
-class ChildRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class ChildRead(ReadFromArchivedRow):
     id: uuid.UUID
     name: str
     date_of_birth: datetime.date | None

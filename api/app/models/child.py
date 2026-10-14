@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
+from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
@@ -26,7 +26,7 @@ def grade_range_predicate(column: str) -> str:
     return f"{column} BETWEEN {LOWEST_GRADE} AND {HIGHEST_GRADE}"
 
 
-class Child(HasID, HasTimestamps, HasActiveFlag, Base):
+class Child(HasID, HasTimestamps, HasArchivedFlag, Base):
     __tablename__ = "children"
     __table_args__ = (
         CheckConstraint(grade_range_predicate("grade_level"), name="ck_children_grade_level_range"),

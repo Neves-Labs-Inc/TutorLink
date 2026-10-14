@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.user import User
 from app.dependencies import AdminPrincipal
+from app.schemas.archived import to_archived
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.user import TutorProfileCreate, UserCreate, UserRead, UserUpdate
 from app.services.mail_service import MailServiceError
@@ -85,7 +86,7 @@ def list_all(
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[UserRead]:
     users, total = list_users(
-        db, is_active=is_active, limit=page_size, offset=(page - 1) * page_size
+        db, is_archived=not is_active, limit=page_size, offset=(page - 1) * page_size
     )
     # One query for the page, not one per row.
     expiries = live_invite_expiries(db, user_ids=[row.id for row in users], now=datetime.now(UTC))
@@ -155,7 +156,7 @@ def update(
             user_id=user_id,
             email=payload.email,
             role=payload.role,
-            is_active=payload.is_active,
+            is_archived=to_archived(payload.is_active),
             name=payload.name,
             now=datetime.now(UTC),
         )
@@ -271,7 +272,7 @@ def _read(user: User, *, invite_expires_at: datetime | None) -> UserRead:
         name=user.name,
         role=user.role,
         tutor_id=user.profile_id,
-        is_active=user.is_active,
+        is_active=not user.is_archived,
         has_password=user.hashed_password is not None,
         invite_expires_at=invite_expires_at,
     )

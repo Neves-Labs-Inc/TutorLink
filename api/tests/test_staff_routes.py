@@ -3,7 +3,7 @@
 The list is the booking form's and the Bookings Staff filter's one source for "who can a
 Booking be with": active Tutors, Managers and Admins, each with the `id` that
 `POST /api/bookings.user_id` takes and the `tutor_id` that `GET /api/tutors/{id}/availability`
-takes. A Developer is never listed, and only `users.is_active` decides who is active.
+takes. A Developer is never listed, and only `users.is_archived` decides who is active.
 """
 
 import uuid
@@ -28,14 +28,14 @@ def _make_user(
     *,
     role: UserRole = UserRole.ADMIN,
     name: str | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
         name=name or f"User {uuid.uuid4().hex[:12]}",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(user)
     db.flush()
@@ -47,7 +47,7 @@ def _make_tutor(
     *,
     role: UserRole = UserRole.TUTOR,
     name: str | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
@@ -56,7 +56,7 @@ def _make_tutor(
             name=name or f"Tutor {suffix}",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=is_active,
+            is_archived=is_archived,
         ),
         phone_number=f"+1{suffix[:10]}",
     )
@@ -135,7 +135,7 @@ def test_a_developer_user_is_never_listed(api: TestClient, db: Session) -> None:
 
 def test_an_inactive_tutor_is_absent(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    retired = _make_tutor(db, is_active=False)
+    retired = _make_tutor(db, is_archived=True)
 
     body = api.get("/api/staff?page_size=100", headers=_auth(admin)).json()
 

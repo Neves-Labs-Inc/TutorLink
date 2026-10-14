@@ -100,7 +100,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -108,7 +108,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -894,7 +894,7 @@ def test_deactivating_a_child_with_no_upcoming_sessions_ignores_the_count(
 
     assert response.status_code == 200
     assert response.json()["is_active"] is False
-    assert _child(db, child_id).is_active is False
+    assert _child(db, child_id).is_archived is True
 
 
 def test_reactivating_a_child_touches_no_booking(
@@ -904,7 +904,7 @@ def test_reactivating_a_child_touches_no_booking(
     home = _make_home(db)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[home])
     upcoming = _book(db, child_id=child_id, home_id=home.id, on=TOMORROW, start=NINE)
-    _child(db, child_id).is_active = False
+    _child(db, child_id).is_archived = True
     db.flush()
 
     response = api.patch(
@@ -913,7 +913,7 @@ def test_reactivating_a_child_touches_no_booking(
 
     assert response.status_code == 200
     assert response.json()["is_active"] is True
-    assert _child(db, child_id).is_active is True
+    assert _child(db, child_id).is_archived is False
     assert _status(db, upcoming) is BookingStatus.CONFIRMED
 
 
@@ -925,7 +925,7 @@ def test_deactivating_an_already_inactive_child_cancels_nothing(
     home = _make_home(db)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[home])
     upcoming = _book(db, child_id=child_id, home_id=home.id, on=TOMORROW, start=NINE)
-    _child(db, child_id).is_active = False
+    _child(db, child_id).is_archived = True
     db.flush()
 
     response = api.patch(
@@ -950,7 +950,7 @@ def test_deactivation_cancels_exactly_the_sessions_that_start_after_now(
 
     assert response.status_code == 200
     assert response.json()["is_active"] is False
-    assert _child(db, sessions.child_id).is_active is False
+    assert _child(db, sessions.child_id).is_archived is True
     assert _status(db, sessions.tomorrow) is BookingStatus.CANCELLED
     assert _status(db, sessions.this_afternoon) is BookingStatus.CANCELLED
     assert _status(db, sessions.this_morning) is BookingStatus.CONFIRMED
@@ -979,7 +979,7 @@ def test_a_deactivation_count_that_does_not_match_is_409_and_applies_nothing(
     child = _child(db, sessions.child_id)
     assert response.status_code == 409
     assert response.json() == {"detail": UPCOMING_SESSIONS_CHANGED_ERROR}
-    assert child.is_active is True
+    assert child.is_archived is False
     assert child.name == "Tommy Doe"
     assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED
     assert _status(db, sessions.this_afternoon) is BookingStatus.PENDING
@@ -1107,7 +1107,7 @@ def test_the_date_of_birth_is_checked_before_the_deactivation_count(
 
     assert response.status_code == 400
     assert response.json() == {"detail": INVALID_DATE_OF_BIRTH_ERROR}
-    assert _child(db, sessions.child_id).is_active is True
+    assert _child(db, sessions.child_id).is_archived is False
     assert _status(db, sessions.tomorrow) is BookingStatus.CONFIRMED
     assert _status(db, sessions.this_afternoon) is BookingStatus.PENDING
 
@@ -1115,7 +1115,7 @@ def test_the_date_of_birth_is_checked_before_the_deactivation_count(
 def test_an_inactive_child_can_still_be_edited(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     child_id = _create_child(api, admin, guardians=[_make_guardian(db)], homes=[_make_home(db)])
-    _child(db, child_id).is_active = False
+    _child(db, child_id).is_archived = True
     db.flush()
 
     response = api.patch(f"/api/children/{child_id}", headers=_auth(admin), json={"notes": "x"})
@@ -1136,7 +1136,7 @@ def test_a_tutor_cannot_deactivate_a_child(api: TestClient, db: Session) -> None
 
     assert response.status_code == 403
     assert isinstance(response.json()["detail"], str)
-    assert _child(db, child_id).is_active is True
+    assert _child(db, child_id).is_archived is False
 
 
 def test_patch_with_no_token_is_401(api: TestClient, db: Session) -> None:
@@ -1147,4 +1147,4 @@ def test_patch_with_no_token_is_401(api: TestClient, db: Session) -> None:
 
     assert response.status_code == 401
     assert isinstance(response.json()["detail"], str)
-    assert _child(db, child_id).is_active is True
+    assert _child(db, child_id).is_archived is False

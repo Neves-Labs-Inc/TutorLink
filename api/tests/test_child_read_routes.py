@@ -99,7 +99,7 @@ def test_deactivated_children_are_hidden_until_asked_for(
 ) -> None:
     admin = _make_user(db)
     active = _make_child(db, name=f"Active {token}")
-    dormant = _make_child(db, name=f"Dormant {token}", is_active=False)
+    dormant = _make_child(db, name=f"Dormant {token}", is_archived=True)
     headers = _auth(admin)
 
     default = api.get(f"/api/children?q={token}", headers=headers).json()
@@ -172,10 +172,10 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
     api: TestClient, db: Session, token: str
 ) -> None:
     admin = _make_user(db)
-    zed = _make_guardian(db, name="Zed Doe", is_active=False)
+    zed = _make_guardian(db, name="Zed Doe", is_archived=True)
     amy = _make_guardian(db, name="Amy Doe")
     active_home = _make_home(db, label="Mum's")
-    dormant_home = _make_home(db, label="Dad's", is_active=False)
+    dormant_home = _make_home(db, label="Dad's", is_archived=True)
     child = _make_child(
         db, name=f"Tommy {token}", guardians=[zed, amy], homes=[active_home, dormant_home]
     )
@@ -214,9 +214,9 @@ def test_detail_nests_every_guardian_and_every_home(
     api: TestClient, db: Session, token: str
 ) -> None:
     admin = _make_user(db)
-    zed = _make_guardian(db, name="Zed Doe", is_active=False)
+    zed = _make_guardian(db, name="Zed Doe", is_archived=True)
     amy = _make_guardian(db, name="Amy Doe")
-    older = _make_home(db, label="Dad's", is_active=False, created_days_ago=2)
+    older = _make_home(db, label="Dad's", is_archived=True, created_days_ago=2)
     newer = _make_home(db, label="Mum's", created_days_ago=1)
     child = _make_child(db, name=f"Tommy {token}", guardians=[zed, amy], homes=[newer, older])
 
@@ -450,7 +450,7 @@ def test_a_malformed_child_id_is_400_not_422(api: TestClient, db: Session) -> No
 
 def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=False, notes="Peanut allergy")
+    child = _make_child(db, is_archived=True, notes="Peanut allergy")
 
     response = api.get(f"/api/children/{child.id}", headers=_auth(admin))
     body = response.json()
@@ -487,7 +487,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -495,7 +495,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -520,9 +520,9 @@ def _make_tutor(db: Session) -> Tutor:
     return tutor
 
 
-def _make_guardian(db: Session, *, name: str = "Jane Doe", is_active: bool = True) -> Guardian:
+def _make_guardian(db: Session, *, name: str = "Jane Doe", is_archived: bool = False) -> Guardian:
     guardian = Guardian(
-        name=name, phone_number=f"+1{uuid.uuid4().int % 10**10:010d}", is_active=is_active
+        name=name, phone_number=f"+1{uuid.uuid4().int % 10**10:010d}", is_archived=is_archived
     )
     db.add(guardian)
     db.flush()
@@ -530,13 +530,13 @@ def _make_guardian(db: Session, *, name: str = "Jane Doe", is_active: bool = Tru
 
 
 def _make_home(
-    db: Session, *, label: str | None = None, is_active: bool = True, created_days_ago: int = 0
+    db: Session, *, label: str | None = None, is_archived: bool = False, created_days_ago: int = 0
 ) -> Home:
     home = Home(
         label=label,
         address=f"{uuid.uuid4().hex[:6]} Main St",
         access_code="1234",
-        is_active=is_active,
+        is_archived=is_archived,
         created_at=datetime.datetime.now(tz=datetime.UTC)
         - datetime.timedelta(days=created_days_ago),
     )
@@ -551,7 +551,7 @@ def _make_child(
     name: str = "Tommy Doe",
     guardians: list[Guardian] | None = None,
     homes: list[Home] | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
     notes: str | None = None,
 ) -> Child:
     child = Child(
@@ -560,7 +560,7 @@ def _make_child(
         grade_level=7,
         school_name="Lincoln Middle School",
         notes=notes,
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()

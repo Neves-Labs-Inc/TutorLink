@@ -67,7 +67,7 @@ def _make_user(
     *,
     role: UserRole = UserRole.ADMIN,
     tutor_id: uuid.UUID | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> User:
     if tutor_id is None:
         user = User(
@@ -75,7 +75,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=is_active,
+            is_archived=is_archived,
         )
         db.add(user)
     else:
@@ -83,14 +83,14 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = is_active
+        user.is_archived = is_archived
     db.flush()
     return user
 
 
-def _make_tutor_user(db: Session, *, is_active: bool = True) -> User:
+def _make_tutor_user(db: Session, *, is_archived: bool = False) -> User:
     """A target an admin may still write to: since #173 another admin is developer-only."""
-    return _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id, is_active=is_active)
+    return _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id, is_archived=is_archived)
 
 
 def _auth(user: User) -> dict[str, str]:
@@ -143,7 +143,7 @@ def test_total_counts_matches_not_returned_rows(api: TestClient, db: Session) ->
 
 def test_deactivated_users_are_hidden_until_asked_for(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    dormant = _make_user(db, is_active=False)
+    dormant = _make_user(db, is_archived=True)
     headers = _auth(admin)
 
     default = api.get("/api/users", headers=headers).json()
@@ -158,7 +158,7 @@ def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
 ) -> None:
     admin = _make_user(db)
     for _ in range(2):
-        _make_user(db, is_active=False)
+        _make_user(db, is_archived=True)
     headers = _auth(admin)
 
     asked = api.get("/api/users?is_active=false&page_size=1", headers=headers).json()
@@ -172,7 +172,7 @@ def test_a_deactivated_user_is_still_readable_by_id(api: TestClient, db: Session
     surface that deactivated a row has to be able to open it in order to reactivate it — a 404
     would make a soft delete indistinguishable from a hard one."""
     admin = _make_user(db)
-    dormant = _make_user(db, is_active=False)
+    dormant = _make_user(db, is_archived=True)
 
     response = api.get(f"/api/users/{dormant.id}", headers=_auth(admin))
 
@@ -274,7 +274,7 @@ def test_an_admin_cannot_deactivate_a_developer(api: TestClient, db: Session) ->
 
     assert response.status_code == 403
     db.refresh(developer)
-    assert developer.is_active is True
+    assert developer.is_archived is False
 
 
 def test_a_developer_may_do_all_of_it(api: TestClient, db: Session) -> None:
@@ -522,7 +522,7 @@ def test_a_tutor_account_brings_its_profile(api: TestClient, db: Session) -> Non
     assert profile.user.id == uuid.UUID(body["id"])
     assert profile.user.name == DISPLAY_NAME
     assert profile.bio == "Algebra"
-    assert profile.user.is_active is True
+    assert profile.user.is_archived is False
     # Canonicalised on the way in, like every other write path: `phone_service` owns the form.
     assert profile.phone_number == "+12025550180"
 
@@ -1014,7 +1014,7 @@ def test_a_manager_is_refused_users_and_settings(
 
     assert response.status_code == 403
     db.refresh(target)
-    assert (target.name, target.is_active) == ("Test User", True)
+    assert (target.name, target.is_archived) == ("Test User", False)
 
 
 # --- invites ---------------------------------------------------------------------------------
@@ -1024,10 +1024,12 @@ INVITE_DAYS = 7
 CLOCK_SLACK = timedelta(minutes=1)
 
 
-def _make_invitee(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
+def _make_invitee(
+    db: Session, *, role: UserRole = UserRole.ADMIN, is_archived: bool = False
+) -> User:
     has_profile = role in (UserRole.TUTOR, UserRole.MANAGER)
     tutor_id = _make_tutor(db).id if has_profile else None
-    user = _make_user(db, role=role, tutor_id=tutor_id, is_active=is_active)
+    user = _make_user(db, role=role, tutor_id=tutor_id, is_archived=is_archived)
     user.hashed_password = None
     db.flush()
     return user
@@ -1128,7 +1130,7 @@ def test_a_deactivated_user_cannot_be_invited(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    dormant = _make_invitee(db, is_active=False)
+    dormant = _make_invitee(db, is_archived=True)
 
     response = api.post(f"/api/users/{dormant.id}/invite", headers=_auth(admin))
 
@@ -1357,7 +1359,7 @@ def test_a_deactivated_user_cannot_be_sent_a_reset_link(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
-    dormant = _make_tutor_user(db, is_active=False)
+    dormant = _make_tutor_user(db, is_archived=True)
 
     response = _send_reset(api, dormant, actor=admin)
 
@@ -1447,7 +1449,7 @@ def _snapshot(db: Session, user: User) -> tuple[object, ...]:
     links = tuple(
         (link.id, link.used_at, link.revoked_at, link.expires_at) for link in _links(db, user)
     )
-    return (user.email, user.name, user.role, user.is_active, user.hashed_password, links)
+    return (user.email, user.name, user.role, user.is_archived, user.hashed_password, links)
 
 
 def _peer_with_a_live_reset_link(api: TestClient, db: Session) -> User:

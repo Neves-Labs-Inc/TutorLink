@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
+from app.schemas.archived import to_archived
 from app.schemas.client import (
     ChildRead,
     ClientCreate,
@@ -68,7 +69,7 @@ def list_all(
     try:
         clients, total = list_clients(
             db,
-            is_active=is_active,
+            is_archived=not is_active,
             phone_number=phone_number,
             q=q,
             limit=page_size,
@@ -124,7 +125,7 @@ def update(
             client_id=client_id,
             name=payload.name,
             phone_number=payload.phone_number,
-            is_active=payload.is_active,
+            is_archived=to_archived(payload.is_active),
             acting_user_id=user.id,
         )
     except ClientNotFound as exc:
@@ -148,7 +149,7 @@ def _summary(row: ClientWithCounts) -> ClientSummary:
         id=row.client.id,
         name=row.client.name,
         phone_number=row.client.phone_number,
-        is_active=row.client.is_active,
+        is_active=not row.client.is_archived,
         home_count=row.home_count,
         child_count=row.child_count,
     )
@@ -169,7 +170,7 @@ def _to_read(detail: ClientDetail) -> ClientRead:
         id=detail.client.id,
         name=detail.client.name,
         phone_number=detail.client.phone_number,
-        is_active=detail.client.is_active,
+        is_active=not detail.client.is_archived,
         homes=[HomeRead.model_validate(home) for home in detail.homes],
         children=[ChildRead.model_validate(child) for child in detail.children],
         language=None if conversation is None else conversation.language,

@@ -59,7 +59,7 @@ def _staff(db: Session, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
         name="Test User",
         hashed_password="not-a-hash",
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()

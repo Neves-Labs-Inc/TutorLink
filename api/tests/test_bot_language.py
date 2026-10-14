@@ -284,7 +284,7 @@ def test_a_spanish_name_staff_set_through_the_api_is_the_one_the_bot_shows(
         name="Mia Manager",
         hashed_password="unused",
         role=UserRole.MANAGER,
-        is_active=True,
+        is_archived=False,
     )
     db.add(manager)
     db.flush()

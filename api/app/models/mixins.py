@@ -23,3 +23,7 @@ class HasTimestamps:
 
 class HasActiveFlag:
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+
+class HasArchivedFlag:
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))

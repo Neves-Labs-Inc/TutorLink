@@ -188,7 +188,7 @@ def _make_user(
     *,
     role: UserRole,
     tutor_id: uuid.UUID | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> User:
     if tutor_id is None:
         user = User(
@@ -196,7 +196,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password("probe-password"),
             role=role,
-            is_active=is_active,
+            is_archived=is_archived,
         )
         db.add(user)
     else:
@@ -204,7 +204,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("probe-password")
         user.role = role
-        user.is_active = is_active
+        user.is_archived = is_archived
     db.flush()
     return user
 
@@ -313,13 +313,13 @@ def test_valid_token_for_a_deleted_user_is_401(probe: TestClient, db: Session) -
 
 
 def test_deactivation_takes_effect_on_the_next_request(probe: TestClient, db: Session) -> None:
-    """D-023: the `users` row is read per request, so `is_active = false` is immediate."""
+    """D-023: the `users` row is read per request, so `is_archived = true` is immediate."""
     user = _make_user(db, role=UserRole.ADMIN)
     headers = _bearer(user)
 
     assert probe.get("/probe/any", headers=headers).status_code == 200
 
-    user.is_active = False
+    user.is_archived = True
     db.flush()
 
     _assert_detail(probe.get("/probe/any", headers=headers), 401, CREDENTIALS_ERROR)

@@ -1126,7 +1126,7 @@ def test_an_office_only_tutor_books_in_office_without_asking(
 def test_a_child_with_no_home_books_in_office_when_the_tutor_can_do_it(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
     _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
 
@@ -1144,7 +1144,7 @@ def test_a_child_with_no_home_and_a_home_visits_tutor_is_handed_to_the_office(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
     """Ranges exist but none fits: an Office handoff, not `CANNOT_CONTINUE`."""
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
 
     turn = _book(chat, world, tutor=world.first_tutor_name, stop_after_date=True)
@@ -1307,7 +1307,7 @@ def test_a_deactivated_home_is_not_counted_and_is_never_offered(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
     home = _add_home(db, client, label="Old place", address="3 Former Street")
-    home.is_active = False
+    home.is_archived = True
     db.flush()
 
     turn = _book(chat, world, stop_after_date=True)
@@ -1709,7 +1709,7 @@ def test_an_inactive_child_beside_an_active_one_is_never_offered(
 ) -> None:
     """REQ-114. One active child left means the child question is skipped outright, so the
     inactive one is neither listed nor silently picked."""
-    _add_child(db, client, name="Retired Child", is_active=False)
+    _add_child(db, client, name="Retired Child", is_archived=True)
     chat.say("hi")
 
     turn = chat.say("book", intent=BotIntent.BOOK)
@@ -1725,7 +1725,7 @@ def test_the_which_child_list_leaves_out_an_inactive_child(
 ) -> None:
     """REQ-114 where there is a list to leave it out of."""
     _add_child(db, client, name="Robin Guardian")
-    _add_child(db, client, name="Retired Child", is_active=False)
+    _add_child(db, client, name="Retired Child", is_archived=True)
     chat.say("hi")
 
     turn = chat.say("book", intent=BotIntent.BOOK)
@@ -1758,7 +1758,7 @@ def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
             ).scalar_one()
         )
     else:
-        child.is_active = False
+        child.is_archived = True
 
     db.flush()
     chat.say("hi")
@@ -2268,7 +2268,7 @@ def test_moving_a_home_session_whose_home_was_deactivated_asks_where_among_what_
     cutoff(1)
     _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
     _add_home(db, client, label="Dad's", address="2 Other Street")
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
     _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
 
@@ -2285,7 +2285,7 @@ def test_moving_a_home_session_with_nowhere_left_to_hold_it_is_handed_to_the_off
     old session stays until Staff move it."""
     cutoff(1)
     original = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
 
     turn = _start_reschedule(chat)
@@ -3148,7 +3148,7 @@ def test_yes_to_the_offer_returns_the_child_for_the_webhook_to_record(
     assert turn.reactivation_child_id == sam.id
     assert turn.flag_reason is None
     assert chat.step is None
-    assert sam.is_active is False
+    assert sam.is_archived is True
 
 
 def test_no_to_the_offer_goes_back_to_the_menu_and_records_nothing(chat: Chat, db: Session) -> None:
@@ -3368,7 +3368,7 @@ def test_a_child_reactivated_since_the_offer_needs_nothing_asked(chat: Chat, db:
     family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
     chat.say("hi")
     _name_at_menu(chat, "Sam")
-    family.children["Sam Jones"].is_active = True
+    family.children["Sam Jones"].is_archived = False
     db.flush()
 
     turn = chat.say(value="yes")
@@ -3443,7 +3443,7 @@ def test_an_approved_child_is_offered_for_booking_like_any_active_child(
     chat.say("hi")
     turn = _name_at_menu(chat, "Sam")
 
-    assert family.children["Sam Jones"].is_active is True
+    assert family.children["Sam Jones"].is_archived is False
     assert turn.reply == f"{render('ASK_WHICH_CHILD', 'en')}\n1. Ann Lee\n2. Sam Jones"
 
 
@@ -3951,7 +3951,7 @@ def _family(
         children[name] = _add_child(db, client, name=name)
 
     for name in inactive:
-        children[name].is_active = False
+        children[name].is_archived = True
 
     db.flush()
 
@@ -4053,14 +4053,14 @@ def _make_client(
     return ClientWorld(guardian_id=guardian.id, child_id=child.id, home_id=home.id)
 
 
-def _add_child(db: Session, client: ClientWorld, *, name: str, is_active: bool = True) -> Child:
+def _add_child(db: Session, client: ClientWorld, *, name: str, is_archived: bool = False) -> Child:
     """A sibling linked to the same guardian and home as `client`'s child."""
     child = Child(
         name=name,
         date_of_birth=datetime.date(2015, 3, 9),
         grade_level=6,
         school_name="Test School",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
+from app.schemas.archived import to_archived
 from app.schemas.client import HomeRead
 from app.schemas.home import HomeUpdate
 from app.services.home_service import (
@@ -45,7 +46,7 @@ def update(
             label=payload.label,
             address=payload.address,
             access_code=payload.access_code,
-            is_active=payload.is_active,
+            is_archived=to_archived(payload.is_active),
         )
     except HomeNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, HOME_NOT_FOUND_ERROR) from exc

@@ -1622,7 +1622,7 @@ def _ask_subject(turn: _Turn, *, child: Child) -> _Next:
     step = STEP_BOOK_SUBJECT if child.evaluated_at is not None else STEP_FIRST_SESSION_SUBJECT
     subjects = turn.db.scalars(
         select(Subject)
-        .where(Subject.is_active.is_(True))
+        .where(Subject.is_archived.is_(False))
         .order_by(Subject.name, Subject.id)
         .limit(SUBJECT_LIMIT)
     ).all()
@@ -2186,7 +2186,7 @@ def _offerable_profile_id(db: Session, *, user_id: uuid.UUID) -> uuid.UUID | Non
     return db.scalars(
         select(Tutor.id)
         .join(User, User.id == Tutor.user_id)
-        .where(Tutor.user_id == user_id, User.is_active.is_(True), User.role.in_(PROFILE_ROLES))
+        .where(Tutor.user_id == user_id, User.is_archived.is_(False), User.role.in_(PROFILE_ROLES))
     ).first()
 
 
@@ -2271,9 +2271,9 @@ def _inactive_hit(hits: list[Child]) -> _NameHit:
     `_AMBIGUOUS`: no child is picked by that name (REQ-132.5). Anything else — no hit, one
     active hit, several all active — is `None`, and the point carries on as it did before 7D.
     """
-    if len(hits) == 1 and not hits[0].is_active:
+    if len(hits) == 1 and hits[0].is_archived:
         result: _NameHit = hits[0]
-    elif len(hits) > 1 and any(not child.is_active for child in hits):
+    elif len(hits) > 1 and any(child.is_archived for child in hits):
         result = _AMBIGUOUS
     else:
         result = None
@@ -2350,7 +2350,7 @@ def _request_reactivation(turn: _Turn) -> _Next:
         result = _refuse_while_pending(turn)
     elif child is None:
         result = _stuck(turn)
-    elif child.is_active:
+    elif not child.is_archived:
         result = _Next(
             reply=(
                 f"{_say(turn, 'REACTIVATION_NOT_NEEDED', name=child.name)} {_say(turn, 'ASK_MENU')}"
@@ -2391,7 +2391,7 @@ def _recognise(db: Session, *, phone_number: str, guardian_id: uuid.UUID | None)
     The conversation's own `guardian_id` wins when the webhook has one. A thread follows the
     guardian who owns it (a number change re-keys it, #126), so the guardian linked to the thread
     at a number is the one holding that number, for every change made since that rule.
-    `is_active` is deliberately not filtered: a deactivated client is recognised and then
+    `is_archived` is deliberately not filtered: a deactivated client is recognised and then
     refused at the write path by `_resolve`, which is a clearer outcome than an intake that
     collides with their own row on `UNIQUE (phone_number)`.
 
@@ -2428,7 +2428,7 @@ def _children(db: Session, *, guardian_id: uuid.UUID) -> list[Child]:
         db.scalars(
             select(Child)
             .join(ChildGuardian, ChildGuardian.child_id == Child.id)
-            .where(ChildGuardian.guardian_id == guardian_id, Child.is_active.is_(True))
+            .where(ChildGuardian.guardian_id == guardian_id, Child.is_archived.is_(False))
             .order_by(Child.name, Child.id)
         ).all()
     )
@@ -2461,7 +2461,7 @@ def _guardian_homes(db: Session, *, guardian_id: uuid.UUID) -> list[Home]:
         db.scalars(
             select(Home)
             .join(GuardianHome, GuardianHome.home_id == Home.id)
-            .where(GuardianHome.guardian_id == guardian_id, Home.is_active.is_(True))
+            .where(GuardianHome.guardian_id == guardian_id, Home.is_archived.is_(False))
             .order_by(Home.created_at, Home.id)
         ).all()
     )
@@ -2473,7 +2473,7 @@ def _homes(db: Session, *, child_id: uuid.UUID) -> list[Home]:
         db.scalars(
             select(Home)
             .join(ChildHome, ChildHome.home_id == Home.id)
-            .where(ChildHome.child_id == child_id, Home.is_active.is_(True))
+            .where(ChildHome.child_id == child_id, Home.is_archived.is_(False))
             .order_by(Home.created_at, Home.id)
         ).all()
     )

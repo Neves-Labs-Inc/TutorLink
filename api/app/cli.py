@@ -98,7 +98,7 @@ def seed_admin(db: Session, *, email: str, password: str, name: str) -> str:
             name_is_default=False,
             hashed_password=hash_password(password),
             role=UserRole.ADMIN,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
         db.commit()
@@ -129,7 +129,7 @@ def seed_developer(db: Session, *, email: str, password: str, name: str) -> str:
             name_is_default=False,
             hashed_password=hash_password(password),
             role=UserRole.DEVELOPER,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
         db.commit()

@@ -108,11 +108,11 @@ def stage(db: Session) -> Stage:
 def landscape(db: Session, stage: Stage) -> Stage:
     casts = [stage.cast, *(_make_cast(db) for _ in range(ACTIVE_TUTOR_TOTAL - 1))]
     for _ in range(INACTIVE_TUTOR_TOTAL):
-        _make_cast(db, is_active=False)
+        _make_cast(db, is_archived=True)
     for _ in range(ACTIVE_CLIENT_TOTAL):
         _make_guardian(db)
     for _ in range(INACTIVE_CLIENT_TOTAL):
-        _make_guardian(db, is_active=False)
+        _make_guardian(db, is_archived=True)
 
     for index, cast in enumerate(casts):
         live = BookingStatus.PENDING if index % 2 == 0 else BookingStatus.CONFIRMED
@@ -546,14 +546,14 @@ def _evaluate(db: Session, stage: Stage, *, on: datetime.date, status: BookingSt
     return booking
 
 
-def _make_cast(db: Session, *, is_active: bool = True) -> Cast:
+def _make_cast(db: Session, *, is_archived: bool = False) -> Cast:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
         user=User(
             email=f"tutor-{suffix}@example.com",
             name=f"Tutor {suffix}",
             role=UserRole.TUTOR,
-            is_active=is_active,
+            is_archived=is_archived,
         ),
         phone_number=f"+1{suffix[:10]}",
     )
@@ -568,10 +568,10 @@ def _make_cast(db: Session, *, is_active: bool = True) -> Cast:
     return Cast(tutor=tutor, availability_id=availability.id)
 
 
-def _make_guardian(db: Session, *, is_active: bool = True) -> Guardian:
+def _make_guardian(db: Session, *, is_archived: bool = False) -> Guardian:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(
-        name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}", is_active=is_active
+        name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}", is_archived=is_archived
     )
     db.add(guardian)
     db.flush()
@@ -588,7 +588,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password("stats-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -596,7 +596,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("stats-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

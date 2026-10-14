@@ -83,11 +83,11 @@ class World:
         self,
         *,
         consent: ConsentAction | None = ConsentAction.OPT_IN,
-        is_active: bool = True,
+        is_archived: bool = False,
         name: str = "Guardian",
     ) -> Guardian:
         guardian = Guardian(
-            name=name, phone_number=f"+1{uuid.uuid4().int % 10**10:010d}", is_active=is_active
+            name=name, phone_number=f"+1{uuid.uuid4().int % 10**10:010d}", is_archived=is_archived
         )
         self.db.add(guardian)
         self.db.flush()
@@ -114,9 +114,9 @@ class World:
         *guardians: Guardian,
         name: str = "Ana",
         is_evaluated: bool = True,
-        is_active: bool = True,
+        is_archived: bool = False,
     ) -> Child:
-        child = Child(name=name, grade_level=5, school_name="Test School", is_active=is_active)
+        child = Child(name=name, grade_level=5, school_name="Test School", is_archived=is_archived)
         if is_evaluated:
             child.evaluated_at = datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC)
             child.evaluated_by_user_id = self.staff().id
@@ -300,7 +300,7 @@ def test_an_opted_in_guardian_of_an_evaluated_child_with_nothing_booked_is_due(
 
 
 def test_an_inactive_guardian_is_not_due(world: World, db: Session) -> None:
-    guardian = world.guardian(is_active=False)
+    guardian = world.guardian(is_archived=True)
     world.child(guardian)
 
     assert candidate_for(db, guardian) is None
@@ -342,7 +342,7 @@ def test_a_child_not_evaluated_makes_no_guardian_due(world: World, db: Session) 
 
 def test_an_inactive_child_makes_no_guardian_due(world: World, db: Session) -> None:
     guardian = world.guardian()
-    world.child(guardian, is_active=False)
+    world.child(guardian, is_archived=True)
 
     assert candidate_for(db, guardian) is None
 

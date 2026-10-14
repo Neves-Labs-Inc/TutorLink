@@ -108,7 +108,7 @@ class WhatsAppChatTaken(ClientServiceError):
 def list_clients(
     db: Session,
     *,
-    is_active: bool,
+    is_archived: bool,
     phone_number: str | None,
     limit: int,
     offset: int,
@@ -126,11 +126,11 @@ def list_clients(
     normalising it would turn a search into a 400. It is a raw case-insensitive substring of
     the stored name or the stored E.164 string.
 
-    The filters compose, and `is_active` is **not** special-cased for the lookup: a
-    deactivated client is found only with `is_active=False`.
+    The filters compose, and `is_archived` is **not** special-cased for the lookup: a
+    deactivated client is found only with `is_archived=True`.
     """
     canonical = None if phone_number is None else normalize_phone_number(db, raw=phone_number)
-    matching = visible_clients(is_active=is_active, phone_number=canonical, q=q)
+    matching = visible_clients(is_archived=is_archived, phone_number=canonical, q=q)
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     rows = db.execute(
         matching.add_columns(_home_count(), _child_count())
@@ -147,7 +147,7 @@ def list_clients(
 
 
 def get_client(db: Session, *, client_id: uuid.UUID) -> ClientDetail:
-    """The client whatever its `is_active` state — a deactivated one is a 200, never a 404,
+    """The client whatever its `is_archived` state — a deactivated one is a 200, never a 404,
     because the surface that deactivated it has to open it in order to reactivate it."""
     return _detail(db, _guardian(db, client_id=client_id))
 
@@ -167,7 +167,7 @@ def create_client(
 
     # Locked before the Guardian is inserted: conversation first, as every turn does.
     thread = conversation_service.lock_thread_at(db, phone_number=canonical)
-    client = Guardian(name=name, phone_number=canonical, is_active=True)
+    client = Guardian(name=name, phone_number=canonical, is_archived=False)
 
     # The savepoint wraps the insert and nothing else. Unwinding it on `IntegrityError` is what
     # keeps the `Session` usable for the rest of the request; the home below is added outside
@@ -204,10 +204,10 @@ def update_client(
     client_id: uuid.UUID,
     name: str | None,
     phone_number: str | None,
-    is_active: bool | None,
+    is_archived: bool | None,
     acting_user_id: uuid.UUID,
 ) -> ClientDetail:
-    """The only deactivation and reactivation path there is; `is_active` moves either way.
+    """The only deactivation and reactivation path there is; `is_archived` moves either way.
 
     The duplicate check excludes this client, so a `PATCH` echoing back the number already
     stored — in any format, since both sides are normalised first — is a no-op on that field
@@ -271,8 +271,8 @@ def update_client(
             if name is not None:
                 client.name = name
 
-            if is_active is not None:
-                client.is_active = is_active
+            if is_archived is not None:
+                client.is_archived = is_archived
 
             db.flush()
     except IntegrityError as exc:
@@ -287,9 +287,9 @@ def update_client(
 
 
 def visible_clients(
-    *, is_active: bool, phone_number: str | None, q: str | None = None
+    *, is_archived: bool, phone_number: str | None, q: str | None = None
 ) -> Select[tuple[Guardian]]:
-    statement = select(Guardian).where(Guardian.is_active.is_(is_active))
+    statement = select(Guardian).where(Guardian.is_archived.is_(is_archived))
     pattern = _substring_pattern(q)
 
     if phone_number is not None:
@@ -317,21 +317,21 @@ def _substring_pattern(raw: str | None) -> str | None:
     return pattern
 
 
-# `homes` carries `is_active`, so a deactivated home is not counted; `child_count` counts every
+# `homes` carries `is_archived`, so an archived home is not counted; `child_count` counts every
 # linked child, active or not, by decision P7C-N. The two subqueries are scalar and
 # correlated rather than joined: a join over `guardian_homes` would multiply the guardian row
 # and turn `total` into a count of links (CONSTITUTION §8).
 #
 # This count and the nested list `_detail` builds are deliberately not the same predicate, and
 # that is not a §11 drift: `docs/api-design.md:69` places nested homes outside the collection
-# `is_active` rule, so the by-id response returns every linked home. `HomeRead` carries
-# `is_active` so the caller can tell which of them this number left out.
+# `is_archived` rule, so the by-id response returns every linked home. `HomeRead` carries
+# the flag so the caller can tell which of them this number left out.
 def _home_count() -> ScalarSelect[int]:
     return (
         select(func.count())
         .select_from(GuardianHome)
         .join(Home, Home.id == GuardianHome.home_id)
-        .where(GuardianHome.guardian_id == Guardian.id, Home.is_active.is_(True))
+        .where(GuardianHome.guardian_id == Guardian.id, Home.is_archived.is_(False))
         .scalar_subquery()
     )
 

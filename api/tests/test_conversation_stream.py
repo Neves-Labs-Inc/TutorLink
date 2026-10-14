@@ -199,7 +199,7 @@ def test_a_valid_staff_token_gets_ready(sockets: TestClient, db: Session, role: 
     ("principal", "expected_reason"),
     [
         (lambda db: _token(_make_user(db, role=UserRole.TUTOR)), OFFICE_REQUIRED_ERROR),
-        (lambda db: _token(_make_user(db, is_active=False)), CREDENTIALS_ERROR),
+        (lambda db: _token(_make_user(db, is_archived=True)), CREDENTIALS_ERROR),
         (lambda db: _token(_make_user(db), lifetime=-_minutes(30)), CREDENTIALS_ERROR),
         (lambda db: "not.a.token", CREDENTIALS_ERROR),
     ],
@@ -941,13 +941,13 @@ def _token(user: User, lifetime: datetime.timedelta | None = None) -> str:
     return jwt.encode(claims, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN, is_active: bool = True) -> User:
+def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN, is_archived: bool = False) -> User:
     user = User(
         email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
         name="Test User",
         hashed_password=hash_password("conversation-stream-password"),
         role=role,
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(user)
     db.flush()

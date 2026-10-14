@@ -372,7 +372,7 @@ def _make_user(
             name=name,
             hashed_password="unused",
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -380,7 +380,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = "unused"
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -400,7 +400,7 @@ def _make_guardian(db: Session) -> Guardian:
     guardian = Guardian(
         name=f"Guardian {uuid.uuid4().hex[:8]}",
         phone_number=f"+1{uuid.uuid4().int % 10**10:010d}",
-        is_active=True,
+        is_archived=False,
     )
     db.add(guardian)
     db.flush()

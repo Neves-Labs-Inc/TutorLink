@@ -240,7 +240,7 @@ def test_book_with_several_unbooked_children_lists_only_those(
     family.book(booked.id, on=WEEK_START + datetime.timedelta(days=6))
     # Neither is eligible: one was never Evaluated, the other is inactive.
     _add_child(family.db, family.client, name="Cal")
-    _add_child(family.db, family.client, name="Dee", is_active=False)
+    _add_child(family.db, family.client, name="Dee", is_archived=True)
 
     reply = phone.tap(BOOK, language)
 
@@ -278,7 +278,7 @@ def test_book_with_one_child_and_no_active_subject_only_says_it_cannot_continue(
     phone: Phone, family: Family
 ) -> None:
     family.thread(Language.EN)
-    phone.db.execute(update(Subject).values(is_active=False))
+    phone.db.execute(update(Subject).values(is_archived=True))
     phone.db.flush()
 
     reply = phone.tap(BOOK, "en")

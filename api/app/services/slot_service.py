@@ -204,9 +204,9 @@ def _qualified_tutor_names(
     """Active Tutors and Managers who teach `subject_id`, at a ceiling that reaches the Child
     or the grade.
 
-    Active is the person's `users.is_active`, and the role is checked too: an Admin keeps the
-    profile they had as a Tutor (`user_service`) but is no longer offered (#130). Names are the
-    person's.
+    Active is the person's `users.is_archived` being false, and the role is checked too: an
+    Admin keeps the profile they had as a Tutor (`user_service`) but is no longer offered
+    (#130). Names are the person's.
 
     The ceiling is matched one of three ways:
 
@@ -222,7 +222,7 @@ def _qualified_tutor_names(
     the row here is the refusal REQ-042.3 asks for rather than the silent pass the same shape
     produces on the booking write path.
 
-    The join to `Subject` and its `is_active` filter close #44 item 1 in its original
+    The join to `Subject` and its `is_archived` filter close #44 item 1 in its original
     direction: a retired subject must yield no qualified tutors here the same way a retired
     tutor already yields none, so a retired `subject_id` answers with the empty `Page`
     `test_a_tutor_with_no_assignment_for_the_subject_is_never_offered` already established for
@@ -235,10 +235,10 @@ def _qualified_tutor_names(
         .join(TutorSubject, TutorSubject.tutor_id == Tutor.id)
         .join(Subject, Subject.id == TutorSubject.subject_id)
         .where(
-            User.is_active.is_(True),
+            User.is_archived.is_(False),
             User.role.in_(PROFILE_ROLES),
             Subject.id == subject_id,
-            Subject.is_active.is_(True),
+            Subject.is_archived.is_(False),
         )
     )
     if child_id is not None:

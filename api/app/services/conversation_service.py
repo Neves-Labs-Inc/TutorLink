@@ -684,7 +684,7 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
             grade_level=None,
             school_name=None,
             notes=None,
-            is_active=True,
+            is_archived=False,
             expected_cancellations=None,
         )
 

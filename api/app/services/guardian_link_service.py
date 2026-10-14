@@ -128,7 +128,7 @@ def _validated_home_ids(
         db.scalars(
             select(ChildHome.home_id)
             .join(Home, Home.id == ChildHome.home_id)
-            .where(ChildHome.child_id == child_id, Home.is_active.is_(True))
+            .where(ChildHome.child_id == child_id, Home.is_archived.is_(False))
         ).all()
     )
 

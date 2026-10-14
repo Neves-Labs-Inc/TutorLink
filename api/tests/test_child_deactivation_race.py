@@ -133,7 +133,7 @@ def test_a_deactivation_behind_an_open_booking_waits_then_refuses_the_stale_coun
     assert deactivated[0].status_code == 409
     assert deactivated[0].json() == {"detail": UPCOMING_SESSIONS_CHANGED_ERROR}
     with committed_sessions() as session:
-        assert session.get_one(Child, world.child_id).is_active is True
+        assert session.get_one(Child, world.child_id).is_archived is False
         assert _statuses(session, world.child_id) == [
             BookingStatus.CONFIRMED,
             BookingStatus.CONFIRMED,
@@ -180,7 +180,7 @@ def test_a_booking_behind_an_open_deactivation_waits_then_is_refused(
     assert booked[0].status_code == 400
     assert booked[0].json() == {"detail": REFERENCE_NOT_FOUND_ERROR}
     with committed_sessions() as session:
-        assert session.get_one(Child, world.child_id).is_active is False
+        assert session.get_one(Child, world.child_id).is_archived is True
         assert _statuses(session, world.child_id) == [BookingStatus.CANCELLED]
 
 
@@ -211,7 +211,7 @@ def test_a_cancel_that_fails_part_way_leaves_the_child_and_every_session_as_they
 
     assert len(calls) == 2
     with committed_sessions() as session:
-        assert session.get_one(Child, world.child_id).is_active is True
+        assert session.get_one(Child, world.child_id).is_archived is False
         assert _statuses(session, world.child_id) == [
             BookingStatus.CONFIRMED,
             BookingStatus.CONFIRMED,
@@ -262,7 +262,7 @@ def test_a_home_deactivation_behind_an_open_booking_waits_then_sees_it(
     assert deactivated[0].status_code == 409
     assert deactivated[0].json() == {"detail": HOME_HAS_UPCOMING_BOOKINGS_ERROR}
     with committed_sessions() as session:
-        assert session.get_one(Home, world.spare_home_id).is_active is True
+        assert session.get_one(Home, world.spare_home_id).is_archived is False
         assert _statuses_at(session, world.spare_home_id) == [BookingStatus.CONFIRMED]
 
 
@@ -310,7 +310,7 @@ def test_a_booking_behind_an_open_home_deactivation_waits_then_is_refused(
     assert booked[0].status_code == 400
     assert booked[0].json() == {"detail": REFERENCE_NOT_FOUND_ERROR}
     with committed_sessions() as session:
-        assert session.get_one(Home, world.spare_home_id).is_active is False
+        assert session.get_one(Home, world.spare_home_id).is_archived is True
         assert _statuses_at(session, world.spare_home_id) == []
 
 
@@ -374,7 +374,7 @@ def _make_world(session: Session) -> World:
         name="Test User",
         hashed_password=hash_password("race-password"),
         role=UserRole.ADMIN,
-        is_active=True,
+        is_archived=False,
     )
     session.add_all([guardian, home, spare_home, child, tutor, subject, admin])
     session.flush()

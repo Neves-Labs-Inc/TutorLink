@@ -207,7 +207,7 @@ def callers(db: Session) -> dict[UserRole, Caller]:
                 name=f"Matrix {role.value}",
                 hashed_password="not-a-real-hash",
                 role=role,
-                is_active=True,
+                is_archived=False,
             )
             db.add(user)
         else:
@@ -215,7 +215,7 @@ def callers(db: Session) -> dict[UserRole, Caller]:
             user = db.get_one(Tutor, tutor_id).user
             user.hashed_password = "not-a-real-hash"
             user.role = role
-            user.is_active = True
+            user.is_archived = False
         db.flush()
         token = create_access_token(user_id=user.id, role=role, tutor_id=tutor_id)
         return Caller(role=role, headers={"Authorization": f"Bearer {token}"}, tutor_id=tutor_id)

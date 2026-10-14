@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal, Principal
+from app.schemas.archived import to_archived
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.subject import SubjectCreate, SubjectRead, SubjectUpdate
 from app.services.subject_service import (
@@ -35,7 +36,7 @@ def _read(row: SubjectWithCount) -> SubjectRead:
         name=row.subject.name,
         name_es=row.subject.name_es,
         description=row.subject.description,
-        is_active=row.subject.is_active,
+        is_active=not row.subject.is_archived,
         tutor_count=row.tutor_count,
     )
 
@@ -49,7 +50,7 @@ def list_all(
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[SubjectRead]:
     subjects, total = list_subjects(
-        db, is_active=is_active, limit=page_size, offset=(page - 1) * page_size
+        db, is_archived=not is_active, limit=page_size, offset=(page - 1) * page_size
     )
 
     return Page[SubjectRead](
@@ -84,7 +85,7 @@ def update(
             subject_id=subject_id,
             name=payload.name,
             description=payload.description,
-            is_active=payload.is_active,
+            is_archived=to_archived(payload.is_active),
             # Left out keeps the stored name; `null` or blank clears it.
             name_es=payload.name_es if "name_es" in payload.model_fields_set else KEEP,
         )

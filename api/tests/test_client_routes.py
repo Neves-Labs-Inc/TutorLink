@@ -44,7 +44,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -52,7 +52,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -74,9 +74,9 @@ def _auth(user: User) -> dict[str, str]:
 
 
 def _make_client(
-    db: Session, *, name: str = "Jane Doe", phone_number: str = PHONE, is_active: bool = True
+    db: Session, *, name: str = "Jane Doe", phone_number: str = PHONE, is_archived: bool = False
 ) -> Guardian:
-    client = Guardian(name=name, phone_number=phone_number, is_active=is_active)
+    client = Guardian(name=name, phone_number=phone_number, is_archived=is_archived)
     db.add(client)
     db.flush()
     return client
@@ -143,7 +143,7 @@ def test_total_counts_matches_not_returned_rows(api: TestClient, db: Session) ->
 def test_deactivated_clients_are_hidden_until_asked_for(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     _make_client(db, name="Active One", phone_number=PHONE)
-    dormant = _make_client(db, name="Dormant One", phone_number=OTHER_PHONE, is_active=False)
+    dormant = _make_client(db, name="Dormant One", phone_number=OTHER_PHONE, is_archived=True)
     headers = _auth(admin)
 
     default = api.get("/api/clients", headers=headers).json()
@@ -256,7 +256,7 @@ def test_phone_number_lookup_does_not_special_case_the_is_active_default(
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
-    dormant = _make_client(db, phone_number=PHONE, is_active=False)
+    dormant = _make_client(db, phone_number=PHONE, is_archived=True)
     headers = _auth(admin)
 
     default = api.get(f"/api/clients?phone_number={PHONE}", headers=headers).json()
@@ -335,7 +335,7 @@ def test_a_deactivated_client_is_still_readable_by_id(api: TestClient, db: Sessi
     """A 404 would make a soft delete indistinguishable from a hard one, and `is_active` is on
     the body because the bot's documented 409 recovery has to decide whether to reactivate."""
     admin = _make_user(db)
-    dormant = _make_client(db, is_active=False)
+    dormant = _make_client(db, is_archived=True)
 
     response = api.get(f"/api/clients/{dormant.id}", headers=_auth(admin))
 
@@ -411,12 +411,12 @@ def test_post_without_a_home_creates_neither_row(api: TestClient, db: Session) -
     assert db.scalars(select(GuardianHome).where(GuardianHome.guardian_id == client_id)).all() == []
 
 
-@pytest.mark.parametrize("is_active", [True, False])
-def test_post_is_never_an_upsert(api: TestClient, db: Session, is_active: bool) -> None:
+@pytest.mark.parametrize("is_archived", [False, True])
+def test_post_is_never_an_upsert(api: TestClient, db: Session, is_archived: bool) -> None:
     """Active or deactivated, the number is taken. Upserting here would overwrite a real
     guardian's name with whatever was just typed into WhatsApp."""
     admin = _make_user(db)
-    existing = _make_client(db, name="Jane Doe", phone_number=PHONE, is_active=is_active)
+    existing = _make_client(db, name="Jane Doe", phone_number=PHONE, is_archived=is_archived)
 
     response = api.post(
         "/api/clients",
@@ -507,13 +507,13 @@ def test_patch_echoing_the_clients_own_number_is_a_200_no_op(
     assert response.json()["name"] == "Jane Roe"
 
 
-@pytest.mark.parametrize("is_active", [True, False])
+@pytest.mark.parametrize("is_archived", [False, True])
 def test_patch_to_another_clients_number_is_the_same_409(
-    api: TestClient, db: Session, is_active: bool
+    api: TestClient, db: Session, is_archived: bool
 ) -> None:
     admin = _make_user(db)
     client = _make_client(db, name="Jane Doe", phone_number=PHONE)
-    _make_client(db, name="John Doe", phone_number=OTHER_PHONE, is_active=is_active)
+    _make_client(db, name="John Doe", phone_number=OTHER_PHONE, is_archived=is_archived)
 
     response = api.patch(
         f"/api/clients/{client.id}",

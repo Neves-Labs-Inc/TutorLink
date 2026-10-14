@@ -63,7 +63,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -71,7 +71,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -86,7 +86,7 @@ def _make_tutor(
     *,
     name: str | None = None,
     phone_number: str | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
@@ -94,7 +94,7 @@ def _make_tutor(
             email=f"tutor-{suffix}@example.com",
             name=name or f"Tutor {suffix}",
             role=UserRole.TUTOR,
-            is_active=is_active,
+            is_archived=is_archived,
         ),
         phone_number=phone_number or _phone_number(),
     )
@@ -178,7 +178,7 @@ def test_deactivated_tutors_are_hidden_until_asked_for(api: TestClient, db: Sess
     """`is_active` is one state or the other and never both — there is no "all" value."""
     admin = _make_user(db)
     live = _make_tutor(db)
-    dormant = _make_tutor(db, is_active=False)
+    dormant = _make_tutor(db, is_archived=True)
     headers = _auth(admin)
 
     default = api.get("/api/tutors", headers=headers).json()
@@ -194,7 +194,7 @@ def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
     admin = _make_user(db)
     _make_tutor(db)
     for _ in range(3):
-        _make_tutor(db, is_active=False)
+        _make_tutor(db, is_archived=True)
 
     asked = api.get("/api/tutors?is_active=false&page_size=1", headers=_auth(admin)).json()
 
@@ -230,7 +230,7 @@ def test_a_deactivated_tutor_is_still_readable_by_id(api: TestClient, db: Sessio
     """The by-id path takes no `?is_active` and deliberately does not filter: the surface that
     deactivated a row has to be able to open it in order to reactivate it."""
     admin = _make_user(db)
-    dormant = _make_tutor(db, is_active=False)
+    dormant = _make_tutor(db, is_archived=True)
 
     response = api.get(f"/api/tutors/{dormant.id}", headers=_auth(admin))
 
@@ -597,7 +597,7 @@ def test_the_grade_filter_still_hides_deactivated_tutors(api: TestClient, db: Se
     admin = _make_user(db)
     subject = _make_subject(db)
     live = _make_tutor(db)
-    dormant = _make_tutor(db, is_active=False)
+    dormant = _make_tutor(db, is_archived=True)
     _assign(db, live, subject, 12)
     _assign(db, dormant, subject, 12)
 
@@ -710,7 +710,7 @@ def test_create_makes_a_person_who_cannot_sign_in_yet(api: TestClient, db: Sessi
 def test_deactivating_a_tutor_deactivates_the_person(
     api: TestClient, db: Session, how: str
 ) -> None:
-    """`users.is_active` is the one flag (#130): the login stops on the very next request."""
+    """`users.is_archived` is the one flag (#130): the login stops on the very next request."""
     admin = _make_user(db)
     profile = _make_tutor(db)
     tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile.id)
@@ -727,7 +727,7 @@ def test_deactivating_a_tutor_deactivates_the_person(
     assert before.status_code == 200
     assert (response.status_code, response.json()["is_active"]) == (200, False)
     db.refresh(tutor_user)
-    assert tutor_user.is_active is False
+    assert tutor_user.is_archived is True
     assert after.status_code == 401
 
 
@@ -927,7 +927,7 @@ def test_patch_with_an_unparseable_phone_number_is_400(api: TestClient, db: Sess
 
 def test_patch_can_reactivate_a_deactivated_tutor(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    dormant = _make_tutor(db, is_active=False)
+    dormant = _make_tutor(db, is_archived=True)
 
     response = api.patch(
         f"/api/tutors/{dormant.id}", headers=_auth(admin), json={"is_active": True}
@@ -964,7 +964,7 @@ def test_delete_is_a_soft_delete_that_keeps_the_row_and_its_assignments(
     assert response.json()["is_active"] is False
     assert [row["name"] for row in response.json()["subjects"]] == ["Algebra"]
     db.refresh(tutor)
-    assert tutor.user.is_active is False
+    assert tutor.user.is_archived is True
     assert (
         db.scalars(select(TutorSubject).where(TutorSubject.tutor_id == tutor.id)).first()
         is not None
@@ -994,7 +994,7 @@ def test_a_tutor_token_is_refused_on_every_write(api: TestClient, db: Session) -
 
     assert [response.status_code for response in (created, patched, deleted)] == [403, 403, 403]
     db.refresh(profile)
-    assert profile.user.is_active is True
+    assert profile.user.is_archived is False
     assert profile.bio is None
 
 
@@ -1043,7 +1043,7 @@ def test_writing_a_profile_is_writing_its_account(
 
     assert (patched.status_code, deleted.status_code) == (expected, expected)
     db.refresh(profile.user)
-    assert profile.user.is_active is (expected == 403)
+    assert profile.user.is_archived is (expected != 403)
 
 
 @pytest.mark.parametrize("name", ["", "   ", "x" * 256, "Ana\nPay to IBAN X", "Ana\u200bLopez"])
@@ -1228,7 +1228,7 @@ def _snapshot(db: Session, user: User) -> tuple[object, ...]:
     db.refresh(user)
     assert user.profile is not None
     db.refresh(user.profile)
-    return (user.email, user.name, user.is_active, user.profile.phone_number, user.profile.bio)
+    return (user.email, user.name, user.is_archived, user.profile.phone_number, user.profile.bio)
 
 
 @pytest.mark.parametrize(
@@ -1282,7 +1282,7 @@ def test_a_developer_may_edit_and_delete_an_admins_profile(api: TestClient, db: 
     assert (patched.status_code, patched.json()["email"]) == (200, "moved@example.com")
     assert deleted.status_code == 200
     db.refresh(admin)
-    assert admin.is_active is False
+    assert admin.is_archived is True
 
 
 def test_an_admin_may_edit_their_own_profile(api: TestClient, db: Session) -> None:
@@ -1296,7 +1296,7 @@ def test_an_admin_may_edit_their_own_profile(api: TestClient, db: Session) -> No
 
     assert response.status_code == 200
     db.refresh(admin)
-    assert (admin.email, admin.name, admin.is_active) == ("me-now@example.com", "New Me", True)
+    assert (admin.email, admin.name, admin.is_archived) == ("me-now@example.com", "New Me", False)
 
 
 def test_an_admin_cannot_deactivate_themselves_through_their_profile(

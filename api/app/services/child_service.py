@@ -18,7 +18,7 @@ blank `notes` clears it, and `date_of_birth` cannot be cleared (A-47).
 **Deactivation cancels the child's upcoming sessions, after a count check (P7C-O, OQ-59).**
 "Upcoming" is `upcoming_live_bookings(now)` (P7C-T), `now` the business wall-clock from
 `clock.business_now` (`BUSINESS_TIMEZONE`).
-`is_active: false` on an active child selects those bookings `FOR UPDATE`; if there are any and
+`is_archived: true` on an active child selects those bookings `FOR UPDATE`; if there are any and
 `expected_cancellations` — the number the admin was shown and confirmed — differs from how many
 there are now, `UpcomingSessionsChanged` refuses the whole update. Otherwise each one goes to
 `cancelled` through `booking_status_service.change_status`, the one transition authority, in the
@@ -139,7 +139,7 @@ def update_child(
     grade_level: int | None,
     school_name: str | None,
     notes: str | None,
-    is_active: bool | None,
+    is_archived: bool | None,
     expected_cancellations: int | None,
 ) -> Child:
     child = db.get(Child, child_id, with_for_update=True, populate_existing=True)
@@ -157,7 +157,7 @@ def update_child(
     if homes is not None:
         _assert_no_upcoming_booking_at_removed_home(db, child_id=child.id, wanted=homes, now=now)
 
-    if is_active is False and child.is_active:
+    if is_archived is True and not child.is_archived:
         cancellations = _confirmed_cancellations(
             db, child_id=child.id, expected=expected_cancellations, now=now
         )
@@ -169,8 +169,8 @@ def update_child(
             db, booking_id=booking_id, target=BookingStatus.CANCELLED
         )
 
-    if is_active is not None:
-        child.is_active = is_active
+    if is_archived is not None:
+        child.is_archived = is_archived
 
     if name is not None:
         child.name = name

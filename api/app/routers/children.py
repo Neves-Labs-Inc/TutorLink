@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.child import Child
+from app.schemas.archived import to_archived
 from app.schemas.child import ChildCreate, ChildRead, ChildUpdate
 from app.services.child_service import (
     DATE_OF_BIRTH_EARLIEST,
@@ -90,7 +91,7 @@ def update(
             grade_level=payload.grade_level,
             school_name=payload.school_name,
             notes=payload.notes,
-            is_active=payload.is_active,
+            is_archived=to_archived(payload.is_active),
             expected_cancellations=payload.expected_cancellations,
         )
     except ChildNotFound as exc:
@@ -119,7 +120,7 @@ def _as_read(child: Child) -> ChildRead:
         grade_level=child.grade_level,
         school_name=child.school_name,
         notes=child.notes,
-        is_active=child.is_active,
+        is_active=not child.is_archived,
         guardian_ids=[link.guardian_id for link in child.guardian_links],
         home_ids=[link.home_id for link in child.home_links],
     )

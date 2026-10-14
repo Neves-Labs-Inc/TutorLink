@@ -670,7 +670,7 @@ def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None
             name="Test User",
             hashed_password=hash_password("isolation-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -678,7 +678,7 @@ def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("isolation-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

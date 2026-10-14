@@ -395,7 +395,7 @@ def test_a_booking_made_by_a_since_deactivated_guardian_can_still_be_edited(
     cannot carry."""
     booking = _book(db, family)
     booking.booked_by_guardian_id = family.guardian.id
-    family.guardian.is_active = False
+    family.guardian.is_archived = True
     db.flush()
     user = _make_user(db)
 

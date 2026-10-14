@@ -51,7 +51,7 @@ def _make_user(
     password: str = PASSWORD,
     role: UserRole = UserRole.ADMIN,
     tutor_id: uuid.UUID | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> User:
     if tutor_id is None:
         user = User(
@@ -59,7 +59,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(password),
             role=role,
-            is_active=is_active,
+            is_archived=is_archived,
         )
         db.add(user)
     else:
@@ -67,7 +67,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(password)
         user.role = role
-        user.is_active = is_active
+        user.is_archived = is_archived
     db.flush()
     return user
 
@@ -107,7 +107,7 @@ def test_wrong_password_unknown_email_and_inactive_user_raise_the_identical_type
     db: Session,
 ) -> None:
     _make_user(db, email="admin@x.com")
-    _make_user(db, email="dormant@x.com", is_active=False)
+    _make_user(db, email="dormant@x.com", is_archived=True)
 
     raised = []
     for email, password in (
@@ -325,7 +325,7 @@ def test_rotate_rejects_a_deactivated_user(db: Session) -> None:
     user = _make_user(db)
     issued = issue_token_pair(db, user=user)
 
-    user.is_active = False
+    user.is_archived = True
     db.flush()
 
     with pytest.raises(InvalidRefreshToken):

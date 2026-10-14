@@ -126,10 +126,10 @@ def test_a_child_has_many_guardians_and_many_homes() -> None:
 
 
 def test_junctions_are_hard_delete() -> None:
-    """No `is_active`, matching tutor_subjects. A link is not an entity, so unlinking a
+    """No `is_archived`, matching tutor_subjects. A link is not an entity, so unlinking a
     guardian after a custody change is a DELETE and takes effect immediately."""
     for junction in ("child_guardians", "child_homes", "guardian_homes"):
-        assert "is_active" not in metadata.tables[junction].c, junction
+        assert "is_archived" not in metadata.tables[junction].c, junction
 
 
 def test_an_exception_may_block_part_of_a_day() -> None:

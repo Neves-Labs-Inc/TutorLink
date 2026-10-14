@@ -6,14 +6,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.enums import UserRole, user_role_enum
-from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
+from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.tutor import Tutor
 
 
-class User(HasID, HasTimestamps, HasActiveFlag, Base):
+class User(HasID, HasTimestamps, HasArchivedFlag, Base):
     """The one record of a person. A Tutor or Manager's teaching profile hangs off it through
     `profile`; an Admin or Developer has none."""
 

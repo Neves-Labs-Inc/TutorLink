@@ -32,6 +32,7 @@ from app.db import get_db
 from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.models.tutor import Tutor
+from app.schemas.archived import to_archived
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.tutor import TutorCreate, TutorRead, TutorSubjectRead, TutorUpdate
 from app.services.name_rules import InvalidName
@@ -74,7 +75,7 @@ def _read(tutor: Tutor) -> TutorRead:
         email=tutor.user.email,
         phone_number=tutor.phone_number,
         bio=tutor.bio,
-        is_active=tutor.user.is_active,
+        is_active=not tutor.user.is_archived,
         subjects=[
             TutorSubjectRead(
                 subject_id=assignment.subject_id,
@@ -103,7 +104,7 @@ def list_all(
     # this route automatically. Declaring a second would shadow the scoped one.
     tutors, total = list_tutors(
         db,
-        is_active=is_active,
+        is_archived=not is_active,
         tutor_id=scope.tutor_id,
         subject_id=subject_id,
         grade_level=grade_level,
@@ -174,7 +175,7 @@ def update(
             email=payload.email,
             phone_number=payload.phone_number,
             bio=payload.bio,
-            is_active=payload.is_active,
+            is_archived=to_archived(payload.is_active),
             now=datetime.now(UTC),
         )
     except TutorNotFound as exc:

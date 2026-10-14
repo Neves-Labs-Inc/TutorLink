@@ -102,7 +102,7 @@ def test_login_rejects_bad_credentials_with_one_indistinguishable_401(
     api: TestClient, db: Session, email: str, password: str
 ) -> None:
     _make_user(db, email=EMAIL)
-    _make_user(db, email=DORMANT_EMAIL, is_active=False)
+    _make_user(db, email=DORMANT_EMAIL, is_archived=True)
     _make_user(db, email=NO_PASSWORD_EMAIL, password=None)
 
     response = _login(api, email=email, password=password)
@@ -370,7 +370,7 @@ def test_a_deactivated_users_link_gets_the_same_400(
 ) -> None:
     invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
     token = _invite(api, db, invitee, fake_mail)
-    invitee.is_active = False
+    invitee.is_archived = True
     db.flush()
 
     response = _set_password(api, token=token)
@@ -568,7 +568,7 @@ def test_a_miss_answers_identically_and_sends_nothing(
     if setup == "password-less":
         _make_user(db, password=None)
     elif setup == "inactive":
-        _make_user(db, is_active=False)
+        _make_user(db, is_archived=True)
 
     response = _forgot(api, email=email)
 
@@ -750,14 +750,14 @@ def _make_user(
     *,
     email: str = EMAIL,
     password: str | None = PASSWORD,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> User:
     user = User(
         email=email,
         name="Test User",
         hashed_password=None if password is None else hash_password(password),
         role=UserRole.ADMIN,
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(user)
     db.flush()

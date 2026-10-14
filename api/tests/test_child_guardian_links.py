@@ -50,7 +50,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -58,7 +58,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -80,30 +80,30 @@ def _auth(user: User) -> dict[str, str]:
 
 
 def _make_guardian(
-    db: Session, *, name: str, phone_number: str, is_active: bool = True
+    db: Session, *, name: str, phone_number: str, is_archived: bool = False
 ) -> Guardian:
-    guardian = Guardian(name=name, phone_number=phone_number, is_active=is_active)
+    guardian = Guardian(name=name, phone_number=phone_number, is_archived=is_archived)
     db.add(guardian)
     db.flush()
     return guardian
 
 
-def _make_home(db: Session, *, label: str, is_active: bool = True) -> Home:
-    home = Home(label=label, address=f"{label} Street", access_code="1234", is_active=is_active)
+def _make_home(db: Session, *, label: str, is_archived: bool = False) -> Home:
+    home = Home(label=label, address=f"{label} Street", access_code="1234", is_archived=is_archived)
     db.add(home)
     db.flush()
     return home
 
 
 def _make_child(
-    db: Session, *, guardians: list[Guardian], homes: list[Home], is_active: bool = True
+    db: Session, *, guardians: list[Guardian], homes: list[Home], is_archived: bool = False
 ) -> Child:
     child = Child(
         name="Tommy Doe",
         date_of_birth=datetime.date(2014, 5, 2),
         grade_level=7,
         school_name="Lincoln Middle School",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()
@@ -197,7 +197,7 @@ def test_linking_a_new_guardian_with_no_homes(api: TestClient, db: Session) -> N
     assert status_code == 201
     assert set(body["guardian_ids"]) == {str(first.id), str(created.id)}
     assert created.name == "John Doe"
-    assert created.is_active is True
+    assert created.is_archived is False
     assert _guardian_home_ids(db, created.id) == []
 
 
@@ -205,7 +205,7 @@ def test_linking_to_an_inactive_child_is_allowed(api: TestClient, db: Session) -
     admin = _make_user(db)
     first = _make_guardian(db, name="Jane Doe", phone_number=FIRST_PHONE)
     child = _make_child(
-        db, guardians=[first], homes=[_make_home(db, label="Mum's")], is_active=False
+        db, guardians=[first], homes=[_make_home(db, label="Mum's")], is_archived=True
     )
     second = _make_guardian(db, name="John Doe", phone_number=SECOND_PHONE)
 
@@ -275,7 +275,7 @@ def test_a_new_guardian_with_a_deactivated_clients_phone_is_409(
 ) -> None:
     admin = _make_user(db)
     child, _, _, _ = _family(db)
-    _make_guardian(db, name="Old Client", phone_number=NEW_PHONE, is_active=False)
+    _make_guardian(db, name="Old Client", phone_number=NEW_PHONE, is_archived=True)
     guardians_before, links_before = _count(db, Guardian), _count(db, ChildGuardian)
 
     status_code, body = _link(
@@ -363,7 +363,7 @@ def test_a_home_outside_the_childs_active_homes_is_400(
     admin = _make_user(db)
     child, first, mums, _ = _family(db)
     if bad_home == "deactivated home of the child":
-        target = _make_home(db, label="Old", is_active=False)
+        target = _make_home(db, label="Old", is_archived=True)
         db.add(ChildHome(child_id=child.id, home_id=target.id))
         db.flush()
     else:

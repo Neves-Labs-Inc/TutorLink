@@ -5,14 +5,14 @@ from sqlalchemy import DateTime, Index, String, Text, func, literal_column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.mixins import HasActiveFlag, HasID
+from app.models.mixins import HasArchivedFlag, HasID
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.tutor import TutorSubject
 
 
-class Subject(HasID, HasActiveFlag, Base):
+class Subject(HasID, HasArchivedFlag, Base):
     __tablename__ = "subjects"
     # Names are unique ignoring case; migration 0036 builds the same index.
     __table_args__ = (

@@ -78,7 +78,7 @@ def add_home(
         label=stored_label,
         address=stored_address,
         access_code=stored_access_code,
-        is_active=True,
+        is_archived=False,
     )
     db.add(home)
     db.flush()
@@ -96,7 +96,7 @@ def update_home(
     label: str | None,
     address: str | None,
     access_code: str | None,
-    is_active: bool | None,
+    is_archived: bool | None,
 ) -> Home:
     """`None` leaves a field alone; `label=""` clears the label. Links are never touched."""
     home = db.get(Home, home_id, with_for_update=True)
@@ -107,7 +107,7 @@ def update_home(
     stored_address = None if address is None else _required(address)
     stored_access_code = None if access_code is None else _required(access_code)
 
-    if is_active is False and _has_upcoming_bookings(db, home_id=home.id):
+    if is_archived is True and _has_upcoming_bookings(db, home_id=home.id):
         raise HomeHasUpcomingBookings
 
     if label is not None:
@@ -119,8 +119,8 @@ def update_home(
     if stored_access_code is not None:
         home.access_code = stored_access_code
 
-    if is_active is not None:
-        home.is_active = is_active
+    if is_archived is not None:
+        home.is_archived = is_archived
 
     db.flush()
 

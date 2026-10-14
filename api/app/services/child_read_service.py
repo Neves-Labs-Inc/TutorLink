@@ -63,7 +63,7 @@ class ChildNotFound(ChildReadServiceError):
 def list_children(
     db: Session,
     *,
-    is_active: bool,
+    is_archived: bool,
     q: str | None,
     limit: int,
     offset: int,
@@ -76,18 +76,18 @@ def list_children(
     guardian, active or not.
 
     `awaiting_evaluation` narrows to active Children who aren't Evaluated, whatever
-    `is_active` says, oldest first: the Child waiting longest leads the tab.
+    `is_archived` says, oldest first: the Child waiting longest leads the tab.
 
     `evaluable` is `awaiting_evaluation` minus Children with a live Evaluation: the ones the
     booking form may offer for an Evaluation. Same order, so the two tabs read alike.
     """
     if awaiting_evaluation or evaluable:
-        matching = _matching(is_active=True, q=q).where(Child.evaluated_at.is_(None))
+        matching = _matching(is_archived=False, q=q).where(Child.evaluated_at.is_(None))
         if evaluable:
             matching = matching.where(~_has_live_evaluation().exists())
         order = (Child.created_at, Child.id)
     else:
-        matching = _matching(is_active=is_active, q=q)
+        matching = _matching(is_archived=is_archived, q=q)
         order = (Child.name, Child.id)
 
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
@@ -117,7 +117,7 @@ def list_children(
 
 
 def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
-    """The child whatever its `is_active` state, with **every** linked home, deactivated ones
+    """The child whatever its `is_archived` state, with **every** linked home, deactivated ones
     included — the by-id rule (§9) and §5.4."""
     child = db.get(Child, child_id)
 
@@ -152,10 +152,10 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
     )
 
 
-def _matching(*, is_active: bool, q: str | None) -> Select[tuple[Child]]:
+def _matching(*, is_archived: bool, q: str | None) -> Select[tuple[Child]]:
     """The guardian-name match is a correlated `EXISTS`, never a join: `total` counts this
     statement, and a child with two matching guardians would otherwise be counted twice (§8)."""
-    statement = select(Child).where(Child.is_active.is_(is_active))
+    statement = select(Child).where(Child.is_archived.is_(is_archived))
     pattern = _substring_pattern(q)
 
     if pattern is not None:
@@ -226,7 +226,7 @@ def _homes_by_child(
     )
 
     if only_active:
-        statement = statement.where(Home.is_active.is_(True))
+        statement = statement.where(Home.is_archived.is_(False))
 
     rows = db.execute(statement).all()
     grouped: defaultdict[uuid.UUID, list[Home]] = defaultdict(list)

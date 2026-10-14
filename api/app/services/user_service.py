@@ -17,7 +17,7 @@ and it keeps "admins create admins" workable. Promoting a Tutor or Manager to Ad
 allowed, since that target is not an admin yet.
 
 **An admin may not change their own role or deactivate themselves.** Their own email and name are
-theirs to edit, and re-sending an unchanged role with `is_active=true` passes (the dashboard sends
+theirs to edit, and re-sending an unchanged role while staying active passes (the dashboard sends
 every field). With peer admins out of reach, an admin demoting or deactivating themselves could
 leave the office with no admin at all. Developers are exempt.
 
@@ -134,21 +134,23 @@ class UserHasNoPassword(UserServiceError):
     """A reset link for a user who has never set a password: an Invite is their way in."""
 
 
-def _visible(is_active: bool) -> Select[tuple[User]]:
-    return select(User).where(User.is_active.is_(is_active))
+def _visible(is_archived: bool) -> Select[tuple[User]]:
+    return select(User).where(User.is_archived.is_(is_archived))
 
 
-def list_users(db: Session, *, is_active: bool, limit: int, offset: int) -> tuple[list[User], int]:
+def list_users(
+    db: Session, *, is_archived: bool, limit: int, offset: int
+) -> tuple[list[User], int]:
     """Rows for one page, plus the total matching before paging.
 
-    Active by default and deactivated only behind `?is_active=false`, uniform across every
+    Active by default and archived only when asked for, uniform across every
     resource (#21). `total` counts matches rather than returned rows — that difference is what
     the page envelope exists to report.
     """
-    total = db.scalar(select(func.count()).select_from(_visible(is_active).subquery())) or 0
+    total = db.scalar(select(func.count()).select_from(_visible(is_archived).subquery())) or 0
     users = list(
         db.scalars(
-            _visible(is_active)
+            _visible(is_archived)
             .options(selectinload(User.profile))
             .order_by(User.email)
             .limit(limit)
@@ -205,7 +207,7 @@ def create_user(
         name_is_default=False,
         hashed_password=None,
         role=role,
-        is_active=True,
+        is_archived=False,
     )
 
     if tutor is None:
@@ -238,7 +240,7 @@ def update_user(
     user_id: uuid.UUID,
     email: str | None,
     role: UserRole | None,
-    is_active: bool | None,
+    is_archived: bool | None,
     name: str | None,
     now: datetime,
 ) -> User:
@@ -258,7 +260,7 @@ def update_user(
     is_self_admin = actor_role is UserRole.ADMIN and user.id == actor_id
     changes_own_role = role is not None and role is not user.role
 
-    if is_self_admin and (changes_own_role or is_active is False):
+    if is_self_admin and (changes_own_role or is_archived is True):
         logger.warning("user_service.update_user: admin %s changing own role or active", actor_id)
         raise SelfChangeNotPermitted
 
@@ -286,8 +288,8 @@ def update_user(
         _assert_role_fits_profile(role=role, has_profile=user.profile is not None)
         user.role = role
 
-    if is_active is not None:
-        user.is_active = is_active
+    if is_archived is not None:
+        user.is_archived = is_archived
 
     db.flush()
 
@@ -311,7 +313,7 @@ def deactivate_user(
         logger.warning("user_service.deactivate_user: admin %s deactivating self", actor_id)
         raise SelfChangeNotPermitted
 
-    user.is_active = False
+    user.is_archived = True
     db.flush()
 
     return user
@@ -344,7 +346,7 @@ def invite_user(
     if user.hashed_password is not None:
         raise UserHasPassword
 
-    if not user.is_active:
+    if user.is_archived:
         raise UserInactive
 
     template = read_email_template(db, kind=TemplateKind.INVITE)
@@ -384,7 +386,7 @@ def send_password_reset(
     if user.hashed_password is None:
         raise UserHasNoPassword
 
-    if not user.is_active:
+    if user.is_archived:
         raise UserInactive
 
     template = read_email_template(db, kind=TemplateKind.PASSWORD_RESET)

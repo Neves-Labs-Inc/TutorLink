@@ -772,11 +772,11 @@ def _check_role(request: BookingRequest, *, role: UserRole) -> None:
 
 def _resolve_staff(db: Session, *, request: BookingRequest) -> User:
     """The Staff member, as a person. A missing, inactive or unbookable (Developer) user is a
-    reference failure like any other retired row (#130); `users.is_active` is the only flag
+    reference failure like any other retired row (#130); `users.is_archived` is the only flag
     that decides whether a Tutor or Manager is active."""
     staff = db.get(User, request.user_id)
 
-    if staff is None or not staff.is_active or staff.role not in BOOKABLE_ROLES:
+    if staff is None or staff.is_archived or staff.role not in BOOKABLE_ROLES:
         raise BookingReferenceNotFound
 
     return staff
@@ -791,7 +791,7 @@ def _resolve(
 ) -> _Context:
     """The rows the rules read, and REQ-044.24's 400 when one of them is missing or retired.
 
-    `retirable` is every reference that carries `is_active`, and a deactivated one is refused
+    `retirable` is every reference that carries `is_archived`, and an archived one is refused
     exactly as a missing one is. A soft delete keeps the row and its dependent rows, so an
     existence check alone lets this endpoint confirm a session against a Staff member that
     `GET /api/slots/available` has already stopped offering (`slot_service`'s
@@ -807,7 +807,7 @@ def _resolve(
     is this 400, and one that is not an active range of *this* Staff member's profile is rule
     1's own 400. The time falling outside the range is rule 1's warning, not either.
 
-    `children` carries `is_active` from migration 0016 on (P7C-1) and an inactive child is
+    `children` carries the flag from migration 0016 on (P7C-1) and an inactive child is
     refused here exactly as a missing one, like every other retirable reference. (`CONSTITUTION.md`
     §12 governs junctions only and never forbade the flag — D-7C-4.)
 
@@ -845,8 +845,8 @@ def _resolve(
 
     if (
         child is None
-        or not child.is_active
-        or any(row is None or not row.is_active for row in retirable)
+        or child.is_archived
+        or any(row is None or row.is_archived for row in retirable)
     ):
         raise BookingReferenceNotFound
 

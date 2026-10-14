@@ -3,7 +3,7 @@
 Separate from `user_service` because the rule is a different one. `/api/users` lists accounts
 for an Admin to manage, Developers and deactivated people included behind a filter; this lists
 the people the Office books sessions with, and no filter widens it. A Developer is never
-bookable, and only `users.is_active` decides who is active — `tutors.is_active` is not
+bookable, and only `users.is_archived` decides who is active — `tutors.is_active` is not
 consulted, the same rule `POST /api/bookings` applies.
 """
 
@@ -17,7 +17,7 @@ BOOKABLE_ROLES = frozenset({UserRole.TUTOR, UserRole.MANAGER, UserRole.ADMIN})
 
 
 def _bookable() -> Select[tuple[User]]:
-    return select(User).where(User.is_active.is_(True), User.role.in_(BOOKABLE_ROLES))
+    return select(User).where(User.is_archived.is_(False), User.role.in_(BOOKABLE_ROLES))
 
 
 def list_staff(db: Session, *, limit: int, offset: int) -> tuple[list[User], int]:

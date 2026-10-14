@@ -50,7 +50,7 @@ def _to_read(household: Household) -> HouseholdRead:
                 id=guardian.id,
                 name=guardian.name,
                 phone_number=guardian.phone_number,
-                is_active=guardian.is_active,
+                is_active=not guardian.is_archived,
             )
             for guardian in household.guardians
         ],
@@ -59,7 +59,7 @@ def _to_read(household: Household) -> HouseholdRead:
                 id=child.id,
                 name=child.name,
                 grade_level=child.grade_level,
-                is_active=child.is_active,
+                is_active=not child.is_archived,
             )
             for child in household.children
         ],

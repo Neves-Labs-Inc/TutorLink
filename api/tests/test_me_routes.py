@@ -175,7 +175,7 @@ def _make_user(db: Session, *, role: UserRole, is_default: bool = False) -> User
         name_is_default=is_default,
         hashed_password="not-a-real-hash",
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     if role is UserRole.TUTOR:
         # One record per person: the Tutor is this user, with a profile hanging off it.

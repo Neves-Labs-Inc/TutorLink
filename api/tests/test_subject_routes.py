@@ -23,7 +23,7 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
         name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()
@@ -36,24 +36,24 @@ def _auth(user: User) -> dict[str, str]:
 
 
 def _make_subject(
-    db: Session, *, name: str | None = None, is_active: bool = True, name_es: str | None = None
+    db: Session, *, name: str | None = None, is_archived: bool = False, name_es: str | None = None
 ) -> Subject:
     subject = Subject(
-        name=name or f"Subject {uuid.uuid4().hex[:12]}", name_es=name_es, is_active=is_active
+        name=name or f"Subject {uuid.uuid4().hex[:12]}", name_es=name_es, is_archived=is_archived
     )
     db.add(subject)
     db.flush()
     return subject
 
 
-def _make_tutor(db: Session, *, is_active: bool = True) -> Tutor:
+def _make_tutor(db: Session, *, is_archived: bool = False) -> Tutor:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
         user=User(
             email=f"tutor-{suffix}@example.com",
             name=f"Tutor {suffix}",
             role=UserRole.TUTOR,
-            is_active=is_active,
+            is_archived=is_archived,
         ),
         phone_number=f"+1{suffix[:10]}",
     )
@@ -95,7 +95,7 @@ def test_total_counts_subjects_not_returned_rows(api: TestClient, db: Session) -
 
 def test_deactivated_subjects_are_hidden_until_asked_for(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    dormant = _make_subject(db, is_active=False)
+    dormant = _make_subject(db, is_archived=True)
     headers = _auth(admin)
 
     default = api.get("/api/subjects", headers=headers).json()
@@ -177,7 +177,7 @@ def test_tutor_count_counts_only_active_tutors(api: TestClient, db: Session) -> 
     subject = _make_subject(db)
     _assign(db, tutor=_make_tutor(db), subject=subject)
     _assign(db, tutor=_make_tutor(db), subject=subject)
-    _assign(db, tutor=_make_tutor(db, is_active=False), subject=subject)
+    _assign(db, tutor=_make_tutor(db, is_archived=True), subject=subject)
 
     body = api.get("/api/subjects", headers=_auth(admin)).json()
 

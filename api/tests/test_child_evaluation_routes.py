@@ -129,7 +129,7 @@ def test_a_level_on_an_unknown_child_or_subject_is_404(api: TestClient, db: Sess
 def test_an_inactive_subject_gets_no_new_level(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     child = _make_child(db)
-    retired = _make_subject(db, is_active=False)
+    retired = _make_subject(db, is_archived=True)
 
     response = api.put(_level_url(child, retired), headers=_auth(admin), json={"level": 3})
 
@@ -145,7 +145,7 @@ def test_an_existing_level_on_a_retired_subject_shows_inactive_and_stays_editabl
     child = _make_child(db)
     math = _make_subject(db)
     api.put(_level_url(child, math), headers=_auth(admin), json={"level": 3})
-    math.is_active = False
+    math.is_archived = True
     db.flush()
 
     edited = api.put(_level_url(child, math), headers=_auth(admin), json={"level": 4})
@@ -340,7 +340,7 @@ def test_awaiting_evaluation_lists_active_children_not_evaluated_oldest_first(
     newest = _make_child(db, name=f"Ana {token}", created_days_ago=1)
     oldest = _make_child(db, name=f"Zoe {token}", created_days_ago=9)
     evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
-    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_active=False)
+    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_archived=True)
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
     api.post(_evaluated_url(evaluated), headers=_auth(admin))
 
@@ -362,7 +362,7 @@ def test_evaluable_lists_active_children_with_no_evaluation_booked_or_done_oldes
     newest = _make_child(db, name=f"Ana {token}", created_days_ago=1)
     oldest = _make_child(db, name=f"Zoe {token}", created_days_ago=9)
     evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
-    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_active=False)
+    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_archived=True)
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
     api.post(_evaluated_url(evaluated), headers=_auth(admin))
 
@@ -478,7 +478,7 @@ def _make_user(
             name=name,
             hashed_password=hash_password("evaluation-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -486,7 +486,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("evaluation-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -532,15 +532,15 @@ def _make_tutor(db: Session) -> Tutor:
     return tutor
 
 
-def _make_subject(db: Session, *, name: str | None = None, is_active: bool = True) -> Subject:
-    subject = Subject(name=name or f"Subject {_suffix()}", is_active=is_active)
+def _make_subject(db: Session, *, name: str | None = None, is_archived: bool = False) -> Subject:
+    subject = Subject(name=name or f"Subject {_suffix()}", is_archived=is_archived)
     db.add(subject)
     db.flush()
     return subject
 
 
 def _make_child(
-    db: Session, *, name: str | None = None, is_active: bool = True, created_days_ago: int = 0
+    db: Session, *, name: str | None = None, is_archived: bool = False, created_days_ago: int = 0
 ) -> Child:
     guardian = Guardian(
         name=f"Guardian {_suffix()}", phone_number=f"+1{uuid.uuid4().int % 10**10:010d}"
@@ -550,7 +550,7 @@ def _make_child(
         name=name or f"Child {_suffix()}",
         grade_level=7,
         school_name="Test School",
-        is_active=is_active,
+        is_archived=is_archived,
         created_at=datetime.datetime.now(tz=datetime.UTC)
         - datetime.timedelta(days=created_days_ago),
     )

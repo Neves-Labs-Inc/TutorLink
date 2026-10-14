@@ -576,7 +576,7 @@ def test_resolving_a_request_ends_it_and_clears_its_flag(
     assert row.reactivation_child_id is None
     assert row.flag_reason is None
     assert row.flagged_at is None
-    assert db.get_one(Child, child.id).is_active is active_after
+    assert db.get_one(Child, child.id).is_archived is (not active_after)
 
 
 @pytest.mark.parametrize(("approve", "active_after"), [(True, True), (False, False)])
@@ -597,20 +597,20 @@ def test_resolving_a_request_keeps_a_flag_that_came_after_it(
     assert row.reactivation_child_id is None
     assert row.flag_reason is FlagReason.STUCK
     assert row.flagged_at == stuck_at
-    assert db.get_one(Child, child.id).is_active is active_after
+    assert db.get_one(Child, child.id).is_archived is (not active_after)
 
 
 def test_approving_a_child_that_is_already_active_still_ends_the_request(db: Session) -> None:
     child = _make_child(db)
     conversation = _make_conversation(db)
     request_reactivation(db, conversation=conversation, child_id=child.id)
-    child.is_active = True
+    child.is_archived = False
     db.flush()
 
     resolve_reactivation(db, conversation_id=conversation.id, approve=True)
 
     assert _row(db, conversation.id).reactivation_child_id is None
-    assert db.get_one(Child, child.id).is_active is True
+    assert db.get_one(Child, child.id).is_archived is False
 
 
 @pytest.mark.parametrize("approve", [True, False])
@@ -837,7 +837,7 @@ def _touch_conversation(session: Session, conversation_id: uuid.UUID) -> None:
 def _read_child_for_share(session: Session, child_id: uuid.UUID) -> bool:
     """The turn's read of a child, locked the way `booking_write_service._resolve` locks it."""
     return session.execute(
-        text("SELECT is_active FROM children WHERE id = :id FOR SHARE"), {"id": child_id}
+        text("SELECT NOT is_archived FROM children WHERE id = :id FOR SHARE"), {"id": child_id}
     ).scalar_one()
 
 
@@ -858,7 +858,7 @@ def _assert_approved(sessions: sessionmaker[Session], row: _CommittedRequest) ->
 
         assert conversation.reactivation_child_id is None
         assert conversation.flag_reason is None
-        assert child.is_active is True
+        assert child.is_archived is False
 
 
 def _blind_once() -> Callable[..., Conversation | None]:
@@ -952,7 +952,7 @@ def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:
     guardian = Guardian(
         name=name or f"Guardian {uuid.uuid4().hex[:8]}",
         phone_number=_phone_number(),
-        is_active=True,
+        is_archived=False,
     )
     db.add(guardian)
     db.flush()
@@ -964,7 +964,7 @@ def _make_child(db: Session) -> Child:
         name=f"Child {uuid.uuid4().hex[:8]}",
         grade_level=3,
         school_name="Elm Primary",
-        is_active=False,
+        is_archived=True,
     )
     db.add(child)
     db.flush()

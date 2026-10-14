@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
+from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from app.models.guardian import Guardian
 
 
-class Home(HasID, HasTimestamps, HasActiveFlag, Base):
+class Home(HasID, HasTimestamps, HasArchivedFlag, Base):
     __tablename__ = "homes"
 
     # The bot has to ask "which home?" when a child has two, and reading two full street

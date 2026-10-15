@@ -12,16 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import Principal, TutorScope, assert_can_access_booking
+from app.dependencies import OFFICE_ROLES, Principal, TutorScope, assert_can_access_booking
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
-from app.schemas.booking import (
-    BookingDetail,
-    BookingKindCounts,
-    BookingPage,
-    booking_detail,
-    booking_summary,
-)
+from app.schemas.booking import BookingDetail, BookingKindCounts, BookingPage
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.services import clock
+from app.services.booking_read_service import booking_detail, booking_summaries
 from app.services.booking_service import (
     BookingFilters,
     BookingNotFound,
@@ -79,7 +75,7 @@ def list_bookings_route(
     counts = count_bookings_by_kind(db, tutor_id=scope.tutor_id, filters=filters)
 
     return BookingPage(
-        items=[booking_summary(row) for row in bookings],
+        items=booking_summaries(db, bookings, now=clock.business_now()),
         total=total,
         page=page,
         page_size=page_size,
@@ -98,4 +94,6 @@ def get_booking_route(booking_id: uuid.UUID, user: Principal, db: DbSession) -> 
 
     assert_can_access_booking(user, booking.user_id)
 
-    return booking_detail(booking)
+    return booking_detail(
+        db, booking, now=clock.business_now(), shows_conversations=user.role in OFFICE_ROLES
+    )

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR
 from app.models.booking import NOTES_MAX_LENGTH, Booking
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import (
     BookingKind,
     BookingLocation,
@@ -102,6 +103,30 @@ def test_editing_a_live_regular_bookings_time_keeps_its_id_and_status(
     assert row.start_time == datetime.time(10, 0)
     assert datetime.datetime.fromisoformat(body["updated_at"]) == row.updated_at
     assert row.updated_at > before
+
+
+def test_the_edit_response_is_the_booking_detail_with_level_and_guardians(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    family.guardian.name = "Zoe Parent"
+    family.co_guardian.name = "Amy Parent"
+    db.add(
+        ChildSubjectLevel(
+            child_id=family.child.id, subject_id=family.subject.id, level=7, set_by_user_id=user.id
+        )
+    )
+    db.flush()
+    booking = _book(db, family)
+
+    body = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN).json()
+
+    assert body["subject_level"] == 7
+    assert body["guardians"] == [
+        {"id": str(family.co_guardian.id), "name": "Amy Parent", "conversation_id": None},
+        {"id": str(family.guardian.id), "name": "Zoe Parent", "conversation_id": None},
+    ]
+    assert body["home"]["directions"] == family.home.directions
 
 
 # --- the booking is not its own neighbour (rules 2 and 3) -----------------------------------

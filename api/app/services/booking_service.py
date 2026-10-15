@@ -59,6 +59,7 @@ def list_bookings(
                 joinedload(Booking.child),
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
+                joinedload(Booking.home),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)
@@ -135,6 +136,7 @@ def list_client_bookings(
                 joinedload(Booking.child),
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
+                joinedload(Booking.home),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)

@@ -9,17 +9,22 @@ exact `{"detail": "..."}` body, as in `test_exception_routes.py`.
 
 import datetime
 import uuid
+from collections.abc import Callable
+from datetime import UTC
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.dependencies import CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
+from app.models.conversation import Conversation
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
@@ -271,6 +276,291 @@ def test_counts_by_kind_stay_inside_the_tutor_scope(
     body = api.get("/api/bookings", headers=_auth(user)).json()
 
     assert body["counts_by_kind"] == {"regular": 1, "evaluation": 0}
+
+
+# --- subject_level, home on rows, guardians on the detail (bookings-reads 01) -----------------
+
+
+def test_a_row_shows_the_childs_level_in_the_bookings_subject(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _set_level(db, family.child, family.subject, level=9, set_by=admin)
+    booking = _book(db, family)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert item["subject_level"] == 9
+    assert detail["subject_level"] == 9
+
+
+def test_a_child_with_no_level_in_the_subject_shows_a_null_level(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    other_subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
+    db.add(other_subject)
+    db.flush()
+    _set_level(db, family.child, other_subject, level=4, set_by=admin)
+    booking = _book(db, family)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert item["subject_level"] is None
+    assert detail["subject_level"] is None
+
+
+def test_an_evaluation_shows_a_null_level(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db)
+    _set_level(db, family.child, family.subject, level=9, set_by=admin)
+    evaluation = _evaluation(db, family, staff=admin)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+    detail = api.get(f"/api/bookings/{evaluation.id}", headers=_auth(admin)).json()
+
+    assert item["subject_level"] is None
+    assert detail["subject_level"] is None
+
+
+def test_a_level_on_an_archived_subject_is_still_shown(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _set_level(db, family.child, family.subject, level=11, set_by=admin)
+    booking = _book(db, family)
+    family.subject.is_archived = True
+    db.flush()
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert item["subject_level"] == 11
+    assert detail["subject_level"] == 11
+
+
+def test_each_row_shows_its_own_childs_level(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db)
+    other_child = _make_child(db, guardians=[family.guardian])
+    _set_level(db, family.child, family.subject, level=3, set_by=admin)
+    _set_level(db, other_child, family.subject, level=8, set_by=admin)
+    first = _book(db, family, start=NINE, end=TEN)
+    second = _book(db, family, child=other_child, start=ELEVEN, end=TWELVE)
+
+    items = api.get("/api/bookings", headers=_auth(admin)).json()["items"]
+
+    assert {row["id"]: row["subject_level"] for row in items} == {
+        str(first.id): 3,
+        str(second.id): 8,
+    }
+
+
+def test_a_home_row_names_its_home_without_directions(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.other_home.label = "Grandma's"
+    db.flush()
+    _book(db, family, home=family.other_home)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+
+    assert item["home"] == {
+        "id": str(family.other_home.id),
+        "label": "Grandma's",
+        "address": "2 Test Avenue",
+    }
+
+
+def test_an_in_office_row_has_a_null_home(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db)
+    _evaluation(db, family, staff=admin)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+
+    assert item["home"] is None
+
+
+def test_a_row_at_an_archived_home_still_names_it(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _book(db, family)
+    family.home.is_archived = True
+    db.flush()
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+
+    assert item["home"] == {"id": str(family.home.id), "label": None, "address": "1 Test Street"}
+
+
+def test_the_detail_lists_the_childs_guardians_by_name(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.guardian.name = "Zoe Parent"
+    family.co_guardian.name = "Amy Parent"
+    db.flush()
+    booking = _book(db, family)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["guardians"] == [
+        {"id": str(family.co_guardian.id), "name": "Amy Parent", "conversation_id": None},
+        {"id": str(family.guardian.id), "name": "Zoe Parent", "conversation_id": None},
+    ]
+
+
+def test_an_archived_guardian_is_left_off_the_detail(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.co_guardian.is_archived = True
+    db.flush()
+    booking = _book(db, family)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert [guardian["id"] for guardian in body["guardians"]] == [str(family.guardian.id)]
+
+
+def test_a_guardians_conversation_is_their_latest_one(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.co_guardian.is_archived = True
+    db.flush()
+    _converse(db, family.guardian, last_message_at=datetime.datetime(2026, 9, 1, tzinfo=UTC))
+    latest = _converse(
+        db, family.guardian, last_message_at=datetime.datetime(2026, 9, 5, tzinfo=UTC)
+    )
+    _converse(db, family.guardian, last_message_at=datetime.datetime(2026, 9, 3, tzinfo=UTC))
+    booking = _book(db, family)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["guardians"] == [
+        {
+            "id": str(family.guardian.id),
+            "name": family.guardian.name,
+            "conversation_id": str(latest.id),
+        }
+    ]
+
+
+def test_another_guardians_conversation_is_not_borrowed(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.guardian.name = "Amy Parent"
+    family.co_guardian.name = "Zoe Parent"
+    db.flush()
+    own = _converse(db, family.guardian, last_message_at=datetime.datetime(2026, 9, 1, tzinfo=UTC))
+    booking = _book(db, family)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert [guardian["conversation_id"] for guardian in body["guardians"]] == [str(own.id), None]
+
+
+def test_only_the_office_sees_a_guardians_conversation_id(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A conversation id opens the Office inbox; a Tutor reading their own Booking gets null."""
+    admin = _make_user(db)
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    family.co_guardian.is_archived = True
+    db.flush()
+    conversation = _converse(
+        db, family.guardian, last_message_at=datetime.datetime(2026, 9, 1, tzinfo=UTC)
+    )
+    booking = _book(db, family, tutor=family.tutor)
+
+    office = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+    tutor = api.get(f"/api/bookings/{booking.id}", headers=_auth(tutor_user)).json()
+
+    assert office["guardians"][0]["conversation_id"] == str(conversation.id)
+    assert tutor["guardians"] == [
+        {"id": str(family.guardian.id), "name": family.guardian.name, "conversation_id": None}
+    ]
+
+
+def test_a_page_runs_the_same_statements_for_two_rows_or_six(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Levels, Homes and Staff of every row come batched, never one query per row."""
+    admin = _make_user(db)
+    for offset in range(6):
+        child = _make_child(db, guardians=[family.guardian])
+        subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
+        db.add(subject)
+        db.flush()
+        _set_level(db, child, subject, level=offset, set_by=admin)
+        booking = _book(db, family, child=child, on=DATE + datetime.timedelta(days=offset))
+        booking.subject_id = subject.id
+        booking.home_id = (family.home if offset % 2 else family.other_home).id
+    db.flush()
+    db.expire_all()
+    headers = _auth(admin)
+    counts = []
+
+    for page_size in (2, 6):
+        statements = _statements_for(
+            db, lambda: api.get(f"/api/bookings?page_size={page_size}", headers=headers)
+        )
+        counts.append(len(statements))
+
+    assert counts[0] == counts[1]
+
+
+def _statements_for(db: Session, call: Callable[[], object]) -> list[str]:
+    captured: list[str] = []
+
+    def record(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        captured.append(statement)
+
+    bind = db.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        call()
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+
+    return captured
+
+
+def _converse(
+    db: Session, guardian: Guardian, *, last_message_at: datetime.datetime
+) -> Conversation:
+    conversation = Conversation(
+        phone_number=f"+1{uuid.uuid4().int % 10**10:010d}",
+        guardian_id=guardian.id,
+        last_message_at=last_message_at,
+    )
+    db.add(conversation)
+    db.flush()
+
+    return conversation
+
+
+def _set_level(
+    db: Session, child: Child, subject: Subject, *, level: int, set_by: User
+) -> ChildSubjectLevel:
+    row = ChildSubjectLevel(
+        child_id=child.id, subject_id=subject.id, level=level, set_by_user_id=set_by.id
+    )
+    db.add(row)
+    db.flush()
+
+    return row
 
 
 def _evaluation(db: Session, family: Family, *, staff: User) -> Booking:

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
@@ -290,12 +291,18 @@ def test_paging_over_a_tied_group_repeats_and_drops_nothing(
     assert len(seen) == len(bookings)
 
 
-def test_an_item_is_the_twelve_field_booking_summary(
+def test_an_item_is_the_fourteen_field_booking_summary(
     api: TestClient, db: Session, family: Family
 ) -> None:
     """`start_time` renders as `09:00:00`, matching `ExceptionRead`, where `docs/api-design.md`
     shows `09:00` — a reported divergence, not an accident."""
     admin = _make_user(db)
+    db.add(
+        ChildSubjectLevel(
+            child_id=family.child.id, subject_id=family.subject.id, level=6, set_by_user_id=admin.id
+        )
+    )
+    db.flush()
     booking = _book(db, family, start=NINE, end=TEN, status=BookingStatus.CONFIRMED)
 
     item = api.get(f"/api/clients/{family.client.id}/bookings", headers=_auth(admin)).json()[
@@ -309,11 +316,13 @@ def test_an_item_is_the_twelve_field_booking_summary(
         "kind",
         "location",
         "subject",
+        "subject_level",
         "scheduled_date",
         "start_time",
         "end_time",
         "status",
         "notes",
+        "home",
         "updated_at",
     }
     assert item["child"] == {"id": str(family.child.id), "name": family.child.name}
@@ -326,6 +335,8 @@ def test_an_item_is_the_twelve_field_booking_summary(
     assert item["location"] == "home"
     assert item["updated_at"] is not None
     assert item["subject"] == {"id": str(family.subject.id), "name": family.subject.name}
+    assert item["subject_level"] == 6
+    assert item["home"] == {"id": str(family.home.id), "label": None, "address": "1 Test Street"}
     assert item["id"] == str(booking.id)
     assert item["scheduled_date"] == "2026-09-07"
     assert item["start_time"] == "09:00:00"

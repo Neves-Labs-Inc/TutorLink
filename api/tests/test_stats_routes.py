@@ -27,6 +27,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import Guardian
 from app.models.home import Home
@@ -70,11 +71,13 @@ SUMMARY_FIELDS = {
     "kind",
     "location",
     "subject",
+    "subject_level",
     "scheduled_date",
     "start_time",
     "end_time",
     "status",
     "notes",
+    "home",
     "updated_at",
 }
 
@@ -457,6 +460,11 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
     api: TestClient, db: Session, stage: Stage
 ) -> None:
     admin = _make_user(db)
+    db.add(
+        ChildSubjectLevel(
+            child_id=stage.child.id, subject_id=stage.subject.id, level=5, set_by_user_id=admin.id
+        )
+    )
     booking = _book(db, stage, on=WEDNESDAY, status=BookingStatus.CONFIRMED)
 
     item = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()[
@@ -480,11 +488,13 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         "kind": "regular",
         "location": "home",
         "subject": {"id": str(stage.subject.id), "name": stage.subject.name},
+        "subject_level": 5,
         "scheduled_date": str(WEDNESDAY),
         "start_time": "10:00:00",
         "end_time": "11:00:00",
         "status": "confirmed",
         "notes": None,
+        "home": {"id": str(stage.home.id), "label": None, "address": "1 Test Street"},
     }
 
 

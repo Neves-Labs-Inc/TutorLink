@@ -44,7 +44,7 @@ from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
-from app.schemas.booking import BookingDetail, booking_detail
+from app.schemas.booking import BookingDetail
 from app.schemas.booking_write import (
     BookingCreate,
     BookingCreated,
@@ -52,6 +52,7 @@ from app.schemas.booking_write import (
     BookingWarning,
 )
 from app.services import clock
+from app.services.booking_read_service import booking_detail
 from app.services.booking_write_service import (
     BlockedByException,
     BookingKindImmutable,
@@ -179,7 +180,8 @@ def replace(
 
     db.commit()
 
-    return booking_detail(booking)
+    # `OfficePrincipal` only, so the caller is always Office.
+    return booking_detail(db, booking, now=clock.business_now(), shows_conversations=True)
 
 
 def _http_error(exc: BookingWriteError) -> HTTPException:

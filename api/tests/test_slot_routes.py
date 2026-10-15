@@ -214,6 +214,7 @@ def test_a_sunday_query_reads_the_sunday_rows_and_not_the_monday_ones(
         (ExceptionStatus.APPROVED, [("10:30:00", "11:30:00")]),
         (ExceptionStatus.PENDING, DEFAULT_GRID),
         (ExceptionStatus.REJECTED, DEFAULT_GRID),
+        (ExceptionStatus.CANCELLED, DEFAULT_GRID),
     ],
 )
 def test_only_an_approved_exception_subtracts_from_availability(
@@ -225,7 +226,7 @@ def test_only_an_approved_exception_subtracts_from_availability(
     expected: list[tuple[str, str]],
 ) -> None:
     """#24: a pending request is a tutor asking for time off and blocks nothing until an admin
-    rules on it; a rejected one blocks nothing ever.
+    rules on it; a rejected or cancelled one blocks nothing ever.
 
     The window ends at 10:15, which is what makes this a bare-overlap assertion as well: the
     10:30 slot clears it by 15 minutes, so a step 2 that gap-expanded by `session_gap_minutes`

@@ -327,13 +327,3 @@ def assert_can_access_booking(user: CurrentUser, owner_user_id: uuid.UUID) -> No
     """
     if user.role not in OFFICE_ROLES and owner_user_id != user.id:
         raise _forbidden(TUTOR_SCOPE_ERROR)
-
-
-def assert_can_access_user(user: CurrentUser, owner_user_id: uuid.UUID) -> None:
-    """For data a Staff member holds as a person, such as their Time off, not as a profile.
-
-    Office always passes. Anyone else passes only for their own user id, profile or not.
-    Raises 403 — never 404, never a silent empty response (`CONSTITUTION.md` §15).
-    """
-    if user.role not in OFFICE_ROLES and owner_user_id != user.id:
-        raise _forbidden(TUTOR_SCOPE_ERROR)

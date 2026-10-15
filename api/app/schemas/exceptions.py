@@ -14,7 +14,11 @@ from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from app.models.availability import REASON_MAX_LENGTH
 from app.models.enums import ExceptionStatus
-from app.schemas.booking import StaffRef
+from app.schemas.booking import NamedRef, StaffRef
+
+# The stored statuses plus `expired`: a stored `pending` row whose window has ended. Derived at
+# read time, never stored, so it is a wire type rather than a member of `ExceptionStatus`.
+ExceptionReadStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
 
 
 def _strip_reason(raw: object) -> object:
@@ -61,9 +65,9 @@ class ExceptionCreate(BaseModel):
 
 
 class ExceptionDecision(BaseModel):
-    # `pending` is not an accepted target. Approval and rejection are both terminal, and
-    # allowing a decided row to be pushed back to pending would mean an approved exception
-    # could stop blocking bookings without anyone rejecting it.
+    # Neither `pending` nor `cancelled` is an accepted target. Nothing goes back to pending, and
+    # cancelling has its own route with its own rules (the owner may cancel; only Admin roles
+    # decide).
     status: Literal[ExceptionStatus.APPROVED, ExceptionStatus.REJECTED]
 
 
@@ -76,5 +80,9 @@ class ExceptionRead(BaseModel):
     start_time: datetime.time | None
     end_time: datetime.time | None
     reason: str | None
-    status: ExceptionStatus
+    status: ExceptionReadStatus
     created_at: datetime.datetime
+    decided_by: NamedRef | None
+    decided_at: datetime.datetime | None
+    cancelled_by: NamedRef | None
+    cancelled_at: datetime.datetime | None

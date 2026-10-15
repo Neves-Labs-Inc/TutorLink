@@ -72,11 +72,12 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     # Time off is held by a user: a Tutor reaches only their own `user_id`.
     ("GET", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
     ("POST", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
-    ("DELETE", "/api/exceptions/{exception_id}"): Access.TUTOR_SCOPED,
+    # The owner or an Admin role, checked on the loaded row.
+    ("POST", "/api/exceptions/{exception_id}/cancel"): Access.TUTOR_SCOPED,
     ("GET", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
-    ("PATCH", "/api/exceptions/{exception_id}"): Access.STAFF,
+    ("PATCH", "/api/exceptions/{exception_id}"): Access.ADMIN,
     ("POST", "/api/subjects"): Access.STAFF,
     ("PATCH", "/api/subjects/{subject_id}"): Access.STAFF,
     # Guardian, Home and Subject are Office; Staff is Admin-only, checked by its handler.
@@ -232,12 +233,13 @@ def callers(db: Session) -> dict[UserRole, Caller]:
 
 def _url(path: str, *, owner: Caller | None) -> str:
     """Random ids for every segment, except a tutor-scoped route's `tutor_id` and `user_id`,
-    which are the tutor's own so the tutor is asking for their own rows."""
+    which are the caller's own so they are asking for their own rows. Every caller has a
+    `user_id`; only the tutor has a `tutor_id`."""
     url = path
+    if owner is not None:
+        url = url.replace("{user_id}", str(owner.user_id))
     if owner is not None and owner.tutor_id is not None:
-        url = url.replace("{tutor_id}", str(owner.tutor_id)).replace(
-            "{user_id}", str(owner.user_id)
-        )
+        url = url.replace("{tutor_id}", str(owner.tutor_id))
     while "{" in url:
         start = url.index("{")
         end = url.index("}", start)

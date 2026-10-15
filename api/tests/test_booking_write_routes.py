@@ -1160,16 +1160,50 @@ def test_a_regular_booking_adjacent_to_the_admins_evaluation_needs_no_gap(
     assert _count(db) == 2
 
 
-def test_an_admins_approved_time_off_does_not_block_a_regular_booking(
+def test_an_admins_approved_time_off_is_the_time_off_warning_on_a_regular_booking(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """A Tutor promoted to Admin keeps their profile and its time off (spec 01); as an Admin
-    neither is consulted."""
-    _make_exception(db, family, status=ExceptionStatus.APPROVED)
-    promoted = _make_user(db, role=UserRole.ADMIN, tutor_id=family.tutor.id)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=admin.id)
     user = _make_user(db)
 
-    response = _post(api, user, family, user_id=str(promoted.id), availability_id=None)
+    refused = _post(api, user, family, user_id=str(admin.id), availability_id=None)
+    confirmed = _post(
+        api, user, family, user_id=str(admin.id), availability_id=None, confirm_warnings=[TIME_OFF]
+    )
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 201
+    assert _count(db) == 1
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.MANAGER])
+def test_approved_time_off_is_the_time_off_warning_on_an_evaluation(
+    api: TestClient, db: Session, family: Family, role: UserRole
+) -> None:
+    staff = _make_user(db, role=role)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=staff.id)
+    user = _make_user(db)
+
+    refused = _post_evaluation(api, user, family, staff)
+    confirmed = _post_evaluation(api, user, family, staff, confirm_warnings=[TIME_OFF])
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 201
+    assert _count(db) == 1
+
+
+@pytest.mark.parametrize(
+    "inert", [ExceptionStatus.PENDING, ExceptionStatus.REJECTED, ExceptionStatus.CANCELLED]
+)
+def test_an_admins_undecided_rejected_or_cancelled_time_off_warns_nothing(
+    api: TestClient, db: Session, family: Family, inert: ExceptionStatus
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    _make_exception(db, family, status=inert, user_id=admin.id)
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(admin.id), availability_id=None)
 
     assert response.status_code == 201
 
@@ -1603,9 +1637,11 @@ def _make_exception(
     status: ExceptionStatus,
     start_time: datetime.time | None = None,
     end_time: datetime.time | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> TutorAvailabilityException:
+    """Time off on `MONDAY` for the family's tutor unless another Staff user is named."""
     row = TutorAvailabilityException(
-        user_id=family.tutor.user_id,
+        user_id=family.tutor.user_id if user_id is None else user_id,
         start_date=MONDAY,
         end_date=MONDAY,
         start_time=start_time,

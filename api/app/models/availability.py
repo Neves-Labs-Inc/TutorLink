@@ -137,5 +137,7 @@ class TutorAvailabilityException(HasID, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Three foreign keys reach `users`, so the join is named.
+    # Three foreign keys reach `users`, so each join is named.
     staff: Mapped["User"] = relationship(foreign_keys=[user_id])
+    decider: Mapped["User | None"] = relationship(foreign_keys=[decided_by])
+    canceller: Mapped["User | None"] = relationship(foreign_keys=[cancelled_by])

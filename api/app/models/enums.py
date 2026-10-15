@@ -43,7 +43,8 @@ class ExceptionStatus(str, enum.Enum):
     Only `APPROVED` blocks bookings. A `PENDING` request is someone asking for time off and
     has no effect on availability until an admin decides it; `REJECTED` and `CANCELLED` block
     nothing — so any query that subtracts Time off from a schedule must filter on `APPROVED`
-    rather than on the row's existence. `CANCELLED` is stored but not yet written by anything.
+    rather than on the row's existence. Cancelling keeps the row, at `CANCELLED`. The wire
+    adds a derived `expired` (see `exception_service.read_status`), never stored here.
     """
 
     PENDING = "pending"

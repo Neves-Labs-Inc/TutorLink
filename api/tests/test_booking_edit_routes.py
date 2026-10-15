@@ -24,7 +24,13 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR
 from app.models.booking import NOTES_MAX_LENGTH, Booking
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ExceptionStatus,
+    UserRole,
+)
 from app.models.user import User
 from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
 from app.routers.booking_writes import (
@@ -46,11 +52,13 @@ from tests.test_booking_write_routes import (
     MONDAY,
     OUTSIDE_SLOT,
     TEN,
+    TIME_OFF,
     TWELVE,
     Family,
     _assert_detail,
     _assert_warnings,
     _auth,
+    _make_exception,
     _make_family,
     _make_user,
     _mark_evaluated,
@@ -334,6 +342,42 @@ def test_a_tutor_booking_moved_outside_its_slot_is_the_outside_slot_warning(
     _assert_warnings(refused, [OUTSIDE_SLOT])
     assert confirmed.status_code == 200
     assert _row(db, booking.id).start_time == datetime.time(12, 0)
+
+
+def test_an_admin_booking_moved_onto_approved_time_off_is_the_time_off_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    booking = _book(
+        db, family, user_id=admin.id, start=datetime.time(13, 0), end=datetime.time(14, 0)
+    )
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=admin.id)
+    user = _make_user(db)
+
+    refused = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+    confirmed = _put(
+        api, user, booking, family, start_time=TEN, end_time=ELEVEN, confirm_warnings=[TIME_OFF]
+    )
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 200
+    assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+def test_an_evaluation_moved_onto_approved_time_off_is_the_time_off_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    evaluation = _book_evaluation(db, family)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=evaluation.user_id)
+    user = _make_user(db)
+
+    refused = _put(api, user, evaluation, family, start_time=TEN, end_time=ELEVEN)
+    confirmed = _put(
+        api, user, evaluation, family, start_time=TEN, end_time=ELEVEN, confirm_warnings=[TIME_OFF]
+    )
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 200
 
 
 # --- correction mode: a session already started may be moved into the past -----------------

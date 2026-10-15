@@ -50,7 +50,7 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.booking_status import OFFICE_ONLY_TRANSITION_ERROR
-from app.routers.exceptions import EXCEPTION_NOT_DELETABLE_ERROR
+from app.routers.exceptions import OTHERS_TIME_OFF_ERROR
 from app.security import create_access_token, hash_password
 from tests.support import user_id_of
 
@@ -65,19 +65,20 @@ FOURTEEN = datetime.time(14, 0)
 FIFTEEN = datetime.time(15, 0)
 SIXTEEN = datetime.time(16, 0)
 
-PENDING_FROM = datetime.date(2026, 9, 14)
-APPROVED_FROM = datetime.date(2026, 9, 21)
+# Far in the future, so neither row has ended (an ended row is frozen, and pending reads Expired).
+PENDING_FROM = datetime.date(2099, 9, 14)
+APPROVED_FROM = datetime.date(2099, 9, 21)
 
 # Wide enough to hold both exceptions at either end. `?from=`/`?to=` are not parameters the
 # exceptions route declares today, so this reads as "unknown query string ignored"; when the
 # window filter lands, the same window still selects both rows and the assertion goes on
 # meaning what it means now — that a date window narrows rows, never widens the tutor scope.
-WINDOW = "from=2026-09-01&to=2026-12-31"
+WINDOW = "from=2099-09-01&to=2099-12-31"
 
 # The smallest body `POST /api/users/{id}/exceptions` accepts. Every use of it below expects
 # a refusal, so it is well-formed on purpose: a 400 from validation would prove nothing about
 # who the caller is.
-EXCEPTION_BODY = {"start_date": "2026-10-05", "end_date": "2026-10-06", "reason": "vacation"}
+EXCEPTION_BODY = {"start_date": "2099-10-05", "end_date": "2099-10-06", "reason": "vacation"}
 
 CHILD_DATE_OF_BIRTH = datetime.date(2014, 5, 2)
 CHILD_NOTES = "Peanut allergy"
@@ -308,8 +309,8 @@ def test_a_tutor_creating_their_own_time_off_lands_pending(
     response = api.post(
         f"/api/users/{world.tutor.user_id}/exceptions",
         json={
-            "start_date": "2026-10-05",
-            "end_date": "2026-10-06",
+            "start_date": "2099-10-05",
+            "end_date": "2099-10-06",
             "reason": "personal",
             "status": "approved",
         },
@@ -328,14 +329,14 @@ def test_a_tutor_creating_their_own_time_off_lands_pending(
     }
 
 
-def test_a_tutor_deletes_their_own_pending_request_and_nothing_else(
+def test_a_tutor_cancels_their_own_pending_request_and_nothing_else(
     api: TestClient, db: Session, world: World
 ) -> None:
-    response = api.delete(f"/api/exceptions/{world.pending_id}", headers=world.tutor_headers)
+    response = api.post(f"/api/exceptions/{world.pending_id}/cancel", headers=world.tutor_headers)
 
-    assert response.status_code == 204
-    assert response.content == b""
-    assert _exception_ids(db, world.tutor.id) == {world.approved_id}
+    assert response.status_code == 200
+    assert _row(db, world.pending_id).status is ExceptionStatus.CANCELLED
+    assert _row(db, world.approved_id).status is ExceptionStatus.APPROVED
     assert _exception_ids(db, world.other_tutor.id) == {
         world.other_pending_id,
         world.other_approved_id,
@@ -347,13 +348,13 @@ def test_a_tutor_deletes_their_own_pending_request_and_nothing_else(
 
 @pytest.mark.parametrize("target", ["another-tutor", "no-such-tutor"])
 @pytest.mark.parametrize(
-    ("method", "template", "body"),
+    ("method", "template", "body", "detail"),
     [
-        ("GET", "/api/tutors/{tutor_id}/availability", None),
-        ("GET", "/api/users/{user_id}/exceptions", None),
-        ("GET", "/api/users/{user_id}/exceptions?" + WINDOW, None),
-        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY),
-        ("GET", "/api/bookings?tutor_id={tutor_id}", None),
+        ("GET", "/api/tutors/{tutor_id}/availability", None, TUTOR_SCOPE_ERROR),
+        ("GET", "/api/users/{user_id}/exceptions", None, OTHERS_TIME_OFF_ERROR),
+        ("GET", "/api/users/{user_id}/exceptions?" + WINDOW, None, OTHERS_TIME_OFF_ERROR),
+        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY, OTHERS_TIME_OFF_ERROR),
+        ("GET", "/api/bookings?tutor_id={tutor_id}", None, TUTOR_SCOPE_ERROR),
     ],
     ids=["availability", "exceptions", "exceptions-windowed", "create-exception", "bookings"],
 )
@@ -365,6 +366,7 @@ def test_a_tutor_naming_a_tutor_id_that_is_not_theirs_is_403(
     method: str,
     template: str,
     body: dict[str, str] | None,
+    detail: str,
 ) -> None:
     """An id matching no tutor at all is 403 too, and deliberately so: a 404 there would turn
     the endpoint into an oracle for which tutor ids exist, the documented choice recorded at
@@ -382,7 +384,7 @@ def test_a_tutor_naming_a_tutor_id_that_is_not_theirs_is_403(
         headers=world.tutor_headers,
     )
 
-    _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
+    _assert_detail(response, 403, detail)
     assert _exception_ids(db, world.other_tutor.id) == {
         world.other_pending_id,
         world.other_approved_id,
@@ -405,12 +407,14 @@ def test_a_tutor_reading_another_tutors_booking_is_403(
     assert marker not in response.text
 
 
-def test_a_tutor_deleting_another_tutors_pending_request_is_403(
+def test_a_tutor_cancelling_another_tutors_pending_request_is_403(
     api: TestClient, db: Session, world: World
 ) -> None:
-    response = api.delete(f"/api/exceptions/{world.other_pending_id}", headers=world.tutor_headers)
+    response = api.post(
+        f"/api/exceptions/{world.other_pending_id}/cancel", headers=world.tutor_headers
+    )
 
-    _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
+    _assert_detail(response, 403, OTHERS_TIME_OFF_ERROR)
     assert _row(db, world.other_pending_id).status is ExceptionStatus.PENDING
 
 
@@ -424,15 +428,14 @@ def test_a_tutor_deleting_another_tutors_pending_request_is_403(
             "PATCH",
             "/api/exceptions/{pending_id}",
             {"status": "approved"},
-            OFFICE_REQUIRED_ERROR,
+            ADMIN_REQUIRED_ERROR,
         ),
         (
             "PATCH",
             "/api/exceptions/{other_pending_id}",
             {"status": "rejected"},
-            OFFICE_REQUIRED_ERROR,
+            ADMIN_REQUIRED_ERROR,
         ),
-        ("DELETE", "/api/exceptions/{approved_id}", None, EXCEPTION_NOT_DELETABLE_ERROR),
         (
             "POST",
             "/api/tutors/{tutor_id}/availability",
@@ -456,7 +459,6 @@ def test_a_tutor_deleting_another_tutors_pending_request_is_403(
     ids=[
         "decide-own-pending",
         "decide-another-tutors-pending",
-        "delete-own-approved",
         "create-own-availability",
         "edit-own-availability",
         "deactivate-own-availability",
@@ -474,7 +476,7 @@ def test_a_tutor_may_not_write_even_to_their_own_rows(
 ) -> None:
     """Approving one's own time off is the rule the status column exists to enforce, and #24
     widened the refusal to everything else a tutor owns: availability is admin-managed even on
-    one's own profile, and a decided exception is no longer the tutor's to withdraw."""
+    one's own profile."""
     response = api.request(
         method, template.format(**_targets(world)), json=body, headers=world.tutor_headers
     )
@@ -559,15 +561,15 @@ def test_a_tutor_may_read_every_subject_including_the_other_tutors(
 
 
 @pytest.mark.parametrize(
-    ("method", "template", "body"),
+    ("method", "template", "body", "detail"),
     [
-        ("GET", "/api/tutors/{tutor_id}/availability", None),
-        ("GET", "/api/users/{user_id}/exceptions", None),
-        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY),
-        ("GET", "/api/bookings", None),
-        ("GET", "/api/bookings?tutor_id={tutor_id}", None),
-        ("GET", "/api/bookings/{booking_id}", None),
-        ("DELETE", "/api/exceptions/{pending_id}", None),
+        ("GET", "/api/tutors/{tutor_id}/availability", None, TUTOR_SCOPE_ERROR),
+        ("GET", "/api/users/{user_id}/exceptions", None, OTHERS_TIME_OFF_ERROR),
+        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY, OTHERS_TIME_OFF_ERROR),
+        ("GET", "/api/bookings", None, TUTOR_SCOPE_ERROR),
+        ("GET", "/api/bookings?tutor_id={tutor_id}", None, TUTOR_SCOPE_ERROR),
+        ("GET", "/api/bookings/{booking_id}", None, TUTOR_SCOPE_ERROR),
+        ("POST", "/api/exceptions/{pending_id}/cancel", None, OTHERS_TIME_OFF_ERROR),
     ],
     ids=[
         "availability",
@@ -576,7 +578,7 @@ def test_a_tutor_may_read_every_subject_including_the_other_tutors(
         "bookings",
         "bookings-by-tutor",
         "booking-by-id",
-        "delete-exception",
+        "cancel-exception",
     ],
 )
 def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
@@ -586,6 +588,7 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
     method: str,
     template: str,
     body: dict[str, str] | None,
+    detail: str,
 ) -> None:
     """Only admins have no profile, so a `tutor` user with none is a data error.
     `dependencies.py` refuses it rather than reading it as
@@ -594,7 +597,7 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
         method, template.format(**_targets(world)), json=body, headers=world.unlinked_headers
     )
 
-    _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
+    _assert_detail(response, 403, detail)
     assert _exception_ids(db, world.tutor.id) == {world.pending_id, world.approved_id}
 
 
@@ -610,7 +613,7 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
         ("GET", "/api/bookings", None),
         ("GET", "/api/bookings/{booking_id}", None),
         ("PATCH", "/api/exceptions/{pending_id}", {"status": "approved"}),
-        ("DELETE", "/api/exceptions/{pending_id}", None),
+        ("POST", "/api/exceptions/{pending_id}/cancel", None),
         ("GET", "/api/subjects", None),
         ("GET", "/api/clients", None),
     ],
@@ -621,7 +624,7 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
         "bookings",
         "booking-by-id",
         "decide-exception",
-        "delete-exception",
+        "cancel-exception",
         "subjects",
         "clients",
     ],

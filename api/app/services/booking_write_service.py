@@ -24,10 +24,11 @@ Staff member's role (`users.role` at write time, #130):
 | | Evaluation | Regular, Admin | Regular, Tutor/Manager |
 |---|---|---|---|
 | hard | 2, 6, 7, 8, 9 | 2, 6, 7 | 2, 6, 7 |
-| warnings (#151) | — | — | 1, 3, 4, 5 |
+| warnings (#151) | 4 | 4 | 1, 3, 4, 5 |
 
-Rules 1, 3, 4 and 5 read the Staff member's teaching profile, which only a Tutor or a Manager
-has; an Admin is checked for overlap and the Location alone. Rule 6 is a no-op In office.
+Rules 1, 3 and 5 read the Staff member's teaching profile, which only a Tutor or a Manager
+has; an Admin is checked for overlap, the Location and Time off alone. Rule 4 reads only the
+Staff user, so it runs for every kind and every bookable role. Rule 6 is a no-op In office.
 
 **Hard blocks run first, then the warnings, and the warnings are collected rather than stopped
 at.** The dashboard's contract (#151) is: every failing warning comes back at once as a 409 with
@@ -269,7 +270,8 @@ class _Context:
 
 
 type _Rule = Callable[[Session, _Context], None]
-type _WarningRule = Callable[[Session, _Context, _Teaching], None]
+type _WarningRule = Callable[[Session, _Context], None]
+type _TeachingWarningRule = Callable[[Session, _Context, _Teaching], None]
 
 
 def create_booking(
@@ -567,9 +569,9 @@ def _rule_3_gap_respected(db: Session, context: _Context, teaching: _Teaching) -
         raise GapNotRespected
 
 
-def _rule_4_not_blocked_by_exception(db: Session, context: _Context, teaching: _Teaching) -> None:
+def _rule_4_not_blocked_by_exception(db: Session, context: _Context) -> None:
     """Rule 4 — the `time_off` warning (#24). Only `approved` blocks; `pending` and `rejected`
-    never do.
+    never do. Every kind, every bookable role: Time off belongs to the Staff user.
 
     Bare overlap, not gap-expanded: step 2 of `GET /api/slots/available` subtracts exceptions
     the same way, and the asymmetry with rule 3 is deliberate.
@@ -703,14 +705,25 @@ _HARD_RULES: dict[BookingKind, tuple[_Rule, ...]] = {
     ),
 }
 
-# Run only with a teaching profile in hand — a Tutor/Manager Regular booking — in the order
-# the codes are reported.
-_WARNING_RULES: tuple[tuple[WarningCode, _WarningRule], ...] = (
+# Rule 4 runs for every booking; the others run only with a teaching profile in hand — a
+# Tutor/Manager Regular booking. Reported in `WarningCode` order.
+_WARNING_RULES: tuple[tuple[WarningCode, _WarningRule | _TeachingWarningRule], ...] = (
     (WarningCode.OUTSIDE_SLOT, _rule_1_inside_named_availability),
     (WarningCode.GAP, _rule_3_gap_respected),
     (WarningCode.TIME_OFF, _rule_4_not_blocked_by_exception),
     (WarningCode.GRADE_CEILING, _rule_5_grade_ceiling_respected),
 )
+
+
+def _run_warning_rule(
+    db: Session, context: _Context, rule: _WarningRule | _TeachingWarningRule
+) -> None:
+    """Rule 4 takes the context alone; the rest need the teaching profile, and are skipped
+    without one."""
+    if rule is _rule_4_not_blocked_by_exception:
+        rule(db, context)
+    elif context.teaching is not None:
+        rule(db, context, context.teaching)
 
 
 def _run_warning_rules(
@@ -719,15 +732,10 @@ def _run_warning_rules(
     """Every failing warning, collected (#151): the Office confirms them all at once, so
     stopping at the first would cost a round trip per warning and would let a later one go
     unmentioned until the earlier was confirmed."""
-    teaching = context.teaching
-
-    if teaching is None:
-        return
-
     raised: list[tuple[WarningCode, BookingWriteError]] = []
     for code, rule in _WARNING_RULES:
         try:
-            rule(db, context, teaching)
+            _run_warning_rule(db, context, rule)
         except BookingWriteError as exc:
             raised.append((code, exc))
 

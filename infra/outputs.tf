@@ -1,26 +1,21 @@
 output "public_ip" {
-  description = "Elastic IP of the host; point a domain's DNS A record here."
-  value       = aws_eip.app.public_ip
+  description = "Elastic IP of the host; point a domain's DNS A record here. Null until elastic_ip_allocation_id is set."
+  value       = one(aws_eip.app[*].public_ip)
 }
 
 output "site_address" {
-  description = "Hostname Caddy serves and gets a certificate for (the domain, or the sslip.io name)."
+  description = "Hostname Caddy serves and gets a certificate for (the domain, or the sslip.io name). Null with no domain and no Elastic IP."
   value       = local.site_address
 }
 
 output "site_url" {
-  description = "Public URL of the site (GitHub variable SITE_URL)."
-  value       = "https://${local.site_address}"
+  description = "Public URL of the site (GitHub variable SITE_URL). Null with no domain and no Elastic IP."
+  value       = local.site_address == null ? null : "https://${local.site_address}"
 }
 
 output "instance_id" {
   description = "EC2 instance ID, for SSM shell sessions (the deploy workflow finds the instance by its tags)."
   value       = aws_instance.app.id
-}
-
-output "db_address" {
-  description = "Private hostname of the RDS database (the full connection string is the DATABASE_URL parameter)."
-  value       = aws_db_instance.app.address
 }
 
 output "ecr_api_repo_url" {
@@ -41,4 +36,9 @@ output "deploy_role_arn" {
 output "region" {
   description = "AWS region everything lives in (GitHub variable AWS_REGION)."
   value       = var.region
+}
+
+output "peering_connection_id" {
+  description = "VPC peering connection to the shared Neves-Labs VPC; paste into Neves-Labs-Infra network/ client_peerings."
+  value       = aws_vpc_peering_connection.shared.id
 }

@@ -19,7 +19,7 @@ readonly REQUIRED_PARAMETERS=(DATABASE_URL SECRET_KEY SITE_ADDRESS)
 # set leaves it off, and a mix fails the deploy so a half-configured feature never goes live.
 readonly BOT_PARAMETERS=(TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_WHATSAPP_NUMBER ANTHROPIC_API_KEY)
 readonly MAIL_PARAMETERS=(SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_FROM)
-# Terraform creates the optional parameters holding this value (infra/ssm.tf); keep the two in sync.
+# Terraform creates the optional parameters and the required DATABASE_URL and SECRET_KEY holding this value (infra/ssm.tf); keep the two in sync.
 readonly PARAMETER_PLACEHOLDER="unset"
 # .env is unquoted: compose's env_file parser treats ` #` as a comment and quotes and `$` as
 # syntax, and a line break ends the value. A value carrying any of these would deploy mangled.
@@ -105,7 +105,13 @@ while IFS=$'\t' read -r name value; do
   fi
 done <<<"$parameters_tsv"
 for key in "${REQUIRED_PARAMETERS[@]}"; do
-  [[ -n "${parameters[$key]:-}" ]] || fail "parameter $PARAMETER_PATH$key is missing or empty"
+  value="${parameters[$key]:-}"
+  if [[ -z "$value" || "$value" == "$PARAMETER_PLACEHOLDER" ]]; then
+    fail "parameter $PARAMETER_PATH$key is missing, empty or still the '$PARAMETER_PLACEHOLDER' placeholder"
+  fi
+  if [[ "$value" =~ $UNSAFE_VALUE_PATTERN ]]; then
+    fail "parameter $PARAMETER_PATH$key contains a character .env cannot carry (# \" ' \$ or a line break)"
+  fi
 done
 
 # The bot keys are all strings and the app reads blank as off.

@@ -209,6 +209,33 @@ mv "$STUB_PARAMETERS_FILE.new" "$STUB_PARAMETERS_FILE"
 run_deploy
 assert_rejected "no database url" DATABASE_URL
 
+echo "==> SITE_ADDRESS missing"
+prepare_case
+grep -v "^${PARAMETER_PATH}SITE_ADDRESS" "$STUB_PARAMETERS_FILE" >"$STUB_PARAMETERS_FILE.new"
+mv "$STUB_PARAMETERS_FILE.new" "$STUB_PARAMETERS_FILE"
+run_deploy
+assert_rejected "no site address" SITE_ADDRESS
+
+for required_key in DATABASE_URL SECRET_KEY SITE_ADDRESS; do
+  echo "==> $required_key still '$PLACEHOLDER'"
+  prepare_case "$required_key=$PLACEHOLDER"
+  run_deploy
+  assert_rejected "placeholder $required_key" "$required_key"
+done
+
+echo "==> Required parameter empty"
+prepare_case "SECRET_KEY="
+run_deploy
+assert_rejected "empty secret key" SECRET_KEY
+
+echo "==> SECRET_KEY with a character .env cannot carry"
+UNSAFE_SECRET_KEY='ab$cd-secret-key-tail'
+prepare_case "SECRET_KEY=$UNSAFE_SECRET_KEY"
+run_deploy
+assert_rejected "unsafe secret key" SECRET_KEY
+! grep -qF -- "$UNSAFE_SECRET_KEY" "$OUTPUT_FILE" || fail "unsafe secret key: output contains the key"
+pass "unsafe secret key: prints no key"
+
 echo "==> Bot parameters all '$PLACEHOLDER'"
 mapfile -t assignments < <(bot_assignments "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER" "$PLACEHOLDER")
 prepare_case "${assignments[@]}"

@@ -84,3 +84,32 @@ jobs:
       # only step that surfaces a type error, and a type error must not reach a release build.
       - name: Build
         run: npm run build
+
+  terraform:
+    name: terraform (${{ matrix.root }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        root: [infra, infra/bootstrap]
+    defaults:
+      run:
+        working-directory: ${{ matrix.root }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - run: terraform fmt -check -recursive
+
+      # No backend and no AWS credentials: CI never talks to AWS.
+      - run: terraform init -backend=false
+
+      - run: terraform validate
+
+      - run: terraform test

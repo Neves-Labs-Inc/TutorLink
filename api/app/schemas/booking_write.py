@@ -2,10 +2,11 @@
 
 **`home_id` is required when `location` is `home`, and `booked_by_guardian_id` is accepted**,
 even though neither appears in the documented example body at `docs/api-design.md:1189-1201`.
-The prose rules above that example are the contract — rule 6 validates `home_id` against
-`child_homes` and rule 7 validates `booked_by_guardian_id` against `child_guardians`. The
-example is the half that is stale. Per `CONSTITUTION.md` §1 that divergence is reported and not
-patched; it is recorded as amendment P4-1.
+The prose rules above that example are the contract — rule 6 validates `home_id` against the
+child's bookable homes (its guardians' homes, `home_set`) and rule 7 validates
+`booked_by_guardian_id` against `child_guardians`. The example is the half that is stale. Per
+`CONSTITUTION.md` §1 that divergence is reported and not patched; it is recorded as amendment
+P4-1.
 
 `BookingWarning` is one entry of the 409's `warnings[]` (#151): the code the client resubmits in
 `confirm_warnings`, and the message it shows. The body is `{"detail": ..., "warnings": [...]}`,

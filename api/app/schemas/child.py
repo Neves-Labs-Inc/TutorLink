@@ -1,8 +1,9 @@
 """Request and response shapes for `/api/children`.
 
-`ChildRead` echoing `guardian_ids` and `home_ids` is what makes `PATCH`'s replace semantics
-observable without a second request — the frozen contract offers no `GET /api/children/{id}` to
-check the result against. The shape itself is `docs/api-design.md`'s (amendment P7-10).
+`ChildRead` echoing `guardian_ids` is what makes `PATCH`'s replace semantics observable without a
+second request. The shape itself is `docs/api-design.md`'s (amendment P7-10). There is no
+`home_ids` anywhere on a child: its homes are its guardians' homes (#214), read through
+`ChildSummary.homes` / `ChildDetail.homes`.
 
 `grade_level` is the Overall grade, an integer 0..12 everywhere (0 = Kindergarten). The label
 ("Grade 7") is derived for display and is never stored, so a string is refused rather than
@@ -46,12 +47,10 @@ class ChildRead(BaseModel):
     notes: str | None
     archived: bool
     guardian_ids: list[uuid.UUID]
-    home_ids: list[uuid.UUID]
 
 
 class ChildCreate(BaseModel):
     guardian_ids: list[uuid.UUID]
-    home_ids: list[uuid.UUID]
     name: str
     date_of_birth: datetime.date
     grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)
@@ -64,7 +63,6 @@ class ChildUpdate(BaseModel):
     # distinguishable all the way down to the service, which is why the default is None and not
     # an empty list.
     guardian_ids: list[uuid.UUID] | None = None
-    home_ids: list[uuid.UUID] | None = None
     name: str | None = None
     date_of_birth: datetime.date | None = None
     grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)

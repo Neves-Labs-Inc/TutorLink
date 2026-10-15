@@ -7,7 +7,6 @@ EXPECTED_TABLES = {
     "guardians",
     "homes",
     "child_guardians",
-    "child_homes",
     "guardian_homes",
     "children",
     "subjects",
@@ -113,13 +112,14 @@ def test_identity_and_location_are_separate_tables() -> None:
     assert "address" in metadata.tables["homes"].c
 
 
-def test_a_child_has_many_guardians_and_many_homes() -> None:
+def test_a_child_has_many_guardians_and_its_homes_are_theirs() -> None:
+    """No `child_homes`: a Child's Homes are derived from its Guardians' (#214)."""
     children = metadata.tables["children"]
 
     assert "parent_id" not in children.c
+    assert "child_homes" not in metadata.tables
     for junction, columns in (
         ("child_guardians", {"child_id", "guardian_id"}),
-        ("child_homes", {"child_id", "home_id"}),
         ("guardian_homes", {"guardian_id", "home_id"}),
     ):
         assert columns <= set(metadata.tables[junction].c.keys()), junction
@@ -128,7 +128,7 @@ def test_a_child_has_many_guardians_and_many_homes() -> None:
 def test_junctions_are_hard_delete() -> None:
     """No `is_archived`, matching tutor_subjects. A link is not an entity, so unlinking a
     guardian after a custody change is a DELETE and takes effect immediately."""
-    for junction in ("child_guardians", "child_homes", "guardian_homes"):
+    for junction in ("child_guardians", "guardian_homes"):
         assert "is_archived" not in metadata.tables[junction].c, junction
 
 

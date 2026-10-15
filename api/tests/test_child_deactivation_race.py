@@ -50,7 +50,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -390,8 +390,8 @@ def _make_world(session: Session) -> World:
         [
             availability,
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
-            ChildHome(child_id=child.id, home_id=home.id),
-            ChildHome(child_id=child.id, home_id=spare_home.id),
+            GuardianHome(guardian_id=guardian.id, home_id=home.id),
+            GuardianHome(guardian_id=guardian.id, home_id=spare_home.id),
             TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=8),
         ]
     )
@@ -442,7 +442,7 @@ def _delete_world(sessions: sessionmaker[Session], world: World) -> None:
             delete(TutorAvailability).where(TutorAvailability.tutor_id == world.tutor_id)
         )
         session.execute(delete(ChildGuardian).where(ChildGuardian.child_id == world.child_id))
-        session.execute(delete(ChildHome).where(ChildHome.child_id == world.child_id))
+        session.execute(delete(GuardianHome).where(GuardianHome.guardian_id == world.guardian_id))
         session.execute(delete(Child).where(Child.id == world.child_id))
         tutor_user_id = session.scalar(select(Tutor.user_id).where(Tutor.id == world.tutor_id))
         session.execute(delete(Tutor).where(Tutor.id == world.tutor_id))

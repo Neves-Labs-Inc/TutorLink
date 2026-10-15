@@ -95,5 +95,4 @@ def _as_read(child: Child) -> ChildRead:
         notes=child.notes,
         archived=child.is_archived,
         guardian_ids=[link.guardian_id for link in child.guardian_links],
-        home_ids=[link.home_id for link in child.home_links],
     )

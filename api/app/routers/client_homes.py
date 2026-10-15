@@ -4,6 +4,9 @@ A thin HTTP shell over `home_service`: the service raises domain exceptions, thi
 status codes and owns the commit. Mounted on the clients prefix beside `clients.py`, the
 `client_bookings.py` precedent. `OfficePrincipal` and never `TutorScope`: clients are admin-only
 (`docs/api-design.md:285`), so there is no tutor filter to apply.
+
+The new home links to this client only; the client's children have it from then on, because a
+child's homes are its guardians' (#214).
 """
 
 import uuid
@@ -16,11 +19,10 @@ from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.schemas.client import HomeRead
 from app.schemas.home import ClientHomeCreate
-from app.services.home_service import BlankHomeDetails, ChildNotLinked, ClientNotFound, add_home
+from app.services.home_service import BlankHomeDetails, ClientNotFound, add_home
 
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
-CHILD_NOT_LINKED_ERROR = "child_ids must name children linked to this client"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -38,14 +40,11 @@ def create(
             label=payload.label,
             address=payload.address,
             access_code=payload.access_code,
-            child_ids=payload.child_ids,
         )
     except ClientNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CLIENT_NOT_FOUND_ERROR) from exc
     except BlankHomeDetails as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, BLANK_HOME_DETAILS_ERROR) from exc
-    except ChildNotLinked as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, CHILD_NOT_LINKED_ERROR) from exc
 
     db.commit()
 

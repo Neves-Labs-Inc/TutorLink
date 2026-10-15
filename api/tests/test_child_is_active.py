@@ -127,14 +127,13 @@ def test_a_child_inserted_without_the_flag_reads_back_not_archived(db: Session) 
 
 def test_post_children_returns_is_active_true(api: TestClient, db: Session) -> None:
     admin = _make_admin(db)
-    guardian, home = _make_guardian(db), _make_home(db)
+    guardian = _make_guardian(db)
 
     response = api.post(
         "/api/children",
         headers=_auth(admin),
         json={
             "guardian_ids": [str(guardian.id)],
-            "home_ids": [str(home.id)],
             "name": "Tommy Doe",
             "date_of_birth": "2014-05-02",
             "grade_level": 7,
@@ -148,14 +147,13 @@ def test_post_children_returns_is_active_true(api: TestClient, db: Session) -> N
 
 def test_get_client_nests_the_childs_is_active(api: TestClient, db: Session) -> None:
     admin = _make_admin(db)
-    guardian, home = _make_guardian(db), _make_home(db)
+    guardian = _make_guardian(db)
     child_id = uuid.UUID(
         api.post(
             "/api/children",
             headers=_auth(admin),
             json={
                 "guardian_ids": [str(guardian.id)],
-                "home_ids": [str(home.id)],
                 "name": "Tommy Doe",
                 "date_of_birth": "2014-05-02",
                 "grade_level": 7,

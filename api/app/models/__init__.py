@@ -37,7 +37,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.models.password_link import PasswordLink, PasswordLinkPurpose
@@ -76,7 +76,6 @@ __all__ = [
     "BotFlowState",
     "Child",
     "ChildGuardian",
-    "ChildHome",
     "Conversation",
     "ConversationStatus",
     "ExceptionStatus",

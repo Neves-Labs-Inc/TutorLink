@@ -22,7 +22,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -35,7 +35,6 @@ PASSWORD = "correct horse battery staple"
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 HOME_NOT_FOUND_ERROR = "Home not found"
 BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
-CHILD_NOT_LINKED_ERROR = "child_ids must name children linked to this client"
 
 HOME_READ_KEYS = {"id", "label", "address", "access_code", "archived"}
 
@@ -46,21 +45,16 @@ TWELVE = datetime.time(12, 0)
 # --- POST /api/clients/{id}/homes -----------------------------------------------------------
 
 
-def test_add_home_links_the_client_and_every_named_child(api: TestClient, db: Session) -> None:
+def test_add_home_links_only_the_client_and_its_children_have_it(
+    api: TestClient, db: Session
+) -> None:
+    """A Child's Homes are its Guardians' (#214): no per-child link is written or needed."""
     admin = _make_user(db)
     client = _make_client(db)
     first = _make_child(db, guardians=[client])
     second = _make_child(db, guardians=[client])
 
-    response = _add(
-        api,
-        admin,
-        client.id,
-        label="Dad's",
-        address="9 Elm St",
-        access_code="4321",
-        child_ids=[str(first.id), str(second.id)],
-    )
+    response = _add(api, admin, client.id, label="Dad's", address="9 Elm St", access_code="4321")
     body = response.json()
 
     assert response.status_code == 201
@@ -72,68 +66,25 @@ def test_add_home_links_the_client_and_every_named_child(api: TestClient, db: Se
 
     home_id = uuid.UUID(body["id"])
     assert _guardian_home_ids(db, client) == [home_id]
-    assert _child_home_pairs(db, home_id) == {(first.id, home_id), (second.id, home_id)}
+    assert _child_home_ids(api, admin, first) == [body["id"]]
+    assert _child_home_ids(api, admin, second) == [body["id"]]
 
     detail = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
     assert [home["id"] for home in detail["homes"]] == [body["id"]]
 
 
-def test_add_home_with_no_child_ids_links_only_the_client(api: TestClient, db: Session) -> None:
+def test_add_home_ignores_child_ids(api: TestClient, db: Session) -> None:
+    """`child_ids` left the contract: naming another client's child neither refuses nor links."""
     admin = _make_user(db)
     client = _make_client(db)
-    _make_child(db, guardians=[client])
+    other = _make_child(db, guardians=[_make_client(db)])
 
-    response = _add(api, admin, client.id)
+    response = _add(api, admin, client.id, child_ids=[str(other.id), str(uuid.uuid4())])
     home_id = uuid.UUID(response.json()["id"])
 
     assert response.status_code == 201
     assert _guardian_home_ids(db, client) == [home_id]
-    assert _child_home_pairs(db, home_id) == set()
-
-
-def test_add_home_collapses_a_repeated_child_id(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    client = _make_client(db)
-    child = _make_child(db, guardians=[client])
-
-    response = _add(api, admin, client.id, child_ids=[str(child.id), str(child.id)])
-    home_id = uuid.UUID(response.json()["id"])
-
-    assert response.status_code == 201
-    assert _child_home_pairs(db, home_id) == {(child.id, home_id)}
-
-
-def test_add_home_accepts_an_inactive_child_linked_to_the_client(
-    api: TestClient, db: Session
-) -> None:
-    """07C A2 delta 3: a home can be prepared before a child returns."""
-    admin = _make_user(db)
-    client = _make_client(db)
-    child = _make_child(db, guardians=[client], is_archived=True)
-
-    response = _add(api, admin, client.id, child_ids=[str(child.id)])
-    home_id = uuid.UUID(response.json()["id"])
-
-    assert response.status_code == 201
-    assert _child_home_pairs(db, home_id) == {(child.id, home_id)}
-
-
-@pytest.mark.parametrize("stranger", ["other_clients_child", "random_uuid"])
-def test_add_home_refuses_a_child_not_linked_to_the_client_and_writes_nothing(
-    api: TestClient, db: Session, stranger: str
-) -> None:
-    admin = _make_user(db)
-    client = _make_client(db)
-    own = _make_child(db, guardians=[client])
-    other = _make_child(db, guardians=[_make_client(db)])
-    named = other.id if stranger == "other_clients_child" else uuid.uuid4()
-    homes_before = _home_count(db)
-
-    response = _add(api, admin, client.id, child_ids=[str(own.id), str(named)])
-
-    _assert_detail(response, 400, CHILD_NOT_LINKED_ERROR)
-    assert _home_count(db) == homes_before
-    assert _guardian_home_ids(db, client) == []
+    assert _child_home_ids(api, admin, other) == []
 
 
 @pytest.mark.parametrize(
@@ -287,13 +238,13 @@ def test_patch_leaves_every_link_in_place(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     client = _make_client(db)
     home = _make_home(db, client=client)
-    child = _make_child(db, guardians=[client], homes=[home])
+    child = _make_child(db, guardians=[client])
 
     response = _patch(api, admin, home.id, {"address": "10 Elm St"})
 
     assert response.status_code == 200
     assert _guardian_home_ids(db, client) == [home.id]
-    assert _child_home_pairs(db, home.id) == {(child.id, home.id)}
+    assert _child_home_ids(api, admin, child) == [str(home.id)]
 
 
 @pytest.mark.parametrize("is_active", [False, True])
@@ -326,7 +277,7 @@ def test_an_archived_home_is_refused_by_post_bookings_and_bookable_once_restored
     admin = _make_user(db)
     client = _make_client(db)
     home = _make_home(db, client=client)
-    child = _make_child(db, guardians=[client], homes=[home])
+    child = _make_child(db, guardians=[client])
     tutor = _make_tutor(db)
     subject = _make_subject(db)
     db.add(TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=8))
@@ -406,7 +357,6 @@ def test_the_shared_literals_match_the_routers_that_already_declare_them() -> No
     assert client_homes.CLIENT_NOT_FOUND_ERROR == clients.CLIENT_NOT_FOUND_ERROR
     assert homes.BLANK_HOME_DETAILS_ERROR == client_homes.BLANK_HOME_DETAILS_ERROR
     assert client_homes.BLANK_HOME_DETAILS_ERROR == BLANK_HOME_DETAILS_ERROR
-    assert client_homes.CHILD_NOT_LINKED_ERROR == CHILD_NOT_LINKED_ERROR
     assert homes.HOME_NOT_FOUND_ERROR == HOME_NOT_FOUND_ERROR
 
 
@@ -459,12 +409,10 @@ def _guardian_home_ids(db: Session, client: Guardian) -> list[uuid.UUID]:
     )
 
 
-def _child_home_pairs(db: Session, home_id: uuid.UUID) -> set[tuple[uuid.UUID, uuid.UUID]]:
-    rows = db.execute(
-        select(ChildHome.child_id, ChildHome.home_id).where(ChildHome.home_id == home_id)
-    ).all()
+def _child_home_ids(api: TestClient, user: User, child: Child) -> list[str]:
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(user)).json()
 
-    return {(child_id, linked_home_id) for child_id, linked_home_id in rows}
+    return [home["id"] for home in detail["homes"]]
 
 
 def _next_monday() -> datetime.date:
@@ -559,7 +507,6 @@ def _make_child(
     db: Session,
     *,
     guardians: list[Guardian],
-    homes: list[Home] | None = None,
     is_archived: bool = False,
 ) -> Child:
     child = Child(
@@ -572,7 +519,6 @@ def _make_child(
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])
-    db.add_all([ChildHome(child_id=child.id, home_id=one.id) for one in homes or []])
     db.flush()
 
     return child

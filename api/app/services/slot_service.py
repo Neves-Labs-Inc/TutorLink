@@ -251,7 +251,10 @@ def _qualified_tutor_names(
     if tutor_id is not None:
         statement = statement.where(Tutor.id == tutor_id)
 
-    return {row.id: row.name for row in db.execute(statement)}
+    # The bot numbers its tutor menu in this order, so it must not be left to the query plan.
+    ordered = statement.order_by(User.name, Tutor.id)
+
+    return {row.id: row.name for row in db.execute(ordered)}
 
 
 def _active_ranges(

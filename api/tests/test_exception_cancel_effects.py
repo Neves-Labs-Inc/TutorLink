@@ -18,7 +18,7 @@ from app.models.availability import TutorAvailability
 from app.models.child import Child
 from app.models.enums import UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -107,7 +107,6 @@ def _make_world(db: Session) -> World:
         [
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
-            ChildHome(child_id=child.id, home_id=home.id),
             TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=GRADE),
             availability,
         ]

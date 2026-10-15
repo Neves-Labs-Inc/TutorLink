@@ -8,8 +8,6 @@ Trimming, and the blank-label-is-`null` and blank-address-is-400 rules, belong t
 they mirror the `String(64)` columns and need no database read.
 """
 
-import uuid
-
 from pydantic import BaseModel, Field
 
 HOME_FIELD_MAX_LENGTH = 64
@@ -19,7 +17,6 @@ class ClientHomeCreate(BaseModel):
     label: str | None = Field(default=None, max_length=HOME_FIELD_MAX_LENGTH)
     address: str
     access_code: str = Field(max_length=HOME_FIELD_MAX_LENGTH)
-    child_ids: list[uuid.UUID] = []
 
 
 class HomeUpdate(BaseModel):

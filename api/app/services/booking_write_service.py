@@ -80,11 +80,12 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.services import scheduling_service
+from app.services.home_set import child_home_ids
 
 # PostgreSQL SQLSTATEs (Appendix A). The constraints are matched by exception type, call site
 # and class of violation — never by their rendered names, which a migrated database and a
@@ -621,20 +622,16 @@ def _rule_6_home_belongs_to_child(db: Session, context: _Context) -> None:
     """Rule 6 — 422 (#38). Checked against the **child**, never against the booking guardian;
     nothing to check In office, where the shape guarantees `home_id` is NULL.
 
-    A guardian booking a session at the child's other home — the co-parent's house — is
-    accepted, which is the case the two columns exist for. Rule 7 is what keeps that safe.
+    The child's homes are its bookable set (`home_set`): every non-archived home of any of its
+    guardians. A guardian booking a session at the child's other home — the co-parent's house —
+    is accepted, which is the case the two columns exist for. Rule 7 is what keeps that safe.
     """
     request = context.request
 
     if request.home_id is not None:
-        linked = db.scalars(
-            select(ChildHome.id).where(
-                ChildHome.child_id == request.child_id,
-                ChildHome.home_id == request.home_id,
-            )
-        ).first()
+        bookable = set(db.scalars(child_home_ids(request.child_id, include_archived=False)))
 
-        if linked is None:
+        if request.home_id not in bookable:
             raise HomeNotLinkedToChild
 
 
@@ -847,9 +844,9 @@ def _resolve(
 
     **Lock order is conversation → child → home → bookings**, and nothing in this module may
     lock a booking before these reads. Neither deactivation can close a cycle against it:
-    `update_child` takes the child and then bookings, and reaches a home only through the key
-    share an inserted `child_homes` row takes, after the child; the Home archive takes only the
-    home and waits on nothing else. The child is kept out of `retirable` because the rules need it
+    `update_child` takes the child and then bookings, and reaches a guardian only through the key
+    share an inserted `child_guardians` row takes, after the child, never a home; the Home archive
+    takes only the home and waits on nothing else. The child is kept out of `retirable` because the rules need it
     too; the home stays in it, read locked.
     """
     child = db.get(Child, request.child_id, with_for_update={"read": True}, populate_existing=True)

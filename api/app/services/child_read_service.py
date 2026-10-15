@@ -5,7 +5,7 @@ split (P7C-D): the two change for different reasons and are owned by different t
 transaction contract as every other service: nothing commits, the caller owns the boundary.
 
 **The list runs a constant number of statements, whatever the page size**: the count, the page,
-then one batched load each for the page's guardians, active homes and next sessions (§5.3). A
+then one batched load each for the page's guardians, bookable homes and next sessions (§5.3). A
 per-row lazy load would turn a page of 100 into 300 round trips, and nothing on a list row is
 read through an ORM relationship for that reason.
 
@@ -27,9 +27,10 @@ from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import Home
 from app.models.subject import Subject
 from app.services import clock
+from app.services.home_set import homes_by_child
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -72,8 +73,8 @@ def list_children(
 ) -> tuple[list[ChildRow], int]:
     """Rows for one page, plus the total matching before paging.
 
-    `homes` on a row is the child's active homes only (A-66); `guardians` is every linked
-    guardian, active or not.
+    `homes` on a row is the child's bookable homes only (A-66): its guardians' homes, archived
+    ones left out (`home_set`). `guardians` is every linked guardian, active or not.
 
     `awaiting_evaluation` narrows to active Children who aren't Evaluated, whatever
     `is_archived` says, oldest first: the Child waiting longest leads the tab.
@@ -101,7 +102,7 @@ def list_children(
     )
     child_ids = [child.id for child in children]
     guardians = _guardians_by_child(db, child_ids=child_ids)
-    homes = _homes_by_child(db, child_ids=child_ids, only_active=True)
+    homes = homes_by_child(db, child_ids=child_ids, include_archived=False)
     next_sessions = _next_sessions_by_child(db, child_ids=child_ids)
     rows = [
         ChildRow(
@@ -117,7 +118,7 @@ def list_children(
 
 
 def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
-    """The child whatever its `is_archived` state, with **every** linked home, deactivated ones
+    """The child whatever its `is_archived` state, with its **whole** home set, archived homes
     included — the by-id rule (§9) and §5.4."""
     child = db.get(Child, child_id)
 
@@ -146,7 +147,7 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
     return ChildDetailRow(
         child=child,
         guardians=_guardians_by_child(db, child_ids=[child.id])[child.id],
-        homes=_homes_by_child(db, child_ids=[child.id], only_active=False)[child.id],
+        homes=homes_by_child(db, child_ids=[child.id], include_archived=True)[child.id],
         upcoming_session_count=upcoming_session_count,
         levels=levels,
     )
@@ -211,28 +212,6 @@ def _guardians_by_child(
 
     for child_id, guardian in rows:
         grouped[child_id].append(guardian)
-
-    return grouped
-
-
-def _homes_by_child(
-    db: Session, *, child_ids: list[uuid.UUID], only_active: bool
-) -> defaultdict[uuid.UUID, list[Home]]:
-    statement = (
-        select(ChildHome.child_id, Home)
-        .join(Home, Home.id == ChildHome.home_id)
-        .where(ChildHome.child_id.in_(child_ids))
-        .order_by(Home.created_at, Home.id)
-    )
-
-    if only_active:
-        statement = statement.where(Home.is_archived.is_(False))
-
-    rows = db.execute(statement).all()
-    grouped: defaultdict[uuid.UUID, list[Home]] = defaultdict(list)
-
-    for child_id, home in rows:
-        grouped[child_id].append(home)
 
     return grouped
 

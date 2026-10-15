@@ -24,7 +24,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -260,6 +260,55 @@ def test_list_homes_are_ordered_by_creation(api: TestClient, db: Session, token:
     body = api.get(f"/api/children?q={token}", headers=_auth(admin)).json()
 
     assert [home["id"] for home in body["items"][0]["homes"]] == [str(older.id), str(newer.id)]
+
+
+def test_a_home_two_guardians_share_appears_once(api: TestClient, db: Session, token: str) -> None:
+    admin = _make_user(db)
+    mum, dad = _make_guardian(db, name="Mum"), _make_guardian(db, name="Dad")
+    shared = _make_home(db)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[mum, dad], homes=[shared])
+    _give_home(db, dad, shared)
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert [home["id"] for home in listed["items"][0]["homes"]] == [str(shared.id)]
+    assert [home["id"] for home in detail["homes"]] == [str(shared.id)]
+
+
+def test_a_home_added_to_a_guardian_later_is_one_of_the_childs_homes(
+    api: TestClient, db: Session, token: str
+) -> None:
+    admin = _make_user(db)
+    guardian = _make_guardian(db)
+    first = _make_home(db, created_days_ago=1)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[guardian], homes=[first])
+    later = _make_home(db)
+    _give_home(db, guardian, later)
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert [home["id"] for home in listed["items"][0]["homes"]] == [str(first.id), str(later.id)]
+    assert [home["id"] for home in detail["homes"]] == [str(first.id), str(later.id)]
+
+
+def test_an_archived_guardians_homes_stay_the_childs(
+    api: TestClient, db: Session, token: str
+) -> None:
+    admin = _make_user(db)
+    archived = _make_guardian(db, is_archived=True)
+    home = _make_home(db)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[archived], homes=[home])
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert [row["id"] for row in listed["items"][0]["homes"]] == [str(home.id)]
+    assert [row["id"] for row in detail["homes"]] == [str(home.id)]
 
 
 # --- next_session and upcoming_session_count --------------------------------------------------
@@ -564,12 +613,19 @@ def _make_child(
     )
     db.add(child)
     db.flush()
-    for guardian in guardians or [_make_guardian(db)]:
+    linked = guardians or [_make_guardian(db)]
+    for guardian in linked:
         db.add(ChildGuardian(child_id=child.id, guardian_id=guardian.id))
+    # A Child's Homes are its Guardians' (#214): `homes` go to the first Guardian.
     for home in homes or [_make_home(db)]:
-        db.add(ChildHome(child_id=child.id, home_id=home.id))
+        _give_home(db, linked[0], home)
     db.flush()
     return child
+
+
+def _give_home(db: Session, guardian: Guardian, home: Home) -> None:
+    db.add(GuardianHome(guardian_id=guardian.id, home_id=home.id))
+    db.flush()
 
 
 def _book(

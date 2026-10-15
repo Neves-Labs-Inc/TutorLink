@@ -24,7 +24,7 @@ from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import FlagReason, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers import child_guardians, children, clients
@@ -35,6 +35,7 @@ PASSWORD = "correct horse battery staple"
 FIRST_PHONE = "+12025550123"
 SECOND_PHONE = "+12025550187"
 NEW_PHONE = "+12025550199"
+OTHER_PHONE = "+12025550145"
 CHOICE_ERROR = "Send exactly one of guardian_id or guardian"
 HOMES_ERROR = "home_ids must name active homes of this child"
 ALREADY_LINKED_ERROR = "That guardian is already linked to this child"
@@ -109,8 +110,9 @@ def _make_child(
     db.flush()
     for guardian in guardians:
         db.add(ChildGuardian(child_id=child.id, guardian_id=guardian.id))
+    # A Child's Homes are its Guardians' (#214): `homes` go to the first Guardian.
     for home in homes:
-        db.add(ChildHome(child_id=child.id, home_id=home.id))
+        db.add(GuardianHome(guardian_id=guardians[0].id, home_id=home.id))
     db.flush()
     return child
 
@@ -119,8 +121,6 @@ def _family(db: Session) -> tuple[Child, Guardian, Home, Home]:
     """A child with one guardian and two active homes, both the first guardian's."""
     first = _make_guardian(db, name="Jane Doe", phone_number=FIRST_PHONE)
     mums, dads = _make_home(db, label="Mum's"), _make_home(db, label="Dad's")
-    for home in (mums, dads):
-        db.add(GuardianHome(guardian_id=first.id, home_id=home.id))
     child = _make_child(db, guardians=[first], homes=[mums, dads])
     return child, first, mums, dads
 
@@ -142,10 +142,6 @@ def _guardian_home_ids(db: Session, guardian_id: uuid.UUID) -> list[uuid.UUID]:
     )
 
 
-def _child_home_ids(db: Session, child_id: uuid.UUID) -> set[uuid.UUID]:
-    return set(db.scalars(select(ChildHome.home_id).where(ChildHome.child_id == child_id)))
-
-
 # --- the shared literals ------------------------------------------------------------------
 
 
@@ -162,7 +158,6 @@ def test_linking_an_existing_guardian_to_one_of_two_homes(api: TestClient, db: S
     admin = _make_user(db)
     child, first, mums, dads = _family(db)
     second = _make_guardian(db, name="John Doe", phone_number=SECOND_PHONE)
-    child_homes_before = _child_home_ids(db, child.id)
 
     status_code, body = _link(
         api, admin, child.id, {"guardian_id": str(second.id), "home_ids": [str(dads.id)]}
@@ -171,9 +166,10 @@ def test_linking_an_existing_guardian_to_one_of_two_homes(api: TestClient, db: S
     assert status_code == 201
     assert "archived" in body
     assert set(body["guardian_ids"]) == {str(first.id), str(second.id)}
-    assert set(body["home_ids"]) == {str(mums.id), str(dads.id)}
+    assert "home_ids" not in body
     assert _guardian_home_ids(db, second.id) == [dads.id]
-    assert _child_home_ids(db, child.id) == child_homes_before
+    child_detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+    assert {one["id"] for one in child_detail["homes"]} == {str(mums.id), str(dads.id)}
 
     detail = api.get(f"/api/clients/{second.id}", headers=_auth(admin)).json()
 
@@ -357,18 +353,19 @@ def test_the_link_constraint_alone_still_answers_409(
 
 @pytest.mark.parametrize("bad_home", ["deactivated home of the child", "home of another child"])
 @pytest.mark.parametrize("guardian_kind", ["existing", "new"])
-def test_a_home_outside_the_childs_active_homes_is_400(
+def test_a_home_outside_the_childs_bookable_homes_is_400(
     api: TestClient, db: Session, bad_home: str, guardian_kind: str
 ) -> None:
     admin = _make_user(db)
     child, first, mums, _ = _family(db)
     if bad_home == "deactivated home of the child":
         target = _make_home(db, label="Old", is_archived=True)
-        db.add(ChildHome(child_id=child.id, home_id=target.id))
+        db.add(GuardianHome(guardian_id=first.id, home_id=target.id))
         db.flush()
     else:
         target = _make_home(db, label="Elsewhere")
-        _make_child(db, guardians=[first], homes=[target])
+        other = _make_guardian(db, name="Other Doe", phone_number=OTHER_PHONE)
+        _make_child(db, guardians=[other], homes=[target])
     second = _make_guardian(db, name="John Doe", phone_number=SECOND_PHONE)
     choice: dict[str, object] = (
         {"guardian_id": str(second.id)}

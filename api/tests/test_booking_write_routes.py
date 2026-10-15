@@ -44,7 +44,7 @@ from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -607,7 +607,7 @@ def test_a_guardian_booking_into_the_co_parents_home_is_accepted(
 def test_two_siblings_at_the_shared_home_are_both_accepted(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """Each passes rule 6 on its own `child_homes` row."""
+    """Each passes rule 6 through the Guardian they share, who holds the Home."""
     user = _make_user(db)
 
     first = _post(api, user, family, booked_by_guardian_id=str(family.guardian.id))
@@ -624,6 +624,19 @@ def test_two_siblings_at_the_shared_home_are_both_accepted(
     assert first.status_code == 201
     assert second.status_code == 201
     assert _count(db) == 2
+
+
+def test_a_home_added_to_a_guardian_after_the_child_is_accepted(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A Child's Homes are its Guardians' (#214): nobody has to link the new Home to the Child."""
+    user = _make_user(db)
+    later = _make_home(db, family.co_guardian)
+
+    response = _post(api, user, family, home_id=str(later.id))
+
+    assert response.status_code == 201
+    assert _row(db, uuid.UUID(response.json()["id"])).home_id == later.id
 
 
 def test_a_guardian_not_linked_to_the_child_is_422(
@@ -1503,8 +1516,8 @@ def _make_family(db: Session) -> Family:
     co_guardian = _make_guardian(db)
     home = _make_home(db, guardian)
     other_home = _make_home(db, co_guardian)
-    child = _make_child(db, guardians=[guardian, co_guardian], homes=[home, other_home])
-    sibling = _make_child(db, guardians=[guardian], homes=[home])
+    child = _make_child(db, guardians=[guardian, co_guardian])
+    sibling = _make_child(db, guardians=[guardian])
     tutor = _make_tutor(db)
     subject = _make_subject(db)
     assignment = TutorSubject(
@@ -1573,7 +1586,7 @@ def _make_home(db: Session, guardian: Guardian) -> Home:
     return home
 
 
-def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) -> Child:
+def _make_child(db: Session, *, guardians: list[Guardian]) -> Child:
     child = Child(
         name=f"Child {uuid.uuid4().hex[:8]}",
         grade_level=CHILD_GRADE,
@@ -1582,7 +1595,6 @@ def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) ->
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])
-    db.add_all([ChildHome(child_id=child.id, home_id=one.id) for one in homes])
     db.flush()
 
     return child

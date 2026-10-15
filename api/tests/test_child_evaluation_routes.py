@@ -15,7 +15,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -559,7 +559,7 @@ def _make_child(
     db.add_all(
         [
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
-            ChildHome(child_id=child.id, home_id=home.id),
+            GuardianHome(guardian_id=guardian.id, home_id=home.id),
         ]
     )
     db.flush()

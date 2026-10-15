@@ -58,7 +58,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor, TutorSubject
@@ -476,7 +476,6 @@ def test_a_completed_intake_writes_the_five_row_kinds_in_one_turn(chat: Chat, db
     assert _count(db, Home) == 1
     assert _count(db, GuardianHome) == 1
     assert _count(db, Child) == 1
-    assert _count(db, ChildHome) == 1
     assert _count(db, ChildGuardian) == 1
 
 
@@ -908,7 +907,6 @@ def test_a_child_already_registered_elsewhere_writes_nothing_and_flags_a_link_re
     assert turn.flag_reason is FlagReason.GUARDIAN_LINK_REQUEST
     assert _count(db, Child) == 0
     assert _count(db, ChildGuardian) == 0
-    assert _count(db, ChildHome) == 0
     assert _count(db, Guardian) == 0
 
 
@@ -968,7 +966,6 @@ def test_a_returning_guardian_with_no_children_is_asked_the_full_child_questions
     assert child.notes == "Peanut allergy"
     assert link.guardian_id == detail.client.id
     assert _count(db, Guardian) == 1
-    assert _count(db, ChildHome) == 1
 
 
 # --- booking (REQ-074) --------------------------------------------------------------------------
@@ -1076,6 +1073,35 @@ def test_more_than_one_active_home_asks_which_one(
     assert "Dad's" in turn.reply
     assert render("OFFICE_OPTION", "en") not in turn.reply
     assert chat.step == bot_service.STEP_BOOK_HOME
+
+
+def test_the_location_step_offers_every_active_home_of_any_of_the_childs_guardians(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """#214: the co-Guardian's Home is the Child's too, and a Home both hold is offered once."""
+    co_guardian = Guardian(name="Bo Guardian", phone_number="+12025550166")
+    # Strictly later than the fixture's Home: both would otherwise take the transaction's
+    # `now()`, and the offer order would fall to random ids.
+    dads = Home(
+        label="Dad's",
+        address="2 Other Street",
+        access_code="9999",
+        created_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1),
+    )
+    db.add_all([co_guardian, dads])
+    db.flush()
+    db.add_all(
+        [
+            ChildGuardian(child_id=client.child_id, guardian_id=co_guardian.id),
+            GuardianHome(guardian_id=co_guardian.id, home_id=dads.id),
+            GuardianHome(guardian_id=co_guardian.id, home_id=client.home_id),
+        ]
+    )
+    db.flush()
+
+    turn = _book(chat, world, stop_after_date=True)
+
+    assert turn.reply == f"{render('ASK_WHERE', 'en')}\n1. Home\n2. Dad's"
 
 
 # --- the Location step: homes and "At the office" from the day's Availability modes (#132) ------
@@ -4044,7 +4070,6 @@ def _make_client(
     db.add_all(
         [
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
-            ChildHome(child_id=child.id, home_id=home.id),
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
         ]
     )
@@ -4064,12 +4089,7 @@ def _add_child(db: Session, client: ClientWorld, *, name: str, is_archived: bool
     )
     db.add(child)
     db.flush()
-    db.add_all(
-        [
-            ChildHome(child_id=child.id, home_id=client.home_id),
-            ChildGuardian(child_id=child.id, guardian_id=client.guardian_id),
-        ]
-    )
+    db.add(ChildGuardian(child_id=child.id, guardian_id=client.guardian_id))
     db.flush()
 
     return child
@@ -4146,12 +4166,7 @@ def _add_home(db: Session, client: ClientWorld, *, label: str | None, address: s
     home = Home(label=label, address=address, access_code="9999")
     db.add(home)
     db.flush()
-    db.add_all(
-        [
-            GuardianHome(guardian_id=client.guardian_id, home_id=home.id),
-            ChildHome(child_id=client.child_id, home_id=home.id),
-        ]
-    )
+    db.add(GuardianHome(guardian_id=client.guardian_id, home_id=home.id))
     db.flush()
 
     return home

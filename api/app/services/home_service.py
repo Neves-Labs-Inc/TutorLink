@@ -3,21 +3,18 @@
 
 Same transaction contract as `user_service`: nothing here commits, the caller owns the
 boundary. Every check runs before the first write or assignment, so a refused request changes
-nothing — for `add_home` no `homes` row is left without its links.
+nothing — for `add_home` no `homes` row is left without its link.
 
-`child_ids` must name children linked to this client through `child_guardians`; an archived
-child qualifies, because a home can be prepared before a child returns (07C A2 delta 3).
-Repeats collapse rather than tripping the `child_homes` UNIQUE constraint.
+`add_home` links the new home to that client only. Their children have it from then on, because
+a child's homes are its guardians' homes (`home_set`, #214); there is no per-child list to fill.
 """
 
 import uuid
-from collections.abc import Sequence
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.guardian import Guardian
+from app.models.home import GuardianHome, Home
 
 HOME_NOT_FOUND_ERROR = "Home not found"
 
@@ -38,10 +35,6 @@ class BlankHomeDetails(HomeServiceError):
     """An address or access code that is empty once trimmed."""
 
 
-class ChildNotLinked(HomeServiceError):
-    """A `child_ids` entry that is not a child linked to this client."""
-
-
 def add_home(
     db: Session,
     *,
@@ -49,7 +42,6 @@ def add_home(
     label: str | None,
     address: str,
     access_code: str,
-    child_ids: Sequence[uuid.UUID],
 ) -> Home:
     if db.get(Guardian, client_id) is None:
         raise ClientNotFound
@@ -57,7 +49,6 @@ def add_home(
     stored_label = _stored_label(label)
     stored_address = _required(address)
     stored_access_code = _required(access_code)
-    children = _linked_child_ids(db, client_id=client_id, requested=child_ids)
 
     home = Home(
         label=stored_label,
@@ -68,7 +59,6 @@ def add_home(
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client_id, home_id=home.id))
-    db.add_all([ChildHome(child_id=child_id, home_id=home.id) for child_id in children])
     db.flush()
 
     return home
@@ -118,21 +108,3 @@ def _required(value: str) -> str:
         raise BlankHomeDetails
 
     return trimmed
-
-
-def _linked_child_ids(
-    db: Session, *, client_id: uuid.UUID, requested: Sequence[uuid.UUID]
-) -> set[uuid.UUID]:
-    wanted = set(requested)
-    linked = set(
-        db.scalars(
-            select(ChildGuardian.child_id).where(
-                ChildGuardian.guardian_id == client_id, ChildGuardian.child_id.in_(wanted)
-            )
-        ).all()
-    )
-
-    if linked != wanted:
-        raise ChildNotLinked
-
-    return wanted

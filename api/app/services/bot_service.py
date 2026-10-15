@@ -94,7 +94,7 @@ from app.models.enums import (
     FlagReason,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -121,6 +121,7 @@ from app.services import (
     scheduling_service,
     slot_service,
 )
+from app.services.home_set import homes_by_child
 from app.services.tutor_service import PROFILE_ROLES
 from app.services.bot_state import FlowState, clear_state, load_state, save_state
 from app.services.name_matching import exact_matches, named_children, typo_matches
@@ -1119,7 +1120,8 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
 
     **Every row #39 names lands here, in one transaction** (REQ-073.2/.3, P7-AA): a `guardians`
     row, a `homes` row and a `guardian_homes` link on the first child, then a `children` row plus
-    a `child_homes` and a `child_guardians` link for each. Holding the guardian in flow state
+    a `child_guardians` link for each. The child's homes are its guardian's (`home_set`, #214), so
+    nothing links a child to a home directly. Holding the guardian in flow state
     until a child exists is what makes "a refused intake leaves none of it behind" true of the whole
     intake rather than only of its tail — and it is what lets P7-F's refusal write *nothing at
     all*.
@@ -1127,9 +1129,8 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
     The guardian's `phone_number` goes through `phone_service` here (REQ-073.4, D-L): this is a
     new row entering the database, unlike the inbound number the thread is keyed on (P7-H).
 
-    For a guardian who already exists — the second child of an intake, or a returning client
-    with no child on file — the child is linked to every home that guardian already has, which
-    is the correlation `child_homes` exists to record.
+    A guardian with no active home — a new client whose home was not created, or an existing one
+    whose homes are all archived — is stuck rather than given a child with nowhere to be tutored.
     """
     answer = _answer(turn, parsed)
 
@@ -1141,23 +1142,22 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
     if turn.guardian is None:
         created = _create_client(turn)
         guardian_id = None if created is None else created.client.id
-        home_ids = [] if created is None else [home.id for home in created.homes]
+        has_home = created is not None and bool(created.homes)
     else:
         guardian_id = turn.guardian.id
-        home_ids = [home.id for home in _guardian_homes(turn.db, guardian_id=guardian_id)]
+        has_home = bool(_guardian_homes(turn.db, guardian_id=guardian_id))
 
     # Popped so the next Child of this Intake never inherits it. Only an int is a grade this
     # step stored: a string is the retired grade step's, from an older build, and is dropped.
     stored_grade = turn.data.pop("child_grade", None)
     grade_level = stored_grade if isinstance(stored_grade, int) else None
 
-    if guardian_id is None or not home_ids:
+    if guardian_id is None or not has_home:
         result = _stuck(turn)
     else:
         child = child_service.create_child(
             turn.db,
             guardian_ids=[guardian_id],
-            home_ids=home_ids,
             name=turn.data["child_name"],
             date_of_birth=datetime.date.fromisoformat(turn.data["child_date_of_birth"]),
             grade_level=grade_level,
@@ -1823,7 +1823,7 @@ def _ask_location(turn: _Turn) -> _Next:
     """The Location step (#132): which of the Child's homes, or the office, from the modes of
     the day's ranges (`slot_service.allowed_locations`).
 
-    The homes come from `child_homes` directly. The bot is not a client of
+    The homes are the Child's bookable set (`home_set`). The bot is not a client of
     `GET /api/clients/{id}` and issue #60's flat uncorrelated lists are not in its path (P7-M).
     One possible Location is chosen without asking; none at all is an Office handoff, since
     ranges exist but no Location fits them (answers.md 03.2). A reschedule presets the old
@@ -2468,15 +2468,8 @@ def _guardian_homes(db: Session, *, guardian_id: uuid.UUID) -> list[Home]:
 
 
 def _homes(db: Session, *, child_id: uuid.UUID) -> list[Home]:
-    """The child's active homes, read from `child_homes` (REQ-074.4)."""
-    return list(
-        db.scalars(
-            select(Home)
-            .join(ChildHome, ChildHome.home_id == Home.id)
-            .where(ChildHome.child_id == child_id, Home.is_archived.is_(False))
-            .order_by(Home.created_at, Home.id)
-        ).all()
-    )
+    """The child's bookable homes: every active home of any of its guardians (REQ-074.4, #214)."""
+    return homes_by_child(db, child_ids=[child_id], include_archived=False)[child_id]
 
 
 def _upcoming_bookings(

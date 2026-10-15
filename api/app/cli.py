@@ -38,7 +38,7 @@ from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import Language, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.models.user import User
@@ -71,7 +71,6 @@ PRELAUNCH_DELETE_ORDER: tuple[type, ...] = (
     Message,
     Conversation,
     GuardianHome,
-    ChildHome,
     ChildGuardian,
     Home,
     Child,

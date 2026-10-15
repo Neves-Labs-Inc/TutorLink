@@ -34,7 +34,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.models.refresh_token import RefreshToken
@@ -49,7 +49,6 @@ PURGED_MODELS = (
     Guardian,
     Child,
     ChildGuardian,
-    ChildHome,
     GuardianHome,
     Home,
     Booking,
@@ -259,7 +258,6 @@ def _make_test_data(db: Session) -> None:
             ),
             TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=12),
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
-            ChildHome(child_id=child.id, home_id=home.id),
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
             Booking(
                 child_id=child.id,

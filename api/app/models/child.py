@@ -12,7 +12,6 @@ from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.guardian import ChildGuardian
-    from app.models.home import ChildHome
     from app.models.user import User
 
 NOTES_MAX_LENGTH = 2000
@@ -51,9 +50,8 @@ class Child(HasID, HasTimestamps, HasArchivedFlag, Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
 
-    # No `parent_id`: a child has many guardians and many homes, and neither is derivable from
-    # the other. A guardian's homes are their own; the homes a child is tutored at are theirs.
+    # No `parent_id`: a child has many guardians. Its homes are its guardians' homes, derived
+    # in `services/home_set.py` rather than stored (#214).
     guardian_links: Mapped[list["ChildGuardian"]] = relationship(back_populates="child")
-    home_links: Mapped[list["ChildHome"]] = relationship(back_populates="child")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="child")
     evaluated_by: Mapped["User | None"] = relationship()

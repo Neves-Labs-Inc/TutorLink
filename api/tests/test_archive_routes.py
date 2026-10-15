@@ -21,7 +21,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -448,7 +448,7 @@ def _make_home(db: Session, *, client: Guardian, is_archived: bool = False) -> H
     return home
 
 
-def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) -> Child:
+def _make_child(db: Session, *, guardians: list[Guardian]) -> Child:
     child = Child(
         name=f"Child {uuid.uuid4().hex[:12]}",
         date_of_birth=datetime.date(2014, 5, 2),
@@ -459,7 +459,6 @@ def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) ->
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])
-    db.add_all([ChildHome(child_id=child.id, home_id=one.id) for one in homes])
     db.flush()
 
     return child
@@ -484,7 +483,7 @@ def _book(
     db.add(availability)
     db.flush()
     booking = Booking(
-        child_id=_make_child(db, guardians=[guardian], homes=[home]).id,
+        child_id=_make_child(db, guardians=[guardian]).id,
         user_id=tutor.user_id,
         kind=BookingKind.REGULAR,
         location=BookingLocation.HOME,

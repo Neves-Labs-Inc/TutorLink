@@ -116,6 +116,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     # A Tutor may Mark completed their own booking (#152); every other move is Office only.
     ("PATCH", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
     ("GET", "/api/staff"): Access.STAFF,
+    ("GET", "/api/staff/{staff_id}"): Access.STAFF,
     ("GET", "/api/stats/overview"): Access.STAFF,
     ("GET", "/api/reminders/week"): Access.STAFF,
     ("GET", "/api/conversations"): Access.STAFF,

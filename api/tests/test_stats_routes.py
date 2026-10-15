@@ -16,6 +16,7 @@ bookings for the same tutor whose times overlap, so the fixture would not build 
 
 import datetime
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -78,6 +79,7 @@ SUMMARY_FIELDS = {
     "status",
     "notes",
     "home",
+    "sort_out_reasons",
     "updated_at",
 }
 
@@ -457,8 +459,12 @@ def test_a_cancelled_booking_created_last_leads_the_feed(
 
 
 def test_each_recent_booking_is_shaped_like_a_booking_list_item(
-    api: TestClient, db: Session, stage: Stage
+    api: TestClient,
+    db: Session,
+    stage: Stage,
+    freeze_business_clock: Callable[[datetime.datetime], None],
 ) -> None:
+    freeze_business_clock(datetime.datetime.combine(THURSDAY, datetime.time(9, 0)))
     admin = _make_user(db)
     db.add(
         ChildSubjectLevel(
@@ -495,6 +501,8 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         "status": "confirmed",
         "notes": None,
         "home": {"id": str(stage.home.id), "label": None, "address": "1 Test Street"},
+        # The day after its date, still confirmed.
+        "sort_out_reasons": ["not_completed"],
     }
 
 

@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,12 +21,18 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.dependencies import CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
-from app.models.availability import TutorAvailability
+from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ExceptionStatus,
+    UserRole,
+)
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
@@ -42,6 +49,10 @@ NINE = datetime.time(9, 0)
 TEN = datetime.time(10, 0)
 ELEVEN = datetime.time(11, 0)
 TWELVE = datetime.time(12, 0)
+
+ONE_DAY = datetime.timedelta(days=1)
+# Before every fixture date, so nothing is yet not completed.
+BEFORE_DATE = datetime.datetime(2026, 9, 1, 9, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,6 +670,420 @@ def test_a_page_runs_the_same_statements_for_two_rows_or_six(
         counts.append(len(statements))
 
     assert counts[0] == counts[1]
+
+
+# --- Bookings to sort out: `sort_out_reasons` (spec 5, #209) ---------------------------------
+
+
+def test_a_live_booking_from_yesterday_is_not_completed_and_todays_is_not(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    """Not completed from 00:00 the day after its date, even if today's has already ended."""
+    admin = _make_user(db)
+    freeze_business_clock(datetime.datetime.combine(LATER, NINE))
+    yesterday = _book(db, family, on=DATE, status=BookingStatus.CONFIRMED)
+    today = _book(db, family, on=LATER, start=datetime.time(7, 0), end=datetime.time(8, 0))
+
+    rows = _reasons_by_id(api.get("/api/bookings", headers=_auth(admin)))
+
+    assert rows == {str(yesterday.id): ["not_completed"], str(today.id): []}
+
+
+def test_a_booking_is_not_completed_from_midnight_after_its_date_however_old(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(datetime.datetime.combine(LATEST, datetime.time(0, 0)))
+    yesterday = _book(db, family, on=LATER, status=BookingStatus.CONFIRMED)
+    a_year_ago = _book(db, family, on=LATER - datetime.timedelta(days=365))
+
+    rows = _reasons_by_id(api.get("/api/bookings", headers=_auth(admin)))
+
+    assert rows == {str(yesterday.id): ["not_completed"], str(a_year_ago.id): ["not_completed"]}
+
+
+@pytest.mark.parametrize("closed", [BookingStatus.COMPLETED, BookingStatus.CANCELLED])
+def test_completing_or_cancelling_a_not_completed_booking_clears_it(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+    closed: BookingStatus,
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(datetime.datetime.combine(LATER, NINE))
+    booking = _book(db, family, on=DATE, status=BookingStatus.CONFIRMED)
+
+    moved = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": closed.value}, headers=_auth(admin)
+    )
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert moved.status_code == 200
+    assert body["sort_out_reasons"] == []
+
+
+@pytest.mark.parametrize(
+    ("window", "clashes"),
+    [
+        (None, True),
+        ((NINE, datetime.time(10, 30)), True),
+        ((datetime.time(10, 30), TWELVE), True),
+        ((NINE, TEN), False),
+        ((ELEVEN, TWELVE), False),
+    ],
+    ids=["whole-day", "overlapping-start", "overlapping-end", "ends-at-start", "starts-at-end"],
+)
+def test_approved_time_off_over_a_live_booking_is_a_clash_and_touching_is_not(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+    window: tuple[datetime.time, datetime.time] | None,
+    clashes: bool,
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family)
+    _time_off(db, family.tutor.user_id, window=window, start=DATE - ONE_DAY, end=LATER)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == (["time_off_clash"] if clashes else [])
+
+
+@pytest.mark.parametrize(
+    "inert", [ExceptionStatus.PENDING, ExceptionStatus.REJECTED, ExceptionStatus.CANCELLED]
+)
+def test_time_off_that_is_not_approved_never_clashes(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+    inert: ExceptionStatus,
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family)
+    _time_off(db, family.tutor.user_id, status=inert)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == []
+
+
+def test_another_staff_members_time_off_does_not_clash(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family, tutor=family.tutor)
+    _time_off(db, family.other_tutor.user_id)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == []
+
+
+def test_cancelling_the_time_off_or_the_booking_clears_the_clash(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    kept_by_time_off = _book(db, family, tutor=family.tutor)
+    kept_by_booking = _book(db, family, tutor=family.other_tutor)
+    time_off = _time_off(db, family.tutor.user_id)
+    _time_off(db, family.other_tutor.user_id)
+
+    cancelled_time_off = api.post(f"/api/exceptions/{time_off.id}/cancel", headers=_auth(admin))
+    cancelled_booking = api.patch(
+        f"/api/bookings/{kept_by_booking.id}", json={"status": "cancelled"}, headers=_auth(admin)
+    )
+    rows = _reasons_by_id(api.get("/api/bookings", headers=_auth(admin)))
+
+    assert cancelled_time_off.status_code == 200
+    assert cancelled_booking.status_code == 200
+    assert rows == {str(kept_by_time_off.id): [], str(kept_by_booking.id): []}
+
+
+def test_a_past_clashing_booking_carries_both_reasons_in_wire_order(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(datetime.datetime.combine(LATEST, NINE))
+    booking = _book(db, family)
+    _time_off(db, family.tutor.user_id)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == ["not_completed", "time_off_clash"]
+
+
+def test_an_upcoming_booking_with_archived_staff_is_to_sort_out_until_restored(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family, status=BookingStatus.CONFIRMED)
+    staff_id = family.tutor.user_id
+
+    archived = _archive_staff(api, admin, staff_id)
+    while_archived = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+    restored = api.post(
+        "/api/restore", json={"type": "staff", "id": str(staff_id)}, headers=_auth(admin)
+    )
+    after_restore = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert archived.status_code == 200
+    assert while_archived["sort_out_reasons"] == ["archived_staff"]
+    assert restored.status_code == 200
+    assert after_restore["sort_out_reasons"] == []
+
+
+def test_cancelling_a_booking_with_archived_staff_clears_it(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family, status=BookingStatus.CONFIRMED)
+    _archive_staff(api, admin, family.tutor.user_id)
+
+    api.patch(f"/api/bookings/{booking.id}", json={"status": "cancelled"}, headers=_auth(admin))
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == []
+
+
+def test_a_past_booking_with_archived_staff_is_only_not_completed(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(datetime.datetime.combine(LATER, NINE))
+    booking = _book(db, family, status=BookingStatus.CONFIRMED)
+    _archive_staff(api, admin, family.tutor.user_id)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == ["not_completed"]
+
+
+# --- `?to_sort_out` and `?reason` --------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SortOutStage:
+    """Frozen at LATER 09:00: one Booking per reason mix, plus one with none."""
+
+    past: Booking
+    past_clash: Booking
+    archived: Booking
+    clean: Booking
+
+
+@pytest.fixture
+def sort_out_stage(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> SortOutStage:
+    freeze_business_clock(datetime.datetime.combine(LATER, NINE))
+    past = _book(db, family, on=DATE, start=NINE, end=TEN)
+    past_clash = _book(db, family, on=DATE, start=ELEVEN, end=TWELVE)
+    _time_off(db, family.tutor.user_id, window=(ELEVEN, TWELVE))
+    archived = _book(db, family, tutor=family.other_tutor, on=LATEST)
+    clean = _book(db, family, on=LATEST)
+    _archive_staff(api, _make_user(db), family.other_tutor.user_id)
+
+    return SortOutStage(past=past, past_clash=past_clash, archived=archived, clean=clean)
+
+
+def test_to_sort_out_lists_each_booking_with_a_reason_once(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get("/api/bookings?to_sort_out=true", headers=_auth(admin)).json()
+
+    assert _reasons_by_id_of(body) == {
+        str(sort_out_stage.past.id): ["not_completed"],
+        str(sort_out_stage.past_clash.id): ["not_completed", "time_off_clash"],
+        str(sort_out_stage.archived.id): ["archived_staff"],
+    }
+    assert body["total"] == 3
+    assert body["counts_by_kind"] == {"regular": 3, "evaluation": 0}
+
+
+def test_to_sort_out_false_lists_only_bookings_with_no_reason(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get("/api/bookings?to_sort_out=false", headers=_auth(admin)).json()
+
+    assert _reasons_by_id_of(body) == {str(sort_out_stage.clean.id): []}
+    assert body["total"] == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("not_completed", {"past", "past_clash"}),
+        ("time_off_clash", {"past_clash"}),
+        ("archived_staff", {"archived"}),
+    ],
+)
+def test_reason_narrows_to_the_bookings_carrying_it(
+    api: TestClient,
+    db: Session,
+    sort_out_stage: SortOutStage,
+    reason: str,
+    expected: set[str],
+) -> None:
+    admin = _make_user(db)
+
+    for query in (f"reason={reason}", f"reason={reason}&to_sort_out=true"):
+        body = api.get(f"/api/bookings?{query}", headers=_auth(admin)).json()
+
+        assert set(_reasons_by_id_of(body)) == {
+            str(getattr(sort_out_stage, name).id) for name in expected
+        }
+        assert body["total"] == len(expected)
+
+
+def test_a_reason_with_to_sort_out_false_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get("/api/bookings?to_sort_out=false&reason=not_completed", headers=_auth(admin))
+
+    _assert_detail(response, 400, "reason can only be used with to_sort_out=true")
+
+
+def test_an_unknown_reason_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get("/api/bookings?reason=bogus", headers=_auth(admin))
+
+    assert response.status_code == 400
+
+
+def test_a_manager_sorts_out_only_their_own_bookings_but_lists_everyones(
+    api: TestClient, db: Session, family: Family, sort_out_stage: SortOutStage
+) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER)
+    own = _book(db, family, on=DATE, start=TWELVE, end=TWELVE.replace(hour=13))
+    own.user_id = manager.id
+    own.availability_id = None
+    db.flush()
+
+    sorting_out = api.get("/api/bookings?to_sort_out=true", headers=_auth(manager)).json()
+    by_reason = api.get("/api/bookings?reason=not_completed", headers=_auth(manager)).json()
+    listing = api.get("/api/bookings", headers=_auth(manager)).json()
+
+    assert set(_reasons_by_id_of(sorting_out)) == {str(own.id)}
+    assert sorting_out["total"] == 1
+    assert set(_reasons_by_id_of(by_reason)) == {str(own.id)}
+    assert listing["total"] == 5
+
+
+def test_an_admin_sorts_out_everyones_bookings(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+
+    body = api.get("/api/bookings?to_sort_out=true", headers=_auth(admin)).json()
+
+    assert body["total"] == 3
+
+
+def _reasons_by_id(response: Response) -> dict[str, list[str]]:
+    return _reasons_by_id_of(response.json())
+
+
+def _reasons_by_id_of(body: dict[str, Any]) -> dict[str, list[str]]:
+    return {row["id"]: row["sort_out_reasons"] for row in body["items"]}
+
+
+def _time_off(
+    db: Session,
+    user_id: uuid.UUID,
+    *,
+    window: tuple[datetime.time, datetime.time] | None = None,
+    start: datetime.date = DATE,
+    end: datetime.date = DATE,
+    status: ExceptionStatus = ExceptionStatus.APPROVED,
+) -> TutorAvailabilityException:
+    row = TutorAvailabilityException(
+        user_id=user_id,
+        start_date=start,
+        end_date=end,
+        start_time=None if window is None else window[0],
+        end_time=None if window is None else window[1],
+        status=status,
+    )
+    db.add(row)
+    db.flush()
+
+    return row
+
+
+def _archive_staff(api: TestClient, admin: User, staff_id: uuid.UUID) -> Response:
+    return api.post(
+        "/api/archive",
+        json={
+            "type": "staff",
+            "id": str(staff_id),
+            "confirm_warnings": ["archived_staff_bookings"],
+        },
+        headers=_auth(admin),
+    )
+
+
+def test_a_page_reads_its_sort_out_reasons_in_one_statement(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    """Only the reasons read reaches Time off on an unfiltered list, so it is the one."""
+    admin = _make_user(db)
+    freeze_business_clock(datetime.datetime.combine(LATER, NINE))
+    for offset in range(6):
+        day = DATE + datetime.timedelta(days=offset)
+        _book(db, family, on=day)
+        _time_off(db, family.tutor.user_id, start=day, end=day)
+    headers = _auth(admin)
+
+    for page_size in (2, 6):
+        statements = _statements_for(
+            db, lambda: api.get(f"/api/bookings?page_size={page_size}", headers=headers)
+        )
+
+        assert sum("tutor_availability_exceptions" in one for one in statements) == 1
 
 
 def _statements_for(db: Session, call: Callable[[], object]) -> list[str]:

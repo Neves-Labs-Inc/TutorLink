@@ -8,7 +8,7 @@ import datetime
 import uuid
 from dataclasses import dataclass, replace
 
-from sqlalchemy import ColumnElement, Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, func, not_, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.booking import Booking
@@ -17,6 +17,7 @@ from app.models.enums import BookingKind, BookingLocation, BookingStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.tutor import Tutor
 from app.models.user import User
+from app.services.sort_out_service import SortOutReason, sort_out_predicate
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -38,6 +39,15 @@ class BookingFilters:
     user_ids: tuple[uuid.UUID, ...] = ()
     # Case-insensitive substring of the Child's or the Staff member's name.
     q: str | None = None
+    # Bookings to sort out (`sort_out_service`): True only those with a reason, False only those
+    # with none, None either. `reason` narrows to that one reason and implies True. Both read
+    # `now` (business wall-clock), which must then be set.
+    to_sort_out: bool | None = None
+    reason: SortOutReason | None = None
+    now: datetime.datetime | None = None
+    # Only this Staff member's Bookings (`bookings.user_id`), on top of `user_ids`: the route
+    # sets it from `sort_out_staff_limit` for a Manager sorting out.
+    staff_user_id: uuid.UUID | None = None
 
 
 class BookingServiceError(Exception): ...
@@ -199,6 +209,13 @@ def apply_booking_filters(
     if filters.user_ids:
         statement = statement.where(Booking.user_id.in_(filters.user_ids))
 
+    if filters.staff_user_id is not None:
+        statement = statement.where(Booking.user_id == filters.staff_user_id)
+
+    sorting_out = _sort_out_condition(filters)
+    if sorting_out is not None:
+        statement = statement.where(sorting_out)
+
     pattern = _substring_pattern(filters.q)
     if pattern is not None:
         # Correlated EXISTS, never a join: `total` counts this statement.
@@ -217,6 +234,21 @@ def apply_booking_filters(
         statement = statement.where(Booking.scheduled_date <= filters.date_to)
 
     return statement
+
+
+def _sort_out_condition(filters: BookingFilters) -> ColumnElement[bool] | None:
+    wants_reason = filters.reason is not None or filters.to_sort_out is True
+    if not wants_reason and filters.to_sort_out is None:
+        return None
+    if filters.now is None:
+        raise ValueError("BookingFilters.now is required to filter Bookings to sort out")
+
+    if wants_reason:
+        condition = sort_out_predicate(filters.now, filters.reason)
+    else:
+        condition = not_(sort_out_predicate(filters.now))
+
+    return condition
 
 
 def _substring_pattern(raw: str | None) -> str | None:

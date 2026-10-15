@@ -36,6 +36,7 @@ from app.schemas.booking import (
     subject_ref,
 )
 from app.services import conversation_service
+from app.services.sort_out_service import sort_out_reasons
 
 type _LevelKey = tuple[uuid.UUID, uuid.UUID]
 
@@ -45,6 +46,7 @@ def booking_summaries(
 ) -> list[BookingSummary]:
     """Needs `child`, `staff`, `subject` and `home` loaded on each row."""
     levels = _subject_levels(db, rows)
+    reasons = sort_out_reasons(db, [row.id for row in rows], now)
 
     return [
         BookingSummary(
@@ -61,6 +63,7 @@ def booking_summaries(
             status=row.status,
             notes=row.notes,
             home=home_summary_ref(row.home),
+            sort_out_reasons=reasons[row.id],
             updated_at=row.updated_at,
         )
         for row in rows
@@ -97,6 +100,7 @@ def booking_detail(
             else NamedRef(id=row.booked_by_guardian.id, name=row.booked_by_guardian.name)
         ),
         guardians=_guardians(db, child_id=row.child_id, shows_conversations=shows_conversations),
+        sort_out_reasons=sort_out_reasons(db, [row.id], now)[row.id],
         updated_at=row.updated_at,
     )
 

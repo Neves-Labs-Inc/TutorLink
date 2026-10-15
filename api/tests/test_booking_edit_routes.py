@@ -501,6 +501,53 @@ def test_a_booking_whose_staff_member_was_archived_can_still_be_rescheduled(
     assert row.start_time == datetime.time(10, 0)
 
 
+def test_moving_a_booking_off_its_staff_members_time_off_clears_the_clash(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family, start=datetime.time(9, 0), end=datetime.time(10, 0))
+    _make_exception(
+        db,
+        family,
+        status=ExceptionStatus.APPROVED,
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+    )
+    user = _make_user(db)
+
+    before = api.get(f"/api/bookings/{booking.id}", headers=_auth(user)).json()
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert before["sort_out_reasons"] == ["time_off_clash"]
+    assert response.status_code == 200
+    assert response.json()["sort_out_reasons"] == []
+
+
+def test_moving_a_booking_from_archived_staff_to_active_staff_clears_it(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    family.tutor.user.is_archived = True
+    db.flush()
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    kept = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+    moved = _put(
+        api,
+        user,
+        booking,
+        family,
+        user_id=str(admin.id),
+        availability_id=None,
+        start_time=TWELVE,
+        end_time=ONE_PM,
+    )
+
+    assert kept.json()["sort_out_reasons"] == ["archived_staff"]
+    assert moved.status_code == 200
+    assert moved.json()["sort_out_reasons"] == []
+
+
 # --- what an edit keeps: the booking guardian is neither accepted nor re-judged -------------
 
 

@@ -1,4 +1,5 @@
 import datetime
+from collections.abc import Callable
 import uuid
 from dataclasses import dataclass
 
@@ -291,11 +292,15 @@ def test_paging_over_a_tied_group_repeats_and_drops_nothing(
     assert len(seen) == len(bookings)
 
 
-def test_an_item_is_the_fourteen_field_booking_summary(
-    api: TestClient, db: Session, family: Family
+def test_an_item_is_the_fifteen_field_booking_summary(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
 ) -> None:
     """`start_time` renders as `09:00:00`, matching `ExceptionRead`, where `docs/api-design.md`
     shows `09:00` — a reported divergence, not an accident."""
+    freeze_business_clock(datetime.datetime(2026, 9, 8, 9, 0))
     admin = _make_user(db)
     db.add(
         ChildSubjectLevel(
@@ -323,6 +328,7 @@ def test_an_item_is_the_fourteen_field_booking_summary(
         "status",
         "notes",
         "home",
+        "sort_out_reasons",
         "updated_at",
     }
     assert item["child"] == {"id": str(family.child.id), "name": family.child.name}
@@ -343,6 +349,8 @@ def test_an_item_is_the_fourteen_field_booking_summary(
     assert item["end_time"] == "10:00:00"
     assert item["status"] == "confirmed"
     assert item["notes"] is None
+    # The day after its date, still confirmed.
+    assert item["sort_out_reasons"] == ["not_completed"]
 
 
 def test_an_unknown_client_id_is_404(api: TestClient, db: Session) -> None:

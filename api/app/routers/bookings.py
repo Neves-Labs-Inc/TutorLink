@@ -25,8 +25,10 @@ from app.services.booking_service import (
     get_booking,
     list_bookings,
 )
+from app.services.sort_out_service import SortOutReason, sort_out_staff_limit
 
 BOOKING_NOT_FOUND_ERROR = "Booking not found"
+REASON_NEEDS_SORT_OUT_ERROR = "reason can only be used with to_sort_out=true"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -36,6 +38,7 @@ router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 @router.get("", response_model=BookingPage)
 def list_bookings_route(
     scope: TutorScope,
+    user: Principal,
     db: DbSession,
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     subject_id: uuid.UUID | None = None,
@@ -44,11 +47,18 @@ def list_bookings_route(
     location: BookingLocation | None = None,
     user_ids: Annotated[list[uuid.UUID] | None, Query(alias="user_id")] = None,
     q: str | None = None,
+    to_sort_out: bool | None = None,
+    reason: SortOutReason | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> BookingPage:
+    if to_sort_out is False and reason is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, REASON_NEEDS_SORT_OUT_ERROR)
+
+    now = clock.business_now()
+    is_sorting_out = to_sort_out is True or reason is not None
     # `?tutor_id=` here is the `TutorScope` dependency's own query parameter
     # (`get_tutor_scope`, `dependencies.py:258-261`), not redeclared here: a tutor sees only
     # their own bookings, and redeclaring it would shadow the dependency's parameter and break
@@ -64,6 +74,10 @@ def list_bookings_route(
         location=location,
         user_ids=tuple(user_ids or ()),
         q=q,
+        to_sort_out=to_sort_out,
+        reason=reason,
+        now=now,
+        staff_user_id=sort_out_staff_limit(user.role, user.id) if is_sorting_out else None,
     )
 
     bookings, total = list_bookings(
@@ -77,7 +91,7 @@ def list_bookings_route(
     counts = count_bookings_by_kind(db, tutor_id=scope.tutor_id, filters=filters)
 
     return BookingPage(
-        items=booking_summaries(db, bookings, now=clock.business_now()),
+        items=booking_summaries(db, bookings, now=now),
         total=total,
         page=page,
         page_size=page_size,

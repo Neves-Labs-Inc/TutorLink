@@ -506,7 +506,8 @@ def _find_clashes(db: Session, windows: Sequence[_Window]) -> list[list[Clash]]:
 
 
 def _clashes_with(window: _Window, booking: Booking) -> bool:
-    # The same bare overlap, no gap padding, as rule 4's `_exception_blocks`.
+    # The same bare overlap, no gap padding, as rule 4's `_exception_blocks`, and the same rule
+    # as `sort_out_service.time_off_clash_predicate` in SQL: keep the two in step.
     if booking.user_id != window.user_id:
         return False
     if not window.start_date <= booking.scheduled_date <= window.end_date:

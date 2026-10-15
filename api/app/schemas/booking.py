@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.schemas.common import Page
 
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.services.sort_out_service import SortOutReason
 
 if TYPE_CHECKING:
     from app.models.home import Home
@@ -66,6 +67,8 @@ class BookingSummary(BaseModel):
     notes: str | None
     # None when the session is In office; an archived Home is still named.
     home: HomeSummaryRef | None
+    # Why the Booking is to sort out, in `SORT_OUT_REASONS` order; [] when it isn't.
+    sort_out_reasons: list[SortOutReason]
     updated_at: datetime.datetime
 
 
@@ -112,6 +115,7 @@ class BookingDetail(BaseModel):
     home: HomeRef | None
     booked_by_guardian: NamedRef | None
     guardians: list[BookingGuardian]
+    sort_out_reasons: list[SortOutReason]
     updated_at: datetime.datetime
 
 

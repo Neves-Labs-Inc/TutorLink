@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.dependencies import ADMIN_REQUIRED_ERROR
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import UserRole
@@ -963,13 +964,34 @@ def test_no_token_is_401_not_403(api: TestClient, db: Session) -> None:
     assert [response.status_code for response in (listed, read, created)] == [401, 401, 401]
 
 
+def test_a_manager_is_refused_on_every_write_including_their_own_profile(
+    api: TestClient, db: Session
+) -> None:
+    """Staff writes are Admin-only (#208): a Manager reads the Tutors page and writes nothing
+    on it, not even their own profile."""
+    own = _make_tutor(db)
+    manager = _make_user(db, role=UserRole.MANAGER, tutor_id=own.id)
+    profile = _make_tutor(db)
+    headers = _auth(manager)
+    payload = _payload()
+
+    created = api.post("/api/tutors", headers=headers, json=payload)
+    patched_other = api.patch(f"/api/tutors/{profile.id}", headers=headers, json={"bio": "x"})
+    patched_own = api.patch(f"/api/tutors/{own.id}", headers=headers, json={"bio": "x"})
+
+    for response in (created, patched_other, patched_own):
+        assert response.status_code == 403
+        assert response.json() == {"detail": ADMIN_REQUIRED_ERROR}
+    assert db.scalar(select(User).where(User.email == payload["email"])) is None
+    db.refresh(profile)
+    db.refresh(own)
+    assert (profile.bio, own.bio) == (None, None)
+
+
 @pytest.mark.parametrize(
     ("actor_role", "target_role", "expected"),
     [
-        (UserRole.MANAGER, UserRole.TUTOR, 200),
-        (UserRole.MANAGER, UserRole.MANAGER, 403),
-        (UserRole.MANAGER, UserRole.ADMIN, 403),
-        (UserRole.MANAGER, UserRole.DEVELOPER, 403),
+        (UserRole.ADMIN, UserRole.TUTOR, 200),
         (UserRole.ADMIN, UserRole.MANAGER, 200),
         (UserRole.ADMIN, UserRole.ADMIN, 403),
         (UserRole.ADMIN, UserRole.DEVELOPER, 403),
@@ -981,10 +1003,8 @@ def test_no_token_is_401_not_403(api: TestClient, db: Session) -> None:
 def test_writing_a_profile_is_writing_its_account(
     api: TestClient, db: Session, actor_role: UserRole, target_role: UserRole, expected: int
 ) -> None:
-    """A Manager may write Tutors only; an Admin anyone but a Developer or a peer Admin (#173);
-    a Developer anyone.
-    The same boundary `/api/users` keeps, seen from the Tutors page — otherwise a Manager could
-    rewrite or disable the login of a peer, an Admin or a Developer who kept a profile."""
+    """An Admin may write anyone but a Developer or a peer Admin (#173); a Developer anyone.
+    The same boundary `/api/users` keeps, seen from the Tutors page."""
     actor = _make_user(db, role=actor_role)
     profile = _make_tutor(db)
     profile.user.role = target_role
@@ -1062,72 +1082,6 @@ def _live_links(db: Session, user: User) -> list[PasswordLink]:
 
 def _invite(db: Session, user: User) -> None:
     issue_link(db, user=user, purpose=PasswordLinkPurpose.INVITE, now=datetime.now(UTC))
-
-
-def test_a_manager_may_not_change_a_tutors_login_email(api: TestClient, db: Session) -> None:
-    """Closing the takeover hole: a Manager could otherwise point a Tutor's login at an address
-    they control and reset the password from there."""
-    manager = _make_user(db, role=UserRole.MANAGER)
-    profile = _make_tutor(db)
-    before = profile.user.email
-
-    response = api.patch(
-        f"/api/tutors/{profile.id}",
-        headers=_auth(manager),
-        json={"email": "taken.over@example.com", "bio": "Rewritten"},
-    )
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Not permitted to change that person's account"
-    db.refresh(profile)
-    db.refresh(profile.user)
-    assert (profile.user.email, profile.bio) == (before, None)
-
-
-def test_a_manager_may_still_edit_a_tutors_name_phone_and_bio(api: TestClient, db: Session) -> None:
-    manager = _make_user(db, role=UserRole.MANAGER)
-    profile = _make_tutor(db)
-
-    response = api.patch(
-        f"/api/tutors/{profile.id}",
-        headers=_auth(manager),
-        json={"name": "Renamed Tutor", "phone_number": "+12025550190", "bio": "Rewritten"},
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert (body["name"], body["phone_number"], body["bio"]) == (
-        "Renamed Tutor",
-        "+12025550190",
-        "Rewritten",
-    )
-
-
-def test_a_manager_echoing_the_stored_email_is_not_changing_it(
-    api: TestClient, db: Session
-) -> None:
-    """The dashboard form always sends the stored address back; only a different one is the
-    Admin-only write."""
-    manager = _make_user(db, role=UserRole.MANAGER)
-    profile = _make_tutor(db)
-    stored = profile.user.email
-
-    echoed = api.patch(
-        f"/api/tutors/{profile.id}",
-        headers=_auth(manager),
-        json={"email": stored.upper(), "bio": "Rewritten"},
-    )
-    changed = api.patch(
-        f"/api/tutors/{profile.id}",
-        headers=_auth(manager),
-        json={"email": "taken.over@example.com", "bio": "Again"},
-    )
-
-    assert (echoed.status_code, changed.status_code) == (200, 403)
-    assert echoed.json()["email"] == stored
-    db.refresh(profile)
-    db.refresh(profile.user)
-    assert (profile.user.email, profile.bio) == (stored, "Rewritten")
 
 
 @pytest.mark.parametrize("actor_role", [UserRole.ADMIN, UserRole.DEVELOPER])

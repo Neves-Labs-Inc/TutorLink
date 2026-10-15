@@ -9,13 +9,13 @@ would otherwise 500 the request (`dependencies.py:237-255`).
 row's owner is its own id, so the check is exact — and doing it first is what makes a tutor
 asking for an id that does not exist get 403 rather than a 404 that discloses non-existence.
 
-The write routes take `OfficePrincipal` and deliberately **not** `TutorScope`: they are
-Office-only, they have no filter to apply, and an unread scope would turn every one of them into
-a 500 the moment it touched `tutors`. A profile edit is an account edit (one record per person),
-so `PATCH` also applies `tutor_service.assert_may_write_person`: a Manager may write Tutors
-only, a Developer's account is a Developer's to write, and so is another Admin's (#173).
-Archiving a Staff member is `POST /api/archive` with `type: "staff"`. A login email is narrower
-still: only an Admin or Developer may change one, so a Manager's `PATCH` carrying `email` is 403.
+The write routes take `AdminPrincipal` and deliberately **not** `TutorScope`: Staff writes are
+Admin-only (#208), so a Manager is 403 on every one of them, their own profile included; they
+have no filter to apply, and an unread scope would turn every one of them into a 500 the moment
+it touched `tutors`. A profile edit is an account edit (one record per person), so `PATCH` also
+applies `tutor_service.assert_may_write_person`: a Developer's account is a Developer's to
+write, and so is another Admin's (#173). Archiving a Staff member is `POST /api/archive` with
+`type: "staff"`.
 
 `POST /{tutor_id}/subjects` and its `DELETE` live in `routers/tutor_subjects.py`, which mounts
 them on this same prefix.
@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
+from app.dependencies import AdminPrincipal, Principal, TutorScope, assert_can_access_tutor
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE
 from app.models.tutor import Tutor
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
@@ -131,7 +131,7 @@ def read_one(tutor_id: uuid.UUID, user: Principal, db: DbSession) -> TutorRead:
 
 
 @router.post("", response_model=TutorRead, status_code=status.HTTP_201_CREATED)
-def create(payload: TutorCreate, user: OfficePrincipal, db: DbSession) -> TutorRead:
+def create(payload: TutorCreate, user: AdminPrincipal, db: DbSession) -> TutorRead:
     try:
         created = create_tutor(
             db,
@@ -159,7 +159,7 @@ def create(payload: TutorCreate, user: OfficePrincipal, db: DbSession) -> TutorR
 
 @router.patch("/{tutor_id}", response_model=TutorRead)
 def update(
-    tutor_id: uuid.UUID, payload: TutorUpdate, user: OfficePrincipal, db: DbSession
+    tutor_id: uuid.UUID, payload: TutorUpdate, user: AdminPrincipal, db: DbSession
 ) -> TutorRead:
     try:
         updated = update_tutor(

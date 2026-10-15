@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.dependencies import ADMIN_REQUIRED_ERROR
 from app.models.enums import UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -361,6 +362,33 @@ def test_a_tutor_token_is_refused_on_both_routes(api: TestClient, db: Session) -
 
     assert post_response.status_code == 403
     assert delete_response.status_code == 403
+
+
+def test_a_manager_is_refused_on_both_routes_and_nothing_changes(
+    api: TestClient, db: Session
+) -> None:
+    """Staff writes are Admin-only (#208)."""
+    manager = _make_user(db, role=UserRole.MANAGER)
+    tutor = _make_tutor(db)
+    kept = _make_subject(db)
+    added = _make_subject(db)
+    db.add(TutorSubject(tutor_id=tutor.id, subject_id=kept.id, max_grade_level=8))
+    db.flush()
+    headers = _auth(manager)
+
+    post_response = api.post(
+        f"/api/tutors/{tutor.id}/subjects",
+        headers=headers,
+        json={"subject_id": str(added.id), "max_grade_level": 8},
+    )
+    delete_response = api.delete(f"/api/tutors/{tutor.id}/subjects/{kept.id}", headers=headers)
+
+    for response in (post_response, delete_response):
+        assert response.status_code == 403
+        assert response.json() == {"detail": ADMIN_REQUIRED_ERROR}
+    db.expire_all()
+    held = db.scalars(select(TutorSubject.subject_id).where(TutorSubject.tutor_id == tutor.id))
+    assert set(held) == {kept.id}
 
 
 def test_no_token_is_401(api: TestClient, db: Session) -> None:

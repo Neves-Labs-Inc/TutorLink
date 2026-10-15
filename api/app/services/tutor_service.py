@@ -65,8 +65,11 @@ class TutorUniqueViolation(TutorServiceError):
 
 
 class TutorAccountForbidden(TutorServiceError):
-    """The actor may not write this person's account through their profile, or a Manager
-    tried to change a login email."""
+    """The actor may not write this person's account through their profile."""
+
+
+class TutorDeveloperForbidden(TutorAccountForbidden):
+    """A non-developer writing to a developer's profile; only a developer may (#173)."""
 
 
 class TutorPeerAdminForbidden(TutorAccountForbidden):
@@ -77,23 +80,16 @@ def assert_may_write_person(*, actor_role: UserRole, actor_id: uuid.UUID, tutor:
     """The profile's person is also a login, so editing a profile edits an account.
 
     `/api/users` is admin-only and keeps Developers out of an Admin's reach; this is the same
-    boundary seen from the Tutors page. A Manager may write Tutors and nobody else (not a peer
-    Manager, not an Admin or Developer who kept a profile after promotion); an Admin may write
-    anyone but a Developer or another Admin; a Developer may write anyone. The peer-admin rule
-    is `user_service`'s (#173): an Admin who kept a profile after promotion is reachable here,
-    and an email change on it plus the public forgot-password flow would take the account over.
-
-    A login email is narrower still: it is an Admin's to change (answers 04 #11), which
-    `update_tutor` checks on top of this, since the address a password link goes to is the
-    account.
+    boundary seen from the Tutors page, whose writes are Admin-only too (#208). An Admin may
+    write anyone but a Developer or another Admin; a Developer may write anyone. The peer-admin
+    rule is `user_service`'s (#173): an Admin who kept a profile after promotion is reachable
+    here, and an email change on it plus the public forgot-password flow would take the account
+    over.
     """
     target = tutor.user.role
 
-    if actor_role is UserRole.MANAGER and target is not UserRole.TUTOR:
-        raise TutorAccountForbidden
-
     if target is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
-        raise TutorAccountForbidden
+        raise TutorDeveloperForbidden
 
     if actor_role is UserRole.ADMIN and target is UserRole.ADMIN and tutor.user_id != actor_id:
         raise TutorPeerAdminForbidden
@@ -303,11 +299,9 @@ def update_tutor(
     name clears `name_is_default`. `phone_number` and `bio` are the profile's. The actor must
     be allowed to write this person (`assert_may_write_person`), checked before any edit.
 
-    A login email is an Admin's to change: a Manager sending a *different* `email` is refused
-    (`TutorAccountForbidden`), even for a Tutor, so a Manager cannot point a login at an
-    address they control. Echoing the stored address back, in any casing, is not a change: the
-    dashboard form always sends it. Changing the address revokes every live password link the
-    person holds, dated `now`, since each was sent to the old one.
+    Echoing the stored address back, in any casing, is not a change: the dashboard form always
+    sends it. Changing the address revokes every live password link the person holds, dated
+    `now`, since each was sent to the old one.
 
     The duplicate checks exclude this person, so a `PATCH` echoing back the email or number
     already stored — in any format, since both sides are normalised first — is a no-op on that
@@ -322,11 +316,6 @@ def update_tutor(
 
     normalized_email = email.strip().lower() if email is not None else None
     email_changed = normalized_email is not None and normalized_email != tutor.user.email
-
-    # Refused before any other check: the dashboard form always echoes the stored address, so
-    # only a real change is the Admin-only write.
-    if email_changed and actor_role is UserRole.MANAGER:
-        raise TutorAccountForbidden
 
     cleaned_name = normalize_name(name) if name is not None else None
     canonical_phone_number: str | None = None

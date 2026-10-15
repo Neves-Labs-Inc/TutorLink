@@ -13,6 +13,13 @@ transaction and surfaces `IntegrityError` immediately.
 savepoint around the write is what leaves the `Session` usable when it fires. Both write paths
 carry both layers.
 
+**Who may write** (#208): the slot's owner, any role, or an Admin role within the account
+boundary `tutor_service.assert_may_write_person` keeps (not a Developer's profile unless a
+Developer, not a peer Admin's). Each write takes the caller as `actor` and checks it here, so
+the rule has one home. `create_availability` refuses a non-Admin naming someone else's profile
+before the lookup, so an unknown id is 403 for them, not a 404 oracle; `update_availability`
+and `deactivate_availability` load the slot first and check its profile.
+
 `deactivate_availability` can only ever be a soft delete: `bookings.availability_id` is a
 `NOT NULL` foreign key (`models/booking.py:83-85`), so a hard delete would either fail on that
 constraint or orphan a booking's history. Deactivating an already-inactive row is a no-op, not
@@ -20,15 +27,20 @@ a conflict.
 """
 
 import datetime
+import logging
 import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.dependencies import ADMIN_ROLES, CurrentUser
 from app.models.availability import TutorAvailability
 from app.models.enums import AvailabilityMode
 from app.models.tutor import Tutor
+from app.services.tutor_service import TutorAccountForbidden, assert_may_write_person
+
+logger = logging.getLogger(__name__)
 
 
 class AvailabilityServiceError(Exception):
@@ -49,6 +61,10 @@ class AvailabilitySlotTaken(AvailabilityServiceError):
 
 class InvalidTimeRange(AvailabilityServiceError):
     """`end_time` is not after `start_time`."""
+
+
+class NotYourAvailability(AvailabilityServiceError):
+    """A caller without an Admin role writing someone else's Availability."""
 
 
 def list_availability(
@@ -80,15 +96,22 @@ def list_availability(
 def create_availability(
     db: Session,
     *,
+    actor: CurrentUser,
     tutor_id: uuid.UUID,
     day_of_week: int,
     start_time: datetime.time,
     end_time: datetime.time,
     mode: AvailabilityMode,
 ) -> TutorAvailability:
-    """Add a recurring weekly slot for `tutor_id`."""
-    if db.get(Tutor, tutor_id) is None:
+    """Add a recurring weekly slot for `tutor_id`. Raises `NotYourAvailability` before the
+    lookup, `TutorNotFound` after it, then the account boundary's `TutorAccountForbidden`."""
+    _assert_may_reach(actor, tutor_id=tutor_id)
+
+    tutor = db.get(Tutor, tutor_id)
+    if tutor is None:
         raise TutorNotFound(f"no tutor {tutor_id}")
+
+    _assert_within_account_boundary(actor, tutor=tutor)
 
     if end_time <= start_time:
         raise InvalidTimeRange("end_time must be after start_time")
@@ -123,6 +146,7 @@ def create_availability(
 def update_availability(
     db: Session,
     *,
+    actor: CurrentUser,
     availability_id: uuid.UUID,
     start_time: datetime.time | None,
     end_time: datetime.time | None,
@@ -131,7 +155,7 @@ def update_availability(
 ) -> TutorAvailability:
     """Change a slot's time window or active status. `day_of_week` cannot move here — moving a
     slot to a different day is a delete plus a create, not an edit."""
-    row = _availability(db, availability_id=availability_id)
+    row = _writable_availability(db, actor, availability_id=availability_id)
 
     merged_start = start_time if start_time is not None else row.start_time
     merged_end = end_time if end_time is not None else row.end_time
@@ -174,10 +198,12 @@ def update_availability(
     return row
 
 
-def deactivate_availability(db: Session, *, availability_id: uuid.UUID) -> TutorAvailability:
+def deactivate_availability(
+    db: Session, *, actor: CurrentUser, availability_id: uuid.UUID
+) -> TutorAvailability:
     """Soft-delete a slot. The only delete there is: `bookings.availability_id` is a `NOT NULL`
     foreign key, so a hard delete would either fail on it or orphan booking history."""
-    row = _availability(db, availability_id=availability_id)
+    row = _writable_availability(db, actor, availability_id=availability_id)
     row.is_active = False
     db.flush()
 
@@ -211,3 +237,37 @@ def _availability(db: Session, *, availability_id: uuid.UUID) -> TutorAvailabili
         raise AvailabilityNotFound(f"no availability {availability_id}")
 
     return row
+
+
+def _writable_availability(
+    db: Session, actor: CurrentUser, *, availability_id: uuid.UUID
+) -> TutorAvailability:
+    # Loaded first, so an unknown slot is a 404 for every role.
+    row = _availability(db, availability_id=availability_id)
+    _assert_may_reach(actor, tutor_id=row.tutor_id)
+    _assert_within_account_boundary(actor, tutor=row.tutor)
+
+    return row
+
+
+def _assert_may_reach(actor: CurrentUser, *, tutor_id: uuid.UUID) -> None:
+    """The profile's owner, or an Admin role. Needs no lookup, so it runs before any."""
+    if tutor_id != actor.tutor_id and actor.role not in ADMIN_ROLES:
+        logger.warning(
+            "availability_service: actor %s refused tutor %s's slots", actor.id, tutor_id
+        )
+        raise NotYourAvailability(f"tutor {tutor_id} is not {actor.id}'s")
+
+
+def _assert_within_account_boundary(actor: CurrentUser, *, tutor: Tutor) -> None:
+    # One's own slots are always one's own; another person's are as writable as their account.
+    if tutor.id == actor.tutor_id:
+        return
+
+    try:
+        assert_may_write_person(actor_role=actor.role, actor_id=actor.id, tutor=tutor)
+    except TutorAccountForbidden:
+        logger.warning(
+            "availability_service: actor %s refused tutor %s's slots", actor.id, tutor.id
+        )
+        raise

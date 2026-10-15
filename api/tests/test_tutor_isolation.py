@@ -49,6 +49,7 @@ from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
+from app.routers.availability import NOT_YOUR_AVAILABILITY_ERROR
 from app.routers.booking_status import OFFICE_ONLY_TRANSITION_ERROR
 from app.routers.exceptions import OTHERS_TIME_OFF_ERROR
 from app.security import create_access_token, hash_password
@@ -351,12 +352,25 @@ def test_a_tutor_cancels_their_own_pending_request_and_nothing_else(
     ("method", "template", "body", "detail"),
     [
         ("GET", "/api/tutors/{tutor_id}/availability", None, TUTOR_SCOPE_ERROR),
+        (
+            "POST",
+            "/api/tutors/{tutor_id}/availability",
+            {"day_of_week": 3, "start_time": "09:00:00", "end_time": "12:00:00"},
+            NOT_YOUR_AVAILABILITY_ERROR,
+        ),
         ("GET", "/api/users/{user_id}/exceptions", None, OTHERS_TIME_OFF_ERROR),
         ("GET", "/api/users/{user_id}/exceptions?" + WINDOW, None, OTHERS_TIME_OFF_ERROR),
         ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY, OTHERS_TIME_OFF_ERROR),
         ("GET", "/api/bookings?tutor_id={tutor_id}", None, TUTOR_SCOPE_ERROR),
     ],
-    ids=["availability", "exceptions", "exceptions-windowed", "create-exception", "bookings"],
+    ids=[
+        "availability",
+        "create-availability",
+        "exceptions",
+        "exceptions-windowed",
+        "create-exception",
+        "bookings",
+    ],
 )
 def test_a_tutor_naming_a_tutor_id_that_is_not_theirs_is_403(
     api: TestClient,
@@ -437,19 +451,6 @@ def test_a_tutor_cancelling_another_tutors_pending_request_is_403(
             ADMIN_REQUIRED_ERROR,
         ),
         (
-            "POST",
-            "/api/tutors/{tutor_id}/availability",
-            {"day_of_week": 3, "start_time": "09:00:00", "end_time": "12:00:00"},
-            OFFICE_REQUIRED_ERROR,
-        ),
-        (
-            "PATCH",
-            "/api/availability/{slot_id}",
-            {"start_time": "10:00:00", "end_time": "11:00:00"},
-            OFFICE_REQUIRED_ERROR,
-        ),
-        ("DELETE", "/api/availability/{slot_id}", None, OFFICE_REQUIRED_ERROR),
-        (
             "PATCH",
             "/api/bookings/{booking_id}",
             {"status": "cancelled"},
@@ -459,9 +460,6 @@ def test_a_tutor_cancelling_another_tutors_pending_request_is_403(
     ids=[
         "decide-own-pending",
         "decide-another-tutors-pending",
-        "create-own-availability",
-        "edit-own-availability",
-        "deactivate-own-availability",
         "change-own-bookings-status",
     ],
 )
@@ -474,9 +472,8 @@ def test_a_tutor_may_not_write_even_to_their_own_rows(
     body: dict[str, object] | None,
     detail: str,
 ) -> None:
-    """Approving one's own time off is the rule the status column exists to enforce, and #24
-    widened the refusal to everything else a tutor owns: availability is admin-managed even on
-    one's own profile."""
+    """Approving one's own time off is the rule the status column exists to enforce. A tutor's
+    own Availability is the exception: theirs to write (#208)."""
     response = api.request(
         method, template.format(**_targets(world)), json=body, headers=world.tutor_headers
     )
@@ -564,6 +561,12 @@ def test_a_tutor_may_read_every_subject_including_the_other_tutors(
     ("method", "template", "body", "detail"),
     [
         ("GET", "/api/tutors/{tutor_id}/availability", None, TUTOR_SCOPE_ERROR),
+        (
+            "POST",
+            "/api/tutors/{tutor_id}/availability",
+            {"day_of_week": 3, "start_time": "09:00:00", "end_time": "12:00:00"},
+            NOT_YOUR_AVAILABILITY_ERROR,
+        ),
         ("GET", "/api/users/{user_id}/exceptions", None, OTHERS_TIME_OFF_ERROR),
         ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY, OTHERS_TIME_OFF_ERROR),
         ("GET", "/api/bookings", None, TUTOR_SCOPE_ERROR),
@@ -573,6 +576,7 @@ def test_a_tutor_may_read_every_subject_including_the_other_tutors(
     ],
     ids=[
         "availability",
+        "create-availability",
         "exceptions",
         "create-exception",
         "bookings",

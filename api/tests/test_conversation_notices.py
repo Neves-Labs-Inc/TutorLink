@@ -810,6 +810,8 @@ def test_me_returns_the_staff_members_own_account(
         "email": staff.email,
         "role": role.value,
         "name": STAFF_NAME,
+        "tutor_id": None if staff.profile_id is None else str(staff.profile_id),
+        "office_phone": None,
     }
 
 
@@ -824,6 +826,8 @@ def test_me_is_open_to_a_tutor(api: TestClient, db: Session) -> None:
         "email": tutor.email,
         "role": "tutor",
         "name": STAFF_NAME,
+        "tutor_id": str(tutor.profile_id),
+        "office_phone": None,
     }
 
 

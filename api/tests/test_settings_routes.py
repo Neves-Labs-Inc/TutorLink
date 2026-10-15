@@ -61,6 +61,9 @@ from app.services.rate_limit_service import IP_MAX_ATTEMPTS_SETTING
 
 BOOKING_DATE = datetime.date(2026, 9, 7)
 BUSINESS_TIMEZONE = "business_timezone"
+OFFICE_PHONE = "office_phone"
+OFFICE_PHONE_NUMBER = "+15551234567"
+OFFICE_PHONE_INVALID_ERROR = "office_phone must be a phone number in E.164 form, like +15551234567"
 PASSWORD = "correct horse battery staple"
 SETTINGS_URL = "/api/settings"
 
@@ -529,6 +532,76 @@ def test_a_developer_can_set_a_reminder_template_id_and_blank_it_again(
     }
     assert blank_response.status_code == 200
     assert _item(blank_response.json(), key)["value"] == ""
+
+
+# --- office phone ----------------------------------------------------------------------------
+
+
+def test_an_admin_sees_the_office_phone_as_a_blank_editable_string(
+    api: TestClient, db: Session
+) -> None:
+    body = api.get(SETTINGS_URL, headers=_auth(_make_user(db))).json()
+
+    assert _item(body, OFFICE_PHONE) == {
+        "key": OFFICE_PHONE,
+        "value": "",
+        "value_type": "string",
+        "is_developer_only": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "value", ["+15551234567", " +15551234567 "], ids=["exact", "padded with spaces"]
+)
+def test_an_admin_saves_an_e164_office_phone_stripped(
+    api: TestClient, db: Session, value: str
+) -> None:
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(_make_user(db)), json=_updates(OFFICE_PHONE, value)
+    )
+
+    assert response.status_code == 200
+    assert _item(response.json(), OFFICE_PHONE)["value"] == OFFICE_PHONE_NUMBER
+
+
+@pytest.mark.parametrize("value", ["", "   "], ids=["empty", "whitespace"])
+def test_a_blank_office_phone_clears_it(api: TestClient, db: Session, value: str) -> None:
+    headers = _auth(_make_user(db))
+    api.patch(SETTINGS_URL, headers=headers, json=_updates(OFFICE_PHONE, OFFICE_PHONE_NUMBER))
+
+    response = api.patch(SETTINGS_URL, headers=headers, json=_updates(OFFICE_PHONE, value))
+
+    assert response.status_code == 200
+    assert _item(response.json(), OFFICE_PHONE)["value"] == ""
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["555-123-4567", "+1 555 123 4567", "+0123", "+1555", "abc"],
+    ids=["no plus", "inner spaces", "leading zero", "invalid number", "letters"],
+)
+def test_an_office_phone_not_in_e164_form_is_refused_with_the_whole_batch(
+    api: TestClient, db: Session, value: str
+) -> None:
+    other_key = _unique_key("batched")
+    other = _make_setting(db, key=other_key, value="1")
+    payload = {"updates": [{"key": other_key, "value": "2"}, {"key": OFFICE_PHONE, "value": value}]}
+
+    response = api.patch(SETTINGS_URL, headers=_auth(_make_user(db)), json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": OFFICE_PHONE_INVALID_ERROR}
+    assert _stored_value(db, other) == "1"
+
+
+def test_a_manager_may_not_set_the_office_phone(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER, tutor_id=_make_tutor(db).id)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(manager), json=_updates(OFFICE_PHONE, OFFICE_PHONE_NUMBER)
+    )
+
+    assert response.status_code == 403
 
 
 def _make_tutor(db: Session) -> Tutor:

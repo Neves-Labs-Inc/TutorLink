@@ -43,6 +43,10 @@ class MeRead(BaseModel):
     email: str
     role: UserRole
     name: str
+    # The caller's own profile id, or null for a user with none.
+    tutor_id: uuid.UUID | None
+    # The office's E.164 number, or null while an Admin has not set one. Same for every role.
+    office_phone: str | None
 
 
 class MeUpdate(BaseModel):

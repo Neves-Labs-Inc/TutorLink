@@ -76,10 +76,11 @@ owns the transaction boundary.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import phonenumbers
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -110,6 +111,10 @@ EMAIL_TEMPLATE_SETTINGS = {
 }
 # Migration 0035's row: the colour both emails use.
 EMAIL_BRAND_COLOR_SETTING = "email_brand_color"
+# Migration 0039's row: the office number every Staff member reads through `GET /api/me`.
+OFFICE_PHONE_SETTING = "office_phone"
+OFFICE_PHONE_INVALID_ERROR = "office_phone must be a phone number in E.164 form, like +15551234567"
+_E164_PATTERN = re.compile(r"\+[1-9][0-9]{1,14}")
 
 
 @dataclass(frozen=True)
@@ -246,6 +251,18 @@ class EmailTemplateSettingInvalid(SettingValueInvalid):
 
     Carries the rule's message, which the router returns as-is: unlike a type error, the Admin
     needs to know which rule they broke to fix the template.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class SettingRuleBroken(SettingValueInvalid):
+    """A string row was given a value its key's rule in `_STRING_RULES` refuses.
+
+    Carries the rule's message, which the router returns as-is, for the same reason as
+    `EmailTemplateSettingInvalid`: the Admin needs to know what a valid value looks like.
     """
 
     def __init__(self, message: str) -> None:
@@ -407,6 +424,13 @@ def read_email_brand_color(db: Session) -> str:
     return get_str_setting(db, key=EMAIL_BRAND_COLOR_SETTING)
 
 
+def read_office_phone(db: Session) -> str | None:
+    """The office's E.164 phone number, or `None` while an Admin has not set one."""
+    phone = get_str_setting(db, key=OFFICE_PHONE_SETTING)
+
+    return phone or None
+
+
 def has_any_booking(db: Session) -> bool:
     """Whether any booking row exists, in any status; what locks `business_timezone`."""
     return db.scalar(select(Booking.id).limit(1)) is not None
@@ -447,7 +471,8 @@ def _checked_string_value(update: SettingUpdate) -> str:
 
     Stripped because every string row is pasted in by hand (a zone name, a Twilio template id),
     and a trailing space would make a template id that looks set fail at send time.
-    Only `business_timezone` has a validator here; the template-id rows accept anything, and
+    Keys in `_STRING_RULES` get their own rule, which does its own stripping. Otherwise only
+    `business_timezone` has a validator here; the template-id rows accept anything, and
     blank is their documented "not approved" value. Email template rows are stored as written:
     their whitespace is the email's layout, and `_check_email_templates` validates them. The
     brand colour is not stripped either: the spec refuses `#74C8C9 ` rather than repairing it.
@@ -461,12 +486,50 @@ def _checked_string_value(update: SettingUpdate) -> str:
         except EmailTemplateInvalid as exc:
             raise EmailTemplateSettingInvalid(exc.message) from exc
 
+    rule = _STRING_RULES.get(update.key)
+
+    if rule is not None:
+        return rule(update.value)
+
     value = update.value.strip()
 
     if update.key == BUSINESS_TIMEZONE_SETTING and not _is_known_zone(value):
         raise BusinessTimezoneUnknown(f"system setting {update.key!r} rejects {update.value!r}")
 
     return value
+
+
+def _checked_office_phone(value: str) -> str:
+    # Not `phone_service`: it imports this module. Blank is the "not set" value.
+    phone = value.strip()
+
+    if phone and not _is_e164_phone(phone):
+        raise SettingRuleBroken(OFFICE_PHONE_INVALID_ERROR)
+
+    return phone
+
+
+def _is_e164_phone(phone: str) -> bool:
+    # The pattern first: `phonenumbers.parse` is lenient about spaces and dashes, and the
+    # stored form must be exactly what a `tel:` link and Twilio both take.
+    if _E164_PATTERN.fullmatch(phone) is None:
+        return False
+
+    try:
+        parsed = phonenumbers.parse(phone, None)
+    except phonenumbers.NumberParseException:
+        return False
+
+    # Possible (right length for the country), not valid: `is_valid_number` also checks the
+    # area code is allocated, and refuses the 555 numbers the office uses as its example.
+    return phonenumbers.is_possible_number(parsed)
+
+
+# Per-key rules for string rows: each takes the submitted string and returns the value to
+# store, or raises `SettingRuleBroken` with the message the Admin sees.
+_STRING_RULES: dict[str, Callable[[str], str]] = {
+    OFFICE_PHONE_SETTING: _checked_office_phone,
+}
 
 
 def _is_email_template_key(key: str) -> bool:

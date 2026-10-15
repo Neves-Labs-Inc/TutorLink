@@ -64,10 +64,12 @@ if ! mountpoint -q "$DATA_DIR"; then
   mount "$DATA_DIR"
 fi
 
-mkdir -p "$DATA_DIR/pgdata" "$DATA_DIR/caddy/data" "$DATA_DIR/caddy/config" "$DATA_DIR/app"
+# The data volume holds Caddy's certificates and the deploy files.
+mkdir -p "$DATA_DIR/caddy/data" "$DATA_DIR/caddy/config" "$DATA_DIR/app"
 
 # Containers bind-mount DATA_DIR. If dockerd ran without it (nofail doesn't order the mount before
-# boot targets), restart policies would start Postgres on an empty directory on the root volume.
+# boot targets), restart policies would start Caddy on an empty directory on the root volume and
+# issue fresh certificates.
 mkdir -p /etc/systemd/system/docker.service.d
 printf '[Unit]\nRequiresMountsFor=%s\n' "$DATA_DIR" > /etc/systemd/system/docker.service.d/10-data-volume.conf
 systemctl daemon-reload

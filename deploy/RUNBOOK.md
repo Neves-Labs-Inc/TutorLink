@@ -1,5 +1,9 @@
 # TutorLink production runbook
 
+> **Stale.** This file describes the retired ECS Express setup. The current setup (an EC2 host in
+> the tutorlink-prod account) is described in [`infra/README.md`](../infra/README.md). The rewrite
+> is tracked as "RB" in [`docs/deployment-todo.md`](../docs/deployment-todo.md).
+
 Operational procedure for standing up and operating TutorLink on Amazon ECS Express Mode. This is
 **not** a frozen contract (`docs/` is; see `CONSTITUTION.md` §1) — it documents this one
 deployment, it will change whenever AWS or the workflow changes, and it lives beside the files it

@@ -20,6 +20,8 @@ locals {
 # No profile here: the default credential chain applies, so AWS_PROFILE works.
 provider "aws" {
   region = var.region
+  # tutorlink-prod only, so an apply with the wrong AWS_PROFILE fails instead of building elsewhere.
+  allowed_account_ids = ["046451670022"]
 
   default_tags {
     tags = local.common_tags

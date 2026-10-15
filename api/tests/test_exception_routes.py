@@ -1349,6 +1349,175 @@ def test_a_row_written_without_a_status_defaults_to_approved(db: Session) -> Non
     assert row.status is ExceptionStatus.APPROVED
 
 
+# --- the Admin cross-Staff list ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("role", REQUESTER_ROLE_CASES)
+def test_a_tutor_or_manager_listing_all_time_off_is_403(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    user = _make_staff(db, role=role)
+
+    response = api.get("/api/exceptions", headers=_bearer(user))
+
+    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+
+
+@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+def test_an_admin_role_lists_all_staffs_time_off(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    admin = _make_staff(db, role=role)
+    tutor = _make_staff(db, role=UserRole.TUTOR)
+    manager = _make_staff(db, role=UserRole.MANAGER)
+    mine = _make_exception(db, user_id=tutor.id, status=ExceptionStatus.PENDING)
+    theirs = _make_exception(db, user_id=manager.id, status=ExceptionStatus.APPROVED)
+
+    response = api.get("/api/exceptions?page_size=100", headers=_bearer(admin))
+    body = response.json()
+
+    assert response.status_code == 200
+    ids = {item["id"] for item in body["items"]}
+    assert {str(mine.id), str(theirs.id)} <= ids
+    assert body["total"] >= 2
+    item = next(item for item in body["items"] if item["id"] == str(mine.id))
+    assert item["staff"] == {"id": str(tutor.id), "name": tutor.name, "role": "tutor"}
+
+
+def test_unauthenticated_list_all_is_401(api: TestClient) -> None:
+    response = api.get("/api/exceptions")
+
+    _assert_detail(response, 401, CREDENTIALS_ERROR)
+
+
+def test_status_pending_leaves_out_ended_undecided_rows_and_expired_returns_them(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    live = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+    ended = _make_exception(
+        db, user_id=owner.id, status=ExceptionStatus.PENDING, start_date=_long_ago()
+    )
+    approved_ended = _make_exception(
+        db, user_id=owner.id, status=ExceptionStatus.APPROVED, start_date=_long_ago()
+    )
+    base = f"/api/exceptions?user_id={owner.id}"
+
+    pending = api.get(f"{base}&status=pending", headers=_bearer(admin)).json()
+    expired = api.get(f"{base}&status=expired", headers=_bearer(admin)).json()
+    approved = api.get(f"{base}&status=approved", headers=_bearer(admin)).json()
+
+    assert [item["id"] for item in pending["items"]] == [str(live.id)]
+    assert pending["total"] == 1
+    assert [item["id"] for item in expired["items"]] == [str(ended.id)]
+    assert [item["status"] for item in expired["items"]] == ["expired"]
+    assert expired["total"] == 1
+    assert {item["id"] for item in approved["items"]} == {str(approved_ended.id)}
+
+
+def test_user_id_dates_and_status_combine_and_total_matches(api: TestClient, db: Session) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    other = _make_staff(db, role=UserRole.TUTOR)
+    hit = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING, start_date=FUTURE)
+    _make_exception(db, user_id=other.id, status=ExceptionStatus.PENDING, start_date=FUTURE)
+    _make_exception(db, user_id=owner.id, status=ExceptionStatus.APPROVED, start_date=FUTURE)
+    _make_exception(
+        db,
+        user_id=owner.id,
+        status=ExceptionStatus.PENDING,
+        start_date=FUTURE + datetime.timedelta(days=30),
+    )
+    # Ends the day before the window opens; the overlap test must leave it out.
+    window_from = FUTURE + datetime.timedelta(days=3)
+    window_to = FUTURE + datetime.timedelta(days=10)
+
+    response = api.get(
+        f"/api/exceptions?user_id={owner.id}&status=pending&from={window_from}&to={window_to}",
+        headers=_bearer(admin),
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["items"] == []
+    assert body["total"] == 0
+
+    response = api.get(
+        f"/api/exceptions?user_id={owner.id}&status=pending&from={FUTURE}&to={window_to}",
+        headers=_bearer(admin),
+    )
+    body = response.json()
+
+    assert [item["id"] for item in body["items"]] == [str(hit.id)]
+    assert body["total"] == 1
+
+
+def test_the_default_sort_is_start_date_and_requested_sort_is_oldest_created_first(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    later_start_older = _make_exception(
+        db,
+        user_id=owner.id,
+        status=ExceptionStatus.PENDING,
+        start_date=FUTURE + datetime.timedelta(days=10),
+    )
+    earlier_start_newer = _make_exception(
+        db, user_id=owner.id, status=ExceptionStatus.PENDING, start_date=FUTURE
+    )
+    later_start_older.created_at = datetime.datetime(2090, 1, 1, tzinfo=datetime.UTC)
+    earlier_start_newer.created_at = datetime.datetime(2090, 2, 1, tzinfo=datetime.UTC)
+    db.flush()
+    base = f"/api/exceptions?user_id={owner.id}"
+
+    by_start = api.get(base, headers=_bearer(admin)).json()
+    by_requested = api.get(f"{base}&sort=requested", headers=_bearer(admin)).json()
+
+    assert [item["id"] for item in by_start["items"]] == [
+        str(earlier_start_newer.id),
+        str(later_start_older.id),
+    ]
+    assert [item["id"] for item in by_requested["items"]] == [
+        str(later_start_older.id),
+        str(earlier_start_newer.id),
+    ]
+
+
+def test_paging_is_stable_when_rows_share_a_start_date(api: TestClient, db: Session) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    rows = [_make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING) for _ in range(5)]
+    base = f"/api/exceptions?user_id={owner.id}&page_size=2"
+
+    seen = [
+        item["id"]
+        for page in (1, 2, 3)
+        for item in api.get(f"{base}&page={page}", headers=_bearer(admin)).json()["items"]
+    ]
+
+    assert sorted(seen) == sorted(str(row.id) for row in rows)
+    assert len(set(seen)) == 5
+
+
+def test_a_developers_time_off_never_appears(api: TestClient, db: Session) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    developer = _make_staff(db, role=UserRole.DEVELOPER)
+    hidden = _make_exception(db, user_id=developer.id, status=ExceptionStatus.APPROVED)
+
+    everyone = api.get("/api/exceptions?page_size=100", headers=_bearer(admin)).json()
+    named = api.get(f"/api/exceptions?user_id={developer.id}", headers=_bearer(admin)).json()
+    as_developer = api.get(
+        f"/api/exceptions?user_id={developer.id}", headers=_bearer(developer)
+    ).json()
+
+    assert str(hidden.id) not in {item["id"] for item in everyone["items"]}
+    assert named["items"] == []
+    assert named["total"] == 0
+    assert as_developer["items"] == []
+
+
 def _payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "start_date": FUTURE.isoformat(),

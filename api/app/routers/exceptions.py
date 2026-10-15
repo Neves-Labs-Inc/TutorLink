@@ -8,6 +8,7 @@ target's role for the Developer boundary); this module maps its refusals to stat
 - `GET /api/users/{user_id}/exceptions` and `POST` on the same path: the person themselves, or
   an Admin role. A Manager reads and writes only their own. A requester's entry lands
   `pending`, an Admin role's `approved`; the status is never read from the body.
+- `GET /api/exceptions` takes `AdminPrincipal`: every Staff member's Time off, filtered.
 - `PATCH /api/exceptions/{exception_id}` takes `AdminPrincipal`, which is what stops anyone
   approving their own request — the one authorisation rule this feature exists to enforce.
 - `POST /api/exceptions/{exception_id}/cancel` takes `Principal`: the owner or an Admin role,
@@ -18,7 +19,7 @@ Every response carries the wire status, which adds `expired` for a pending row t
 
 import datetime
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -29,7 +30,12 @@ from app.models.availability import TutorAvailabilityException
 from app.models.user import User
 from app.schemas.booking import NamedRef, StaffRef
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
-from app.schemas.exceptions import ExceptionCreate, ExceptionDecision, ExceptionRead
+from app.schemas.exceptions import (
+    ExceptionCreate,
+    ExceptionDecision,
+    ExceptionRead,
+    ExceptionReadStatus,
+)
 from app.services import clock
 from app.services.exception_service import (
     DeveloperTimeOff,
@@ -46,6 +52,7 @@ from app.services.exception_service import (
     cancel_exception,
     create_exception,
     decide_exception,
+    list_all_exceptions,
     list_exceptions,
     read_status,
 )
@@ -102,6 +109,39 @@ def list_user_exceptions(
         )
     except ExceptionRequestError as exc:
         raise _http_error(exc) from exc
+
+    now = clock.business_now()
+
+    return Page[ExceptionRead](
+        items=[_read(row, now=now) for row in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/exceptions", response_model=Page[ExceptionRead])
+def list_all_staff_exceptions(
+    _user: AdminPrincipal,
+    db: DbSession,
+    status_filter: Annotated[ExceptionReadStatus | None, Query(alias="status")] = None,
+    user_id: uuid.UUID | None = None,
+    date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
+    date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
+    sort: Literal["start", "requested"] = "start",
+    page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
+    page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+) -> Page[ExceptionRead]:
+    rows, total = list_all_exceptions(
+        db,
+        status=status_filter,
+        user_id=user_id,
+        date_from=date_from,
+        date_to=date_to,
+        sort=sort,
+        limit=page_size,
+        offset=(page - 1) * page_size,
+    )
 
     now = clock.business_now()
 

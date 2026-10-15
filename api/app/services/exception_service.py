@@ -28,16 +28,20 @@ import datetime
 import logging
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.dependencies import ADMIN_ROLES
 from app.models.availability import TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.user import User
+from app.schemas.exceptions import ExceptionReadStatus
 from app.services import clock
 
 EXPIRED_STATUS = "expired"
+PENDING_STATUS = "pending"
+SORT_BY_START = "start"
+SORT_BY_REQUESTED = "requested"
 
 # The only decisions there are, keyed by the status they leave. Approving a rejected row is
 # allowed (an Admin changing their mind before it starts); declining an approved one is not,
@@ -286,6 +290,68 @@ def list_exceptions(
     return rows, total
 
 
+def list_all_exceptions(
+    db: Session,
+    *,
+    status: ExceptionReadStatus | None = None,
+    user_id: uuid.UUID | None = None,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    sort: str = SORT_BY_START,
+    limit: int,
+    offset: int,
+) -> tuple[list[TutorAvailabilityException], int]:
+    """Every Staff member's Time off, filtered, and the count before paging.
+
+    The caller has already established an Admin role. Developers' rows are always left out,
+    even when `user_id` names one: the Developer stays hidden from this list for every caller.
+
+    `status` is the wire status: `pending` is stored pending that has not ended and `expired`
+    is stored pending that has, so the two never overlap. `date_from`/`date_to` overlap the
+    window as in `list_exceptions`. `sort` is `start` (the default) or `requested`; `id` breaks
+    ties in both so paging is stable.
+    """
+    matching = (
+        select(TutorAvailabilityException)
+        .join(User, TutorAvailabilityException.user_id == User.id)
+        .where(User.role != UserRole.DEVELOPER)
+    )
+    if user_id is not None:
+        matching = matching.where(TutorAvailabilityException.user_id == user_id)
+    if date_from is not None:
+        matching = matching.where(TutorAvailabilityException.end_date >= date_from)
+    if date_to is not None:
+        matching = matching.where(TutorAvailabilityException.start_date <= date_to)
+    if status is not None:
+        matching = matching.where(_matches_wire_status(status, now=clock.business_now()))
+
+    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
+
+    if sort == SORT_BY_REQUESTED:
+        ordering = (TutorAvailabilityException.created_at, TutorAvailabilityException.id)
+    else:
+        ordering = (
+            TutorAvailabilityException.start_date,
+            TutorAvailabilityException.start_time.nulls_first(),
+            TutorAvailabilityException.id,
+        )
+
+    rows = list(
+        db.scalars(
+            matching.options(
+                joinedload(TutorAvailabilityException.staff),
+                selectinload(TutorAvailabilityException.decider),
+                selectinload(TutorAvailabilityException.canceller),
+            )
+            .order_by(*ordering)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+
+    return rows, total
+
+
 def has_ended(
     *, end_date: datetime.date, end_time: datetime.time | None, now: datetime.datetime
 ) -> bool:
@@ -310,6 +376,30 @@ def read_status(row: TutorAvailabilityException, *, now: datetime.datetime) -> s
     )
 
     return EXPIRED_STATUS if is_expired else row.status.value
+
+
+def _matches_wire_status(
+    status: ExceptionReadStatus, *, now: datetime.datetime
+) -> ColumnElement[bool]:
+    """SQL form of `read_status`: the same end rule as `has_ended`, evaluated by the database."""
+    if status not in (PENDING_STATUS, EXPIRED_STATUS):
+        return TutorAvailabilityException.status == ExceptionStatus(status)
+
+    # A whole-day window ends at the start of the day after `end_date`; a partial-day one at
+    # `end_time`, and the end itself counts as ended.
+    has_ended_sql = or_(
+        TutorAvailabilityException.end_date < now.date(),
+        and_(
+            TutorAvailabilityException.end_date == now.date(),
+            TutorAvailabilityException.end_time.is_not(None),
+            TutorAvailabilityException.end_time <= now.time(),
+        ),
+    )
+    is_pending = TutorAvailabilityException.status == ExceptionStatus.PENDING
+    if status == EXPIRED_STATUS:
+        return and_(is_pending, has_ended_sql)
+
+    return and_(is_pending, ~has_ended_sql)
 
 
 def _lock(

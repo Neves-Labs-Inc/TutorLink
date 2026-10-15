@@ -34,7 +34,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.models.refresh_token import RefreshToken
@@ -49,7 +49,6 @@ PURGED_MODELS = (
     Guardian,
     Child,
     ChildGuardian,
-    ChildHome,
     GuardianHome,
     Home,
     Booking,
@@ -224,7 +223,7 @@ def _make_test_data(db: Session) -> None:
     )
     subject = Subject(name=f"Subject {suffix}")
     guardian = Guardian(name="Guardian", phone_number=f"+2{suffix[:10]}")
-    home = Home(address=f"{suffix} Test Street", access_code="0000")
+    home = Home(address=f"{suffix} Test Street", directions="0000")
     child = Child(name="Child", grade_level=7, school_name="Test School")
     conversation = Conversation(phone_number=guardian.phone_number)
     db.add_all([staff, tutor, subject, guardian, home, child, conversation])
@@ -244,7 +243,7 @@ def _make_test_data(db: Session) -> None:
     db.add_all(
         [
             TutorAvailabilityException(
-                tutor_id=tutor.id, start_date=MONDAY, end_date=MONDAY, reason="sick"
+                user_id=tutor.user_id, start_date=MONDAY, end_date=MONDAY, reason="sick"
             ),
             SystemSetting(key=f"k-{suffix}", value="1", value_type="integer"),
             RefreshToken(
@@ -259,7 +258,6 @@ def _make_test_data(db: Session) -> None:
             ),
             TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=12),
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
-            ChildHome(child_id=child.id, home_id=home.id),
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
             Booking(
                 child_id=child.id,

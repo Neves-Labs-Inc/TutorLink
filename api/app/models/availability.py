@@ -10,7 +10,6 @@ from sqlalchemy import (
     Index,
     SmallInteger,
     String,
-    Text,
     Time,
     UniqueConstraint,
     func,
@@ -32,8 +31,10 @@ from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.tutor import Tutor
+    from app.models.user import User
 
 AVAILABILITY_MODE_LENGTH = 16
+REASON_MAX_LENGTH = 500
 
 
 class TutorAvailability(HasID, HasTimestamps, HasActiveFlag, Base):
@@ -71,19 +72,24 @@ class TutorAvailability(HasID, HasTimestamps, HasActiveFlag, Base):
 
 
 class TutorAvailabilityException(HasID, Base):
-    """Overrides the recurring schedule for a date or an inclusive date range. A NULL
-    `start_time`/`end_time` pair blocks the whole day; a set pair blocks only that window.
+    """A Staff member's Time off: overrides the recurring schedule for a date or an inclusive
+    date range. A NULL `start_time`/`end_time` pair blocks the whole day; a set pair blocks
+    only that window.
 
-    Only a row whose `status` is `APPROVED` overrides anything. A tutor's own time-off request
+    Keyed on the person (`user_id`), not a teaching profile, so any Staff member — an Admin
+    with no profile included — can hold it. `reason` is optional free text.
+
+    Only a row whose `status` is `APPROVED` overrides anything. A Tutor's own time-off request
     lands as `PENDING` and is inert until an admin decides it, so a consumer that subtracts
-    exceptions from availability must filter on `status` — the row existing is not enough.
+    Time off from availability must filter on `status` — the row existing is not enough.
+    `decided_*` and `cancelled_*` are recorded by the lifecycle, and are null until then.
     """
 
     __tablename__ = "tutor_availability_exceptions"
     __table_args__ = (
         Index(
-            "ix_tutor_availability_exceptions_tutor_id_dates",
-            "tutor_id",
+            "ix_tutor_availability_exceptions_user_id_dates",
+            "user_id",
             "start_date",
             "end_date",
         ),
@@ -101,15 +107,14 @@ class TutorAvailabilityException(HasID, Base):
         ),
     )
 
-    tutor_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tutors.id"), nullable=False
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     start_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     end_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     start_time: Mapped[datetime.time | None] = mapped_column(Time, nullable=True)
     end_time: Mapped[datetime.time | None] = mapped_column(Time, nullable=True)
-    reason: Mapped[str] = mapped_column(String(32), nullable=False)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(REASON_MAX_LENGTH), nullable=True)
     # The server default is `approved`, not `pending`: every row that predates the approval
     # workflow was written by an admin and already blocks bookings, so `approved` is the one
     # backfill that leaves existing rows meaning what they meant. See migration 0008.
@@ -119,5 +124,20 @@ class TutorAvailabilityException(HasID, Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    decided_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    cancelled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
-    tutor: Mapped["Tutor"] = relationship(back_populates="exceptions")
+    # Three foreign keys reach `users`, so each join is named.
+    staff: Mapped["User"] = relationship(foreign_keys=[user_id])
+    decider: Mapped["User | None"] = relationship(foreign_keys=[decided_by])
+    canceller: Mapped["User | None"] = relationship(foreign_keys=[cancelled_by])

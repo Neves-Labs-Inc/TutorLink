@@ -214,6 +214,7 @@ def test_a_sunday_query_reads_the_sunday_rows_and_not_the_monday_ones(
         (ExceptionStatus.APPROVED, [("10:30:00", "11:30:00")]),
         (ExceptionStatus.PENDING, DEFAULT_GRID),
         (ExceptionStatus.REJECTED, DEFAULT_GRID),
+        (ExceptionStatus.CANCELLED, DEFAULT_GRID),
     ],
 )
 def test_only_an_approved_exception_subtracts_from_availability(
@@ -225,7 +226,7 @@ def test_only_an_approved_exception_subtracts_from_availability(
     expected: list[tuple[str, str]],
 ) -> None:
     """#24: a pending request is a tutor asking for time off and blocks nothing until an admin
-    rules on it; a rejected one blocks nothing ever.
+    rules on it; a rejected or cancelled one blocks nothing ever.
 
     The window ends at 10:15, which is what makes this a bare-overlap assertion as well: the
     10:30 slot clears it by 15 minutes, so a step 2 that gap-expanded by `session_gap_minutes`
@@ -493,7 +494,7 @@ def test_a_retired_subject_is_never_offered(
     """#44 item 1 in its original direction: a soft-deleted `subject` must yield no qualified
     tutors here, the same empty `Page` a subject nobody is assigned to already yields, rather
     than a booking `POST /api/bookings` now refuses with a 400."""
-    db.get_one(Subject, world.subject_id).is_active = False
+    db.get_one(Subject, world.subject_id).is_archived = True
     db.flush()
 
     response = api.get(_url(world), headers=_bearer(admin))
@@ -502,15 +503,18 @@ def test_a_retired_subject_is_never_offered(
     assert _windows(response) == []
 
 
-def test_a_deactivated_tutor_is_never_offered(
+def test_an_archived_tutor_is_never_offered(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
-    """Through the Tutors page: deactivating the profile deactivates the person (#130)."""
-    deleted = api.delete(f"/api/tutors/{world.tutor_id}", headers=_bearer(admin))
+    """Archiving the Staff member takes their profile off the offer surface (#130)."""
+    person = db.get_one(Tutor, world.tutor_id).user
+    archived = api.post(
+        "/api/archive", headers=_bearer(admin), json={"type": "staff", "id": str(person.id)}
+    )
 
     response = api.get(_url(world), headers=_bearer(admin))
 
-    assert deleted.status_code == 200
+    assert archived.status_code == 200
     assert _windows(response) == []
 
 
@@ -670,7 +674,7 @@ def test_a_retired_subject_offered_by_neither_surface(
     """The divergence #44 item 1 exists to close: the same retired `subject_id` the offer
     surface now declines to offer must also be the one `POST /api/bookings` refuses, so the
     two surfaces cannot drift apart again without both of these assertions failing."""
-    db.get_one(Subject, world.subject_id).is_active = False
+    db.get_one(Subject, world.subject_id).is_archived = True
     db.flush()
 
     offered = api.get(_url(world), headers=_bearer(admin))
@@ -1072,7 +1076,7 @@ def _make_world(
     _assign(db, tutor_id=tutor.id, subject_id=subject_id, max_grade_level=max_grade_level)
 
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     db.add_all([child, home])
     db.flush()
 
@@ -1188,7 +1192,7 @@ def _make_exception(
     end_time: datetime.time | None = None,
 ) -> TutorAvailabilityException:
     row = TutorAvailabilityException(
-        tutor_id=tutor_id,
+        user_id=db.get_one(Tutor, tutor_id).user_id,
         start_date=start_date,
         end_date=end_date,
         start_time=start_time,

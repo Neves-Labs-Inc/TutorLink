@@ -1068,7 +1068,7 @@ def _inactive_child_id(db: Session) -> uuid.UUID:
         date_of_birth=datetime.date(2015, 3, 9),
         grade_level=6,
         school_name="Test School",
-        is_active=False,
+        is_archived=True,
     )
     db.add(child)
     db.flush()

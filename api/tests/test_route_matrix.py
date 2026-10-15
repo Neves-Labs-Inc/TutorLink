@@ -7,8 +7,8 @@ longer exists fails too, so the table cannot rot.
 
 "Allowed" means the gate let the caller through: anything but 401, 403 or a 5xx. The probes
 send random ids and an empty body, so a 404 or a 422 is the expected shape of "you got past
-the gate". A tutor-scoped route is probed with the tutor's own `tutor_id`, so the tutor is
-asking for their own data.
+the gate". A tutor-scoped route is probed with the tutor's own `tutor_id` and `user_id`, so the
+tutor is asking for their own data.
 
 The chat websocket is classified here and probed in `test_conversation_stream.py`, where the
 socket fixtures live.
@@ -69,16 +69,26 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("GET", "/api/subjects"): Access.SHARED_CATALOGUE,
     ("GET", "/api/tutors"): Access.TUTOR_SCOPED,
     ("GET", "/api/tutors/{tutor_id}"): Access.TUTOR_SCOPED,
-    ("GET", "/api/tutors/{tutor_id}/exceptions"): Access.TUTOR_SCOPED,
-    ("POST", "/api/tutors/{tutor_id}/exceptions"): Access.TUTOR_SCOPED,
-    ("DELETE", "/api/exceptions/{exception_id}"): Access.TUTOR_SCOPED,
+    # Time off is held by a user: a Tutor reaches only their own `user_id`.
+    ("GET", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
+    ("POST", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
+    # The owner or an Admin role, checked on the loaded row.
+    ("POST", "/api/exceptions/{exception_id}/cancel"): Access.TUTOR_SCOPED,
     ("GET", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
+    # Self or an Admin role, checked against the slot's profile (#208).
+    ("POST", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
+    ("PATCH", "/api/availability/{availability_id}"): Access.TUTOR_SCOPED,
+    ("DELETE", "/api/availability/{availability_id}"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
-    ("PATCH", "/api/exceptions/{exception_id}"): Access.STAFF,
+    ("PATCH", "/api/exceptions/{exception_id}"): Access.ADMIN,
+    ("GET", "/api/exceptions"): Access.ADMIN,
+    ("GET", "/api/counts"): Access.STAFF,
     ("POST", "/api/subjects"): Access.STAFF,
     ("PATCH", "/api/subjects/{subject_id}"): Access.STAFF,
-    ("DELETE", "/api/subjects/{subject_id}"): Access.STAFF,
+    # Guardian, Home and Subject are Office; Staff is Admin-only, checked by its handler.
+    ("POST", "/api/archive"): Access.STAFF,
+    ("POST", "/api/restore"): Access.STAFF,
     ("GET", "/api/clients"): Access.STAFF,
     ("GET", "/api/clients/{client_id}"): Access.STAFF,
     ("POST", "/api/clients"): Access.STAFF,
@@ -98,20 +108,21 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("DELETE", "/api/children/{child_id}/evaluated"): Access.STAFF,
     ("GET", "/api/households"): Access.STAFF,
     ("PATCH", "/api/homes/{home_id}"): Access.STAFF,
-    ("POST", "/api/tutors"): Access.STAFF,
-    ("PATCH", "/api/tutors/{tutor_id}"): Access.STAFF,
-    ("DELETE", "/api/tutors/{tutor_id}"): Access.STAFF,
-    ("POST", "/api/tutors/{tutor_id}/subjects"): Access.STAFF,
-    ("DELETE", "/api/tutors/{tutor_id}/subjects/{subject_id}"): Access.STAFF,
-    ("POST", "/api/tutors/{tutor_id}/availability"): Access.STAFF,
-    ("PATCH", "/api/availability/{availability_id}"): Access.STAFF,
-    ("DELETE", "/api/availability/{availability_id}"): Access.STAFF,
+    # Staff writes are Admin-only (#208); reading the Tutors page is not.
+    ("POST", "/api/tutors"): Access.ADMIN,
+    ("PATCH", "/api/tutors/{tutor_id}"): Access.ADMIN,
+    ("POST", "/api/tutors/{tutor_id}/subjects"): Access.ADMIN,
+    ("DELETE", "/api/tutors/{tutor_id}/subjects/{subject_id}"): Access.ADMIN,
     ("GET", "/api/slots/available"): Access.STAFF,
     ("POST", "/api/bookings"): Access.STAFF,
     ("PUT", "/api/bookings/{booking_id}"): Access.STAFF,
     # A Tutor may Mark completed their own booking (#152); every other move is Office only.
     ("PATCH", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
+    # Only an Admin keeps a Booking over Time off on purpose (#209).
+    ("POST", "/api/bookings/{booking_id}/clash-acknowledgement"): Access.ADMIN,
+    ("DELETE", "/api/bookings/{booking_id}/clash-acknowledgement"): Access.ADMIN,
     ("GET", "/api/staff"): Access.STAFF,
+    ("GET", "/api/staff/{staff_id}"): Access.STAFF,
     ("GET", "/api/stats/overview"): Access.STAFF,
     ("GET", "/api/reminders/week"): Access.STAFF,
     ("GET", "/api/conversations"): Access.STAFF,
@@ -127,11 +138,8 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/conversations/{conversation_id}/reactivation/deny"): Access.STAFF,
     ("POST", "/api/conversations/{conversation_id}/handled"): Access.STAFF,
     (WEBSOCKET, "/api/conversations/stream"): Access.STAFF,
-    ("GET", "/api/users"): Access.ADMIN,
-    ("GET", "/api/users/{user_id}"): Access.ADMIN,
     ("POST", "/api/users"): Access.ADMIN,
     ("PATCH", "/api/users/{user_id}"): Access.ADMIN,
-    ("DELETE", "/api/users/{user_id}"): Access.ADMIN,
     ("POST", "/api/users/{user_id}/invite"): Access.ADMIN,
     ("POST", "/api/users/{user_id}/password-reset"): Access.ADMIN,
     ("GET", "/api/settings"): Access.ADMIN,
@@ -171,6 +179,7 @@ class Caller:
     role: UserRole
     headers: dict[str, str]
     tutor_id: uuid.UUID | None
+    user_id: uuid.UUID
 
 
 @pytest.fixture
@@ -207,7 +216,7 @@ def callers(db: Session) -> dict[UserRole, Caller]:
                 name=f"Matrix {role.value}",
                 hashed_password="not-a-real-hash",
                 role=role,
-                is_active=True,
+                is_archived=False,
             )
             db.add(user)
         else:
@@ -215,20 +224,28 @@ def callers(db: Session) -> dict[UserRole, Caller]:
             user = db.get_one(Tutor, tutor_id).user
             user.hashed_password = "not-a-real-hash"
             user.role = role
-            user.is_active = True
+            user.is_archived = False
         db.flush()
         token = create_access_token(user_id=user.id, role=role, tutor_id=tutor_id)
-        return Caller(role=role, headers={"Authorization": f"Bearer {token}"}, tutor_id=tutor_id)
+        return Caller(
+            role=role,
+            headers={"Authorization": f"Bearer {token}"},
+            tutor_id=tutor_id,
+            user_id=user.id,
+        )
 
     return {role: make(role, tutor.id if role is UserRole.TUTOR else None) for role in UserRole}
 
 
-def _url(path: str, *, tutor_id: uuid.UUID | None) -> str:
-    """Random ids for every segment, except a tutor-scoped route's `tutor_id`, which is the
-    tutor's own so the tutor is asking for their own rows."""
+def _url(path: str, *, owner: Caller | None) -> str:
+    """Random ids for every segment, except a tutor-scoped route's `tutor_id` and `user_id`,
+    which are the caller's own so they are asking for their own rows. Every caller has a
+    `user_id`; only the tutor has a `tutor_id`."""
     url = path
-    if tutor_id is not None:
-        url = url.replace("{tutor_id}", str(tutor_id))
+    if owner is not None:
+        url = url.replace("{user_id}", str(owner.user_id))
+    if owner is not None and owner.tutor_id is not None:
+        url = url.replace("{tutor_id}", str(owner.tutor_id))
     while "{" in url:
         start = url.index("{")
         end = url.index("}", start)
@@ -286,8 +303,8 @@ def test_each_role_reaches_exactly_its_class(
 ) -> None:
     outcomes: dict[UserRole, int] = {}
     for role, caller in callers.items():
-        scoped_tutor_id = caller.tutor_id if access is Access.TUTOR_SCOPED else None
-        url = _url(path, tutor_id=scoped_tutor_id)
+        owner = caller if access is Access.TUTOR_SCOPED else None
+        url = _url(path, owner=owner)
         outcomes[role] = _call(gate_client, method, url, caller.headers)
 
     allowed = {role for role, code in outcomes.items() if code not in {401, 403} and code < 500}
@@ -299,4 +316,4 @@ def test_each_role_reaches_exactly_its_class(
 
 @pytest.mark.parametrize(("method", "path", "access"), _gated_routes())
 def test_no_token_is_401(gate_client: TestClient, method: str, path: str, access: Access) -> None:
-    assert _call(gate_client, method, _url(path, tutor_id=None), {}) == 401
+    assert _call(gate_client, method, _url(path, owner=None), {}) == 401

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy.orm import Session
 
-from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
@@ -34,6 +34,9 @@ from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.availability import (
     AVAILABILITY_NOT_FOUND_ERROR,
+    DEVELOPER_FORBIDDEN_ERROR,
+    NOT_YOUR_AVAILABILITY_ERROR,
+    PEER_ADMIN_FORBIDDEN_ERROR,
     SLOT_TAKEN_ERROR,
     TUTOR_NOT_FOUND_ERROR,
 )
@@ -42,6 +45,10 @@ from app.services import availability_service
 from tests.support import user_id_of
 
 STAFF_ROLE_CASES = [UserRole.ADMIN, UserRole.MANAGER, UserRole.DEVELOPER]
+ADMIN_ROLE_CASES = [UserRole.ADMIN, UserRole.DEVELOPER]
+ALL_ROLE_CASES = [UserRole.TUTOR, *STAFF_ROLE_CASES]
+WRITE_CASES = ["create", "update", "delete"]
+WRITE_SUCCESS_STATUS = {"create": 201, "update": 200, "delete": 200}
 
 
 # --- list: every slot, active and deactivated -----------------------------------------------
@@ -185,17 +192,6 @@ def test_admin_creates_a_slot(api: TestClient, db: Session) -> None:
     assert body["start_time"] == "09:00:00"
     assert body["end_time"] == "12:00:00"
     assert body["is_active"] is True
-
-
-def test_tutor_cannot_create_a_slot(api: TestClient, db: Session) -> None:
-    tutor = _make_tutor(db)
-    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
-
-    response = api.post(
-        f"/api/tutors/{tutor.id}/availability", json=_payload(), headers=_bearer(user)
-    )
-
-    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 def test_admin_creating_for_an_unknown_tutor_is_404(api: TestClient, db: Session) -> None:
@@ -387,18 +383,6 @@ def test_patch_body_carrying_day_of_week_is_ignored(api: TestClient, db: Session
     assert _row(db, row.id).day_of_week == 0
 
 
-def test_tutor_cannot_update_a_slot(api: TestClient, db: Session) -> None:
-    tutor = _make_tutor(db)
-    row = _make_slot(db, tutor_id=tutor.id, day_of_week=0, start_time=datetime.time(9, 0))
-    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
-
-    response = api.patch(
-        f"/api/availability/{row.id}", json={"end_time": "11:00:00"}, headers=_bearer(user)
-    )
-
-    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
-
-
 def test_updating_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
     user = _make_user(db, role=UserRole.ADMIN)
 
@@ -566,16 +550,6 @@ def test_a_referencing_booking_survives_deactivation(api: TestClient, db: Sessio
     assert db.get_one(Booking, booking.id).availability_id == row.id
 
 
-def test_tutor_cannot_delete_a_slot(api: TestClient, db: Session) -> None:
-    tutor = _make_tutor(db)
-    row = _make_slot(db, tutor_id=tutor.id, day_of_week=0, start_time=datetime.time(9, 0))
-    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
-
-    response = api.delete(f"/api/availability/{row.id}", headers=_bearer(user))
-
-    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
-
-
 def test_deleting_an_unknown_slot_is_404(api: TestClient, db: Session) -> None:
     user = _make_user(db, role=UserRole.ADMIN)
 
@@ -593,8 +567,8 @@ def test_unauthenticated_delete_is_401(api: TestClient, db: Session) -> None:
     _assert_detail(response, 401, CREDENTIALS_ERROR)
 
 
-@pytest.mark.parametrize("role", STAFF_ROLE_CASES)
-def test_developer_reaches_every_admin_only_route(
+@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+def test_an_admin_role_reaches_every_write_on_a_tutors_slots(
     api: TestClient, db: Session, role: UserRole
 ) -> None:
     tutor = _make_tutor(db)
@@ -614,6 +588,157 @@ def test_developer_reaches_every_admin_only_route(
     assert created.status_code == 201
     assert patched.status_code == 200
     assert deleted.status_code == 200
+
+
+# --- who may write: self, or an Admin role within the account boundary (#208) ---------------
+
+
+@pytest.mark.parametrize("write", WRITE_CASES)
+@pytest.mark.parametrize("role", [UserRole.TUTOR, UserRole.MANAGER])
+def test_a_tutor_or_manager_writes_their_own_availability(
+    api: TestClient, db: Session, role: UserRole, write: str
+) -> None:
+    own = _make_tutor(db)
+    slot = _make_slot(db, tutor_id=own.id, day_of_week=0, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=role, tutor_id=own.id)
+
+    response = _write(api, write, user=user, tutor_id=own.id, slot_id=slot.id)
+
+    assert response.status_code == WRITE_SUCCESS_STATUS[write]
+    assert response.json()["tutor_id"] == str(own.id)
+
+
+@pytest.mark.parametrize("write", WRITE_CASES)
+@pytest.mark.parametrize("role", [UserRole.TUTOR, UserRole.MANAGER])
+def test_a_tutor_or_manager_on_another_tutors_availability_is_403(
+    api: TestClient, db: Session, role: UserRole, write: str
+) -> None:
+    own = _make_tutor(db)
+    user = _make_user(db, role=role, tutor_id=own.id)
+    other = _make_tutor(db)
+    slot = _make_slot(db, tutor_id=other.id, day_of_week=0, start_time=datetime.time(9, 0))
+
+    response = _write(api, write, user=user, tutor_id=other.id, slot_id=slot.id)
+
+    _assert_detail(response, 403, NOT_YOUR_AVAILABILITY_ERROR)
+    _assert_untouched(db, tutor_id=other.id, slot_id=slot.id)
+
+
+@pytest.mark.parametrize("role", [UserRole.TUTOR, UserRole.MANAGER])
+def test_a_tutor_or_manager_naming_an_unknown_tutor_is_403_not_404(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    """Refused before the lookup, so the route is no oracle for which profile ids exist."""
+    own = _make_tutor(db)
+    user = _make_user(db, role=role, tutor_id=own.id)
+
+    response = api.post(
+        f"/api/tutors/{uuid.uuid4()}/availability", json=_payload(), headers=_bearer(user)
+    )
+
+    _assert_detail(response, 403, NOT_YOUR_AVAILABILITY_ERROR)
+
+
+@pytest.mark.parametrize("write", WRITE_CASES)
+@pytest.mark.parametrize(
+    ("actor_role", "target_role"),
+    [
+        (UserRole.ADMIN, UserRole.TUTOR),
+        (UserRole.ADMIN, UserRole.MANAGER),
+        (UserRole.DEVELOPER, UserRole.TUTOR),
+        (UserRole.DEVELOPER, UserRole.MANAGER),
+        (UserRole.DEVELOPER, UserRole.ADMIN),
+        (UserRole.DEVELOPER, UserRole.DEVELOPER),
+    ],
+    ids=lambda role: role.value,
+)
+def test_an_admin_role_writes_availability_inside_the_account_boundary(
+    api: TestClient, db: Session, actor_role: UserRole, target_role: UserRole, write: str
+) -> None:
+    actor = _make_user(db, role=actor_role)
+    target = _make_tutor(db)
+    _make_user(db, role=target_role, tutor_id=target.id)
+    slot = _make_slot(db, tutor_id=target.id, day_of_week=0, start_time=datetime.time(9, 0))
+
+    response = _write(api, write, user=actor, tutor_id=target.id, slot_id=slot.id)
+
+    assert response.status_code == WRITE_SUCCESS_STATUS[write]
+
+
+@pytest.mark.parametrize("write", WRITE_CASES)
+@pytest.mark.parametrize(
+    ("target_role", "detail"),
+    [
+        (UserRole.ADMIN, PEER_ADMIN_FORBIDDEN_ERROR),
+        (UserRole.DEVELOPER, DEVELOPER_FORBIDDEN_ERROR),
+    ],
+    ids=["peer-admin", "developer"],
+)
+def test_an_admin_on_a_peer_admins_or_developers_availability_is_403(
+    api: TestClient, db: Session, target_role: UserRole, detail: str, write: str
+) -> None:
+    """The account boundary `/api/users` keeps (#173), seen from the schedule editor."""
+    admin = _make_user(db, role=UserRole.ADMIN)
+    target = _make_tutor(db)
+    _make_user(db, role=target_role, tutor_id=target.id)
+    slot = _make_slot(db, tutor_id=target.id, day_of_week=0, start_time=datetime.time(9, 0))
+
+    response = _write(api, write, user=admin, tutor_id=target.id, slot_id=slot.id)
+
+    _assert_detail(response, 403, detail)
+    _assert_untouched(db, tutor_id=target.id, slot_id=slot.id)
+
+
+@pytest.mark.parametrize("write", WRITE_CASES)
+def test_an_admin_writes_their_own_kept_profiles_availability(
+    api: TestClient, db: Session, write: str
+) -> None:
+    own = _make_tutor(db)
+    admin = _make_user(db, role=UserRole.ADMIN, tutor_id=own.id)
+    slot = _make_slot(db, tutor_id=own.id, day_of_week=0, start_time=datetime.time(9, 0))
+
+    response = _write(api, write, user=admin, tutor_id=own.id, slot_id=slot.id)
+
+    assert response.status_code == WRITE_SUCCESS_STATUS[write]
+
+
+@pytest.mark.parametrize("write", ["update", "delete"])
+@pytest.mark.parametrize("role", ALL_ROLE_CASES)
+def test_an_unknown_slot_is_404_for_every_role(
+    api: TestClient, db: Session, role: UserRole, write: str
+) -> None:
+    own = _make_tutor(db)
+    user = _make_user(db, role=role, tutor_id=own.id)
+
+    response = _write(api, write, user=user, tutor_id=own.id, slot_id=uuid.uuid4())
+
+    _assert_detail(response, 404, AVAILABILITY_NOT_FOUND_ERROR)
+
+
+def _write(
+    api: TestClient, write: str, *, user: User, tutor_id: uuid.UUID, slot_id: uuid.UUID
+) -> Response:
+    headers = _bearer(user)
+
+    if write == "create":
+        response = api.post(
+            f"/api/tutors/{tutor_id}/availability",
+            json=_payload(start_time="13:00:00", end_time="15:00:00"),
+            headers=headers,
+        )
+    elif write == "update":
+        response = api.patch(
+            f"/api/availability/{slot_id}", json={"end_time": "10:00:00"}, headers=headers
+        )
+    else:
+        response = api.delete(f"/api/availability/{slot_id}", headers=headers)
+    return response
+
+
+def _assert_untouched(db: Session, *, tutor_id: uuid.UUID, slot_id: uuid.UUID) -> None:
+    row = _row(db, slot_id)
+    assert _count_for(db, tutor_id) == 1
+    assert (row.end_time, row.is_active) == (datetime.time(18, 0), True)
 
 
 def _payload(**overrides: object) -> dict[str, object]:
@@ -679,7 +804,7 @@ def _make_slot(
 
 
 def _make_booking(db: Session, *, tutor_id: uuid.UUID, availability_id: uuid.UUID) -> Booking:
-    home = Home(label="Home", address="1 Main St", access_code="1234")
+    home = Home(label="Home", address="1 Main St", directions="1234")
     child = Child(name="Kid", grade_level=5, school_name="Test School")
     subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
     db.add_all([home, child, subject])

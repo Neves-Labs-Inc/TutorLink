@@ -68,6 +68,8 @@ class ReminderWeek:
     has_run: bool
     preview: tuple[ReminderCandidate, ...] | None
     rows: tuple[ReminderRow, ...]
+    next_run_at: datetime.datetime
+    """Naive business wall-clock: when the next weekly run sends, whatever week is read."""
 
 
 def reminder_week(
@@ -87,6 +89,8 @@ def reminder_week(
     week = week_start or run_week_start
     rows = _rows(db, week_start=week)
     has_run = bool(rows) or _was_run(db, week_start=week)
+    run_has_run = has_run if week == run_week_start else _has_run(db, week_start=run_week_start)
+    next_run_at = run_at + datetime.timedelta(days=DAYS_PER_WEEK) if run_has_run else run_at
 
     preview = None
     if week == run_week_start and not has_run:
@@ -102,6 +106,7 @@ def reminder_week(
         has_run=has_run,
         preview=preview,
         rows=tuple(row for row in rows if statuses is None or row.status in statuses),
+        next_run_at=next_run_at,
     )
 
 
@@ -113,6 +118,10 @@ def _next_or_current_run(db: Session, *, now: datetime.datetime) -> datetime.dat
     run_day = now.date() + datetime.timedelta(days=(weekday - now.isoweekday()) % DAYS_PER_WEEK)
 
     return datetime.datetime.combine(run_day, datetime.time(hour))
+
+
+def _has_run(db: Session, *, week_start: datetime.date) -> bool:
+    return bool(_rows(db, week_start=week_start)) or _was_run(db, week_start=week_start)
 
 
 def _was_run(db: Session, *, week_start: datetime.date) -> bool:

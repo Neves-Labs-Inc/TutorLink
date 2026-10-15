@@ -1,8 +1,7 @@
-"""Booking read shapes, and the builders that fill them from a loaded `Booking` row.
+"""Booking read shapes, and the pure refs they are built from.
 
-The builders live here rather than in each router because three routers (`bookings`,
-`client_bookings`, `stats`) render the same summary and each had its own copy; the null-safe
-`subject` and `home` of #130 are one rule, kept in one place.
+The reads themselves are assembled by `services.booking_read_service`, which needs the DB for
+the batched fields (`subject_level`, `guardians`); the refs here need only a loaded row.
 """
 
 import datetime
@@ -14,9 +13,9 @@ from pydantic import BaseModel
 from app.schemas.common import Page
 
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.services.sort_out_service import SortOutReason
 
 if TYPE_CHECKING:
-    from app.models.booking import Booking
     from app.models.home import Home
     from app.models.subject import Subject
     from app.models.user import User
@@ -43,6 +42,14 @@ class BookingChild(NamedRef):
     notes: str | None
 
 
+class HomeSummaryRef(BaseModel):
+    """A list row's Home. `directions` is left out on purpose: it is read on the detail only."""
+
+    id: uuid.UUID
+    label: str | None
+    address: str
+
+
 class BookingSummary(BaseModel):
     id: uuid.UUID
     child: NamedRef
@@ -51,11 +58,21 @@ class BookingSummary(BaseModel):
     location: BookingLocation
     # None on an Evaluation (`ck_bookings_subject_matches_kind`).
     subject: NamedRef | None
+    # The Child's level in `subject`; None with no level set, or with no Subject.
+    subject_level: int | None
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
     status: BookingStatus
     notes: str | None
+    # None when the session is In office; an archived Home is still named.
+    home: HomeSummaryRef | None
+    # Why the Booking is to sort out, in `SORT_OUT_REASONS` order; [] when it isn't.
+    sort_out_reasons: list[SortOutReason]
+    # Who kept the Booking over Time off on purpose, and when; both None when nobody did. An
+    # archived user is still named.
+    clash_acknowledged_by: NamedRef | None
+    clash_acknowledged_at: datetime.datetime | None
     updated_at: datetime.datetime
 
 
@@ -74,7 +91,15 @@ class HomeRef(BaseModel):
     id: uuid.UUID
     label: str | None
     address: str
-    access_code: str
+    directions: str | None
+
+
+class BookingGuardian(BaseModel):
+    """A non-archived Guardian of the Booking's Child, with their latest conversation if any."""
+
+    id: uuid.UUID
+    name: str
+    conversation_id: uuid.UUID | None
 
 
 class BookingDetail(BaseModel):
@@ -84,6 +109,7 @@ class BookingDetail(BaseModel):
     kind: BookingKind
     location: BookingLocation
     subject: NamedRef | None
+    subject_level: int | None
     scheduled_date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
@@ -92,6 +118,12 @@ class BookingDetail(BaseModel):
     # None when the session is In office (`ck_bookings_home_matches_location`).
     home: HomeRef | None
     booked_by_guardian: NamedRef | None
+    guardians: list[BookingGuardian]
+    sort_out_reasons: list[SortOutReason]
+    # Who kept the Booking over Time off on purpose, and when; both None when nobody did. An
+    # archived user is still named.
+    clash_acknowledged_by: NamedRef | None
+    clash_acknowledged_at: datetime.datetime | None
     updated_at: datetime.datetime
 
 
@@ -99,57 +131,23 @@ def staff_ref(user: "User") -> StaffRef:
     return StaffRef(id=user.id, name=user.name, role=user.role)
 
 
+def user_ref(user: "User | None") -> NamedRef | None:
+    return None if user is None else NamedRef(id=user.id, name=user.name)
+
+
 def subject_ref(subject: "Subject | None") -> NamedRef | None:
     return None if subject is None else NamedRef(id=subject.id, name=subject.name)
+
+
+def home_summary_ref(home: "Home | None") -> HomeSummaryRef | None:
+    return (
+        None if home is None else HomeSummaryRef(id=home.id, label=home.label, address=home.address)
+    )
 
 
 def home_ref(home: "Home | None") -> HomeRef | None:
     return (
         None
         if home is None
-        else HomeRef(
-            id=home.id, label=home.label, address=home.address, access_code=home.access_code
-        )
-    )
-
-
-def booking_summary(row: "Booking") -> BookingSummary:
-    """Needs `child`, `staff` and `subject` loaded on `row`."""
-    return BookingSummary(
-        id=row.id,
-        child=NamedRef(id=row.child.id, name=row.child.name),
-        staff=staff_ref(row.staff),
-        kind=row.kind,
-        location=row.location,
-        subject=subject_ref(row.subject),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
-        updated_at=row.updated_at,
-    )
-
-
-def booking_detail(row: "Booking") -> BookingDetail:
-    """Needs `child`, `staff`, `subject`, `home` and `booked_by_guardian` loaded on `row`."""
-    return BookingDetail(
-        id=row.id,
-        child=BookingChild(id=row.child.id, name=row.child.name, notes=row.child.notes),
-        staff=staff_ref(row.staff),
-        kind=row.kind,
-        location=row.location,
-        subject=subject_ref(row.subject),
-        scheduled_date=row.scheduled_date,
-        start_time=row.start_time,
-        end_time=row.end_time,
-        status=row.status,
-        notes=row.notes,
-        home=home_ref(row.home),
-        booked_by_guardian=(
-            None
-            if row.booked_by_guardian is None
-            else NamedRef(id=row.booked_by_guardian.id, name=row.booked_by_guardian.name)
-        ),
-        updated_at=row.updated_at,
+        else HomeRef(id=home.id, label=home.label, address=home.address, directions=home.directions)
     )

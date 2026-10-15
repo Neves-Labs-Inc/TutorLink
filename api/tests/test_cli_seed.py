@@ -27,7 +27,7 @@ def test_creates_exactly_one_admin_whose_password_verifies(db: Session) -> None:
     assert admin.email == "admin@tutorlink.test"
     assert admin.role.value == "admin"
     assert admin.profile is None
-    assert admin.is_active is True
+    assert admin.is_archived is False
     assert verify_password("change-me-please", admin.hashed_password)
 
 
@@ -124,7 +124,7 @@ def test_creates_a_developer_whose_password_verifies(db: Session) -> None:
     developer = db.scalars(select(User)).one()
     assert developer.role is UserRole.DEVELOPER
     assert developer.profile is None
-    assert developer.is_active is True
+    assert developer.is_archived is False
     assert verify_password("change-me-please", developer.hashed_password)
 
 

@@ -15,6 +15,7 @@ from app.dependencies import Principal
 from app.models.user import User
 from app.schemas.user import MeRead, MeUpdate
 from app.services.name_rules import InvalidName
+from app.services.settings_service import read_office_phone
 from app.services.user_service import get_user, rename_user
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api/me", tags=["me"])
 @router.get("", response_model=MeRead)
 def read_me(user: Principal, db: DbSession) -> MeRead:
     # `get_current_user` has just read this row and refused a missing or inactive one.
-    return _me(get_user(db, user_id=user.id))
+    return _me(db, get_user(db, user_id=user.id))
 
 
 @router.patch("", response_model=MeRead)
@@ -38,13 +39,15 @@ def update_me(payload: MeUpdate, user: Principal, db: DbSession) -> MeRead:
 
     db.commit()
 
-    return _me(account)
+    return _me(db, account)
 
 
-def _me(account: User) -> MeRead:
+def _me(db: Session, account: User) -> MeRead:
     return MeRead(
         id=account.id,
         email=account.email,
         role=account.role,
         name=account.name,
+        tutor_id=account.profile_id,
+        office_phone=read_office_phone(db),
     )

@@ -17,13 +17,13 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
+from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.child import Child
 
 
-class Guardian(HasID, HasTimestamps, HasActiveFlag, Base):
+class Guardian(HasID, HasTimestamps, HasArchivedFlag, Base):
     __tablename__ = "guardians"
     __table_args__ = (Index("ix_guardians_phone_number", "phone_number"),)
 
@@ -37,7 +37,7 @@ class ChildGuardian(HasID, Base):
     """Which guardians a child has. Many-to-many: siblings share guardians, and a child with
     separated guardians has two.
 
-    Hard delete, no `is_active`, matching `tutor_subjects`. A junction is a link rather than an
+    Hard delete, no `is_archived`, matching `tutor_subjects`. A junction is a link rather than an
     entity, and #21's soft-delete rule is about entities. Unlinking a guardian after a custody
     change is a DELETE and takes effect immediately.
     """

@@ -284,7 +284,7 @@ def test_a_spanish_name_staff_set_through_the_api_is_the_one_the_bot_shows(
         name="Mia Manager",
         hashed_password="unused",
         role=UserRole.MANAGER,
-        is_active=True,
+        is_archived=False,
     )
     db.add(manager)
     db.flush()
@@ -395,28 +395,26 @@ def test_a_spanish_none_word_stores_no_notes(chat: Chat, db: Session, word: str)
     assert db.execute(select(Child)).scalar_one().notes is None
 
 
-@pytest.mark.parametrize("word", ["ninguno", "nada", "No hay."])
-def test_a_spanish_none_word_is_recorded_as_no_access_code(chat: Chat, word: str) -> None:
-    """`homes.access_code` is NOT NULL, and "none" is what an English Guardian's "no code"
-    has always been stored as, so Staff and tutors read the same thing in both languages."""
+@pytest.mark.parametrize("word", ["none", "ninguno", "no", "nada", "No hay."])
+def test_a_none_word_records_no_directions(chat: Chat, word: str) -> None:
     _open_intake(chat)
     chat.say(value="Ada Guardian")
     chat.say(value="1 Test Street")
 
     chat.say(value=word)
 
-    assert chat.state.collected_data["access_code"] == bot_service.NO_ACCESS_CODE == "none"
+    assert chat.state.collected_data["directions"] is None
     assert chat.step == bot_service.STEP_INTAKE_LABEL
 
 
-def test_an_access_code_is_otherwise_kept_as_written(chat: Chat) -> None:
+def test_directions_are_otherwise_kept_as_written(chat: Chat) -> None:
     _open_intake(chat)
     chat.say(value="Ada Guardian")
     chat.say(value="1 Test Street")
 
-    chat.say(value="Nada 4521")
+    chat.say(value="Gate code 1234")
 
-    assert chat.state.collected_data["access_code"] == "Nada 4521"
+    assert chat.state.collected_data["directions"] == "Gate code 1234"
 
 
 # --- Spanish fixture conversations (the webhook) ------------------------------------------------

@@ -204,9 +204,9 @@ def _qualified_tutor_names(
     """Active Tutors and Managers who teach `subject_id`, at a ceiling that reaches the Child
     or the grade.
 
-    Active is the person's `users.is_active`, and the role is checked too: an Admin keeps the
-    profile they had as a Tutor (`user_service`) but is no longer offered (#130). Names are the
-    person's.
+    Active is the person's `users.is_archived` being false, and the role is checked too: an
+    Admin keeps the profile they had as a Tutor (`user_service`) but is no longer offered
+    (#130). Names are the person's.
 
     The ceiling is matched one of three ways:
 
@@ -222,7 +222,7 @@ def _qualified_tutor_names(
     the row here is the refusal REQ-042.3 asks for rather than the silent pass the same shape
     produces on the booking write path.
 
-    The join to `Subject` and its `is_active` filter close #44 item 1 in its original
+    The join to `Subject` and its `is_archived` filter close #44 item 1 in its original
     direction: a retired subject must yield no qualified tutors here the same way a retired
     tutor already yields none, so a retired `subject_id` answers with the empty `Page`
     `test_a_tutor_with_no_assignment_for_the_subject_is_never_offered` already established for
@@ -235,10 +235,10 @@ def _qualified_tutor_names(
         .join(TutorSubject, TutorSubject.tutor_id == Tutor.id)
         .join(Subject, Subject.id == TutorSubject.subject_id)
         .where(
-            User.is_active.is_(True),
+            User.is_archived.is_(False),
             User.role.in_(PROFILE_ROLES),
             Subject.id == subject_id,
-            Subject.is_active.is_(True),
+            Subject.is_archived.is_(False),
         )
     )
     if child_id is not None:
@@ -251,7 +251,10 @@ def _qualified_tutor_names(
     if tutor_id is not None:
         statement = statement.where(Tutor.id == tutor_id)
 
-    return {row.id: row.name for row in db.execute(statement)}
+    # The bot numbers its tutor menu in this order, so it must not be left to the query plan.
+    ordered = statement.order_by(User.name, Tutor.id)
+
+    return {row.id: row.name for row in db.execute(ordered)}
 
 
 def _active_ranges(
@@ -291,14 +294,19 @@ def _approved_exceptions(
     `rejected` blocks nothing ever (#24). The date comparison is inclusive at both ends, so a
     range covers its middle days as well as its edges, and a set time window applies to every
     day in the range rather than as one continuous absence across it.
+
+    Time off is held by the person, so it is reached through `tutors.user_id`; the result is
+    still keyed by profile, like every other step.
     """
     rows = db.execute(
         select(
-            TutorAvailabilityException.tutor_id,
+            Tutor.id,
             TutorAvailabilityException.start_time,
             TutorAvailabilityException.end_time,
-        ).where(
-            TutorAvailabilityException.tutor_id.in_(tutor_ids),
+        )
+        .join(Tutor, Tutor.user_id == TutorAvailabilityException.user_id)
+        .where(
+            Tutor.id.in_(tutor_ids),
             TutorAvailabilityException.status == ExceptionStatus.APPROVED,
             TutorAvailabilityException.start_date <= date,
             TutorAvailabilityException.end_date >= date,

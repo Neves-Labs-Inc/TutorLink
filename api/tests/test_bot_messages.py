@@ -37,7 +37,7 @@ EXPECTED_IDS = {
     "GREETING_RETURNING",
     "ASK_GUARDIAN_NAME",
     "ASK_ADDRESS",
-    "ASK_ACCESS_CODE",
+    "ASK_DIRECTIONS",
     "ASK_HOME_LABEL",
     "ASK_CHILD_REGISTERED",
     "ASK_CHILD_NAME",
@@ -78,7 +78,7 @@ EXPECTED_IDS = {
     "NO_UPCOMING",
     "NUDGE_intake_name",
     "NUDGE_intake_address",
-    "NUDGE_intake_access_code",
+    "NUDGE_intake_directions",
     "NUDGE_intake_label",
     "NUDGE_child_registered",
     "NUDGE_child_name",
@@ -161,6 +161,40 @@ def test_render_returns_the_spanish_or_english_line() -> None:
     assert render("ASK_MENU", None) == (
         "I can book a session, cancel one, or move one to another time. What would you like to do?"
     )
+
+
+@pytest.mark.parametrize(
+    ("message_id", "language", "expected"),
+    [
+        (
+            "ASK_DIRECTIONS",
+            "en",
+            "Is there anything the tutor should know to get in, such as a gate or door code,"
+            ' parking, or which entrance to use? You can reply "none".',
+        ),
+        (
+            "ASK_DIRECTIONS",
+            "es",
+            "¿Hay algo que el tutor deba saber para entrar, como un código de portón o puerta,"
+            ' dónde estacionar o qué entrada usar? Puede responder "ninguno".',
+        ),
+        (
+            "NUDGE_intake_directions",
+            "en",
+            'Please send any directions the tutor needs to get in, or reply "none".',
+        ),
+        (
+            "NUDGE_intake_directions",
+            "es",
+            "Por favor, envíe las indicaciones que el tutor necesite para entrar, o responda"
+            ' "ninguno".',
+        ),
+    ],
+)
+def test_the_directions_step_asks_for_a_way_in(
+    message_id: str, language: str, expected: str
+) -> None:
+    assert render(message_id, language) == expected
 
 
 def test_render_fills_placeholders() -> None:

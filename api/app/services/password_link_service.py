@@ -185,7 +185,7 @@ def set_password_with_link(db: Session, *, token: str, password: str, now: datet
         logger.warning("password_link.set_password: no live link for the token")
         raise InvalidLink
 
-    if not user.is_active:
+    if user.is_archived:
         logger.warning("password_link.set_password: user %s is inactive", user.id)
         raise InvalidLink
 
@@ -216,7 +216,7 @@ def request_reset(db: Session, *, email: str, now: datetime) -> tuple[User, str]
     """
     user = _lock_user_by_email(db, email=normalise_email(email))
 
-    if user is None or not user.is_active or user.hashed_password is None:
+    if user is None or user.is_archived or user.hashed_password is None:
         return None
 
     _link, token = issue_link(db, user=user, purpose=PasswordLinkPurpose.RESET, now=now)

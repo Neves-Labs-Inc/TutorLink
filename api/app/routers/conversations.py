@@ -413,7 +413,6 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         flag_reason=detail.conversation.flag_reason,
         flagged_at=detail.conversation.flagged_at,
         message_count=detail.message_count,
-        unread_count=detail.unread_count,
         created_at=detail.conversation.created_at,
         reactivation_request=_reactivation_request(detail.reactivation_child),
         is_window_open=detail.is_window_open,
@@ -450,7 +449,7 @@ def _reactivation_request(child: Child | None) -> ReactivationRequestRead | None
         request = None
     else:
         request = ReactivationRequestRead(
-            child=ReactivationChildRef(id=child.id, name=child.name, is_active=child.is_active)
+            child=ReactivationChildRef(id=child.id, name=child.name, archived=child.is_archived)
         )
 
     return request

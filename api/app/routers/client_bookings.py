@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.enums import BookingStatus
-from app.schemas.booking import BookingSummary, booking_summary
+from app.schemas.booking import BookingSummary
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
+from app.services import clock
+from app.services.booking_read_service import booking_summaries
 from app.services.booking_service import BookingFilters, ClientNotFound, list_client_bookings
 
 CLIENT_NOT_FOUND_ERROR = "Client not found"
@@ -55,7 +57,7 @@ def list_bookings_for_client(
         raise HTTPException(status.HTTP_404_NOT_FOUND, CLIENT_NOT_FOUND_ERROR) from exc
 
     return Page[BookingSummary](
-        items=[booking_summary(row) for row in bookings],
+        items=booking_summaries(db, bookings, now=clock.business_now()),
         total=total,
         page=page,
         page_size=page_size,

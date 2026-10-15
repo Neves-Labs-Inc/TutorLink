@@ -15,14 +15,14 @@ class HouseholdGuardian(BaseModel):
     id: uuid.UUID
     name: str
     phone_number: str
-    is_active: bool
+    archived: bool
 
 
 class HouseholdChild(BaseModel):
     id: uuid.UUID
     name: str
     grade_level: int | None
-    is_active: bool
+    archived: bool
 
 
 class HouseholdRead(BaseModel):

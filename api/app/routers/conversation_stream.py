@@ -242,7 +242,7 @@ def _resolve_admin(db: Session, token: str) -> _Admin | str:
 
     user = None if claims is None else db.get(User, claims.subject)
 
-    if claims is None or user is None or not user.is_active:
+    if claims is None or user is None or user.is_archived:
         resolved: _Admin | str = CREDENTIALS_ERROR
     elif user.role not in OFFICE_ROLES:
         resolved = OFFICE_REQUIRED_ERROR

@@ -12,6 +12,8 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 
+SUBJECT_NOT_FOUND_ERROR = "Subject not found"
+
 
 class Keep(enum.Enum):
     """An update argument the caller left out, as opposed to `None`, which clears it."""
@@ -40,8 +42,8 @@ class SubjectWithCount:
     tutor_count: int
 
 
-def _visible(is_active: bool) -> Select[tuple[Subject]]:
-    return select(Subject).where(Subject.is_active.is_(is_active))
+def _visible(is_archived: bool) -> Select[tuple[Subject]]:
+    return select(Subject).where(Subject.is_archived.is_(is_archived))
 
 
 def _count_expr() -> Select[tuple[int]]:
@@ -50,7 +52,7 @@ def _count_expr() -> Select[tuple[int]]:
         .select_from(TutorSubject)
         .join(Tutor, Tutor.id == TutorSubject.tutor_id)
         .join(User, User.id == Tutor.user_id)
-        .where(TutorSubject.subject_id == Subject.id, User.is_active.is_(True))
+        .where(TutorSubject.subject_id == Subject.id, User.is_archived.is_(False))
         .scalar_subquery()
     )
 
@@ -67,12 +69,12 @@ def _name_taken(db: Session, *, name: str, exclude_id: uuid.UUID | None) -> bool
 
 
 def list_subjects(
-    db: Session, *, is_active: bool, limit: int, offset: int
+    db: Session, *, is_archived: bool, limit: int, offset: int
 ) -> tuple[list[SubjectWithCount], int]:
-    total = db.scalar(select(func.count()).select_from(_visible(is_active).subquery())) or 0
+    total = db.scalar(select(func.count()).select_from(_visible(is_archived).subquery())) or 0
     rows = db.execute(
         select(Subject, _count_expr())
-        .where(Subject.is_active.is_(is_active))
+        .where(Subject.is_archived.is_(is_archived))
         .order_by(Subject.name)
         .limit(limit)
         .offset(offset)
@@ -100,7 +102,7 @@ def create_subject(
     if _name_taken(db, name=name, exclude_id=None):
         raise SubjectNameTaken
 
-    subject = Subject(name=name, name_es=name_es, description=description, is_active=True)
+    subject = Subject(name=name, name_es=name_es, description=description, is_archived=False)
 
     try:
         with db.begin_nested():
@@ -118,7 +120,6 @@ def update_subject(
     subject_id: uuid.UUID,
     name: str | None,
     description: str | None,
-    is_active: bool | None,
     name_es: str | None | Keep = KEEP,
 ) -> SubjectWithCount:
     found = _get_with_count(db, subject_id=subject_id)
@@ -145,19 +146,8 @@ def update_subject(
             if description is not None:
                 subject.description = description
 
-            if is_active is not None:
-                subject.is_active = is_active
-
             db.flush()
     except IntegrityError as exc:
         raise SubjectNameTaken from exc
 
     return SubjectWithCount(subject=subject, tutor_count=found.tutor_count)
-
-
-def deactivate_subject(db: Session, *, subject_id: uuid.UUID) -> SubjectWithCount:
-    found = _get_with_count(db, subject_id=subject_id)
-    found.subject.is_active = False
-    db.flush()
-
-    return found

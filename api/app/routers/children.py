@@ -8,15 +8,15 @@ Children are reached through the client surface, which the RBAC table
 Nothing here queries a tutor-owned table and no route takes `TutorScope`. These are the two
 write routes; the reads of `/api/children` live in `children_read.py`.
 
-`PATCH` with `is_active: false` cancels the child's upcoming sessions in the same transaction as
-the deactivation, which is why the one `db.commit()` below must stay the only one: a refusal or a
-failure part-way through the cancellations leaves nothing written (P7C-O).
+Archiving a child, which cancels its upcoming sessions, is `POST /api/archive`, not a route
+here (see `archive_service`).
 """
 
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -26,25 +26,23 @@ from app.schemas.child import ChildCreate, ChildRead, ChildUpdate
 from app.services.child_service import (
     DATE_OF_BIRTH_EARLIEST,
     ChildNotFound,
-    HomeRemovalHasUpcomingBookings,
+    GuardianRemovalHasUpcomingBookings,
     InvalidChildLinks,
     InvalidDateOfBirth,
-    UpcomingSessionsChanged,
     create_child,
     update_child,
 )
 
 CHILD_NOT_FOUND_ERROR = "Child not found"
 INVALID_LINKS_ERROR = (
-    "guardian_ids and home_ids must each name at least one guardian or home, and every id "
-    "given must already exist"
+    "guardian_ids must name at least one guardian, and every id given must already exist"
 )
 INVALID_DATE_OF_BIRTH_ERROR = (
     f"date_of_birth must be a real date between {DATE_OF_BIRTH_EARLIEST.isoformat()} and today"
 )
-UPCOMING_SESSIONS_CHANGED_ERROR = "Upcoming sessions changed; review them and confirm again"
-HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR = (
-    "Child has upcoming bookings at a home being removed; cancel or move them first"
+GUARDIAN_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR = (
+    "Child has upcoming bookings at a home that would no longer be theirs; "
+    "cancel or move them first"
 )
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -58,7 +56,6 @@ def create(payload: ChildCreate, user: OfficePrincipal, db: DbSession) -> ChildR
         created = create_child(
             db,
             guardian_ids=payload.guardian_ids,
-            home_ids=payload.home_ids,
             name=payload.name,
             date_of_birth=payload.date_of_birth,
             grade_level=payload.grade_level,
@@ -78,20 +75,17 @@ def create(payload: ChildCreate, user: OfficePrincipal, db: DbSession) -> ChildR
 @router.patch("/{child_id}", response_model=ChildRead)
 def update(
     child_id: uuid.UUID, payload: ChildUpdate, user: OfficePrincipal, db: DbSession
-) -> ChildRead:
+) -> ChildRead | JSONResponse:
     try:
         updated = update_child(
             db,
             child_id=child_id,
             guardian_ids=payload.guardian_ids,
-            home_ids=payload.home_ids,
             name=payload.name,
             date_of_birth=payload.date_of_birth,
             grade_level=payload.grade_level,
             school_name=payload.school_name,
             notes=payload.notes,
-            is_active=payload.is_active,
-            expected_cancellations=payload.expected_cancellations,
         )
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
@@ -99,12 +93,15 @@ def update(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_LINKS_ERROR) from exc
     except InvalidDateOfBirth as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_DATE_OF_BIRTH_ERROR) from exc
-    except HomeRemovalHasUpcomingBookings as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, HOME_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR
-        ) from exc
-    except UpcomingSessionsChanged as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, UPCOMING_SESSIONS_CHANGED_ERROR) from exc
+    except GuardianRemovalHasUpcomingBookings as exc:
+        # A `JSONResponse`, like `archive.py`'s refusals: the body carries `booking_ids`.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": GUARDIAN_REMOVAL_HAS_UPCOMING_BOOKINGS_ERROR,
+                "booking_ids": [str(booking_id) for booking_id in exc.booking_ids],
+            },
+        )
 
     db.commit()
 
@@ -119,7 +116,6 @@ def _as_read(child: Child) -> ChildRead:
         grade_level=child.grade_level,
         school_name=child.school_name,
         notes=child.notes,
-        is_active=child.is_active,
+        archived=child.is_archived,
         guardian_ids=[link.guardian_id for link in child.guardian_links],
-        home_ids=[link.home_id for link in child.home_links],
     )

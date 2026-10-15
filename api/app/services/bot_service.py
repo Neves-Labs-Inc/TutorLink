@@ -94,7 +94,7 @@ from app.models.enums import (
     FlagReason,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import DIRECTIONS_MAX_LENGTH, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -121,6 +121,7 @@ from app.services import (
     scheduling_service,
     slot_service,
 )
+from app.services.home_set import homes_by_child
 from app.services.tutor_service import PROFILE_ROLES
 from app.services.bot_state import FlowState, clear_state, load_state, save_state
 from app.services.name_matching import exact_matches, named_children, typo_matches
@@ -142,7 +143,7 @@ SUBJECT_LIMIT = 100
 
 STEP_INTAKE_NAME = "intake_name"
 STEP_INTAKE_ADDRESS = "intake_address"
-STEP_INTAKE_ACCESS_CODE = "intake_access_code"
+STEP_INTAKE_DIRECTIONS = "intake_directions"
 STEP_INTAKE_LABEL = "intake_label"
 STEP_CHILD_REGISTERED = "child_registered"
 STEP_CHILD_NAME = "child_name"
@@ -178,23 +179,19 @@ OPENING_QUESTION = "Nothing yet: this is the parent's first message in a new con
 # Staff-facing, so it is not a catalogue message.
 BOOKING_NOTE = "Booked by the WhatsApp assistant."
 
-# What a "no access code" answer is stored as: `homes.access_code` is NOT NULL, and this is the
-# word an English Guardian has always sent, so Staff and tutors read one thing in both languages.
-NO_ACCESS_CODE = "none"
-
 # The widths of the columns the intake answers land in. `homes.address` is TEXT and takes a
 # loose bound of its own; `children.notes` is TEXT bounded by the same `NOTES_MAX_LENGTH` the
-# API schema enforces; the rest are the declared `String(...)` lengths in `models/`.
+# API schema enforces, and `homes.directions` by `DIRECTIONS_MAX_LENGTH`; the rest are the
+# declared `String(...)` lengths in `models/`.
 NAME_LIMIT = 255
 ADDRESS_LIMIT = 1000
-ACCESS_CODE_LIMIT = 64
 LABEL_LIMIT = 64
 
-# See `_context`. A street address and its door code are what P7-F exists to protect; a child's
+# See `_context`. A street address and its directions (a door code, often) are what P7-F exists to protect; a child's
 # date of birth and the notes answer — which can be health information — are withheld on the
 # same reasoning (A-55). No step after the one that collected any of them needs it in order to
 # be understood.
-_WITHHELD_FROM_CONTEXT = frozenset({"address", "access_code", "child_date_of_birth", "child_notes"})
+_WITHHELD_FROM_CONTEXT = frozenset({"address", "directions", "child_date_of_birth", "child_notes"})
 
 # Compared after `_normalized`, so "Yes, please!" is "yes please". The parser is told to answer
 # `yes` or `no`; these are the phrasings it may still pass through verbatim.
@@ -342,7 +339,7 @@ _BOOKING_KEYS = (
 # the exact shape a stale payload (a build whose handler now reads a key an older build never
 # wrote) fails on with a `KeyError`. A step absent here needs nothing beyond the step's own
 # answer, which arrives through `parsed.answer` rather than `collected_data`.
-_INTAKE_KEYS = frozenset({"guardian_name", "address", "access_code"})
+_INTAKE_KEYS = frozenset({"guardian_name", "address", "directions"})
 
 _REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # `child_grade` is optional: a flow saved before the grade step existed creates the Child
@@ -956,16 +953,16 @@ def _collect_text(key: str, reply_id: str, step: str, *, limit: int) -> _Handler
     return handler
 
 
-def _intake_access_code(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
-    """The access code, kept as written, except that a Spanish none word ("ninguno", "no hay")
-    is stored as `NO_ACCESS_CODE`, the English Guardian's "none"."""
+def _intake_directions(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+    """How the tutor gets in, kept as written; a none word ("none", "ninguno", "no") records
+    no directions."""
     value = _answer(turn, parsed)
 
     if value is None:
         result = None
     else:
-        is_none = _normalized(value) in _SPANISH_SKIP
-        turn.data["access_code"] = NO_ACCESS_CODE if is_none else value[:ACCESS_CODE_LIMIT]
+        is_none = _normalized(value) in _NO_NOTES
+        turn.data["directions"] = None if is_none else value[:DIRECTIONS_MAX_LENGTH]
         result = _Next(reply=_say(turn, "ASK_HOME_LABEL"), step=STEP_INTAKE_LABEL)
 
     return result
@@ -989,7 +986,7 @@ def _intake_label(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
 def _child_registered(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     """P7-F's gate. "Yes" stops here and writes nothing: phone-alone identity cannot tell a real
     second guardian from anyone who knows a child's name, and linking would hand over the other
-    guardian's home address and door access code. The bot asks, writes no child row and no link,
+    guardian's home address and door directions. The bot asks, writes no child row and no link,
     and raises `guardian_link_request` for an admin. Do not relax this into an automatic link."""
     answer = _yes_no(turn, parsed)
 
@@ -1119,7 +1116,8 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
 
     **Every row #39 names lands here, in one transaction** (REQ-073.2/.3, P7-AA): a `guardians`
     row, a `homes` row and a `guardian_homes` link on the first child, then a `children` row plus
-    a `child_homes` and a `child_guardians` link for each. Holding the guardian in flow state
+    a `child_guardians` link for each. The child's homes are its guardian's (`home_set`, #214), so
+    nothing links a child to a home directly. Holding the guardian in flow state
     until a child exists is what makes "a refused intake leaves none of it behind" true of the whole
     intake rather than only of its tail — and it is what lets P7-F's refusal write *nothing at
     all*.
@@ -1127,9 +1125,8 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
     The guardian's `phone_number` goes through `phone_service` here (REQ-073.4, D-L): this is a
     new row entering the database, unlike the inbound number the thread is keyed on (P7-H).
 
-    For a guardian who already exists — the second child of an intake, or a returning client
-    with no child on file — the child is linked to every home that guardian already has, which
-    is the correlation `child_homes` exists to record.
+    A guardian with no active home — a new client whose home was not created, or an existing one
+    whose homes are all archived — is stuck rather than given a child with nowhere to be tutored.
     """
     answer = _answer(turn, parsed)
 
@@ -1141,23 +1138,22 @@ def _child_notes(turn: _Turn, parsed: ParsedIntent) -> _Next:
     if turn.guardian is None:
         created = _create_client(turn)
         guardian_id = None if created is None else created.client.id
-        home_ids = [] if created is None else [home.id for home in created.homes]
+        has_home = created is not None and bool(created.homes)
     else:
         guardian_id = turn.guardian.id
-        home_ids = [home.id for home in _guardian_homes(turn.db, guardian_id=guardian_id)]
+        has_home = bool(_guardian_homes(turn.db, guardian_id=guardian_id))
 
     # Popped so the next Child of this Intake never inherits it. Only an int is a grade this
     # step stored: a string is the retired grade step's, from an older build, and is dropped.
     stored_grade = turn.data.pop("child_grade", None)
     grade_level = stored_grade if isinstance(stored_grade, int) else None
 
-    if guardian_id is None or not home_ids:
+    if guardian_id is None or not has_home:
         result = _stuck(turn)
     else:
         child = child_service.create_child(
             turn.db,
             guardian_ids=[guardian_id],
-            home_ids=home_ids,
             name=turn.data["child_name"],
             date_of_birth=datetime.date.fromisoformat(turn.data["child_date_of_birth"]),
             grade_level=grade_level,
@@ -1184,7 +1180,7 @@ def _create_client(turn: _Turn) -> client_service.ClientDetail | None:
     home = client_service.HomeInput(
         label=turn.data.get("home_label"),
         address=turn.data["address"],
-        access_code=turn.data["access_code"],
+        directions=turn.data["directions"],
     )
 
     try:
@@ -1622,7 +1618,7 @@ def _ask_subject(turn: _Turn, *, child: Child) -> _Next:
     step = STEP_BOOK_SUBJECT if child.evaluated_at is not None else STEP_FIRST_SESSION_SUBJECT
     subjects = turn.db.scalars(
         select(Subject)
-        .where(Subject.is_active.is_(True))
+        .where(Subject.is_archived.is_(False))
         .order_by(Subject.name, Subject.id)
         .limit(SUBJECT_LIMIT)
     ).all()
@@ -1823,7 +1819,7 @@ def _ask_location(turn: _Turn) -> _Next:
     """The Location step (#132): which of the Child's homes, or the office, from the modes of
     the day's ranges (`slot_service.allowed_locations`).
 
-    The homes come from `child_homes` directly. The bot is not a client of
+    The homes are the Child's bookable set (`home_set`). The bot is not a client of
     `GET /api/clients/{id}` and issue #60's flat uncorrelated lists are not in its path (P7-M).
     One possible Location is chosen without asking; none at all is an Office handoff, since
     ranges exist but no Location fits them (answers.md 03.2). A reschedule presets the old
@@ -2186,7 +2182,7 @@ def _offerable_profile_id(db: Session, *, user_id: uuid.UUID) -> uuid.UUID | Non
     return db.scalars(
         select(Tutor.id)
         .join(User, User.id == Tutor.user_id)
-        .where(Tutor.user_id == user_id, User.is_active.is_(True), User.role.in_(PROFILE_ROLES))
+        .where(Tutor.user_id == user_id, User.is_archived.is_(False), User.role.in_(PROFILE_ROLES))
     ).first()
 
 
@@ -2271,9 +2267,9 @@ def _inactive_hit(hits: list[Child]) -> _NameHit:
     `_AMBIGUOUS`: no child is picked by that name (REQ-132.5). Anything else — no hit, one
     active hit, several all active — is `None`, and the point carries on as it did before 7D.
     """
-    if len(hits) == 1 and not hits[0].is_active:
+    if len(hits) == 1 and hits[0].is_archived:
         result: _NameHit = hits[0]
-    elif len(hits) > 1 and any(not child.is_active for child in hits):
+    elif len(hits) > 1 and any(child.is_archived for child in hits):
         result = _AMBIGUOUS
     else:
         result = None
@@ -2350,7 +2346,7 @@ def _request_reactivation(turn: _Turn) -> _Next:
         result = _refuse_while_pending(turn)
     elif child is None:
         result = _stuck(turn)
-    elif child.is_active:
+    elif not child.is_archived:
         result = _Next(
             reply=(
                 f"{_say(turn, 'REACTIVATION_NOT_NEEDED', name=child.name)} {_say(turn, 'ASK_MENU')}"
@@ -2391,7 +2387,7 @@ def _recognise(db: Session, *, phone_number: str, guardian_id: uuid.UUID | None)
     The conversation's own `guardian_id` wins when the webhook has one. A thread follows the
     guardian who owns it (a number change re-keys it, #126), so the guardian linked to the thread
     at a number is the one holding that number, for every change made since that rule.
-    `is_active` is deliberately not filtered: a deactivated client is recognised and then
+    `is_archived` is deliberately not filtered: a deactivated client is recognised and then
     refused at the write path by `_resolve`, which is a clearer outcome than an intake that
     collides with their own row on `UNIQUE (phone_number)`.
 
@@ -2428,7 +2424,7 @@ def _children(db: Session, *, guardian_id: uuid.UUID) -> list[Child]:
         db.scalars(
             select(Child)
             .join(ChildGuardian, ChildGuardian.child_id == Child.id)
-            .where(ChildGuardian.guardian_id == guardian_id, Child.is_active.is_(True))
+            .where(ChildGuardian.guardian_id == guardian_id, Child.is_archived.is_(False))
             .order_by(Child.name, Child.id)
         ).all()
     )
@@ -2461,22 +2457,15 @@ def _guardian_homes(db: Session, *, guardian_id: uuid.UUID) -> list[Home]:
         db.scalars(
             select(Home)
             .join(GuardianHome, GuardianHome.home_id == Home.id)
-            .where(GuardianHome.guardian_id == guardian_id, Home.is_active.is_(True))
+            .where(GuardianHome.guardian_id == guardian_id, Home.is_archived.is_(False))
             .order_by(Home.created_at, Home.id)
         ).all()
     )
 
 
 def _homes(db: Session, *, child_id: uuid.UUID) -> list[Home]:
-    """The child's active homes, read from `child_homes` (REQ-074.4)."""
-    return list(
-        db.scalars(
-            select(Home)
-            .join(ChildHome, ChildHome.home_id == Home.id)
-            .where(ChildHome.child_id == child_id, Home.is_active.is_(True))
-            .order_by(Home.created_at, Home.id)
-        ).all()
-    )
+    """The child's bookable homes: every active home of any of its guardians (REQ-074.4, #214)."""
+    return homes_by_child(db, child_ids=[child_id], include_archived=False)[child_id]
 
 
 def _upcoming_bookings(
@@ -2674,7 +2663,7 @@ def _context(state: FlowState) -> dict[str, str]:
     The numbered choices go in verbatim, because "the second one" and "the 10:30 one" are only
     resolvable against them.
 
-    **The home address and its access code are withheld** (`_WITHHELD_FROM_CONTEXT`). They are
+    **The home address and its directions are withheld** (`_WITHHELD_FROM_CONTEXT`). They are
     the pair #39 built P7-F to protect — a street address and the code that opens its door —
     and no later step needs either to be interpreted, so sending them to a third-party model
     once per message of the rest of the conversation buys nothing and exposes the two values
@@ -2721,9 +2710,9 @@ _HANDLERS: dict[str, _Handler] = {
         "guardian_name", "ASK_ADDRESS", STEP_INTAKE_ADDRESS, limit=NAME_LIMIT
     ),
     STEP_INTAKE_ADDRESS: _collect_text(
-        "address", "ASK_ACCESS_CODE", STEP_INTAKE_ACCESS_CODE, limit=ADDRESS_LIMIT
+        "address", "ASK_DIRECTIONS", STEP_INTAKE_DIRECTIONS, limit=ADDRESS_LIMIT
     ),
-    STEP_INTAKE_ACCESS_CODE: _intake_access_code,
+    STEP_INTAKE_DIRECTIONS: _intake_directions,
     STEP_INTAKE_LABEL: _intake_label,
     STEP_CHILD_REGISTERED: _child_registered,
     STEP_CHILD_NAME: _child_name,

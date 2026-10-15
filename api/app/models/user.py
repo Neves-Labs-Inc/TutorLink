@@ -6,14 +6,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.enums import UserRole, user_role_enum
-from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
+from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.tutor import Tutor
 
 
-class User(HasID, HasTimestamps, HasActiveFlag, Base):
+class User(HasID, HasTimestamps, HasArchivedFlag, Base):
     """The one record of a person. A Tutor or Manager's teaching profile hangs off it through
     `profile`; an Admin or Developer has none."""
 
@@ -33,7 +33,9 @@ class User(HasID, HasTimestamps, HasActiveFlag, Base):
 
     profile: Mapped["Tutor | None"] = relationship(back_populates="user", uselist=False)
     # The sessions this person is the Staff member of (#130).
-    bookings: Mapped[list["Booking"]] = relationship(back_populates="staff")
+    bookings: Mapped[list["Booking"]] = relationship(
+        back_populates="staff", foreign_keys="Booking.user_id"
+    )
 
     @property
     def profile_id(self) -> uuid.UUID | None:

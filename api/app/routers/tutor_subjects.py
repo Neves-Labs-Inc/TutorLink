@@ -1,5 +1,5 @@
-"""`/api/tutors/{tutor_id}/subjects` — admin only, assigning and removing subject-grade
-assignments.
+"""`/api/tutors/{tutor_id}/subjects` — Admin only (`AdminPrincipal`; a Manager is 403, #208),
+assigning and removing subject-grade assignments.
 
 A thin HTTP shell over `tutor_subject_service`: the service raises domain exceptions, this
 maps them to status codes and owns the commit. `remove` returns 204 because a hard-deleted
@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import OfficePrincipal
+from app.dependencies import AdminPrincipal
 from app.schemas.tutor_subject import TutorSubjectAssignmentRead, TutorSubjectCreate
 from app.services.tutor_subject_service import (
     AssignmentExists,
@@ -42,7 +42,7 @@ router = APIRouter(prefix="/api/tutors", tags=["tutor-subjects"])
     status_code=status.HTTP_201_CREATED,
 )
 def assign(
-    tutor_id: uuid.UUID, payload: TutorSubjectCreate, user: OfficePrincipal, db: DbSession
+    tutor_id: uuid.UUID, payload: TutorSubjectCreate, user: AdminPrincipal, db: DbSession
 ) -> TutorSubjectAssignmentRead:
     try:
         assignment = assign_subject(
@@ -74,9 +74,7 @@ def assign(
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
 )
-def remove(
-    tutor_id: uuid.UUID, subject_id: uuid.UUID, user: OfficePrincipal, db: DbSession
-) -> None:
+def remove(tutor_id: uuid.UUID, subject_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> None:
     try:
         remove_subject(db, tutor_id=tutor_id, subject_id=subject_id)
     except TutorNotFound as exc:

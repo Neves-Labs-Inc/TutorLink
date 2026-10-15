@@ -17,6 +17,7 @@ from app.models.mixins import HasID, HasTimestamps
 
 SETTING_VALUE_TYPE_INTEGER = "integer"
 SETTING_VALUE_TYPE_STRING = "string"
+SETTING_VALUE_TYPE_BOOLEAN = "boolean"
 
 
 class SystemSetting(HasID, HasTimestamps, Base):

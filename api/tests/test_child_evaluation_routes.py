@@ -15,7 +15,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -38,7 +38,7 @@ def test_setting_a_level_records_it_and_who_set_it(api: TestClient, db: Session)
     [row] = detail["levels"]
     assert row["subject_id"] == str(math.id)
     assert row["name"] == math.name
-    assert row["is_active"] is True
+    assert row["archived"] is False
     assert row["level"] == 5
     assert row["set_by"] == {"id": str(admin.id), "name": "Marta"}
     assert row["updated_at"] is not None
@@ -129,7 +129,7 @@ def test_a_level_on_an_unknown_child_or_subject_is_404(api: TestClient, db: Sess
 def test_an_inactive_subject_gets_no_new_level(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     child = _make_child(db)
-    retired = _make_subject(db, is_active=False)
+    retired = _make_subject(db, is_archived=True)
 
     response = api.put(_level_url(child, retired), headers=_auth(admin), json={"level": 3})
 
@@ -145,7 +145,7 @@ def test_an_existing_level_on_a_retired_subject_shows_inactive_and_stays_editabl
     child = _make_child(db)
     math = _make_subject(db)
     api.put(_level_url(child, math), headers=_auth(admin), json={"level": 3})
-    math.is_active = False
+    math.is_archived = True
     db.flush()
 
     edited = api.put(_level_url(child, math), headers=_auth(admin), json={"level": 4})
@@ -153,7 +153,7 @@ def test_an_existing_level_on_a_retired_subject_shows_inactive_and_stays_editabl
     removed = api.delete(_level_url(child, math), headers=_auth(admin))
 
     assert edited.status_code == 200
-    assert (row["level"], row["is_active"]) == (4, False)
+    assert (row["level"], row["archived"]) == (4, True)
     assert removed.status_code == 204
 
 
@@ -215,6 +215,51 @@ def test_clearing_evaluated_keeps_the_levels(api: TestClient, db: Session) -> No
     assert response.status_code == 204
     assert detail["evaluated"] is None
     assert [row["level"] for row in detail["levels"]] == [5]
+
+
+# --- levels on the list row, and the Evaluated filter ------------------------------------------
+
+
+def test_the_list_row_levels_skip_archived_subjects_and_follow_subject_name(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db, name=f"Lv {_suffix()}")
+    zoology = _make_subject(db, name=f"Zoology {_suffix()}")
+    algebra = _make_subject(db, name=f"Algebra {_suffix()}")
+    retired = _make_subject(db, name=f"Aaa {_suffix()}")
+    for subject, level in [(zoology, 2), (algebra, 6), (retired, 9)]:
+        api.put(_level_url(child, subject), headers=_auth(admin), json={"level": level})
+    retired.is_archived = True
+    db.flush()
+
+    [row] = api.get(f"/api/children?q={child.name}", headers=_auth(admin)).json()["items"]
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert row["levels"] == [
+        {"subject_id": str(algebra.id), "name": algebra.name, "level": 6},
+        {"subject_id": str(zoology.id), "name": zoology.name, "level": 2},
+    ]
+    assert len(detail["levels"]) == 3
+
+
+def test_evaluated_true_and_false_split_the_children(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    token = _suffix()
+    done = _make_child(db, name=f"Done {token}")
+    waiting = _make_child(db, name=f"Waiting {token}")
+    api.put(_level_url(done, _make_subject(db)), headers=_auth(admin), json={"level": 5})
+    api.post(_evaluated_url(done), headers=_auth(admin))
+
+    def ids(query: str) -> list[str]:
+        body = api.get(f"/api/children?q={token}{query}", headers=_auth(admin)).json()
+        return [row["id"] for row in body["items"]]
+
+    assert ids("&evaluated=true") == [str(done.id)]
+    assert ids("&evaluated=false") == [str(waiting.id)]
+    assert sorted(ids("")) == sorted([str(done.id), str(waiting.id)])
+    assert ids("&awaiting_evaluation=true&evaluated=true") == []
+    assert ids("&awaiting_evaluation=true&evaluated=false") == [str(waiting.id)]
 
 
 # --- Evaluated and the Evaluation booking stay separate acts (#133) -------------------------
@@ -340,7 +385,7 @@ def test_awaiting_evaluation_lists_active_children_not_evaluated_oldest_first(
     newest = _make_child(db, name=f"Ana {token}", created_days_ago=1)
     oldest = _make_child(db, name=f"Zoe {token}", created_days_ago=9)
     evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
-    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_active=False)
+    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_archived=True)
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
     api.post(_evaluated_url(evaluated), headers=_auth(admin))
 
@@ -362,7 +407,7 @@ def test_evaluable_lists_active_children_with_no_evaluation_booked_or_done_oldes
     newest = _make_child(db, name=f"Ana {token}", created_days_ago=1)
     oldest = _make_child(db, name=f"Zoe {token}", created_days_ago=9)
     evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
-    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_active=False)
+    _make_child(db, name=f"Mia {token}", created_days_ago=30, is_archived=True)
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
     api.post(_evaluated_url(evaluated), headers=_auth(admin))
 
@@ -478,7 +523,7 @@ def _make_user(
             name=name,
             hashed_password=hash_password("evaluation-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -486,7 +531,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("evaluation-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -532,25 +577,25 @@ def _make_tutor(db: Session) -> Tutor:
     return tutor
 
 
-def _make_subject(db: Session, *, name: str | None = None, is_active: bool = True) -> Subject:
-    subject = Subject(name=name or f"Subject {_suffix()}", is_active=is_active)
+def _make_subject(db: Session, *, name: str | None = None, is_archived: bool = False) -> Subject:
+    subject = Subject(name=name or f"Subject {_suffix()}", is_archived=is_archived)
     db.add(subject)
     db.flush()
     return subject
 
 
 def _make_child(
-    db: Session, *, name: str | None = None, is_active: bool = True, created_days_ago: int = 0
+    db: Session, *, name: str | None = None, is_archived: bool = False, created_days_ago: int = 0
 ) -> Child:
     guardian = Guardian(
         name=f"Guardian {_suffix()}", phone_number=f"+1{uuid.uuid4().int % 10**10:010d}"
     )
-    home = Home(address=f"{_suffix()} Main St", access_code="1234")
+    home = Home(address=f"{_suffix()} Main St", directions="1234")
     child = Child(
         name=name or f"Child {_suffix()}",
         grade_level=7,
         school_name="Test School",
-        is_active=is_active,
+        is_archived=is_archived,
         created_at=datetime.datetime.now(tz=datetime.UTC)
         - datetime.timedelta(days=created_days_ago),
     )
@@ -559,7 +604,7 @@ def _make_child(
     db.add_all(
         [
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
-            ChildHome(child_id=child.id, home_id=home.id),
+            GuardianHome(guardian_id=guardian.id, home_id=home.id),
         ]
     )
     db.flush()

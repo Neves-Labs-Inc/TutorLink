@@ -14,6 +14,7 @@ Evaluation: who the booking form may offer for an Evaluation.
 """
 
 import uuid
+from collections import defaultdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,6 +25,7 @@ from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
+from app.models.guardian import Guardian
 from app.schemas.booking import NamedRef, subject_ref
 from app.schemas.child import (
     ChildDetail,
@@ -31,6 +33,7 @@ from app.schemas.child import (
     ChildHomeRead,
     ChildHomeRef,
     ChildLevelRead,
+    ChildLevelRef,
     ChildSummary,
     EvaluatedRead,
     NextSession,
@@ -44,8 +47,11 @@ from app.services.child_read_service import (
     get_child,
     list_children,
 )
+from app.services.home_set import guardians_by_home
 
 CHILD_NOT_FOUND_ERROR = "Child not found"
+
+Owners = defaultdict[uuid.UUID, list[Guardian]]
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -56,25 +62,31 @@ router = APIRouter(prefix="/api/children", tags=["children"])
 def list_all(
     user: OfficePrincipal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     q: str | None = None,
     awaiting_evaluation: bool = False,
     evaluable: bool = False,
+    subject_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    evaluated: bool | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ChildSummary]:
     rows, total = list_children(
         db,
-        is_active=is_active,
+        is_archived=archived,
         q=q,
         limit=page_size,
         offset=(page - 1) * page_size,
         awaiting_evaluation=awaiting_evaluation,
         evaluable=evaluable,
+        subject_ids=subject_id or (),
+        is_evaluated=evaluated,
     )
 
+    owners = guardians_by_home(db, home_ids=[home.id for row in rows for home in row.homes])
+
     return Page[ChildSummary](
-        items=[_summary(row) for row in rows],
+        items=[_summary(row, owners) for row in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -88,27 +100,41 @@ def read_one(child_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> Child
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
 
-    return _detail(found)
+    owners = guardians_by_home(db, home_ids=[home.id for home in found.homes])
+
+    return _detail(found, owners)
 
 
-def _summary(row: ChildRow) -> ChildSummary:
+def _summary(row: ChildRow, owners: Owners) -> ChildSummary:
     return ChildSummary(
         id=row.child.id,
         name=row.child.name,
         grade_level=row.child.grade_level,
         school_name=row.child.school_name,
-        is_active=row.child.is_active,
+        archived=row.child.is_archived,
         guardians=[NamedRef(id=guardian.id, name=guardian.name) for guardian in row.guardians],
         homes=[
             ChildHomeRef(
-                id=home.id, label=home.label, address=home.address, is_active=home.is_active
+                id=home.id,
+                label=home.label,
+                address=home.address,
+                archived=home.is_archived,
+                guardians=_owner_refs(owners[home.id]),
             )
             for home in row.homes
         ],
         next_session=_next_session(row.next_session),
+        levels=[
+            ChildLevelRef(subject_id=level.subject_id, name=level.subject.name, level=level.level)
+            for level in row.levels
+        ],
         evaluated=_evaluated(row.child),
         created_at=row.child.created_at,
     )
+
+
+def _owner_refs(guardians: list[Guardian]) -> list[NamedRef]:
+    return [NamedRef(id=guardian.id, name=guardian.name) for guardian in guardians]
 
 
 def _next_session(booking: Booking | None) -> NextSession | None:
@@ -126,7 +152,7 @@ def _next_session(booking: Booking | None) -> NextSession | None:
     )
 
 
-def _detail(row: ChildDetailRow) -> ChildDetail:
+def _detail(row: ChildDetailRow, owners: Owners) -> ChildDetail:
     return ChildDetail(
         id=row.child.id,
         name=row.child.name,
@@ -134,14 +160,20 @@ def _detail(row: ChildDetailRow) -> ChildDetail:
         grade_level=row.child.grade_level,
         school_name=row.child.school_name,
         notes=row.child.notes,
-        is_active=row.child.is_active,
+        archived=row.child.is_archived,
         upcoming_session_count=row.upcoming_session_count,
+        next_session=_next_session(row.next_session),
         guardians=[
             ChildGuardianRead(
                 id=guardian.id,
                 name=guardian.name,
                 phone_number=guardian.phone_number,
-                is_active=guardian.is_active,
+                archived=guardian.is_archived,
+                language=row.guardian_states[guardian.id].language,
+                reminders=row.guardian_states[guardian.id].reminders,
+                reminders_blocked_by_whatsapp=row.guardian_states[
+                    guardian.id
+                ].is_blocked_by_whatsapp,
             )
             for guardian in row.guardians
         ],
@@ -150,8 +182,9 @@ def _detail(row: ChildDetailRow) -> ChildDetail:
                 id=home.id,
                 label=home.label,
                 address=home.address,
-                access_code=home.access_code,
-                is_active=home.is_active,
+                directions=home.directions,
+                archived=home.is_archived,
+                guardians=_owner_refs(owners[home.id]),
             )
             for home in row.homes
         ],
@@ -164,7 +197,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
     return ChildLevelRead(
         subject_id=row.subject_id,
         name=row.subject.name,
-        is_active=row.subject.is_active,
+        archived=row.subject.is_archived,
         level=row.level,
         set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,

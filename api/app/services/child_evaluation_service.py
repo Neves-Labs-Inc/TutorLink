@@ -73,7 +73,7 @@ def set_level(
 
     row = _level_row(db, child_id=child_id, subject_id=subject_id)
 
-    if row is None and not subject.is_active:
+    if row is None and subject.is_archived:
         raise SubjectInactive
 
     if row is None:

@@ -1,86 +1,161 @@
-"""Tutor availability exceptions: a tutor asks for time off, an admin decides it.
+"""Staff Time off (availability exceptions): someone asks for time off, an Admin decides it.
 
-The first routes in the system a tutor may *write* through, and the four endpoints are
-deliberately asymmetric about it:
+Time off is keyed on the Staff member's user, so any Staff member — an Admin with no teaching
+profile included — can hold it. The table has no `tutor_id`, so `TutorScope` has nothing to
+filter on. Who may reach whose Time off is decided in `exception_service` (it needs the
+target's role for the Developer boundary); this module maps its refusals to status codes:
 
-- `GET /api/tutors/{tutor_id}/exceptions` takes `TutorScope` and returns every status. A
-  `pending` row is visible to the tutor who asked and to the admins who have yet to rule on
-  it; it simply blocks nothing until it is approved.
-- `POST /api/tutors/{tutor_id}/exceptions` takes `TutorScope`, so a tutor may create only
-  under their own id and an admin or developer may target anyone. The status the row lands at
-  is derived from the caller's role in the service, never read from the body.
-- `PATCH /api/exceptions/{exception_id}` takes `OfficePrincipal`. No tutor may reach it at all,
-  which is what stops a tutor approving their own time off — the one authorisation rule this
-  feature exists to enforce. It deliberately does not take `TutorScope`: the unapplied-scope
-  guard is not armed here, and does not need to be, because there is no tutor-visible query to
-  narrow. The row is loaded by primary key by a caller who is already allowed to see every
-  tutor's rows.
-- `DELETE /api/exceptions/{exception_id}` takes `Principal` and checks the loaded row's owner,
-  the other half of the two-shape rule: it cannot filter by tutor before it knows whose row it
-  is. An admin or developer deletes any exception — the only reversal of a mistaken approval,
-  since `PATCH` refuses to re-decide — while a tutor deletes only their own, and only while it
-  is still `pending`.
+- `GET /api/users/{user_id}/exceptions` and `POST` on the same path: the person themselves, or
+  an Admin role. A Manager reads and writes only their own. A requester's entry lands
+  `pending`, an Admin role's `approved`; the status is never read from the body.
+- `GET /api/exceptions` takes `AdminPrincipal`: every Staff member's Time off, filtered.
+- `PATCH /api/exceptions/{exception_id}` takes `AdminPrincipal`, which is what stops anyone
+  approving their own request — the one authorisation rule this feature exists to enforce.
+- `POST /api/exceptions/{exception_id}/cancel` takes `Principal`: the owner or an Admin role,
+  checked on the loaded row before its status. It replaced `DELETE`; the row is kept.
+
+Every response carries the wire status, which adds `expired` for a pending row that has ended,
+and the row's clashing Bookings. An Admin write that would land a row approved over clashes is
+the #151 409 `{"detail", "warnings": [booking_clash]}` until the caller confirms it.
 """
 
 import datetime
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import OfficePrincipal, Principal, TutorScope, assert_can_access_tutor
+from app.dependencies import AdminPrincipal, Principal
 from app.models.availability import TutorAvailabilityException
+from app.models.user import User
+from app.schemas.booking import NamedRef, StaffRef
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
-from app.schemas.exceptions import ExceptionCreate, ExceptionDecision, ExceptionRead
+from app.schemas.exceptions import (
+    ClashingBooking,
+    ExceptionCreate,
+    ExceptionDecision,
+    ExceptionRead,
+    ExceptionReadStatus,
+    TimeOffWarning,
+)
+from app.services import clock
 from app.services.exception_service import (
+    BOOKING_CLASH_WARNING,
+    Clash,
+    DeveloperTimeOff,
     ExceptionAlreadyDecided,
-    ExceptionNotDeletable,
+    ExceptionCancelled,
+    ExceptionEnded,
+    ExceptionNotCancellable,
     ExceptionNotFound,
-    TutorNotFound,
+    ExceptionRequestError,
+    NotYourTimeOff,
+    UnconfirmedBookingClash,
+    UserArchived,
+    UserNotFound,
+    WindowEnded,
+    cancel_exception,
+    clashes_by_exception,
     create_exception,
     decide_exception,
-    delete_exception,
+    list_all_exceptions,
     list_exceptions,
-    load_exception_for_delete,
+    read_status,
 )
 
-TUTOR_NOT_FOUND_ERROR = "No such tutor"
+USER_NOT_FOUND_ERROR = "No such user"
 EXCEPTION_NOT_FOUND_ERROR = "No such availability exception"
-ALREADY_DECIDED_ERROR = "This exception has already been decided"
-EXCEPTION_NOT_DELETABLE_ERROR = "An admin has already decided this request"
+OTHERS_TIME_OFF_ERROR = "You can only manage your own time off"
+DEVELOPER_TIME_OFF_ERROR = "Only a developer may manage a developer's time off"
+USER_ARCHIVED_ERROR = "Time off cannot be entered for an archived user"
+WINDOW_ENDED_ERROR = "This time off has already ended"
+ALREADY_DECIDED_ERROR = "This time off has already been decided"
+TIME_OFF_CANCELLED_ERROR = "This time off has been cancelled"
+TIME_OFF_ENDED_ERROR = "This time off has ended"
+NOT_CANCELLABLE_ERROR = "Only pending or approved time off can be cancelled"
+UNCONFIRMED_WARNINGS_ERROR = "This time off needs the listed warnings confirmed"
+
+_ERRORS: dict[type[ExceptionRequestError], tuple[int, str]] = {
+    UserNotFound: (status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR),
+    ExceptionNotFound: (status.HTTP_404_NOT_FOUND, EXCEPTION_NOT_FOUND_ERROR),
+    NotYourTimeOff: (status.HTTP_403_FORBIDDEN, OTHERS_TIME_OFF_ERROR),
+    DeveloperTimeOff: (status.HTTP_403_FORBIDDEN, DEVELOPER_TIME_OFF_ERROR),
+    UserArchived: (status.HTTP_422_UNPROCESSABLE_CONTENT, USER_ARCHIVED_ERROR),
+    WindowEnded: (status.HTTP_422_UNPROCESSABLE_CONTENT, WINDOW_ENDED_ERROR),
+    ExceptionAlreadyDecided: (status.HTTP_409_CONFLICT, ALREADY_DECIDED_ERROR),
+    ExceptionCancelled: (status.HTTP_409_CONFLICT, TIME_OFF_CANCELLED_ERROR),
+    ExceptionEnded: (status.HTTP_409_CONFLICT, TIME_OFF_ENDED_ERROR),
+    ExceptionNotCancellable: (status.HTTP_409_CONFLICT, NOT_CANCELLABLE_ERROR),
+}
 
 DbSession = Annotated[Session, Depends(get_db)]
 
 router = APIRouter(prefix="/api", tags=["exceptions"])
 
 
-@router.get("/tutors/{tutor_id}/exceptions", response_model=Page[ExceptionRead])
-def list_tutor_exceptions(
-    scope: TutorScope,
+@router.get("/users/{user_id}/exceptions", response_model=Page[ExceptionRead])
+def list_user_exceptions(
+    user_id: uuid.UUID,
+    user: Principal,
     db: DbSession,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ExceptionRead]:
-    # As in `create_tutor_exception` below, `get_tutor_scope` declares the `{tutor_id}` segment
-    # and this read is what marks the scope applied. Leaving it unread would not widen the
-    # query — it would 500 it, since exceptions are a tutor-owned table.
-    tutor_id = scope.tutor_id
+    try:
+        rows, total = list_exceptions(
+            db,
+            actor_id=user.id,
+            actor_role=user.role,
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+    except ExceptionRequestError as exc:
+        raise _http_error(exc) from exc
 
-    rows, total = list_exceptions(
+    return Page[ExceptionRead](
+        items=_reads(db, rows, now=clock.business_now()),
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/exceptions", response_model=Page[ExceptionRead])
+def list_all_staff_exceptions(
+    _user: AdminPrincipal,
+    db: DbSession,
+    status_filter: Annotated[ExceptionReadStatus | None, Query(alias="status")] = None,
+    user_id: uuid.UUID | None = None,
+    date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
+    date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
+    sort: Literal["start", "requested"] = "start",
+    page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
+    page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+) -> Page[ExceptionRead]:
+    # One reading for both the status filter and the rendered statuses, so they agree.
+    now = clock.business_now()
+    rows, total = list_all_exceptions(
         db,
-        tutor_id=tutor_id,
+        status=status_filter,
+        user_id=user_id,
         date_from=date_from,
         date_to=date_to,
+        sort=sort,
         limit=page_size,
         offset=(page - 1) * page_size,
+        now=now,
     )
 
     return Page[ExceptionRead](
-        items=[_read(row) for row in rows],
+        items=_reads(db, rows, now=now),
         total=total,
         page=page,
         page_size=page_size,
@@ -88,111 +163,145 @@ def list_tutor_exceptions(
 
 
 @router.post(
-    "/tutors/{tutor_id}/exceptions",
+    "/users/{user_id}/exceptions",
     response_model=ExceptionRead,
     status_code=status.HTTP_201_CREATED,
 )
-def create_tutor_exception(
+def create_user_exception(
+    user_id: uuid.UUID,
     payload: ExceptionCreate,
-    scope: TutorScope,
     user: Principal,
     db: DbSession,
-) -> ExceptionRead:
-    # No `tutor_id` parameter is declared here: `get_tutor_scope` already declares it and binds
-    # it from the path segment. Reading `scope.tutor_id` is both where the owning id comes from
-    # and what marks the scope applied. A tutor reaching for another tutor's id was refused
-    # with a 403 during dependency resolution, so this id is always one the caller may write.
-    tutor_id = scope.tutor_id
-
+) -> ExceptionRead | JSONResponse:
     try:
         row = create_exception(
             db,
-            tutor_id=tutor_id,
-            creator_role=user.role,
+            actor_id=user.id,
+            actor_role=user.role,
+            user_id=user_id,
             start_date=payload.start_date,
             end_date=payload.end_date,
             start_time=payload.start_time,
             end_time=payload.end_time,
             reason=payload.reason,
-            notes=payload.notes,
+            confirm_warnings=frozenset(payload.confirm_warnings),
         )
-    except TutorNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=TUTOR_NOT_FOUND_ERROR
-        ) from exc
+    except UnconfirmedBookingClash as exc:
+        return _warnings_response(exc)
+    except ExceptionRequestError as exc:
+        raise _http_error(exc) from exc
 
     db.commit()
 
-    return _read(row)
+    return _reads(db, [row], now=clock.business_now())[0]
 
 
 @router.patch("/exceptions/{exception_id}", response_model=ExceptionRead)
-def decide_tutor_exception(
+def decide_staff_exception(
     exception_id: uuid.UUID,
     payload: ExceptionDecision,
-    user: OfficePrincipal,
+    user: AdminPrincipal,
     db: DbSession,
+) -> ExceptionRead | JSONResponse:
+    try:
+        row = decide_exception(
+            db,
+            actor_id=user.id,
+            actor_role=user.role,
+            exception_id=exception_id,
+            decision=payload.status,
+            confirm_warnings=frozenset(payload.confirm_warnings),
+        )
+    except UnconfirmedBookingClash as exc:
+        return _warnings_response(exc)
+    except ExceptionRequestError as exc:
+        raise _http_error(exc) from exc
+
+    db.commit()
+
+    return _reads(db, [row], now=clock.business_now())[0]
+
+
+@router.post("/exceptions/{exception_id}/cancel", response_model=ExceptionRead)
+def cancel_staff_exception(
+    exception_id: uuid.UUID, user: Principal, db: DbSession
 ) -> ExceptionRead:
     try:
-        row = decide_exception(db, exception_id=exception_id, decision=payload.status)
-    except ExceptionNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=EXCEPTION_NOT_FOUND_ERROR
-        ) from exc
-    except ExceptionAlreadyDecided as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=ALREADY_DECIDED_ERROR
-        ) from exc
+        row = cancel_exception(
+            db, actor_id=user.id, actor_role=user.role, exception_id=exception_id
+        )
+    except ExceptionRequestError as exc:
+        raise _http_error(exc) from exc
 
     db.commit()
 
-    return _read(row)
+    return _reads(db, [row], now=clock.business_now())[0]
 
 
-@router.delete(
-    "/exceptions/{exception_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    response_model=None,
-)
-def delete_tutor_exception(exception_id: uuid.UUID, user: Principal, db: DbSession) -> None:
-    try:
-        row = load_exception_for_delete(db, exception_id=exception_id)
-    except ExceptionNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=EXCEPTION_NOT_FOUND_ERROR
-        ) from exc
-
-    # Ownership first, status second, and the order is load-bearing: answering "already
-    # decided" to a tutor holding someone else's id would tell them which of that tutor's
-    # requests have been ruled on. An id matching no row is 404 for everyone and an id matching
-    # another tutor's row is 403 — that pair does reveal to a tutor whether an id exists, and
-    # it is the constitution's deliberate choice (cross-tutor access is 403, never 404, never
-    # an empty 200), not an oversight to harden into a uniform 404.
-    assert_can_access_tutor(user, row.tutor_id)
-
-    try:
-        delete_exception(db, exception=row, actor_role=user.role)
-    except ExceptionNotDeletable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=EXCEPTION_NOT_DELETABLE_ERROR
-        ) from exc
-
-    db.commit()
+def _http_error(exc: ExceptionRequestError) -> HTTPException:
+    status_code, detail = _ERRORS[type(exc)]
+    return HTTPException(status_code=status_code, detail=detail)
 
 
-def _read(row: TutorAvailabilityException) -> ExceptionRead:
+def _warnings_response(exc: UnconfirmedBookingClash) -> JSONResponse:
+    warning = TimeOffWarning(
+        code=BOOKING_CLASH_WARNING,
+        message=f"This time off clashes with {exc.clash_count} booking(s)",
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": UNCONFIRMED_WARNINGS_ERROR,
+            "warnings": [warning.model_dump(mode="json")],
+        },
+    )
+
+
+def _reads(
+    db: Session, rows: list[TutorAvailabilityException], *, now: datetime.datetime
+) -> list[ExceptionRead]:
+    """The rows as read, their clashes fetched for the whole batch at once."""
+    clashes = clashes_by_exception(db, rows, now=now)
+
+    return [_read(row, now=now, clashes=clashes.get(row.id, [])) for row in rows]
+
+
+def _read(
+    row: TutorAvailabilityException, *, now: datetime.datetime, clashes: list[Clash]
+) -> ExceptionRead:
     # Built field by field rather than with `model_validate(row)`: the constitution forbids an
     # ORM instance crossing the HTTP boundary, and an explicit constructor is what makes adding
     # a column to the table a decision to expose it rather than an accident.
     return ExceptionRead(
         id=row.id,
-        tutor_id=row.tutor_id,
+        staff=StaffRef(id=row.staff.id, name=row.staff.name, role=row.staff.role),
         start_date=row.start_date,
         end_date=row.end_date,
         start_time=row.start_time,
         end_time=row.end_time,
         reason=row.reason,
-        notes=row.notes,
-        status=row.status,
+        status=read_status(row, now=now),
         created_at=row.created_at,
+        decided_by=_named(row.decider),
+        decided_at=row.decided_at,
+        cancelled_by=_named(row.canceller),
+        cancelled_at=row.cancelled_at,
+        clashing_bookings=[_clashing(clash) for clash in clashes],
+        clashing_bookings_count=len(clashes),
     )
+
+
+def _clashing(clash: Clash) -> ClashingBooking:
+    return ClashingBooking(
+        booking_id=clash.booking_id,
+        date=clash.date,
+        start_time=clash.start_time,
+        end_time=clash.end_time,
+        child_name=clash.child_name,
+        status=clash.status,
+    )
+
+
+def _named(person: User | None) -> NamedRef | None:
+    return None if person is None else NamedRef(id=person.id, name=person.name)

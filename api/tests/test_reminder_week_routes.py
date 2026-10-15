@@ -14,7 +14,7 @@ from collections.abc import Callable
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR
@@ -22,6 +22,7 @@ from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
 from app.models.enums import ConsentAction, Language, ReminderStatus, UserRole
 from app.models.guardian import Guardian
+from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.security import create_access_token
 from app.services.reminder_service import run_week
@@ -59,13 +60,24 @@ def _staff(db: Session, role: UserRole = UserRole.ADMIN) -> dict[str, str]:
         name="Test User",
         hashed_password="not-a-hash",
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()
     token = create_access_token(user_id=user.id, role=user.role, tutor_id=user.profile_id)
 
     return {"Authorization": f"Bearer {token}"}
+
+
+def _set_reminders(db: Session, *, sids: bool, is_on: bool) -> None:
+    for language in Language:
+        set_template_sid(db, language, f"HX{language.value}" if sids else "")
+    db.execute(
+        update(SystemSetting)
+        .where(SystemSetting.key == "reminders_enabled")
+        .values(value="true" if is_on else "false")
+    )
+    db.flush()
 
 
 def _get(api: TestClient, db: Session, query: str = "") -> dict[str, object]:
@@ -243,12 +255,19 @@ def test_the_default_week_midweek_is_the_one_the_next_run_covers(
     assert body["preview"] is not None
 
 
-def test_the_response_carries_no_send_time(
+def test_the_response_carries_the_next_run_but_not_the_weekday_or_hour(
     api: TestClient, db: Session, at: Callable[..., None]
 ) -> None:
     at(SUNDAY_NOON)
 
-    assert set(_get(api, db)) == {"week_start", "has_run", "preview", "rows"}
+    assert set(_get(api, db)) == {
+        "week_start",
+        "has_run",
+        "preview",
+        "rows",
+        "next_run_at",
+        "reminders",
+    }
 
 
 # --- an explicit week, and the worklist ---------------------------------------------------------
@@ -364,3 +383,122 @@ def test_a_tutor_is_refused(api: TestClient, db: Session, at: Callable[..., None
 
     assert response.status_code == 403
     assert response.json() == {"detail": OFFICE_REQUIRED_ERROR}
+
+
+# --- when the next run sends ----------------------------------------------------------------------
+
+NEW_YORK_OCTOBER = datetime.timezone(datetime.timedelta(hours=-4))
+SUNDAY_EVENING = datetime.datetime(2026, 10, 11, 19, 30)
+
+
+def _next_run_at(api: TestClient, db: Session, query: str = "") -> datetime.datetime:
+    _set_reminders(db, sids=True, is_on=True)
+    value = _get(api, db, query)["next_run_at"]
+    assert isinstance(value, str)
+
+    return datetime.datetime.fromisoformat(value)
+
+
+def test_next_run_at_is_the_coming_run_day_at_the_hour_in_the_business_zone(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(datetime.datetime(2026, 10, 7, 9, 0))
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 11, 18, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_is_today_on_run_day_after_the_hour_until_the_run_happens(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_EVENING)
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 11, 18, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_moves_a_week_on_once_the_week_has_run(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_EVENING)
+    db.add(BookingReminderRun(week_start=WEEK_START))
+    db.flush()
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 18, 18, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_follows_the_settings(
+    api: TestClient,
+    db: Session,
+    at: Callable[..., None],
+    set_int_setting: Callable[[str, int], None],
+) -> None:
+    at(datetime.datetime(2026, 10, 7, 9, 0))
+    set_int_setting("reminder_weekday", 5)
+    set_int_setting("reminder_hour", 8)
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 9, 8, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_ignores_the_week_asked_for(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_NOON)
+
+    assert _next_run_at(api, db, "?week_start=2026-09-14") == _next_run_at(api, db)
+
+
+# --- whether reminders are running ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sids", "is_on", "state", "has_next_run"),
+    [
+        (True, True, "on", True),
+        (True, False, "off", False),
+        (False, True, "not_set_up", False),
+        (False, False, "not_set_up", False),
+    ],
+)
+def test_the_week_says_whether_reminders_are_running_and_only_then_when_next(
+    api: TestClient,
+    db: Session,
+    at: Callable[..., None],
+    sids: bool,
+    is_on: bool,
+    state: str,
+    has_next_run: bool,
+) -> None:
+    at(SUNDAY_NOON)
+    _set_reminders(db, sids=sids, is_on=is_on)
+
+    body = _get(api, db)
+
+    assert body["reminders"] == state
+    assert (body["next_run_at"] is not None) is has_next_run
+
+
+def test_one_blank_template_id_with_the_switch_on_is_still_on(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_NOON)
+    _set_reminders(db, sids=False, is_on=True)
+    set_template_sid(db, Language.EN, EN_SID)
+
+    assert _get(api, db)["reminders"] == "on"
+
+
+def test_the_state_ignores_the_week_asked_for_and_keeps_the_rest_of_the_read(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_NOON)
+    _set_reminders(db, sids=True, is_on=False)
+
+    body = _get(api, db, "?week_start=2026-09-14")
+
+    assert (body["reminders"], body["next_run_at"]) == ("off", None)
+    assert body["week_start"] == "2026-09-14"
+
+
+def test_a_manager_reads_the_state(api: TestClient, db: Session, at: Callable[..., None]) -> None:
+    at(SUNDAY_NOON)
+
+    assert api.get(PATH, headers=_staff(db, UserRole.MANAGER)).status_code == 200

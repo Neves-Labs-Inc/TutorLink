@@ -90,7 +90,7 @@ def authenticate_user(db: Session, *, email: str, password: str) -> User:
         verify_password(password, DUMMY_PASSWORD_HASH)
         raise InvalidCredentials("no account for that email")
 
-    # Checked before is_active so that an inactive account costs the same bcrypt round as an
+    # Checked before is_archived so that an inactive account costs the same bcrypt round as an
     # active one and the two stay indistinguishable from outside. A user with no password (a
     # Tutor the office created without a login) pays the same round against the dummy hash
     # and fails like a wrong password.
@@ -100,7 +100,7 @@ def authenticate_user(db: Session, *, email: str, password: str) -> User:
     if user.hashed_password is None:
         raise InvalidCredentials("account has no password")
 
-    if not user.is_active:
+    if user.is_archived:
         raise InvalidCredentials("account is not active")
 
     return user
@@ -142,7 +142,7 @@ def rotate_refresh_token(db: Session, *, presented: str) -> IssuedTokens:
         raise InvalidRefreshToken("refresh token has expired")
 
     user = db.get(User, row.user_id)
-    if user is None or not user.is_active:
+    if user is None or user.is_archived:
         # What makes deactivating an account stop it refreshing, rather than letting it
         # survive for the remaining seven days of the refresh lifetime.
         raise InvalidRefreshToken("account is missing or not active")

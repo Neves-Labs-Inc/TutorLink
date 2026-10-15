@@ -24,10 +24,11 @@ Staff member's role (`users.role` at write time, #130):
 | | Evaluation | Regular, Admin | Regular, Tutor/Manager |
 |---|---|---|---|
 | hard | 2, 6, 7, 8, 9 | 2, 6, 7 | 2, 6, 7 |
-| warnings (#151) | — | — | 1, 3, 4, 5 |
+| warnings (#151) | 4 | 4 | 1, 3, 4, 5 |
 
-Rules 1, 3, 4 and 5 read the Staff member's teaching profile, which only a Tutor or a Manager
-has; an Admin is checked for overlap and the Location alone. Rule 6 is a no-op In office.
+Rules 1, 3 and 5 read the Staff member's teaching profile, which only a Tutor or a Manager
+has; an Admin is checked for overlap, the Location and Time off alone. Rule 4 reads only the
+Staff user, so it runs for every kind and every bookable role. Rule 6 is a no-op In office.
 
 **Hard blocks run first, then the warnings, and the warnings are collected rather than stopped
 at.** The dashboard's contract (#151) is: every failing warning comes back at once as a 409 with
@@ -79,11 +80,12 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.services import scheduling_service
+from app.services.home_set import child_home_ids
 
 # PostgreSQL SQLSTATEs (Appendix A). The constraints are matched by exception type, call site
 # and class of violation — never by their rendered names, which a migrated database and a
@@ -175,6 +177,11 @@ class BookingReferenceNotFound(BookingWriteError):
     (REQ-044.24) — 400. See `_resolve` for why a soft-deleted row is this and not a 422."""
 
 
+class StaffArchived(BookingWriteError):
+    """The Staff member being assigned is archived — 422. Only a *new* assignment is refused:
+    an edit keeping the booking's current Staff member never raises this."""
+
+
 class StaffRoleNotAllowed(BookingWriteError):
     """The Staff member's role does not take this kind of booking (#130) — 422."""
 
@@ -264,7 +271,8 @@ class _Context:
 
 
 type _Rule = Callable[[Session, _Context], None]
-type _WarningRule = Callable[[Session, _Context, _Teaching], None]
+type _WarningRule = Callable[[Session, _Context], None]
+type _TeachingWarningRule = Callable[[Session, _Context, _Teaching], None]
 
 
 def create_booking(
@@ -377,6 +385,7 @@ def replace_booking(
         now=now,
         confirm_warnings=confirm_warnings,
         exclude_booking_id=row.id,
+        current_staff_id=row.user_id,
         skip_window=is_past,
         before_rules=lambda: _check_live(_lock(db, row)),
     )
@@ -387,8 +396,15 @@ def replace_booking(
     # create's comment gives: `_take_snapshot` flushes dirty state before emitting SAVEPOINT,
     # so a row dirtied above the `with` would be UPDATEd in the outer transaction and a
     # constraint failure there poisons the `Session`.
+    # Compared before the assignments below overwrite the stored values.
+    is_moved = _moves_booking(row, request)
+
     try:
         with db.begin_nested():
+            if is_moved:
+                # A moved Booking is checked again: an Admin kept the old time, not this one.
+                row.clash_acknowledged_by_user = None
+                row.clash_acknowledged_at = None
             row.user_id = request.user_id
             row.location = request.location
             row.subject_id = request.subject_id
@@ -408,6 +424,16 @@ def replace_booking(
     return row
 
 
+def _moves_booking(row: Booking, request: BookingRequest) -> bool:
+    """Whether the edit changes when the Booking is, or who it is with."""
+    return (row.scheduled_date, row.start_time, row.end_time, row.user_id) != (
+        request.scheduled_date,
+        request.start_time,
+        request.end_time,
+        request.user_id,
+    )
+
+
 def _validate(
     db: Session,
     *,
@@ -416,6 +442,7 @@ def _validate(
     confirm_warnings: frozenset[WarningCode] | None,
     exclude_booking_id: uuid.UUID | None,
     skip_window: bool,
+    current_staff_id: uuid.UUID | None = None,
     before_rules: Callable[[], None] = lambda: None,
 ) -> None:
     """The one rule pipeline, for a create and for an edit.
@@ -432,7 +459,7 @@ def _validate(
     """
     _check_shape(request)
     settings = scheduling_service.load_scheduling_settings(db)
-    staff = _resolve_staff(db, request=request)
+    staff = _resolve_staff(db, request=request, current_staff_id=current_staff_id)
     _check_role(request, role=staff.role)
     context = _resolve(
         db,
@@ -560,16 +587,16 @@ def _rule_3_gap_respected(db: Session, context: _Context, teaching: _Teaching) -
         raise GapNotRespected
 
 
-def _rule_4_not_blocked_by_exception(db: Session, context: _Context, teaching: _Teaching) -> None:
+def _rule_4_not_blocked_by_exception(db: Session, context: _Context) -> None:
     """Rule 4 — the `time_off` warning (#24). Only `approved` blocks; `pending` and `rejected`
-    never do.
+    never do. Every kind, every bookable role: Time off belongs to the Staff user.
 
     Bare overlap, not gap-expanded: step 2 of `GET /api/slots/available` subtracts exceptions
     the same way, and the asymmetry with rule 3 is deliberate.
     """
     request = context.request
 
-    for row in _approved_exceptions(db, tutor_id=teaching.tutor_id, on=request.scheduled_date):
+    for row in _approved_exceptions(db, user_id=request.user_id, on=request.scheduled_date):
         if _exception_blocks(row, start_time=request.start_time, end_time=request.end_time):
             raise BlockedByException
 
@@ -612,20 +639,16 @@ def _rule_6_home_belongs_to_child(db: Session, context: _Context) -> None:
     """Rule 6 — 422 (#38). Checked against the **child**, never against the booking guardian;
     nothing to check In office, where the shape guarantees `home_id` is NULL.
 
-    A guardian booking a session at the child's other home — the co-parent's house — is
-    accepted, which is the case the two columns exist for. Rule 7 is what keeps that safe.
+    The child's homes are its bookable set (`home_set`): every non-archived home of any of its
+    guardians. A guardian booking a session at the child's other home — the co-parent's house —
+    is accepted, which is the case the two columns exist for. Rule 7 is what keeps that safe.
     """
     request = context.request
 
     if request.home_id is not None:
-        linked = db.scalars(
-            select(ChildHome.id).where(
-                ChildHome.child_id == request.child_id,
-                ChildHome.home_id == request.home_id,
-            )
-        ).first()
+        bookable = set(db.scalars(child_home_ids(request.child_id, include_archived=False)))
 
-        if linked is None:
+        if request.home_id not in bookable:
             raise HomeNotLinkedToChild
 
 
@@ -696,14 +719,25 @@ _HARD_RULES: dict[BookingKind, tuple[_Rule, ...]] = {
     ),
 }
 
-# Run only with a teaching profile in hand — a Tutor/Manager Regular booking — in the order
-# the codes are reported.
-_WARNING_RULES: tuple[tuple[WarningCode, _WarningRule], ...] = (
+# Rule 4 runs for every booking; the others run only with a teaching profile in hand — a
+# Tutor/Manager Regular booking. Reported in `WarningCode` order.
+_WARNING_RULES: tuple[tuple[WarningCode, _WarningRule | _TeachingWarningRule], ...] = (
     (WarningCode.OUTSIDE_SLOT, _rule_1_inside_named_availability),
     (WarningCode.GAP, _rule_3_gap_respected),
     (WarningCode.TIME_OFF, _rule_4_not_blocked_by_exception),
     (WarningCode.GRADE_CEILING, _rule_5_grade_ceiling_respected),
 )
+
+
+def _run_warning_rule(
+    db: Session, context: _Context, rule: _WarningRule | _TeachingWarningRule
+) -> None:
+    """Rule 4 takes the context alone; the rest need the teaching profile, and are skipped
+    without one."""
+    if rule is _rule_4_not_blocked_by_exception:
+        rule(db, context)
+    elif context.teaching is not None:
+        rule(db, context, context.teaching)
 
 
 def _run_warning_rules(
@@ -712,15 +746,10 @@ def _run_warning_rules(
     """Every failing warning, collected (#151): the Office confirms them all at once, so
     stopping at the first would cost a round trip per warning and would let a later one go
     unmentioned until the earlier was confirmed."""
-    teaching = context.teaching
-
-    if teaching is None:
-        return
-
     raised: list[tuple[WarningCode, BookingWriteError]] = []
     for code, rule in _WARNING_RULES:
         try:
-            rule(db, context, teaching)
+            _run_warning_rule(db, context, rule)
         except BookingWriteError as exc:
             raised.append((code, exc))
 
@@ -770,14 +799,20 @@ def _check_role(request: BookingRequest, *, role: UserRole) -> None:
         raise BookingShapeInvalid
 
 
-def _resolve_staff(db: Session, *, request: BookingRequest) -> User:
-    """The Staff member, as a person. A missing, inactive or unbookable (Developer) user is a
-    reference failure like any other retired row (#130); `users.is_active` is the only flag
-    that decides whether a Tutor or Manager is active."""
+def _resolve_staff(
+    db: Session, *, request: BookingRequest, current_staff_id: uuid.UUID | None
+) -> User:
+    """The Staff member, as a person. A missing or unbookable (Developer) user is a reference
+    failure like any other retired row (#130). An archived one is `StaffArchived`, unless the
+    edit keeps the booking's current Staff member (`current_staff_id`): that is no assignment,
+    and an archive must not pin the booking in place. `users.is_archived` is the only flag
+    that decides whether a Tutor or Manager is archived."""
     staff = db.get(User, request.user_id)
 
-    if staff is None or not staff.is_active or staff.role not in BOOKABLE_ROLES:
+    if staff is None or staff.role not in BOOKABLE_ROLES:
         raise BookingReferenceNotFound
+    if staff.is_archived and staff.id != current_staff_id:
+        raise StaffArchived
 
     return staff
 
@@ -791,7 +826,7 @@ def _resolve(
 ) -> _Context:
     """The rows the rules read, and REQ-044.24's 400 when one of them is missing or retired.
 
-    `retirable` is every reference that carries `is_active`, and a deactivated one is refused
+    `retirable` is every reference that carries `is_archived`, and an archived one is refused
     exactly as a missing one is. A soft delete keeps the row and its dependent rows, so an
     existence check alone lets this endpoint confirm a session against a Staff member that
     `GET /api/slots/available` has already stopped offering (`slot_service`'s
@@ -807,14 +842,14 @@ def _resolve(
     is this 400, and one that is not an active range of *this* Staff member's profile is rule
     1's own 400. The time falling outside the range is rule 1's warning, not either.
 
-    `children` carries `is_active` from migration 0016 on (P7C-1) and an inactive child is
+    `children` carries the flag from migration 0016 on (P7C-1) and an inactive child is
     refused here exactly as a missing one, like every other retirable reference. (`CONSTITUTION.md`
     §12 governs junctions only and never forbade the flag — D-7C-4.)
 
     **The child and the home are read `FOR SHARE`** (P7C-S), because each has a deactivation
     that decides on the bookings it can see: `child_service.update_child` locks the child
-    `FOR UPDATE` and cancels the upcoming bookings it counted, and `home_service.update_home`
-    locks the home `FOR UPDATE` and refuses while one is upcoming. An unlocked read here would
+    `FOR UPDATE` and cancels the upcoming bookings it counted, and `archive_service`'s Home
+    archive locks the home `FOR UPDATE` and refuses while one is upcoming. An unlocked read here would
     let a booking commit behind either decision — a live session on an inactive child that the
     admin never confirmed, or at a home the guard just let go. With the share lock each pair
     serialises: a deactivation already under way makes this wait and then see the row inactive;
@@ -826,9 +861,9 @@ def _resolve(
 
     **Lock order is conversation → child → home → bookings**, and nothing in this module may
     lock a booking before these reads. Neither deactivation can close a cycle against it:
-    `update_child` takes the child and then bookings, and reaches a home only through the key
-    share an inserted `child_homes` row takes, after the child; `update_home` takes only the home
-    and waits on nothing else. The child is kept out of `retirable` because the rules need it
+    `update_child` takes the child and then bookings, and reaches a guardian only through the key
+    share an inserted `child_guardians` row takes, after the child, never a home; the Home archive
+    takes only the home and waits on nothing else. The child is kept out of `retirable` because the rules need it
     too; the home stays in it, read locked.
     """
     child = db.get(Child, request.child_id, with_for_update={"read": True}, populate_existing=True)
@@ -845,8 +880,8 @@ def _resolve(
 
     if (
         child is None
-        or not child.is_active
-        or any(row is None or not row.is_active for row in retirable)
+        or child.is_archived
+        or any(row is None or row.is_archived for row in retirable)
     ):
         raise BookingReferenceNotFound
 
@@ -997,12 +1032,13 @@ def _not_the_booking(exclude_booking_id: uuid.UUID | None) -> ColumnElement[bool
 
 
 def _approved_exceptions(
-    db: Session, *, tutor_id: uuid.UUID, on: datetime.date
+    db: Session, *, user_id: uuid.UUID, on: datetime.date
 ) -> list[TutorAvailabilityException]:
+    # Time off is held by the person, so it is looked up by the Booking's Staff user.
     return list(
         db.scalars(
             select(TutorAvailabilityException).where(
-                TutorAvailabilityException.tutor_id == tutor_id,
+                TutorAvailabilityException.user_id == user_id,
                 TutorAvailabilityException.status == ExceptionStatus.APPROVED,
                 TutorAvailabilityException.start_date <= on,
                 TutorAvailabilityException.end_date >= on,

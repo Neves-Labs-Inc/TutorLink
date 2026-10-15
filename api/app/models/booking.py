@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     ColumnElement,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Text,
@@ -52,6 +53,9 @@ BOOKING_HOME_MATCHES_LOCATION_PREDICATE = "(location = 'home') = (home_id IS NOT
 BOOKING_SUBJECT_MATCHES_KIND_PREDICATE = "(kind = 'regular') = (subject_id IS NOT NULL)"
 BOOKING_EVALUATION_HAS_NO_SLOT_PREDICATE = "kind <> 'evaluation' OR availability_id IS NULL"
 LIVE_EVALUATION_PREDICATE = f"kind = 'evaluation' AND {LIVE_BOOKING_STATUS_PREDICATE}"
+CLASH_ACKNOWLEDGEMENT_PAIR_PREDICATE = (
+    "(clash_acknowledged_by IS NULL) = (clash_acknowledged_at IS NULL)"
+)
 
 
 def upcoming_live_bookings(now: datetime.datetime) -> ColumnElement[bool]:
@@ -100,6 +104,9 @@ class Booking(HasID, HasTimestamps, Base):
         ),
         CheckConstraint(
             BOOKING_EVALUATION_HAS_NO_SLOT_PREDICATE, name="ck_bookings_evaluation_has_no_slot"
+        ),
+        CheckConstraint(
+            CLASH_ACKNOWLEDGEMENT_PAIR_PREDICATE, name="ck_bookings_clash_acknowledgement_pair"
         ),
         # REQ-008: a Staff member's live (pending or confirmed) bookings never overlap in time,
         # whatever their kind — keyed on the person (`user_id`), not on a teaching profile an
@@ -160,10 +167,23 @@ class Booking(HasID, HasTimestamps, Base):
     end_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
     status: Mapped[BookingStatus] = mapped_column(booking_status_enum, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # An Admin kept this Booking over approved Time off on purpose (#209): both set or both
+    # NULL. Cleared when an edit moves its time or Staff member, so a moved Booking is checked
+    # again (`booking_write_service.replace_booking`).
+    clash_acknowledged_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    clash_acknowledged_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     child: Mapped["Child"] = relationship(back_populates="bookings")
-    staff: Mapped["User"] = relationship(back_populates="bookings")
+    # Two foreign keys reach `users`, so each relationship names its own.
+    staff: Mapped["User"] = relationship(back_populates="bookings", foreign_keys=[user_id])
     subject: Mapped["Subject | None"] = relationship(back_populates="bookings")
     availability: Mapped["TutorAvailability | None"] = relationship(back_populates="bookings")
     home: Mapped["Home | None"] = relationship(back_populates="bookings")
     booked_by_guardian: Mapped["Guardian | None"] = relationship()
+    clash_acknowledged_by_user: Mapped["User | None"] = relationship(
+        foreign_keys=[clash_acknowledged_by]
+    )

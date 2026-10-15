@@ -327,7 +327,7 @@ def test_a_pending_request_resurfaces_and_only_approve_then_ends_it(
     assert row.reactivation_child_id is None
     assert row.flag_reason is None
     assert row.flagged_at is None
-    assert db.get_one(Child, child.id).is_active is True
+    assert db.get_one(Child, child.id).is_archived is False
     assert len(broadcasts) == 2
 
 
@@ -770,7 +770,7 @@ def _assert_request_ended(sessions: sessionmaker[Session], row: _CommittedFlag) 
         assert conversation.reactivation_child_id is None
         assert conversation.flag_reason is None
         assert conversation.flagged_at is None
-        assert child.is_active is True
+        assert child.is_archived is False
 
 
 def _post_handled(api: TestClient, user: User, conversation_id: uuid.UUID, token: str) -> Response:
@@ -852,7 +852,7 @@ def _make_child(db: Session) -> Child:
         name=f"Child {uuid.uuid4().hex[:8]}",
         grade_level=3,
         school_name="Elm Primary",
-        is_active=False,
+        is_archived=True,
     )
     db.add(child)
     db.flush()
@@ -869,7 +869,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -877,7 +877,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

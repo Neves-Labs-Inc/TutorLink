@@ -117,7 +117,7 @@ def test_child_notes_are_present_regardless_of_booking_status(
 def test_child_notes_are_present_for_an_inactive_child(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    family.child.is_active = False
+    family.child.is_archived = True
     db.flush()
     booking_id = _make_booking(db, family, start=NINE, end=TEN)
     tutor_headers = _bearer(_make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id))
@@ -189,7 +189,7 @@ def _make_family(db: Session) -> Family:
     )
     subject = Subject(name=f"Subject {suffix}")
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+2{suffix[:10]}")
-    home = Home(address=f"{suffix} Test Street", access_code="0000")
+    home = Home(address=f"{suffix} Test Street", directions="0000")
     child = Child(
         name=f"Child {suffix}",
         date_of_birth=CHILD_DATE_OF_BIRTH,
@@ -250,7 +250,7 @@ def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None
             name="Test User",
             hashed_password=hash_password("child-notes-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -258,7 +258,7 @@ def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("child-notes-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

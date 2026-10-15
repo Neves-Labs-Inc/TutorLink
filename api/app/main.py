@@ -11,8 +11,10 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.config import get_settings
 from app.db import SessionLocal
 from app.routers import (
+    archive,
     auth,
     availability,
+    booking_clash,
     booking_status,
     booking_writes,
     bookings,
@@ -26,6 +28,7 @@ from app.routers import (
     clients,
     conversation_stream,
     conversations,
+    counts,
     exceptions,
     health,
     homes,
@@ -129,6 +132,7 @@ def create_app() -> FastAPI:
     app.include_router(exceptions.router)
     app.include_router(settings.router)
     app.include_router(subjects.router)
+    app.include_router(archive.router)
     app.include_router(clients.router)
     app.include_router(client_bookings.router)
     app.include_router(client_reminders.router)
@@ -146,8 +150,10 @@ def create_app() -> FastAPI:
     app.include_router(bookings.router)
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
+    app.include_router(booking_clash.router)
     app.include_router(staff.router)
     app.include_router(stats.router)
+    app.include_router(counts.router)
     app.include_router(reminders.router)
     app.include_router(webhook.router)
     app.include_router(conversations.router)

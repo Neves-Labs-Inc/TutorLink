@@ -198,7 +198,7 @@ def _make_user(db: Session, *, email: str = EMAIL) -> User:
         name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=UserRole.ADMIN,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()

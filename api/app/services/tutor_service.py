@@ -65,52 +65,39 @@ class TutorUniqueViolation(TutorServiceError):
 
 
 class TutorAccountForbidden(TutorServiceError):
-    """The actor may not write this person's account through their profile, or a Manager
-    tried to change a login email."""
+    """The actor may not write this person's account through their profile."""
+
+
+class TutorDeveloperForbidden(TutorAccountForbidden):
+    """A non-developer writing to a developer's profile; only a developer may (#173)."""
 
 
 class TutorPeerAdminForbidden(TutorAccountForbidden):
     """An admin writing to another admin's profile; only a developer may (#173)."""
 
 
-class TutorSelfChangeForbidden(TutorAccountForbidden):
-    """An admin deactivating themselves through their own profile (#173)."""
-
-
 def assert_may_write_person(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -> None:
     """The profile's person is also a login, so editing a profile edits an account.
 
     `/api/users` is admin-only and keeps Developers out of an Admin's reach; this is the same
-    boundary seen from the Tutors page. A Manager may write Tutors and nobody else (not a peer
-    Manager, not an Admin or Developer who kept a profile after promotion); an Admin may write
-    anyone but a Developer or another Admin; a Developer may write anyone. The peer-admin rule
-    is `user_service`'s (#173): an Admin who kept a profile after promotion is reachable here,
-    and an email change on it plus the public forgot-password flow would take the account over.
-
-    A login email is narrower still: it is an Admin's to change (answers 04 #11), which
-    `update_tutor` checks on top of this, since the address a password link goes to is the
-    account.
+    boundary seen from the Tutors page, whose writes are Admin-only too (#208). An Admin may
+    write anyone but a Developer or another Admin; a Developer may write anyone. The peer-admin
+    rule is `user_service`'s (#173): an Admin who kept a profile after promotion is reachable
+    here, and an email change on it plus the public forgot-password flow would take the account
+    over.
     """
     target = tutor.user.role
 
-    if actor_role is UserRole.MANAGER and target is not UserRole.TUTOR:
-        raise TutorAccountForbidden
-
     if target is UserRole.DEVELOPER and actor_role is not UserRole.DEVELOPER:
-        raise TutorAccountForbidden
+        raise TutorDeveloperForbidden
 
     if actor_role is UserRole.ADMIN and target is UserRole.ADMIN and tutor.user_id != actor_id:
         raise TutorPeerAdminForbidden
 
 
-def _is_self_admin(*, actor_role: UserRole, actor_id: uuid.UUID, tutor: Tutor) -> bool:
-    """An admin acting on their own profile, who may not deactivate themselves (#173)."""
-    return actor_role is UserRole.ADMIN and tutor.user_id == actor_id
-
-
 def matching_tutors(
     *,
-    is_active: bool,
+    is_archived: bool,
     tutor_id: uuid.UUID | None,
     subject_id: uuid.UUID | None,
     grade_level: int | None,
@@ -119,7 +106,7 @@ def matching_tutors(
 ) -> Select[tuple[Tutor]]:
     """The filtered tutor query, as `EXISTS` rather than a join.
 
-    `is_active` and `q` are the person's: the query joins `users`, since `tutors.is_active`
+    `is_archived` and `q` are the person's: the query joins `users`, since `tutors.is_active`
     decides nothing (#130) and the name lives on the user.
 
     `grade_level` is a **ceiling** comparison — `max_grade_level >= grade_level` — so a tutor
@@ -136,7 +123,7 @@ def matching_tutors(
     Public: `stats_service` is its second consumer, per CONSTITUTION §11.
     """
     statement = (
-        select(Tutor).join(User, User.id == Tutor.user_id).where(User.is_active.is_(is_active))
+        select(Tutor).join(User, User.id == Tutor.user_id).where(User.is_archived.is_(is_archived))
     )
     pattern = _substring_pattern(q)
 
@@ -199,7 +186,7 @@ def _phone_number_taken(db: Session, *, phone_number: str, exclude_id: uuid.UUID
 def list_tutors(
     db: Session,
     *,
-    is_active: bool,
+    is_archived: bool,
     tutor_id: uuid.UUID | None,
     subject_id: uuid.UUID | None,
     grade_level: int | None,
@@ -215,7 +202,7 @@ def list_tutors(
     yields an empty page rather than a 404.
     """
     filtered = matching_tutors(
-        is_active=is_active,
+        is_archived=is_archived,
         tutor_id=tutor_id,
         subject_id=subject_id,
         grade_level=grade_level,
@@ -236,7 +223,7 @@ def list_tutors(
 
 
 def get_tutor(db: Session, *, tutor_id: uuid.UUID) -> Tutor:
-    """Fetch by id, ignoring `is_active` — a deactivated tutor fetched by id is a 200 (#21)."""
+    """Fetch by id, ignoring `is_archived` — an archived tutor fetched by id is a 200 (#21)."""
     tutor = db.scalars(
         select(Tutor).where(Tutor.id == tutor_id).options(SUBJECTS_LOADED, USER_LOADED)
     ).first()
@@ -263,7 +250,7 @@ def create_tutor(
         name_is_default=False,
         hashed_password=None,
         role=UserRole.TUTOR,
-        is_active=True,
+        is_archived=False,
     )
 
     return create_profile(db, user=user, phone_number=phone_number, bio=bio)
@@ -306,18 +293,15 @@ def update_tutor(
     email: str | None,
     phone_number: str | None,
     bio: str | None,
-    is_active: bool | None,
     now: datetime,
 ) -> Tutor:
-    """`name`, `email` and `is_active` are the person's and are written to the user; a chosen
+    """`name` and `email` are the person's and are written to the user; a chosen
     name clears `name_is_default`. `phone_number` and `bio` are the profile's. The actor must
     be allowed to write this person (`assert_may_write_person`), checked before any edit.
 
-    A login email is an Admin's to change: a Manager sending a *different* `email` is refused
-    (`TutorAccountForbidden`), even for a Tutor, so a Manager cannot point a login at an
-    address they control. Echoing the stored address back, in any casing, is not a change: the
-    dashboard form always sends it. Changing the address revokes every live password link the
-    person holds, dated `now`, since each was sent to the old one.
+    Echoing the stored address back, in any casing, is not a change: the dashboard form always
+    sends it. Changing the address revokes every live password link the person holds, dated
+    `now`, since each was sent to the old one.
 
     The duplicate checks exclude this person, so a `PATCH` echoing back the email or number
     already stored — in any format, since both sides are normalised first — is a no-op on that
@@ -330,16 +314,8 @@ def update_tutor(
     tutor = get_tutor(db, tutor_id=tutor_id)
     assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
 
-    if is_active is False and _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
-        raise TutorSelfChangeForbidden
-
     normalized_email = email.strip().lower() if email is not None else None
     email_changed = normalized_email is not None and normalized_email != tutor.user.email
-
-    # Refused before any other check: the dashboard form always echoes the stored address, so
-    # only a real change is the Admin-only write.
-    if email_changed and actor_role is UserRole.MANAGER:
-        raise TutorAccountForbidden
 
     cleaned_name = normalize_name(name) if name is not None else None
     canonical_phone_number: str | None = None
@@ -377,35 +353,11 @@ def update_tutor(
             if bio is not None:
                 tutor.bio = bio
 
-            if is_active is not None:
-                tutor.user.is_active = is_active
-
             db.flush()
     except IntegrityError as exc:
         raise TutorUniqueViolation from exc
 
     if email_changed:
         revoke_links_for_user(db, user_id=tutor.user_id, now=now)
-
-    return tutor
-
-
-def deactivate_tutor(
-    db: Session, *, actor_role: UserRole, actor_id: uuid.UUID, tutor_id: uuid.UUID
-) -> Tutor:
-    """Soft delete of the person: `users.is_active` is the one flag that counts, so this is
-    what stops the login, the offer surface and the Tutors list at once.
-
-    It does not touch `tutor_subjects`, `tutor_availability` or `bookings`: deleting the
-    assignments would make deactivation irreversible.
-    """
-    tutor = get_tutor(db, tutor_id=tutor_id)
-    assert_may_write_person(actor_role=actor_role, actor_id=actor_id, tutor=tutor)
-
-    if _is_self_admin(actor_role=actor_role, actor_id=actor_id, tutor=tutor):
-        raise TutorSelfChangeForbidden
-
-    tutor.user.is_active = False
-    db.flush()
 
     return tutor

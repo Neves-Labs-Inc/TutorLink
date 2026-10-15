@@ -9,13 +9,13 @@ suggests:
 
 - `GET` takes `TutorScope`, whose `tutor_id` binds from the path segment — the two-shape rule's
   "list" side, same as `routers/exceptions.py`'s `list_tutor_exceptions`.
-- `POST` looks like it should take `TutorScope` too, because its path also carries
-  `{tutor_id}`, and it must not: the route is admin-only per the RBAC table
-  (`docs/api-design.md:271-278`), so there is nobody for the scope to narrow, and
-  `CONSTITUTION.md` §15 forbids a `OfficePrincipal` route also taking `TutorScope`. It takes a
-  plain `tutor_id: uuid.UUID` path parameter instead.
-- `PATCH`/`DELETE` load one row by id and are staff-only too, so both take `OfficePrincipal` and
-  neither takes `TutorScope`.
+- `POST`, `PATCH` and `DELETE` take `Principal` (any signed-in role, Tutors included) and
+  **not** `TutorScope`: the rule is self or Admin (#208), not "a tutor sees only their own",
+  and `availability_service` checks it against the caller it is handed. A Tutor or Manager
+  writes their own slots; an Admin role writes anyone's within the account boundary (not a
+  Developer's unless a Developer, not a peer Admin's). `POST` refuses a non-Admin naming
+  someone else's profile before any lookup, an unknown id included; `PATCH`/`DELETE` load the
+  slot first, so an unknown slot is 404 for every role.
 """
 
 import uuid
@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import OfficePrincipal, TutorScope
+from app.dependencies import Principal, TutorScope
 from app.models.availability import TutorAvailability
 from app.schemas.availability import AvailabilityCreate, AvailabilityRead, AvailabilityUpdate
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
@@ -33,17 +33,34 @@ from app.services.availability_service import (
     AvailabilityNotFound,
     AvailabilitySlotTaken,
     InvalidTimeRange,
+    NotYourAvailability,
     TutorNotFound,
     create_availability,
     deactivate_availability,
     list_availability,
     update_availability,
 )
+from app.services.tutor_service import (
+    TutorAccountForbidden,
+    TutorDeveloperForbidden,
+    TutorPeerAdminForbidden,
+)
 
 TUTOR_NOT_FOUND_ERROR = "No such tutor"
 AVAILABILITY_NOT_FOUND_ERROR = "No such availability slot"
 SLOT_TAKEN_ERROR = "This tutor already has a slot starting at that time on that day"
 INVALID_TIME_RANGE_ERROR = "end_time must be after start_time"
+NOT_YOUR_AVAILABILITY_ERROR = "Only an Admin may change someone else's Availability"
+# The same words `/api/users` answers with for the same rules (#173).
+PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
+DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
+# Every refusal a write can raise, by its exact type; `assert_may_write_person` raises only the
+# two `TutorAccountForbidden` subclasses.
+FORBIDDEN_DETAILS: dict[type[Exception], str] = {
+    NotYourAvailability: NOT_YOUR_AVAILABILITY_ERROR,
+    TutorPeerAdminForbidden: PEER_ADMIN_FORBIDDEN_ERROR,
+    TutorDeveloperForbidden: DEVELOPER_FORBIDDEN_ERROR,
+}
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -81,12 +98,13 @@ def list_tutor_availability(
 def create_tutor_availability(
     tutor_id: uuid.UUID,
     payload: AvailabilityCreate,
-    user: OfficePrincipal,
+    user: Principal,
     db: DbSession,
 ) -> AvailabilityRead:
     try:
         row = create_availability(
             db,
+            actor=user,
             tutor_id=tutor_id,
             day_of_week=payload.day_of_week,
             start_time=payload.start_time,
@@ -96,6 +114,10 @@ def create_tutor_availability(
     except TutorNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=TUTOR_NOT_FOUND_ERROR
+        ) from exc
+    except (NotYourAvailability, TutorAccountForbidden) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_DETAILS[type(exc)]
         ) from exc
     except InvalidTimeRange as exc:
         raise HTTPException(
@@ -113,12 +135,13 @@ def create_tutor_availability(
 def update_tutor_availability(
     availability_id: uuid.UUID,
     payload: AvailabilityUpdate,
-    user: OfficePrincipal,
+    user: Principal,
     db: DbSession,
 ) -> AvailabilityRead:
     try:
         row = update_availability(
             db,
+            actor=user,
             availability_id=availability_id,
             start_time=payload.start_time,
             end_time=payload.end_time,
@@ -128,6 +151,10 @@ def update_tutor_availability(
     except AvailabilityNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=AVAILABILITY_NOT_FOUND_ERROR
+        ) from exc
+    except (NotYourAvailability, TutorAccountForbidden) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_DETAILS[type(exc)]
         ) from exc
     except InvalidTimeRange as exc:
         raise HTTPException(
@@ -143,13 +170,17 @@ def update_tutor_availability(
 
 @router.delete("/availability/{availability_id}", response_model=AvailabilityRead)
 def delete_tutor_availability(
-    availability_id: uuid.UUID, user: OfficePrincipal, db: DbSession
+    availability_id: uuid.UUID, user: Principal, db: DbSession
 ) -> AvailabilityRead:
     try:
-        row = deactivate_availability(db, availability_id=availability_id)
+        row = deactivate_availability(db, actor=user, availability_id=availability_id)
     except AvailabilityNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=AVAILABILITY_NOT_FOUND_ERROR
+        ) from exc
+    except (NotYourAvailability, TutorAccountForbidden) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_DETAILS[type(exc)]
         ) from exc
 
     db.commit()

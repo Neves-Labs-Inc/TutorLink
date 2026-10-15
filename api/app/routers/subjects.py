@@ -12,16 +12,15 @@ from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, P
 from app.schemas.subject import SubjectCreate, SubjectRead, SubjectUpdate
 from app.services.subject_service import (
     KEEP,
+    SUBJECT_NOT_FOUND_ERROR,
     SubjectNameTaken,
     SubjectNotFound,
     SubjectWithCount,
     create_subject,
-    deactivate_subject,
     list_subjects,
     update_subject,
 )
 
-SUBJECT_NOT_FOUND_ERROR = "Subject not found"
 SUBJECT_NAME_TAKEN_ERROR = "A subject with that name already exists"
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -35,7 +34,7 @@ def _read(row: SubjectWithCount) -> SubjectRead:
         name=row.subject.name,
         name_es=row.subject.name_es,
         description=row.subject.description,
-        is_active=row.subject.is_active,
+        archived=row.subject.is_archived,
         tutor_count=row.tutor_count,
     )
 
@@ -44,12 +43,12 @@ def _read(row: SubjectWithCount) -> SubjectRead:
 def list_all(
     user: Principal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[SubjectRead]:
     subjects, total = list_subjects(
-        db, is_active=is_active, limit=page_size, offset=(page - 1) * page_size
+        db, is_archived=archived, limit=page_size, offset=(page - 1) * page_size
     )
 
     return Page[SubjectRead](
@@ -84,7 +83,6 @@ def update(
             subject_id=subject_id,
             name=payload.name,
             description=payload.description,
-            is_active=payload.is_active,
             # Left out keeps the stored name; `null` or blank clears it.
             name_es=payload.name_es if "name_es" in payload.model_fields_set else KEEP,
         )
@@ -96,15 +94,3 @@ def update(
     db.commit()
 
     return _read(updated)
-
-
-@router.delete("/{subject_id}", response_model=SubjectRead)
-def soft_delete(subject_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> SubjectRead:
-    try:
-        deactivated = deactivate_subject(db, subject_id=subject_id)
-    except SubjectNotFound as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, SUBJECT_NOT_FOUND_ERROR) from exc
-
-    db.commit()
-
-    return _read(deactivated)

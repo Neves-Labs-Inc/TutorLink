@@ -26,23 +26,35 @@ is unreachable by any test this harness can run.
 
 import logging
 import uuid
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import ScalarSelect, Select, func, or_, select
+from sqlalchemy import ColumnElement, ScalarSelect, Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.child import Child
 from app.models.conversation import Conversation
+from app.models.enums import Language
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.user import User
 from app.services import conversation_service, message_service
 from app.services.bot_state import clear_state
 from app.services.conversation_service import LATEST_CONVERSATION_FIRST
+from app.services.home_service import HomeDetails, home_details
+from app.services.guardian_state import (
+    GuardianState,
+    ReminderState,
+    effective_language,
+    guardian_states,
+    reminders_state,
+)
 from app.services.phone_service import normalize_phone_number
 
 logger = logging.getLogger(__name__)
+
+CLIENT_NOT_FOUND_ERROR = "Client not found"
 
 # The Staff-only line a number change leaves in the Guardian's thread; numbers as stored.
 NUMBER_CHANGE_NOTE = "Number changed from {previous} to {current} by {staff}"
@@ -55,7 +67,7 @@ _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 class HomeInput:
     label: str | None
     address: str
-    access_code: str
+    directions: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +89,14 @@ class ClientDetail:
 
 @dataclass(frozen=True, slots=True)
 class ClientWithCounts:
+    """One list row. `children` are the non-archived ones, by name, so `child_count` is their
+    number."""
+
     client: Guardian
     home_count: int
     child_count: int
+    children: list[Child]
+    state: GuardianState
 
 
 class ClientServiceError(Exception):
@@ -108,11 +125,13 @@ class WhatsAppChatTaken(ClientServiceError):
 def list_clients(
     db: Session,
     *,
-    is_active: bool,
+    is_archived: bool,
     phone_number: str | None,
     limit: int,
     offset: int,
     q: str | None = None,
+    languages: Collection[Language] = (),
+    reminders: Collection[ReminderState] = (),
 ) -> tuple[list[ClientWithCounts], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -126,11 +145,23 @@ def list_clients(
     normalising it would turn a search into a 400. It is a raw case-insensitive substring of
     the stored name or the stored E.164 string.
 
-    The filters compose, and `is_active` is **not** special-cased for the lookup: a
-    deactivated client is found only with `is_active=False`.
+    It also matches the name of any of the Guardian's non-archived Children.
+
+    `languages` and `reminders` keep a Guardian whose state is any of the listed values; empty
+    means no filter. The filters compose, and `is_archived` is **not** special-cased for the
+    lookup: a deactivated client is found only with `is_archived=True`.
+
+    A constant number of statements whatever the page size: the Children and the Guardian
+    state are read for the whole page at once.
     """
     canonical = None if phone_number is None else normalize_phone_number(db, raw=phone_number)
-    matching = visible_clients(is_active=is_active, phone_number=canonical, q=q)
+    matching = visible_clients(
+        is_archived=is_archived,
+        phone_number=canonical,
+        q=q,
+        languages=languages,
+        reminders=reminders,
+    )
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     rows = db.execute(
         matching.add_columns(_home_count(), _child_count())
@@ -138,16 +169,25 @@ def list_clients(
         .limit(limit)
         .offset(offset)
     ).all()
+    guardian_ids = [client.id for client, _, _ in rows]
+    children = _active_children(db, guardian_ids=guardian_ids)
+    states = guardian_states(db, guardian_ids)
     clients = [
-        ClientWithCounts(client=client, home_count=homes, child_count=children)
-        for client, homes, children in rows
+        ClientWithCounts(
+            client=client,
+            home_count=home_count,
+            child_count=child_count,
+            children=children.get(client.id, []),
+            state=states[client.id],
+        )
+        for client, home_count, child_count in rows
     ]
 
     return clients, total
 
 
 def get_client(db: Session, *, client_id: uuid.UUID) -> ClientDetail:
-    """The client whatever its `is_active` state — a deactivated one is a 200, never a 404,
+    """The client whatever its `is_archived` state — a deactivated one is a 200, never a 404,
     because the surface that deactivated it has to open it in order to reactivate it."""
     return _detail(db, _guardian(db, client_id=client_id))
 
@@ -160,6 +200,12 @@ def create_client(
     An unlinked WhatsApp thread already at the number becomes the new Guardian's. One linked to
     another Guardian (data from before threads followed their Guardian) is left alone.
     """
+    # Before any write, so a blank address (`BlankAddress`) leaves no Guardian behind.
+    details = (
+        None
+        if home is None
+        else home_details(label=home.label, address=home.address, directions=home.directions)
+    )
     canonical = normalize_phone_number(db, raw=phone_number)
 
     if _phone_number_taken(db, phone_number=canonical, exclude_id=None):
@@ -167,7 +213,7 @@ def create_client(
 
     # Locked before the Guardian is inserted: conversation first, as every turn does.
     thread = conversation_service.lock_thread_at(db, phone_number=canonical)
-    client = Guardian(name=name, phone_number=canonical, is_active=True)
+    client = Guardian(name=name, phone_number=canonical, is_archived=False)
 
     # The savepoint wraps the insert and nothing else. Unwinding it on `IntegrityError` is what
     # keeps the `Session` usable for the rest of the request; the home below is added outside
@@ -184,8 +230,8 @@ def create_client(
 
     homes: list[Home] = []
 
-    if home is not None:
-        homes = [_attach_home(db, client=client, home=home)]
+    if details is not None:
+        homes = [_attach_home(db, client=client, home=details)]
 
     language_conversation = None
     if thread is not None and thread.guardian_id is None:
@@ -204,10 +250,9 @@ def update_client(
     client_id: uuid.UUID,
     name: str | None,
     phone_number: str | None,
-    is_active: bool | None,
     acting_user_id: uuid.UUID,
 ) -> ClientDetail:
-    """The only deactivation and reactivation path there is; `is_active` moves either way.
+    """Archive and Restore are `archive_service`'s, not this.
 
     The duplicate check excludes this client, so a `PATCH` echoing back the number already
     stored — in any format, since both sides are normalised first — is a no-op on that field
@@ -260,7 +305,7 @@ def update_client(
     # already dirty before it emits the SAVEPOINT (`SessionTransaction._take_snapshot`):
     # assigned above the block, the UPDATE would run outside the savepoint and a constraint
     # violation would deactivate the whole request's transaction, leaving the `Session`
-    # unusable even though this raises the right error. Nothing in the block but three
+    # unusable even though this raises the right error. Nothing in the block but two
     # in-memory assignments and the flush, so no other failure can be mislabelled. The
     # constraint is matched by the exception, never by its name — see `create_client`.
     try:
@@ -270,9 +315,6 @@ def update_client(
 
             if name is not None:
                 client.name = name
-
-            if is_active is not None:
-                client.is_active = is_active
 
             db.flush()
     except IntegrityError as exc:
@@ -287,9 +329,14 @@ def update_client(
 
 
 def visible_clients(
-    *, is_active: bool, phone_number: str | None, q: str | None = None
+    *,
+    is_archived: bool,
+    phone_number: str | None,
+    q: str | None = None,
+    languages: Collection[Language] = (),
+    reminders: Collection[ReminderState] = (),
 ) -> Select[tuple[Guardian]]:
-    statement = select(Guardian).where(Guardian.is_active.is_(is_active))
+    statement = select(Guardian).where(Guardian.is_archived.is_(is_archived))
     pattern = _substring_pattern(q)
 
     if phone_number is not None:
@@ -300,10 +347,31 @@ def visible_clients(
             or_(
                 Guardian.name.ilike(pattern, escape=_LIKE_ESCAPE),
                 Guardian.phone_number.ilike(pattern, escape=_LIKE_ESCAPE),
+                _has_active_child_named(pattern),
             )
         )
 
+    if languages:
+        statement = statement.where(effective_language().in_(languages))
+
+    if reminders:
+        statement = statement.where(reminders_state().in_(reminders))
+
     return statement
+
+
+def _has_active_child_named(pattern: str) -> ColumnElement[bool]:
+    # `EXISTS` rather than a join, so a Guardian with two matching Children is one row.
+    return (
+        select(ChildGuardian.child_id)
+        .join(Child, Child.id == ChildGuardian.child_id)
+        .where(
+            ChildGuardian.guardian_id == Guardian.id,
+            Child.is_archived.is_(False),
+            Child.name.ilike(pattern, escape=_LIKE_ESCAPE),
+        )
+        .exists()
+    )
 
 
 def _substring_pattern(raw: str | None) -> str | None:
@@ -317,21 +385,22 @@ def _substring_pattern(raw: str | None) -> str | None:
     return pattern
 
 
-# `homes` carries `is_active`, so a deactivated home is not counted; `child_count` counts every
-# linked child, active or not, by decision P7C-N. The two subqueries are scalar and
+# Neither count includes archived rows: an archived home or Child is not counted (#213, which
+# replaced decision P7C-N's count of every linked Child), so `child_count` is the number of
+# Children the row names. The two subqueries are scalar and
 # correlated rather than joined: a join over `guardian_homes` would multiply the guardian row
 # and turn `total` into a count of links (CONSTITUTION §8).
 #
 # This count and the nested list `_detail` builds are deliberately not the same predicate, and
 # that is not a §11 drift: `docs/api-design.md:69` places nested homes outside the collection
-# `is_active` rule, so the by-id response returns every linked home. `HomeRead` carries
-# `is_active` so the caller can tell which of them this number left out.
+# `is_archived` rule, so the by-id response returns every linked home. `HomeRead` carries
+# the flag so the caller can tell which of them this number left out.
 def _home_count() -> ScalarSelect[int]:
     return (
         select(func.count())
         .select_from(GuardianHome)
         .join(Home, Home.id == GuardianHome.home_id)
-        .where(GuardianHome.guardian_id == Guardian.id, Home.is_active.is_(True))
+        .where(GuardianHome.guardian_id == Guardian.id, Home.is_archived.is_(False))
         .scalar_subquery()
     )
 
@@ -340,9 +409,28 @@ def _child_count() -> ScalarSelect[int]:
     return (
         select(func.count())
         .select_from(ChildGuardian)
-        .where(ChildGuardian.guardian_id == Guardian.id)
+        .join(Child, Child.id == ChildGuardian.child_id)
+        .where(ChildGuardian.guardian_id == Guardian.id, Child.is_archived.is_(False))
         .scalar_subquery()
     )
+
+
+def _active_children(
+    db: Session, *, guardian_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[Child]]:
+    """Each Guardian's non-archived Children by name, for a whole page in one statement."""
+    rows = db.execute(
+        select(ChildGuardian.guardian_id, Child)
+        .join(Child, Child.id == ChildGuardian.child_id)
+        .where(ChildGuardian.guardian_id.in_(guardian_ids), Child.is_archived.is_(False))
+        .order_by(Child.name, Child.id)
+    ).all()
+
+    children: dict[uuid.UUID, list[Child]] = {}
+    for guardian_id, child in rows:
+        children.setdefault(guardian_id, []).append(child)
+
+    return children
 
 
 def _phone_number_taken(db: Session, *, phone_number: str, exclude_id: uuid.UUID | None) -> bool:
@@ -389,8 +477,8 @@ def _guardian(db: Session, *, client_id: uuid.UUID) -> Guardian:
     return client
 
 
-def _attach_home(db: Session, *, client: Guardian, home: HomeInput) -> Home:
-    created = Home(label=home.label, address=home.address, access_code=home.access_code)
+def _attach_home(db: Session, *, client: Guardian, home: HomeDetails) -> Home:
+    created = Home(label=home.label, address=home.address, directions=home.directions)
     db.add(created)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=created.id))
@@ -414,6 +502,7 @@ def _detail(db: Session, client: Guardian) -> ClientDetail:
             .join(ChildGuardian, ChildGuardian.child_id == Child.id)
             .where(ChildGuardian.guardian_id == client.id)
             .order_by(Child.name, Child.id)
+            .options(selectinload(Child.evaluated_by))
         ).all()
     )
 

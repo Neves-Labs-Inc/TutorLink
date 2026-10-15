@@ -24,12 +24,14 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Emailed links can be built (`mail_service.public_url`) without configuring SMTP.
 os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 
-# 0034 holds the default email copy and 0035 the default brand colour; the harness seeds from
-# them so each default has one source.
+# 0034 holds the default email copy, 0035 the default brand colour, 0039 the blank office phone
+# and 0041 the reminders switch; the harness seeds from them so each default has one source.
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
-EMAIL_SETTING_MIGRATIONS = (
+SEEDED_SETTING_MIGRATIONS = (
     MIGRATIONS_DIR / "0034_email_template_settings.py",
     MIGRATIONS_DIR / "0035_email_brand_color_setting.py",
+    MIGRATIONS_DIR / "0039_office_phone_setting.py",
+    MIGRATIONS_DIR / "0041_reminders_enabled_setting.py",
 )
 
 
@@ -198,7 +200,7 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         ("reminder_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
         ("reminder_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
     ]
-    rows += [row for migration in EMAIL_SETTING_MIGRATIONS for row in _seed_rows(migration)]
+    rows += [row for migration in SEEDED_SETTING_MIGRATIONS for row in _seed_rows(migration)]
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"
         " VALUES (:key, :value, :value_type, :is_developer_only) ON CONFLICT (key) DO NOTHING"

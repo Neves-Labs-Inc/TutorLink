@@ -26,8 +26,9 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
-from app.schemas.booking import booking_summary
 from app.schemas.stats import StatsOverview
+from app.services import clock
+from app.services.booking_read_service import booking_summaries
 from app.services.stats_service import overview
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -48,5 +49,5 @@ def read_overview(user: OfficePrincipal, db: DbSession, date: datetime.date) -> 
         upcoming_week_evaluation_count=data.upcoming_week_evaluation_count,
         active_tutor_count=data.active_tutor_count,
         active_client_count=data.active_client_count,
-        recent_bookings=[booking_summary(row) for row in data.recent_bookings],
+        recent_bookings=booking_summaries(db, data.recent_bookings, now=clock.business_now()),
     )

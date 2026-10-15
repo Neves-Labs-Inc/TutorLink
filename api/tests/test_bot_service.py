@@ -58,7 +58,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import DIRECTIONS_MAX_LENGTH, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor, TutorSubject
@@ -476,7 +476,6 @@ def test_a_completed_intake_writes_the_five_row_kinds_in_one_turn(chat: Chat, db
     assert _count(db, Home) == 1
     assert _count(db, GuardianHome) == 1
     assert _count(db, Child) == 1
-    assert _count(db, ChildHome) == 1
     assert _count(db, ChildGuardian) == 1
 
 
@@ -514,7 +513,7 @@ def test_an_over_long_answer_is_truncated_to_the_column_it_lands_in(
     _open_intake(chat)
     chat.say(value="A" * 400)
     chat.say(value="1 Test Street")
-    chat.say(value="B" * 200)
+    chat.say(value="B" * 600)
     chat.say(value="skip")
     chat.say(value="no")
     chat.say(value="Sam")
@@ -528,7 +527,7 @@ def test_an_over_long_answer_is_truncated_to_the_column_it_lands_in(
     child = db.execute(select(Child)).scalar_one()
 
     assert len(guardian.name) == bot_service.NAME_LIMIT
-    assert len(home.access_code) == bot_service.ACCESS_CODE_LIMIT
+    assert home.directions == "B" * DIRECTIONS_MAX_LENGTH == "B" * 500
     assert child.school_name == "C" * bot_service.NAME_LIMIT
     assert child.notes == "D" * NOTES_MAX_LENGTH
 
@@ -869,7 +868,7 @@ def test_the_date_of_birth_and_notes_are_never_sent_to_the_parser_again(chat: Ch
     assert all("child_notes" not in context for context in after_notes)
 
 
-def test_the_address_and_access_code_are_never_sent_to_the_parser(chat: Chat) -> None:
+def test_the_address_and_directions_are_never_sent_to_the_parser(chat: Chat) -> None:
     """A street address and the code that opens its door are the pair #39 built P7-F to
     protect. No step after the one that collected them needs either to be understood, so they
     do not travel to a third-party model once per message for the rest of the conversation."""
@@ -908,7 +907,6 @@ def test_a_child_already_registered_elsewhere_writes_nothing_and_flags_a_link_re
     assert turn.flag_reason is FlagReason.GUARDIAN_LINK_REQUEST
     assert _count(db, Child) == 0
     assert _count(db, ChildGuardian) == 0
-    assert _count(db, ChildHome) == 0
     assert _count(db, Guardian) == 0
 
 
@@ -946,7 +944,7 @@ def test_a_returning_guardian_with_no_children_is_asked_the_full_child_questions
         db,
         name="Ada Guardian",
         phone_number=CANONICAL_NUMBER,
-        home=client_service.HomeInput(label="Home", address="1 Test Street", access_code="1234"),
+        home=client_service.HomeInput(label="Home", address="1 Test Street", directions="1234"),
     )
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
@@ -968,7 +966,6 @@ def test_a_returning_guardian_with_no_children_is_asked_the_full_child_questions
     assert child.notes == "Peanut allergy"
     assert link.guardian_id == detail.client.id
     assert _count(db, Guardian) == 1
-    assert _count(db, ChildHome) == 1
 
 
 # --- booking (REQ-074) --------------------------------------------------------------------------
@@ -1078,6 +1075,35 @@ def test_more_than_one_active_home_asks_which_one(
     assert chat.step == bot_service.STEP_BOOK_HOME
 
 
+def test_the_location_step_offers_every_active_home_of_any_of_the_childs_guardians(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """#214: the co-Guardian's Home is the Child's too, and a Home both hold is offered once."""
+    co_guardian = Guardian(name="Bo Guardian", phone_number="+12025550166")
+    # Strictly later than the fixture's Home: both would otherwise take the transaction's
+    # `now()`, and the offer order would fall to random ids.
+    dads = Home(
+        label="Dad's",
+        address="2 Other Street",
+        directions="9999",
+        created_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1),
+    )
+    db.add_all([co_guardian, dads])
+    db.flush()
+    db.add_all(
+        [
+            ChildGuardian(child_id=client.child_id, guardian_id=co_guardian.id),
+            GuardianHome(guardian_id=co_guardian.id, home_id=dads.id),
+            GuardianHome(guardian_id=co_guardian.id, home_id=client.home_id),
+        ]
+    )
+    db.flush()
+
+    turn = _book(chat, world, stop_after_date=True)
+
+    assert turn.reply == f"{render('ASK_WHERE', 'en')}\n1. Home\n2. Dad's"
+
+
 # --- the Location step: homes and "At the office" from the day's Availability modes (#132) ------
 
 
@@ -1126,7 +1152,7 @@ def test_an_office_only_tutor_books_in_office_without_asking(
 def test_a_child_with_no_home_books_in_office_when_the_tutor_can_do_it(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
     _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
 
@@ -1144,7 +1170,7 @@ def test_a_child_with_no_home_and_a_home_visits_tutor_is_handed_to_the_office(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
     """Ranges exist but none fits: an Office handoff, not `CANNOT_CONTINUE`."""
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
 
     turn = _book(chat, world, tutor=world.first_tutor_name, stop_after_date=True)
@@ -1307,7 +1333,7 @@ def test_a_deactivated_home_is_not_counted_and_is_never_offered(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld
 ) -> None:
     home = _add_home(db, client, label="Old place", address="3 Former Street")
-    home.is_active = False
+    home.is_archived = True
     db.flush()
 
     turn = _book(chat, world, stop_after_date=True)
@@ -1371,7 +1397,7 @@ def test_time_off_approved_since_the_offer_re_offers_rather_than_erroring(
     _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
     db.add(
         TutorAvailabilityException(
-            tutor_id=world.first_tutor_id,
+            user_id=db.get_one(Tutor, world.first_tutor_id).user_id,
             start_date=DATE,
             end_date=DATE,
             start_time=NINE,
@@ -1709,7 +1735,7 @@ def test_an_inactive_child_beside_an_active_one_is_never_offered(
 ) -> None:
     """REQ-114. One active child left means the child question is skipped outright, so the
     inactive one is neither listed nor silently picked."""
-    _add_child(db, client, name="Retired Child", is_active=False)
+    _add_child(db, client, name="Retired Child", is_archived=True)
     chat.say("hi")
 
     turn = chat.say("book", intent=BotIntent.BOOK)
@@ -1725,7 +1751,7 @@ def test_the_which_child_list_leaves_out_an_inactive_child(
 ) -> None:
     """REQ-114 where there is a list to leave it out of."""
     _add_child(db, client, name="Robin Guardian")
-    _add_child(db, client, name="Retired Child", is_active=False)
+    _add_child(db, client, name="Retired Child", is_archived=True)
     chat.say("hi")
 
     turn = chat.say("book", intent=BotIntent.BOOK)
@@ -1758,7 +1784,7 @@ def test_a_guardian_whose_only_child_is_inactive_is_treated_as_having_none(
             ).scalar_one()
         )
     else:
-        child.is_active = False
+        child.is_archived = True
 
     db.flush()
     chat.say("hi")
@@ -2268,7 +2294,7 @@ def test_moving_a_home_session_whose_home_was_deactivated_asks_where_among_what_
     cutoff(1)
     _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
     _add_home(db, client, label="Dad's", address="2 Other Street")
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
     _set_mode(db, world.first_availability_id, AvailabilityMode.ANYWHERE)
 
@@ -2285,7 +2311,7 @@ def test_moving_a_home_session_with_nowhere_left_to_hold_it_is_handed_to_the_off
     old session stays until Staff move it."""
     cutoff(1)
     original = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
-    db.get_one(Home, client.home_id).is_active = False
+    db.get_one(Home, client.home_id).is_archived = True
     db.flush()
 
     turn = _start_reschedule(chat)
@@ -2557,7 +2583,7 @@ def test_a_punctuated_none_stores_no_notes(chat: Chat, db: Session) -> None:
 _STEP_PROMPTS = {
     bot_service.STEP_INTAKE_NAME: render("ASK_GUARDIAN_NAME", "en"),
     bot_service.STEP_INTAKE_ADDRESS: render("ASK_ADDRESS", "en"),
-    bot_service.STEP_INTAKE_ACCESS_CODE: render("ASK_ACCESS_CODE", "en"),
+    bot_service.STEP_INTAKE_DIRECTIONS: render("ASK_DIRECTIONS", "en"),
     bot_service.STEP_INTAKE_LABEL: render("ASK_HOME_LABEL", "en"),
     bot_service.STEP_CHILD_REGISTERED: render("ASK_CHILD_REGISTERED", "en"),
     bot_service.STEP_CHILD_NAME: render("ASK_CHILD_NAME", "en"),
@@ -3064,7 +3090,7 @@ def test_a_guardian_recognised_by_phone_is_reported_for_linking_on_every_turn(
         db,
         name="Ada Guardian",
         phone_number=CANONICAL_NUMBER,
-        home=client_service.HomeInput(label="Home", address="1 Test Street", access_code="1234"),
+        home=client_service.HomeInput(label="Home", address="1 Test Street", directions="1234"),
     )
 
     opening = chat.say("hi")
@@ -3148,7 +3174,7 @@ def test_yes_to_the_offer_returns_the_child_for_the_webhook_to_record(
     assert turn.reactivation_child_id == sam.id
     assert turn.flag_reason is None
     assert chat.step is None
-    assert sam.is_active is False
+    assert sam.is_archived is True
 
 
 def test_no_to_the_offer_goes_back_to_the_menu_and_records_nothing(chat: Chat, db: Session) -> None:
@@ -3368,7 +3394,7 @@ def test_a_child_reactivated_since_the_offer_needs_nothing_asked(chat: Chat, db:
     family = _family(db, active=("Ann Lee",), inactive=("Sam Jones",))
     chat.say("hi")
     _name_at_menu(chat, "Sam")
-    family.children["Sam Jones"].is_active = True
+    family.children["Sam Jones"].is_archived = False
     db.flush()
 
     turn = chat.say(value="yes")
@@ -3443,7 +3469,7 @@ def test_an_approved_child_is_offered_for_booking_like_any_active_child(
     chat.say("hi")
     turn = _name_at_menu(chat, "Sam")
 
-    assert family.children["Sam Jones"].is_active is True
+    assert family.children["Sam Jones"].is_archived is False
     assert turn.reply == f"{render('ASK_WHICH_CHILD', 'en')}\n1. Ann Lee\n2. Sam Jones"
 
 
@@ -3951,7 +3977,7 @@ def _family(
         children[name] = _add_child(db, client, name=name)
 
     for name in inactive:
-        children[name].is_active = False
+        children[name].is_archived = True
 
     db.flush()
 
@@ -4032,7 +4058,7 @@ def _make_client(
     child_name: str = "Sam Guardian",
 ) -> ClientWorld:
     guardian = Guardian(name="Ada Guardian", phone_number=phone_number)
-    home = Home(label="Home", address="1 Test Street", access_code="1234")
+    home = Home(label="Home", address="1 Test Street", directions="1234")
     child = Child(
         name=child_name,
         date_of_birth=datetime.date(2014, 5, 2),
@@ -4044,7 +4070,6 @@ def _make_client(
     db.add_all(
         [
             GuardianHome(guardian_id=guardian.id, home_id=home.id),
-            ChildHome(child_id=child.id, home_id=home.id),
             ChildGuardian(child_id=child.id, guardian_id=guardian.id),
         ]
     )
@@ -4053,23 +4078,18 @@ def _make_client(
     return ClientWorld(guardian_id=guardian.id, child_id=child.id, home_id=home.id)
 
 
-def _add_child(db: Session, client: ClientWorld, *, name: str, is_active: bool = True) -> Child:
+def _add_child(db: Session, client: ClientWorld, *, name: str, is_archived: bool = False) -> Child:
     """A sibling linked to the same guardian and home as `client`'s child."""
     child = Child(
         name=name,
         date_of_birth=datetime.date(2015, 3, 9),
         grade_level=6,
         school_name="Test School",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()
-    db.add_all(
-        [
-            ChildHome(child_id=child.id, home_id=client.home_id),
-            ChildGuardian(child_id=child.id, guardian_id=client.guardian_id),
-        ]
-    )
+    db.add(ChildGuardian(child_id=child.id, guardian_id=client.guardian_id))
     db.flush()
 
     return child
@@ -4143,15 +4163,10 @@ def _make_staff(db: Session) -> User:
 
 
 def _add_home(db: Session, client: ClientWorld, *, label: str | None, address: str) -> Home:
-    home = Home(label=label, address=address, access_code="9999")
+    home = Home(label=label, address=address, directions="9999")
     db.add(home)
     db.flush()
-    db.add_all(
-        [
-            GuardianHome(guardian_id=client.guardian_id, home_id=home.id),
-            ChildHome(child_id=client.child_id, home_id=home.id),
-        ]
-    )
+    db.add(GuardianHome(guardian_id=client.guardian_id, home_id=home.id))
     db.flush()
 
     return home

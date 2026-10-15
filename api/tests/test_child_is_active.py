@@ -1,5 +1,5 @@
-"""`Child.is_active` (migration 0016, P7C-1) and `upcoming_live_bookings`, the one definition of
-"upcoming" that CW and CR both import (P7C-T).
+"""The Child archive flag (migration 0016, P7C-1; `is_archived` from 0037) and
+`upcoming_live_bookings`, the one definition of "upcoming" that CW and CR both import (P7C-T).
 """
 
 import datetime
@@ -37,7 +37,7 @@ def _make_guardian(db: Session) -> Guardian:
 
 
 def _make_home(db: Session) -> Home:
-    home = Home(address=f"{uuid.uuid4().hex[:6]} Elm Street", access_code="1234")
+    home = Home(address=f"{uuid.uuid4().hex[:6]} Elm Street", directions="1234")
     db.add(home)
     db.flush()
     return home
@@ -49,7 +49,7 @@ def _make_admin(db: Session) -> User:
         name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=UserRole.ADMIN,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()
@@ -116,25 +116,24 @@ def _make_booking(
     return booking
 
 
-def test_a_child_inserted_without_is_active_reads_back_true(db: Session) -> None:
+def test_a_child_inserted_without_the_flag_reads_back_not_archived(db: Session) -> None:
     child = Child(name="Tommy Doe", grade_level=7, school_name="Lincoln Middle School")
     db.add(child)
     db.flush()
     db.expire_all()
 
-    assert db.get_one(Child, child.id).is_active is True
+    assert db.get_one(Child, child.id).is_archived is False
 
 
 def test_post_children_returns_is_active_true(api: TestClient, db: Session) -> None:
     admin = _make_admin(db)
-    guardian, home = _make_guardian(db), _make_home(db)
+    guardian = _make_guardian(db)
 
     response = api.post(
         "/api/children",
         headers=_auth(admin),
         json={
             "guardian_ids": [str(guardian.id)],
-            "home_ids": [str(home.id)],
             "name": "Tommy Doe",
             "date_of_birth": "2014-05-02",
             "grade_level": 7,
@@ -143,19 +142,18 @@ def test_post_children_returns_is_active_true(api: TestClient, db: Session) -> N
     )
 
     assert response.status_code == 201
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
 
 
 def test_get_client_nests_the_childs_is_active(api: TestClient, db: Session) -> None:
     admin = _make_admin(db)
-    guardian, home = _make_guardian(db), _make_home(db)
+    guardian = _make_guardian(db)
     child_id = uuid.UUID(
         api.post(
             "/api/children",
             headers=_auth(admin),
             json={
                 "guardian_ids": [str(guardian.id)],
-                "home_ids": [str(home.id)],
                 "name": "Tommy Doe",
                 "date_of_birth": "2014-05-02",
                 "grade_level": 7,
@@ -167,7 +165,7 @@ def test_get_client_nests_the_childs_is_active(api: TestClient, db: Session) -> 
     response = api.get(f"/api/clients/{guardian.id}", headers=_auth(admin))
 
     nested = next(row for row in response.json()["children"] if row["id"] == str(child_id))
-    assert nested["is_active"] is True
+    assert nested["archived"] is False
 
 
 def test_upcoming_live_bookings(db: Session) -> None:

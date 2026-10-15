@@ -44,7 +44,7 @@ from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -59,6 +59,7 @@ from app.routers.booking_writes import (
     LIVE_EVALUATION_EXISTS_ERROR,
     OUTSIDE_AVAILABILITY_ERROR,
     REFERENCE_NOT_FOUND_ERROR,
+    STAFF_ARCHIVED_ERROR,
     STAFF_ROLE_NOT_ALLOWED_ERROR,
     UNCONFIRMED_WARNINGS_ERROR,
     WARNING_MESSAGES,
@@ -606,7 +607,7 @@ def test_a_guardian_booking_into_the_co_parents_home_is_accepted(
 def test_two_siblings_at_the_shared_home_are_both_accepted(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """Each passes rule 6 on its own `child_homes` row."""
+    """Each passes rule 6 through the Guardian they share, who holds the Home."""
     user = _make_user(db)
 
     first = _post(api, user, family, booked_by_guardian_id=str(family.guardian.id))
@@ -623,6 +624,19 @@ def test_two_siblings_at_the_shared_home_are_both_accepted(
     assert first.status_code == 201
     assert second.status_code == 201
     assert _count(db) == 2
+
+
+def test_a_home_added_to_a_guardian_after_the_child_is_accepted(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """A Child's Homes are its Guardians' (#214): nobody has to link the new Home to the Child."""
+    user = _make_user(db)
+    later = _make_home(db, family.co_guardian)
+
+    response = _post(api, user, family, home_id=str(later.id))
+
+    assert response.status_code == 201
+    assert _row(db, uuid.UUID(response.json()["id"])).home_id == later.id
 
 
 def test_a_guardian_not_linked_to_the_child_is_422(
@@ -772,7 +786,7 @@ def test_an_id_that_names_no_row_is_400(
     assert _count(db) == 0
 
 
-@pytest.mark.parametrize("reference", ["tutor", "subject", "home", "guardian", "child"])
+@pytest.mark.parametrize("reference", ["subject", "home", "guardian", "child"])
 def test_a_reference_an_admin_has_retired_is_400(
     api: TestClient, db: Session, family: Family, reference: str
 ) -> None:
@@ -797,24 +811,37 @@ def test_a_reference_an_admin_has_retired_is_400(
     assert _count(db) == 0
 
 
+def test_an_archived_tutor_as_staff_is_422_and_writes_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    _retire(family.tutor)
+    db.flush()
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    _assert_detail(response, 422, STAFF_ARCHIVED_ERROR)
+    assert _count(db) == 0
+
+
 def test_a_reactivated_child_can_be_booked_again(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """Reactivation goes through `PATCH /api/children/{id}`, the path an admin actually takes
+    """Restoring goes through `POST /api/restore`, the path an admin actually takes
     (P7C-P), rather than flipping the column behind the service's back."""
-    family.child.is_active = False
+    family.child.is_archived = True
     db.flush()
     user = _make_user(db)
     refused = _post(api, user, family)
 
-    reactivated = api.patch(
-        f"/api/children/{family.child.id}", json={"is_active": True}, headers=_auth(user)
+    reactivated = api.post(
+        "/api/restore", json={"type": "child", "id": str(family.child.id)}, headers=_auth(user)
     )
     accepted = _post(api, user, family)
 
     _assert_detail(refused, 400, REFERENCE_NOT_FOUND_ERROR)
     assert reactivated.status_code == 200
-    assert reactivated.json()["is_active"] is True
+    assert reactivated.json()["archived"] is False
     assert accepted.status_code == 201
     assert _count(db) == 1
 
@@ -1146,16 +1173,50 @@ def test_a_regular_booking_adjacent_to_the_admins_evaluation_needs_no_gap(
     assert _count(db) == 2
 
 
-def test_an_admins_approved_time_off_does_not_block_a_regular_booking(
+def test_an_admins_approved_time_off_is_the_time_off_warning_on_a_regular_booking(
     api: TestClient, db: Session, family: Family
 ) -> None:
-    """A Tutor promoted to Admin keeps their profile and its time off (spec 01); as an Admin
-    neither is consulted."""
-    _make_exception(db, family, status=ExceptionStatus.APPROVED)
-    promoted = _make_user(db, role=UserRole.ADMIN, tutor_id=family.tutor.id)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=admin.id)
     user = _make_user(db)
 
-    response = _post(api, user, family, user_id=str(promoted.id), availability_id=None)
+    refused = _post(api, user, family, user_id=str(admin.id), availability_id=None)
+    confirmed = _post(
+        api, user, family, user_id=str(admin.id), availability_id=None, confirm_warnings=[TIME_OFF]
+    )
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 201
+    assert _count(db) == 1
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.MANAGER])
+def test_approved_time_off_is_the_time_off_warning_on_an_evaluation(
+    api: TestClient, db: Session, family: Family, role: UserRole
+) -> None:
+    staff = _make_user(db, role=role)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=staff.id)
+    user = _make_user(db)
+
+    refused = _post_evaluation(api, user, family, staff)
+    confirmed = _post_evaluation(api, user, family, staff, confirm_warnings=[TIME_OFF])
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 201
+    assert _count(db) == 1
+
+
+@pytest.mark.parametrize(
+    "inert", [ExceptionStatus.PENDING, ExceptionStatus.REJECTED, ExceptionStatus.CANCELLED]
+)
+def test_an_admins_undecided_rejected_or_cancelled_time_off_warns_nothing(
+    api: TestClient, db: Session, family: Family, inert: ExceptionStatus
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    _make_exception(db, family, status=inert, user_id=admin.id)
+    user = _make_user(db)
+
+    response = _post(api, user, family, user_id=str(admin.id), availability_id=None)
 
     assert response.status_code == 201
 
@@ -1193,15 +1254,15 @@ def test_a_developer_as_staff_is_400(api: TestClient, db: Session, family: Famil
     assert _count(db) == 0
 
 
-def test_an_inactive_admin_as_staff_is_400(api: TestClient, db: Session, family: Family) -> None:
+def test_an_archived_admin_as_staff_is_422(api: TestClient, db: Session, family: Family) -> None:
     admin = _make_user(db, role=UserRole.ADMIN)
-    admin.is_active = False
+    admin.is_archived = True
     db.flush()
     user = _make_user(db)
 
     response = _post_evaluation(api, user, family, admin)
 
-    _assert_detail(response, 400, REFERENCE_NOT_FOUND_ERROR)
+    _assert_detail(response, 422, STAFF_ARCHIVED_ERROR)
     assert _count(db) == 0
 
 
@@ -1455,8 +1516,8 @@ def _make_family(db: Session) -> Family:
     co_guardian = _make_guardian(db)
     home = _make_home(db, guardian)
     other_home = _make_home(db, co_guardian)
-    child = _make_child(db, guardians=[guardian, co_guardian], homes=[home, other_home])
-    sibling = _make_child(db, guardians=[guardian], homes=[home])
+    child = _make_child(db, guardians=[guardian, co_guardian])
+    sibling = _make_child(db, guardians=[guardian])
     tutor = _make_tutor(db)
     subject = _make_subject(db)
     assignment = TutorSubject(
@@ -1516,7 +1577,7 @@ def _make_guardian(db: Session) -> Guardian:
 
 
 def _make_home(db: Session, guardian: Guardian) -> Home:
-    home = Home(label="Home", address=f"{uuid.uuid4().hex[:6]} Main St", access_code="1234")
+    home = Home(label="Home", address=f"{uuid.uuid4().hex[:6]} Main St", directions="1234")
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=guardian.id, home_id=home.id))
@@ -1525,7 +1586,7 @@ def _make_home(db: Session, guardian: Guardian) -> Home:
     return home
 
 
-def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) -> Child:
+def _make_child(db: Session, *, guardians: list[Guardian]) -> Child:
     child = Child(
         name=f"Child {uuid.uuid4().hex[:8]}",
         grade_level=CHILD_GRADE,
@@ -1534,7 +1595,6 @@ def _make_child(db: Session, *, guardians: list[Guardian], homes: list[Home]) ->
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])
-    db.add_all([ChildHome(child_id=child.id, home_id=one.id) for one in homes])
     db.flush()
 
     return child
@@ -1589,9 +1649,11 @@ def _make_exception(
     status: ExceptionStatus,
     start_time: datetime.time | None = None,
     end_time: datetime.time | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> TutorAvailabilityException:
+    """Time off on `MONDAY` for the family's tutor unless another Staff user is named."""
     row = TutorAvailabilityException(
-        tutor_id=family.tutor.id,
+        user_id=family.tutor.user_id if user_id is None else user_id,
         start_date=MONDAY,
         end_date=MONDAY,
         start_time=start_time,
@@ -1641,7 +1703,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password("booking-write-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -1649,7 +1711,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("booking-write-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user
@@ -1671,7 +1733,7 @@ def _retire(row: object) -> None:
     """Soft-delete a reference. A Tutor is retired through their user: `tutors.is_active` decides
     nothing (#130)."""
     target = row.user if isinstance(row, Tutor) else row
-    target.is_active = False  # type: ignore[attr-defined]
+    target.is_archived = True  # type: ignore[attr-defined]
 
 
 def _count(db: Session) -> int:

@@ -37,7 +37,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -45,7 +45,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -67,12 +67,12 @@ def _auth(user: User) -> dict[str, str]:
 
 
 def _make_guardian(
-    db: Session, name: str, *, phone_number: str | None = None, is_active: bool = True
+    db: Session, name: str, *, phone_number: str | None = None, is_archived: bool = False
 ) -> Guardian:
     guardian = Guardian(
         name=name,
         phone_number=phone_number or f"+1303{uuid.uuid4().int % 10**7:07d}",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(guardian)
     db.flush()
@@ -80,10 +80,10 @@ def _make_guardian(
 
 
 def _make_child(
-    db: Session, name: str, *, guardians: list[Guardian], is_active: bool = True
+    db: Session, name: str, *, guardians: list[Guardian], is_archived: bool = False
 ) -> Child:
     child = Child(
-        name=name, grade_level=7, school_name="Lincoln Middle School", is_active=is_active
+        name=name, grade_level=7, school_name="Lincoln Middle School", is_archived=is_archived
     )
     db.add(child)
     db.flush()
@@ -163,11 +163,11 @@ def test_list_returns_the_page_envelope_with_the_pinned_item_shape(
                         "id": str(jane.id),
                         "name": "Jane Doe",
                         "phone_number": "+12025550123",
-                        "is_active": True,
+                        "archived": False,
                     }
                 ],
                 "children": [
-                    {"id": str(tommy.id), "name": "Tommy Doe", "grade_level": 7, "is_active": True}
+                    {"id": str(tommy.id), "name": "Tommy Doe", "grade_level": 7, "archived": False}
                 ],
             }
         ],
@@ -264,7 +264,7 @@ def test_a_guardian_with_no_children_is_a_household_of_one(api: TestClient, db: 
                     "id": str(solo.id),
                     "name": "Solo Guardian",
                     "phone_number": solo.phone_number,
-                    "is_active": True,
+                    "archived": False,
                 }
             ],
             "children": [],
@@ -276,9 +276,9 @@ def test_inactive_members_are_included_carrying_their_flag_and_is_active_is_not_
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
-    _make_guardian(db, "Dormant Guardian", is_active=False)
+    _make_guardian(db, "Dormant Guardian", is_archived=True)
     parent = _make_guardian(db, "Active Guardian")
-    _make_child(db, "Dormant Child", guardians=[parent], is_active=False)
+    _make_child(db, "Dormant Child", guardians=[parent], is_archived=True)
 
     default = _get(api, admin)
     flagged = _get(api, admin, is_active="false")
@@ -286,9 +286,9 @@ def test_inactive_members_are_included_carrying_their_flag_and_is_active_is_not_
     assert flagged == default
     assert default["total"] == 2
     active, dormant = default["items"]
-    assert active["guardians"][0]["is_active"] is True
-    assert active["children"][0]["is_active"] is False
-    assert dormant["guardians"][0]["is_active"] is False
+    assert active["guardians"][0]["archived"] is False
+    assert active["children"][0]["archived"] is True
+    assert dormant["guardians"][0]["archived"] is True
 
 
 # --- search -----------------------------------------------------------------------------------

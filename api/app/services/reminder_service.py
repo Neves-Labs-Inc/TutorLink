@@ -178,7 +178,7 @@ def due_guardians(db: Session, *, now: datetime.datetime) -> list[ReminderCandid
         .join(Child, Child.id == ChildGuardian.child_id)
         .join(_LATEST_CONSENTS, _LATEST_CONSENTS.c.guardian_id == Guardian.id)
         .where(
-            Guardian.is_active.is_(True),
+            Guardian.is_archived.is_(False),
             _LATEST_CONSENTS.c.action == ConsentAction.OPT_IN,
             _child_is_eligible(week_start),
         )
@@ -652,4 +652,4 @@ def _child_is_eligible(week_start: datetime.date) -> ColumnElement[bool]:
         )
     )
 
-    return and_(Child.is_active.is_(True), Child.evaluated_at.is_not(None), ~booked_that_week)
+    return and_(Child.is_archived.is_(False), Child.evaluated_at.is_not(None), ~booked_that_week)

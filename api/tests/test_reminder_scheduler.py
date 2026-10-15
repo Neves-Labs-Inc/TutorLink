@@ -11,17 +11,19 @@ import datetime
 import logging
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.enums import Language
 from app.models.booking_reminder import BookingReminder
+from app.models.booking_reminder_run import BookingReminderRun
+from app.models.system_setting import SystemSetting
 from app.services import reminder_scheduler
 from app.services.reminder_scheduler import (
     REMINDER_LOCK_KEY,
@@ -39,6 +41,8 @@ from tests.test_reminder_service import EN_SID, World, set_template_sid
 NOT_DUE_LINE = "booking reminders: not due"
 SKIPPED_LINE = "booking reminders: skipped, another instance holds the lock"
 FAILED_LINE = "booking reminders: failed"
+OFF_LINE = "booking reminders: switched off"
+NOT_SET_UP_LINE = "booking reminders: not set up"
 
 SUNDAY_6PM = datetime.datetime(2026, 10, 11, 18, 0)
 
@@ -65,6 +69,23 @@ def due_guardian(world: World, db: Session) -> DueGuardian:
     world.child(guardian)
 
     return DueGuardian(guardian_id=guardian.id, phone_number=guardian.phone_number)
+
+
+def _switch_reminders(db: Session, *, is_on: bool) -> None:
+    db.execute(
+        update(SystemSetting)
+        .where(SystemSetting.key == "reminders_enabled")
+        .values(value="true" if is_on else "false")
+    )
+    db.flush()
+
+
+def _written_rows(db: Session) -> tuple[int, int]:
+    """Every reminder row and every run row; what a tick that must not run must leave as is."""
+    return (
+        db.scalar(select(func.count()).select_from(BookingReminder)) or 0,
+        db.scalar(select(func.count()).select_from(BookingReminderRun)) or 0,
+    )
 
 
 def _sends(fake: FakeTwilio, due: DueGuardian) -> int:
@@ -212,6 +233,67 @@ def test_a_2am_hour_skipped_by_spring_forward_runs_at_the_first_tick_after_it(
     assert _sends(fake_twilio, due_guardian) == 1
 
 
+def test_a_due_tick_with_reminders_switched_off_sends_and_writes_nothing(
+    db: Session,
+    freeze_business_clock: Freeze,
+    fake_twilio: FakeTwilio,
+    due_guardian: DueGuardian,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    freeze_business_clock(SUNDAY_6PM)
+    _switch_reminders(db, is_on=False)
+    rows_before = _written_rows(db)
+
+    with caplog.at_level(logging.INFO, logger=reminder_scheduler.__name__):
+        result = _tick(db)
+
+    assert result is TickResult.OFF
+    assert [record.getMessage() for record in caplog.records] == [OFF_LINE]
+    assert _sends(fake_twilio, due_guardian) == 0
+    assert _written_rows(db) == rows_before
+
+
+@pytest.mark.parametrize("is_on", [True, False], ids=["switched-on", "switched-off"])
+def test_a_due_tick_with_no_reminder_template_set_up_sends_and_writes_nothing(
+    db: Session,
+    world: World,
+    freeze_business_clock: Freeze,
+    fake_twilio: FakeTwilio,
+    caplog: pytest.LogCaptureFixture,
+    is_on: bool,
+) -> None:
+    freeze_business_clock(SUNDAY_6PM)
+    world.child(world.guardian())
+    _switch_reminders(db, is_on=is_on)
+    rows_before = _written_rows(db)
+
+    with caplog.at_level(logging.INFO, logger=reminder_scheduler.__name__):
+        result = _tick(db)
+
+    assert result is TickResult.NOT_SET_UP
+    assert [record.getMessage() for record in caplog.records] == [NOT_SET_UP_LINE]
+    assert fake_twilio.sent == []
+    assert _written_rows(db) == rows_before
+
+
+def test_switching_reminders_on_later_on_the_run_day_runs_the_week_once(
+    db: Session, freeze_business_clock: Freeze, fake_twilio: FakeTwilio, due_guardian: DueGuardian
+) -> None:
+    _switch_reminders(db, is_on=False)
+    freeze_business_clock(SUNDAY_6PM)
+    while_off = _tick(db)
+
+    _switch_reminders(db, is_on=True)
+    freeze_business_clock(SUNDAY_6PM + datetime.timedelta(hours=1))
+    first_on = _tick(db)
+    freeze_business_clock(SUNDAY_6PM + datetime.timedelta(hours=2))
+    second_on = _tick(db)
+
+    assert (while_off, first_on, second_on) == (TickResult.OFF, TickResult.RAN, TickResult.RAN)
+    assert _sends(fake_twilio, due_guardian) == 1
+
+
+@pytest.mark.usefixtures("committed_template_sid")
 def test_a_tick_skips_while_another_instance_holds_the_reminder_lock(
     committed_sessions: sessionmaker[Session],
     freeze_business_clock: Freeze,
@@ -245,6 +327,7 @@ def test_a_tick_that_fails_logs_failed_and_returns_instead_of_raising(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     freeze_business_clock(SUNDAY_6PM)
+    set_template_sid(db, Language.EN, EN_SID)
 
     def fail(db: Session, *, now: datetime.datetime) -> None:
         raise RuntimeError("database went away")
@@ -333,3 +416,26 @@ def test_lifespan_starts_the_reminder_scheduler_and_cancels_it_on_exit(
 @pytest.fixture
 def committed_sessions(_test_engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)
+
+
+@pytest.fixture
+def committed_template_sid(
+    committed_sessions: sessionmaker[Session],
+) -> Generator[None, None, None]:
+    """The English template id set where a tick's own sessions see it, and put back after: a
+    tick with no template set up stops before the lock."""
+    key = "reminder_template_sid_en"
+    with committed_sessions() as session:
+        original = session.scalars(
+            select(SystemSetting.value).where(SystemSetting.key == key)
+        ).one()
+        set_template_sid(session, Language.EN, EN_SID)
+        session.commit()
+    try:
+        yield
+    finally:
+        with committed_sessions() as session:
+            session.execute(
+                update(SystemSetting).where(SystemSetting.key == key).values(value=original)
+            )
+            session.commit()

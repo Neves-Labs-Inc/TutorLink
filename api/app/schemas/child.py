@@ -104,7 +104,7 @@ class ChildHomeRef(BaseModel):
 
 
 class ChildHomeRead(ChildHomeRef):
-    access_code: str
+    directions: str | None
 
 
 class NextSession(BaseModel):

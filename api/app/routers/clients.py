@@ -45,7 +45,9 @@ from app.services.client_service import (
     list_clients,
     update_client,
 )
+from app.routers.client_homes import BLANK_HOME_DETAILS_ERROR
 from app.services.guardian_state import ReminderState
+from app.services.home_service import BlankAddress
 from app.services.home_set import guardians_by_home
 from app.services.phone_service import InvalidPhoneNumber
 
@@ -117,6 +119,8 @@ def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> Clien
         raise HTTPException(status.HTTP_409_CONFLICT, PHONE_NUMBER_TAKEN_ERROR) from exc
     except InvalidPhoneNumber as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
+    except BlankAddress as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, BLANK_HOME_DETAILS_ERROR) from exc
 
     db.commit()
 
@@ -170,7 +174,7 @@ def _home_input(home: HomeCreate | None) -> HomeInput | None:
     return (
         None
         if home is None
-        else HomeInput(label=home.label, address=home.address, access_code=home.access_code)
+        else HomeInput(label=home.label, address=home.address, directions=home.directions)
     )
 
 

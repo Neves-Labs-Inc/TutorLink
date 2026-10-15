@@ -10,6 +10,7 @@ a child's homes are its guardians' homes (`home_set`, #214); there is no per-chi
 """
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
@@ -31,8 +32,24 @@ class HomeNotFound(HomeServiceError):
     """No home with that id."""
 
 
-class BlankHomeDetails(HomeServiceError):
-    """An address or access code that is empty once trimmed."""
+class BlankAddress(HomeServiceError):
+    """An address that is empty once trimmed."""
+
+
+@dataclass(frozen=True, slots=True)
+class HomeDetails:
+    """A Home's fields as stored: trimmed, with a blank label or directions as `None`."""
+
+    label: str | None
+    address: str
+    directions: str | None
+
+
+def home_details(*, label: str | None, address: str, directions: str | None) -> HomeDetails:
+    """Raises `BlankAddress` when the address is empty once trimmed."""
+    return HomeDetails(
+        label=_optional(label), address=_required(address), directions=_optional(directions)
+    )
 
 
 def add_home(
@@ -41,19 +58,16 @@ def add_home(
     client_id: uuid.UUID,
     label: str | None,
     address: str,
-    access_code: str,
+    directions: str | None,
 ) -> Home:
     if db.get(Guardian, client_id) is None:
         raise ClientNotFound
 
-    stored_label = _stored_label(label)
-    stored_address = _required(address)
-    stored_access_code = _required(access_code)
-
+    details = home_details(label=label, address=address, directions=directions)
     home = Home(
-        label=stored_label,
-        address=stored_address,
-        access_code=stored_access_code,
+        label=details.label,
+        address=details.address,
+        directions=details.directions,
         is_archived=False,
     )
     db.add(home)
@@ -70,33 +84,33 @@ def update_home(
     home_id: uuid.UUID,
     label: str | None,
     address: str | None,
-    access_code: str | None,
+    directions: str | None,
 ) -> Home:
-    """`None` leaves a field alone; `label=""` clears the label. Links are never touched."""
+    """`None` leaves a field alone; `""` clears the label or the directions. Links are never
+    touched."""
     home = db.get(Home, home_id, with_for_update=True)
 
     if home is None:
         raise HomeNotFound
 
     stored_address = None if address is None else _required(address)
-    stored_access_code = None if access_code is None else _required(access_code)
 
     if label is not None:
-        home.label = _stored_label(label)
+        home.label = _optional(label)
 
     if stored_address is not None:
         home.address = stored_address
 
-    if stored_access_code is not None:
-        home.access_code = stored_access_code
+    if directions is not None:
+        home.directions = _optional(directions)
 
     db.flush()
 
     return home
 
 
-def _stored_label(label: str | None) -> str | None:
-    trimmed = "" if label is None else label.strip()
+def _optional(value: str | None) -> str | None:
+    trimmed = "" if value is None else value.strip()
 
     return trimmed or None
 
@@ -105,6 +119,6 @@ def _required(value: str) -> str:
     trimmed = value.strip()
 
     if not trimmed:
-        raise BlankHomeDetails
+        raise BlankAddress
 
     return trimmed

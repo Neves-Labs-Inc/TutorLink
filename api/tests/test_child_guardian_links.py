@@ -90,7 +90,7 @@ def _make_guardian(
 
 
 def _make_home(db: Session, *, label: str, is_archived: bool = False) -> Home:
-    home = Home(label=label, address=f"{label} Street", access_code="1234", is_archived=is_archived)
+    home = Home(label=label, address=f"{label} Street", directions="1234", is_archived=is_archived)
     db.add(home)
     db.flush()
     return home

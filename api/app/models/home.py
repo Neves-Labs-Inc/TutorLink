@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.guardian import Guardian
 
+# How long a Home's directions may be; request schemas and the bot intake cut to it.
+DIRECTIONS_MAX_LENGTH = 500
+
 
 class Home(HasID, HasTimestamps, HasArchivedFlag, Base):
     __tablename__ = "homes"
@@ -32,7 +35,8 @@ class Home(HasID, HasTimestamps, HasArchivedFlag, Base):
     # addresses back over WhatsApp is a poor prompt. Nullable, so it costs nothing unused.
     label: Mapped[str | None] = mapped_column(String(64), nullable=True)
     address: Mapped[str] = mapped_column(Text, nullable=False)
-    access_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Optional free text for Staff on how to get in: a gate or door code, parking, the entrance.
+    directions: Mapped[str | None] = mapped_column(String(DIRECTIONS_MAX_LENGTH), nullable=True)
 
     guardian_links: Mapped[list["GuardianHome"]] = relationship(back_populates="home")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="home")

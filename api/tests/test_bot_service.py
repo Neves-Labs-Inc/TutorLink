@@ -58,7 +58,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import GuardianHome, Home
+from app.models.home import DIRECTIONS_MAX_LENGTH, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor, TutorSubject
@@ -513,7 +513,7 @@ def test_an_over_long_answer_is_truncated_to_the_column_it_lands_in(
     _open_intake(chat)
     chat.say(value="A" * 400)
     chat.say(value="1 Test Street")
-    chat.say(value="B" * 200)
+    chat.say(value="B" * 600)
     chat.say(value="skip")
     chat.say(value="no")
     chat.say(value="Sam")
@@ -527,7 +527,7 @@ def test_an_over_long_answer_is_truncated_to_the_column_it_lands_in(
     child = db.execute(select(Child)).scalar_one()
 
     assert len(guardian.name) == bot_service.NAME_LIMIT
-    assert len(home.access_code) == bot_service.ACCESS_CODE_LIMIT
+    assert home.directions == "B" * DIRECTIONS_MAX_LENGTH == "B" * 500
     assert child.school_name == "C" * bot_service.NAME_LIMIT
     assert child.notes == "D" * NOTES_MAX_LENGTH
 
@@ -868,7 +868,7 @@ def test_the_date_of_birth_and_notes_are_never_sent_to_the_parser_again(chat: Ch
     assert all("child_notes" not in context for context in after_notes)
 
 
-def test_the_address_and_access_code_are_never_sent_to_the_parser(chat: Chat) -> None:
+def test_the_address_and_directions_are_never_sent_to_the_parser(chat: Chat) -> None:
     """A street address and the code that opens its door are the pair #39 built P7-F to
     protect. No step after the one that collected them needs either to be understood, so they
     do not travel to a third-party model once per message for the rest of the conversation."""
@@ -944,7 +944,7 @@ def test_a_returning_guardian_with_no_children_is_asked_the_full_child_questions
         db,
         name="Ada Guardian",
         phone_number=CANONICAL_NUMBER,
-        home=client_service.HomeInput(label="Home", address="1 Test Street", access_code="1234"),
+        home=client_service.HomeInput(label="Home", address="1 Test Street", directions="1234"),
     )
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
@@ -1085,7 +1085,7 @@ def test_the_location_step_offers_every_active_home_of_any_of_the_childs_guardia
     dads = Home(
         label="Dad's",
         address="2 Other Street",
-        access_code="9999",
+        directions="9999",
         created_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1),
     )
     db.add_all([co_guardian, dads])
@@ -2583,7 +2583,7 @@ def test_a_punctuated_none_stores_no_notes(chat: Chat, db: Session) -> None:
 _STEP_PROMPTS = {
     bot_service.STEP_INTAKE_NAME: render("ASK_GUARDIAN_NAME", "en"),
     bot_service.STEP_INTAKE_ADDRESS: render("ASK_ADDRESS", "en"),
-    bot_service.STEP_INTAKE_ACCESS_CODE: render("ASK_ACCESS_CODE", "en"),
+    bot_service.STEP_INTAKE_DIRECTIONS: render("ASK_DIRECTIONS", "en"),
     bot_service.STEP_INTAKE_LABEL: render("ASK_HOME_LABEL", "en"),
     bot_service.STEP_CHILD_REGISTERED: render("ASK_CHILD_REGISTERED", "en"),
     bot_service.STEP_CHILD_NAME: render("ASK_CHILD_NAME", "en"),
@@ -3090,7 +3090,7 @@ def test_a_guardian_recognised_by_phone_is_reported_for_linking_on_every_turn(
         db,
         name="Ada Guardian",
         phone_number=CANONICAL_NUMBER,
-        home=client_service.HomeInput(label="Home", address="1 Test Street", access_code="1234"),
+        home=client_service.HomeInput(label="Home", address="1 Test Street", directions="1234"),
     )
 
     opening = chat.say("hi")
@@ -4058,7 +4058,7 @@ def _make_client(
     child_name: str = "Sam Guardian",
 ) -> ClientWorld:
     guardian = Guardian(name="Ada Guardian", phone_number=phone_number)
-    home = Home(label="Home", address="1 Test Street", access_code="1234")
+    home = Home(label="Home", address="1 Test Street", directions="1234")
     child = Child(
         name=child_name,
         date_of_birth=datetime.date(2014, 5, 2),
@@ -4163,7 +4163,7 @@ def _make_staff(db: Session) -> User:
 
 
 def _add_home(db: Session, client: ClientWorld, *, label: str | None, address: str) -> Home:
-    home = Home(label=label, address=address, access_code="9999")
+    home = Home(label=label, address=address, directions="9999")
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client.guardian_id, home_id=home.id))

@@ -167,7 +167,7 @@ def _detail(row: ChildDetailRow, owners: Owners) -> ChildDetail:
                 id=home.id,
                 label=home.label,
                 address=home.address,
-                access_code=home.access_code,
+                directions=home.directions,
                 archived=home.is_archived,
                 guardians=_owner_refs(owners[home.id]),
             )

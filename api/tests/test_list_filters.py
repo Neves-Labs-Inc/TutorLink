@@ -808,7 +808,7 @@ def _make_client(
 
 
 def _make_home(db: Session, *, guardian: Guardian, is_archived: bool = False) -> Home:
-    home = Home(address="1 Test Street", access_code="0000", is_archived=is_archived)
+    home = Home(address="1 Test Street", directions="0000", is_archived=is_archived)
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=guardian.id, home_id=home.id))

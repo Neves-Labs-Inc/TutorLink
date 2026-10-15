@@ -88,7 +88,7 @@ def _post_booking(api: TestClient, user: User, world: World) -> Response:
 def _make_world(db: Session) -> World:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
-    home = Home(label="Home", address=f"{suffix[:6]} Main St", access_code="1234")
+    home = Home(label="Home", address=f"{suffix[:6]} Main St", directions="1234")
     child = Child(name=f"Child {suffix[:8]}", grade_level=GRADE, school_name="Test School")
     tutor = Tutor(
         user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),

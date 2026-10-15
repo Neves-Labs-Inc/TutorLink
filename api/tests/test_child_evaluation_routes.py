@@ -545,7 +545,7 @@ def _make_child(
     guardian = Guardian(
         name=f"Guardian {_suffix()}", phone_number=f"+1{uuid.uuid4().int % 10**10:010d}"
     )
-    home = Home(address=f"{_suffix()} Main St", access_code="1234")
+    home = Home(address=f"{_suffix()} Main St", directions="1234")
     child = Child(
         name=name or f"Child {_suffix()}",
         grade_level=7,

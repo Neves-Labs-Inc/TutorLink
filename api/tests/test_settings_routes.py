@@ -688,7 +688,7 @@ def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
     suffix = uuid.uuid4().hex[:12]
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     subject = Subject(name=f"Subject {suffix}")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     tutor = _make_tutor(db)
     db.add_all([child, subject, home])
     db.flush()

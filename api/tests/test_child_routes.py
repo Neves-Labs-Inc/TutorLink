@@ -126,7 +126,7 @@ def _make_guardian(db: Session, *, homes: Sequence[Home] = ()) -> Guardian:
 
 
 def _make_home(db: Session) -> Home:
-    home = Home(address=f"{uuid.uuid4().hex[:6]} Elm Street", access_code="1234")
+    home = Home(address=f"{uuid.uuid4().hex[:6]} Elm Street", directions="1234")
     db.add(home)
     db.flush()
     return home

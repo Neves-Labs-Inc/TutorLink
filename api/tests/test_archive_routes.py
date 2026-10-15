@@ -439,7 +439,7 @@ def _make_client(db: Session, *, is_archived: bool = False) -> Guardian:
 
 
 def _make_home(db: Session, *, client: Guardian, is_archived: bool = False) -> Home:
-    home = Home(label="Mum's", address="123 Main St", access_code="1234", is_archived=is_archived)
+    home = Home(label="Mum's", address="123 Main St", directions="1234", is_archived=is_archived)
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=home.id))

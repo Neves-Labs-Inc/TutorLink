@@ -366,8 +366,8 @@ def world(committed_sessions: sessionmaker[Session]) -> Generator[World, None, N
 def _make_world(session: Session) -> World:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
-    home = Home(address=f"{suffix[:6]} Race Street", access_code="1234")
-    spare_home = Home(address=f"{suffix[:6]} Spare Street", access_code="1234")
+    home = Home(address=f"{suffix[:6]} Race Street", directions="1234")
+    spare_home = Home(address=f"{suffix[:6]} Spare Street", directions="1234")
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     tutor = Tutor(
         user=User(email=f"t-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),

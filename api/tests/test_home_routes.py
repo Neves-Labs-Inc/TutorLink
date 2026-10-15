@@ -34,9 +34,9 @@ PASSWORD = "correct horse battery staple"
 
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 HOME_NOT_FOUND_ERROR = "Home not found"
-BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
+BLANK_HOME_DETAILS_ERROR = "address must not be blank"
 
-HOME_READ_KEYS = {"id", "label", "address", "access_code", "archived", "guardians"}
+HOME_READ_KEYS = {"id", "label", "address", "directions", "archived", "guardians"}
 
 NINE = datetime.time(9, 0)
 TWELVE = datetime.time(12, 0)
@@ -54,14 +54,14 @@ def test_add_home_links_only_the_client_and_its_children_have_it(
     first = _make_child(db, guardians=[client])
     second = _make_child(db, guardians=[client])
 
-    response = _add(api, admin, client.id, label="Dad's", address="9 Elm St", access_code="4321")
+    response = _add(api, admin, client.id, label="Dad's", address="9 Elm St", directions="4321")
     body = response.json()
 
     assert response.status_code == 201
     assert set(body) == HOME_READ_KEYS
     assert body["label"] == "Dad's"
     assert body["address"] == "9 Elm St"
-    assert body["access_code"] == "4321"
+    assert body["directions"] == "4321"
     assert body["archived"] is False
     assert body["guardians"] == [{"id": str(client.id), "name": client.name}]
 
@@ -88,18 +88,15 @@ def test_add_home_ignores_child_ids(api: TestClient, db: Session) -> None:
     assert _child_home_ids(api, admin, other) == []
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("address", "   "), ("access_code", "   "), ("address", "")],
-)
-def test_add_home_refuses_blank_details_and_writes_nothing(
-    api: TestClient, db: Session, field: str, value: str
+@pytest.mark.parametrize("address", ["   ", ""])
+def test_add_home_refuses_a_blank_address_and_writes_nothing(
+    api: TestClient, db: Session, address: str
 ) -> None:
     admin = _make_user(db)
     client = _make_client(db)
     homes_before = _home_count(db)
 
-    response = _add(api, admin, client.id, **{field: value})
+    response = _add(api, admin, client.id, address=address)
 
     _assert_detail(response, 400, BLANK_HOME_DETAILS_ERROR)
     assert _home_count(db) == homes_before
@@ -111,25 +108,56 @@ def test_add_home_stores_a_blank_label_as_null_and_trims_the_rest(
     admin = _make_user(db)
     client = _make_client(db)
 
-    response = _add(api, admin, client.id, label="  ", address="  9 Elm St ", access_code=" 42 ")
+    response = _add(api, admin, client.id, label="  ", address="  9 Elm St ", directions=" 42 ")
     body = response.json()
     stored = db.get(Home, uuid.UUID(body["id"]))
 
     assert response.status_code == 201
     assert body["label"] is None
     assert stored is not None
-    assert (stored.label, stored.address, stored.access_code) == (None, "9 Elm St", "42")
+    assert (stored.label, stored.address, stored.directions) == (None, "9 Elm St", "42")
 
 
-@pytest.mark.parametrize("field", ["label", "access_code"])
-def test_add_home_refuses_a_field_over_64_characters_with_400(
-    api: TestClient, db: Session, field: str
+@pytest.mark.parametrize("directions", [None, "  ", ""])
+def test_add_home_stores_absent_or_blank_directions_as_null(
+    api: TestClient, db: Session, directions: str | None
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    body = (
+        {"address": "9 Elm St"}
+        if directions is None
+        else {"address": "9 Elm St", "directions": directions}
+    )
+
+    response = api.post(f"/api/clients/{client.id}/homes", json=body, headers=_auth(admin))
+    stored = db.get(Home, uuid.UUID(response.json()["id"]))
+
+    assert response.status_code == 201
+    assert response.json()["directions"] is None
+    assert stored is not None
+    assert stored.directions is None
+
+
+def test_add_home_accepts_500_characters_of_directions(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    response = _add(api, admin, client.id, directions="x" * 500)
+
+    assert response.status_code == 201
+    assert response.json()["directions"] == "x" * 500
+
+
+@pytest.mark.parametrize(("field", "length"), [("label", 65), ("directions", 501)])
+def test_add_home_refuses_a_field_over_its_limit_with_400(
+    api: TestClient, db: Session, field: str, length: int
 ) -> None:
     admin = _make_user(db)
     client = _make_client(db)
     homes_before = _home_count(db)
 
-    response = _add(api, admin, client.id, **{field: "x" * 65})
+    response = _add(api, admin, client.id, **{field: "x" * length})
 
     assert response.status_code == 400
     assert set(response.json()) == {"detail"}
@@ -142,7 +170,7 @@ def test_add_home_without_an_address_is_400_not_422(api: TestClient, db: Session
     client = _make_client(db)
 
     response = api.post(
-        f"/api/clients/{client.id}/homes", json={"access_code": "1"}, headers=_auth(admin)
+        f"/api/clients/{client.id}/homes", json={"directions": "1"}, headers=_auth(admin)
     )
 
     assert response.status_code == 400
@@ -162,19 +190,19 @@ def test_add_home_for_an_unknown_client_is_404(api: TestClient, db: Session) -> 
 # --- PATCH /api/homes/{id} ------------------------------------------------------------------
 
 
-def test_patch_access_code_changes_only_that_field(api: TestClient, db: Session) -> None:
+def test_patch_directions_changes_only_that_field(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     owner = _make_client(db)
     home = _make_home(db, client=owner)
 
-    response = _patch(api, admin, home.id, {"access_code": "0000"})
+    response = _patch(api, admin, home.id, {"directions": " Side door "})
 
     assert response.status_code == 200
     assert response.json() == {
         "id": str(home.id),
         "label": "Mum's",
         "address": "123 Main St",
-        "access_code": "0000",
+        "directions": "Side door",
         "archived": False,
         "guardians": [{"id": str(owner.id), "name": owner.name}],
     }
@@ -225,36 +253,50 @@ def test_patch_with_an_empty_body_changes_nothing(api: TestClient, db: Session) 
 
     assert response.status_code == 200
     assert response.json()["label"] == "Mum's"
-    assert response.json()["access_code"] == "1234"
+    assert response.json()["directions"] == "1234"
 
 
-@pytest.mark.parametrize("field", ["address", "access_code"])
-def test_patch_refuses_a_blank_detail_and_applies_nothing(
-    api: TestClient, db: Session, field: str
+@pytest.mark.parametrize(
+    ("directions", "stored"),
+    [("", None), ("   ", None), (None, "1234"), (" Back gate ", "Back gate")],
+)
+def test_patch_directions_clears_on_blank_and_is_left_alone_on_null(
+    api: TestClient, db: Session, directions: str | None, stored: str | None
 ) -> None:
     admin = _make_user(db)
     home = _make_home(db, client=_make_client(db))
 
-    response = _patch(api, admin, home.id, {field: "  ", "label": "X"})
+    response = _patch(api, admin, home.id, {"directions": directions})
+
+    assert response.status_code == 200
+    assert response.json()["directions"] == stored
+    assert _reloaded(db, home).directions == stored
+
+
+def test_patch_refuses_a_blank_address_and_applies_nothing(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    home = _make_home(db, client=_make_client(db))
+
+    response = _patch(api, admin, home.id, {"address": "  ", "label": "X", "directions": ""})
 
     _assert_detail(response, 400, BLANK_HOME_DETAILS_ERROR)
     reloaded = _reloaded(db, home)
-    assert (reloaded.label, reloaded.address, reloaded.access_code) == (
+    assert (reloaded.label, reloaded.address, reloaded.directions) == (
         "Mum's",
         "123 Main St",
         "1234",
     )
 
 
-def test_patch_access_code_over_64_characters_is_400(api: TestClient, db: Session) -> None:
+def test_patch_directions_over_500_characters_is_400(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     home = _make_home(db, client=_make_client(db))
 
-    response = _patch(api, admin, home.id, {"access_code": "x" * 65})
+    response = _patch(api, admin, home.id, {"directions": "x" * 501})
 
     assert response.status_code == 400
     assert set(response.json()) == {"detail"}
-    assert _reloaded(db, home).access_code == "1234"
+    assert _reloaded(db, home).directions == "1234"
 
 
 def test_patch_leaves_every_link_in_place(api: TestClient, db: Session) -> None:
@@ -387,7 +429,7 @@ def test_the_shared_literals_match_the_routers_that_already_declare_them() -> No
 
 
 def _home_body(**overrides: object) -> dict[str, object]:
-    body: dict[str, object] = {"label": "Dad's", "address": "9 Elm St", "access_code": "4321"}
+    body: dict[str, object] = {"label": "Dad's", "address": "9 Elm St", "directions": "4321"}
     body.update(overrides)
 
     return body
@@ -517,7 +559,7 @@ def _make_client(db: Session) -> Guardian:
 
 
 def _make_home(db: Session, *, client: Guardian, is_archived: bool = False) -> Home:
-    home = Home(label="Mum's", address="123 Main St", access_code="1234", is_archived=is_archived)
+    home = Home(label="Mum's", address="123 Main St", directions="1234", is_archived=is_archived)
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=home.id))

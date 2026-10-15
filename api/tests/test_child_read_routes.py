@@ -239,7 +239,7 @@ def test_detail_nests_every_guardian_and_every_home(
             "id": str(older.id),
             "label": "Dad's",
             "address": older.address,
-            "access_code": "1234",
+            "directions": "1234",
             "archived": True,
             "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         },
@@ -247,7 +247,7 @@ def test_detail_nests_every_guardian_and_every_home(
             "id": str(newer.id),
             "label": "Mum's",
             "address": newer.address,
-            "access_code": "1234",
+            "directions": "1234",
             "archived": False,
             "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         },
@@ -605,7 +605,7 @@ def _make_home(
     home = Home(
         label=label,
         address=f"{uuid.uuid4().hex[:6]} Main St",
-        access_code="1234",
+        directions="1234",
         is_archived=is_archived,
         created_at=datetime.datetime.now(tz=datetime.UTC)
         - datetime.timedelta(days=created_days_ago),

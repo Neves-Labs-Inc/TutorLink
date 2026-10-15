@@ -94,7 +94,7 @@ from app.models.enums import (
     FlagReason,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import GuardianHome, Home
+from app.models.home import DIRECTIONS_MAX_LENGTH, GuardianHome, Home
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -143,7 +143,7 @@ SUBJECT_LIMIT = 100
 
 STEP_INTAKE_NAME = "intake_name"
 STEP_INTAKE_ADDRESS = "intake_address"
-STEP_INTAKE_ACCESS_CODE = "intake_access_code"
+STEP_INTAKE_DIRECTIONS = "intake_directions"
 STEP_INTAKE_LABEL = "intake_label"
 STEP_CHILD_REGISTERED = "child_registered"
 STEP_CHILD_NAME = "child_name"
@@ -179,23 +179,19 @@ OPENING_QUESTION = "Nothing yet: this is the parent's first message in a new con
 # Staff-facing, so it is not a catalogue message.
 BOOKING_NOTE = "Booked by the WhatsApp assistant."
 
-# What a "no access code" answer is stored as: `homes.access_code` is NOT NULL, and this is the
-# word an English Guardian has always sent, so Staff and tutors read one thing in both languages.
-NO_ACCESS_CODE = "none"
-
 # The widths of the columns the intake answers land in. `homes.address` is TEXT and takes a
 # loose bound of its own; `children.notes` is TEXT bounded by the same `NOTES_MAX_LENGTH` the
-# API schema enforces; the rest are the declared `String(...)` lengths in `models/`.
+# API schema enforces, and `homes.directions` by `DIRECTIONS_MAX_LENGTH`; the rest are the
+# declared `String(...)` lengths in `models/`.
 NAME_LIMIT = 255
 ADDRESS_LIMIT = 1000
-ACCESS_CODE_LIMIT = 64
 LABEL_LIMIT = 64
 
-# See `_context`. A street address and its door code are what P7-F exists to protect; a child's
+# See `_context`. A street address and its directions (a door code, often) are what P7-F exists to protect; a child's
 # date of birth and the notes answer — which can be health information — are withheld on the
 # same reasoning (A-55). No step after the one that collected any of them needs it in order to
 # be understood.
-_WITHHELD_FROM_CONTEXT = frozenset({"address", "access_code", "child_date_of_birth", "child_notes"})
+_WITHHELD_FROM_CONTEXT = frozenset({"address", "directions", "child_date_of_birth", "child_notes"})
 
 # Compared after `_normalized`, so "Yes, please!" is "yes please". The parser is told to answer
 # `yes` or `no`; these are the phrasings it may still pass through verbatim.
@@ -343,7 +339,7 @@ _BOOKING_KEYS = (
 # the exact shape a stale payload (a build whose handler now reads a key an older build never
 # wrote) fails on with a `KeyError`. A step absent here needs nothing beyond the step's own
 # answer, which arrives through `parsed.answer` rather than `collected_data`.
-_INTAKE_KEYS = frozenset({"guardian_name", "address", "access_code"})
+_INTAKE_KEYS = frozenset({"guardian_name", "address", "directions"})
 
 _REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # `child_grade` is optional: a flow saved before the grade step existed creates the Child
@@ -957,16 +953,16 @@ def _collect_text(key: str, reply_id: str, step: str, *, limit: int) -> _Handler
     return handler
 
 
-def _intake_access_code(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
-    """The access code, kept as written, except that a Spanish none word ("ninguno", "no hay")
-    is stored as `NO_ACCESS_CODE`, the English Guardian's "none"."""
+def _intake_directions(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
+    """How the tutor gets in, kept as written; a none word ("none", "ninguno", "no") records
+    no directions."""
     value = _answer(turn, parsed)
 
     if value is None:
         result = None
     else:
-        is_none = _normalized(value) in _SPANISH_SKIP
-        turn.data["access_code"] = NO_ACCESS_CODE if is_none else value[:ACCESS_CODE_LIMIT]
+        is_none = _normalized(value) in _NO_NOTES
+        turn.data["directions"] = None if is_none else value[:DIRECTIONS_MAX_LENGTH]
         result = _Next(reply=_say(turn, "ASK_HOME_LABEL"), step=STEP_INTAKE_LABEL)
 
     return result
@@ -990,7 +986,7 @@ def _intake_label(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
 def _child_registered(turn: _Turn, parsed: ParsedIntent) -> _Next | None:
     """P7-F's gate. "Yes" stops here and writes nothing: phone-alone identity cannot tell a real
     second guardian from anyone who knows a child's name, and linking would hand over the other
-    guardian's home address and door access code. The bot asks, writes no child row and no link,
+    guardian's home address and door directions. The bot asks, writes no child row and no link,
     and raises `guardian_link_request` for an admin. Do not relax this into an automatic link."""
     answer = _yes_no(turn, parsed)
 
@@ -1184,7 +1180,7 @@ def _create_client(turn: _Turn) -> client_service.ClientDetail | None:
     home = client_service.HomeInput(
         label=turn.data.get("home_label"),
         address=turn.data["address"],
-        access_code=turn.data["access_code"],
+        directions=turn.data["directions"],
     )
 
     try:
@@ -2667,7 +2663,7 @@ def _context(state: FlowState) -> dict[str, str]:
     The numbered choices go in verbatim, because "the second one" and "the 10:30 one" are only
     resolvable against them.
 
-    **The home address and its access code are withheld** (`_WITHHELD_FROM_CONTEXT`). They are
+    **The home address and its directions are withheld** (`_WITHHELD_FROM_CONTEXT`). They are
     the pair #39 built P7-F to protect — a street address and the code that opens its door —
     and no later step needs either to be interpreted, so sending them to a third-party model
     once per message of the rest of the conversation buys nothing and exposes the two values
@@ -2714,9 +2710,9 @@ _HANDLERS: dict[str, _Handler] = {
         "guardian_name", "ASK_ADDRESS", STEP_INTAKE_ADDRESS, limit=NAME_LIMIT
     ),
     STEP_INTAKE_ADDRESS: _collect_text(
-        "address", "ASK_ACCESS_CODE", STEP_INTAKE_ACCESS_CODE, limit=ADDRESS_LIMIT
+        "address", "ASK_DIRECTIONS", STEP_INTAKE_DIRECTIONS, limit=ADDRESS_LIMIT
     ),
-    STEP_INTAKE_ACCESS_CODE: _intake_access_code,
+    STEP_INTAKE_DIRECTIONS: _intake_directions,
     STEP_INTAKE_LABEL: _intake_label,
     STEP_CHILD_REGISTERED: _child_registered,
     STEP_CHILD_NAME: _child_name,

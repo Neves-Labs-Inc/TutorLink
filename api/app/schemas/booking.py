@@ -74,7 +74,7 @@ class HomeRef(BaseModel):
     id: uuid.UUID
     label: str | None
     address: str
-    access_code: str
+    directions: str | None
 
 
 class BookingDetail(BaseModel):
@@ -107,9 +107,7 @@ def home_ref(home: "Home | None") -> HomeRef | None:
     return (
         None
         if home is None
-        else HomeRef(
-            id=home.id, label=home.label, address=home.address, access_code=home.access_code
-        )
+        else HomeRef(id=home.id, label=home.label, address=home.address, directions=home.directions)
     )
 
 

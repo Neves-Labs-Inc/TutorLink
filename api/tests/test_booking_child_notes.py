@@ -189,7 +189,7 @@ def _make_family(db: Session) -> Family:
     )
     subject = Subject(name=f"Subject {suffix}")
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+2{suffix[:10]}")
-    home = Home(address=f"{suffix} Test Street", access_code="0000")
+    home = Home(address=f"{suffix} Test Street", directions="0000")
     child = Child(
         name=f"Child {suffix}",
         date_of_birth=CHILD_DATE_OF_BIRTH,

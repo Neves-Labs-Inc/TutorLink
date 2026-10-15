@@ -529,7 +529,8 @@ def test_get_by_id_returns_the_bookings_own_home_not_the_first_one(
     body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
 
     assert body["home"]["address"] == family.other_home.address
-    assert body["home"]["access_code"] == family.other_home.access_code
+    assert body["home"]["directions"] == family.other_home.directions
+    assert "access_code" not in body["home"]
 
 
 def test_get_by_id_with_no_booking_guardian_is_null(
@@ -622,8 +623,8 @@ def _make_family(db: Session) -> Family:
     tutor = _make_tutor(db)
     other_tutor = _make_tutor(db)
     subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
-    home = Home(address="1 Test Street", access_code="0000")
-    other_home = Home(address="2 Test Avenue", access_code="1111")
+    home = Home(address="1 Test Street", directions="0000")
+    other_home = Home(address="2 Test Avenue", directions="1111")
     db.add_all([subject, home, other_home])
     db.flush()
     child = _make_child(db, guardians=[guardian, co_guardian])

@@ -42,6 +42,7 @@ from app.models.user import User
 from app.services import conversation_service, message_service
 from app.services.bot_state import clear_state
 from app.services.conversation_service import LATEST_CONVERSATION_FIRST
+from app.services.home_service import HomeDetails, home_details
 from app.services.guardian_state import (
     GuardianState,
     ReminderState,
@@ -66,7 +67,7 @@ _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 class HomeInput:
     label: str | None
     address: str
-    access_code: str
+    directions: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +200,12 @@ def create_client(
     An unlinked WhatsApp thread already at the number becomes the new Guardian's. One linked to
     another Guardian (data from before threads followed their Guardian) is left alone.
     """
+    # Before any write, so a blank address (`BlankAddress`) leaves no Guardian behind.
+    details = (
+        None
+        if home is None
+        else home_details(label=home.label, address=home.address, directions=home.directions)
+    )
     canonical = normalize_phone_number(db, raw=phone_number)
 
     if _phone_number_taken(db, phone_number=canonical, exclude_id=None):
@@ -223,8 +230,8 @@ def create_client(
 
     homes: list[Home] = []
 
-    if home is not None:
-        homes = [_attach_home(db, client=client, home=home)]
+    if details is not None:
+        homes = [_attach_home(db, client=client, home=details)]
 
     language_conversation = None
     if thread is not None and thread.guardian_id is None:
@@ -470,8 +477,8 @@ def _guardian(db: Session, *, client_id: uuid.UUID) -> Guardian:
     return client
 
 
-def _attach_home(db: Session, *, client: Guardian, home: HomeInput) -> Home:
-    created = Home(label=home.label, address=home.address, access_code=home.access_code)
+def _attach_home(db: Session, *, client: Guardian, home: HomeDetails) -> Home:
+    created = Home(label=home.label, address=home.address, directions=home.directions)
     db.add(created)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=created.id))

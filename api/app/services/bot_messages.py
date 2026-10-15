@@ -136,9 +136,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Thank you. What is the address where the tutoring will take place?",
         "es": "Gracias. ¿Cuál es la dirección donde se realizará la tutoría?",
     },
-    "ASK_ACCESS_CODE": {
-        "en": "Is there an access code or entry instruction the tutor will need?",
-        "es": "¿Hay algún código de acceso o instrucción de entrada que el tutor necesite?",
+    "ASK_DIRECTIONS": {
+        "en": 'Is there anything the tutor should know to get in, such as a gate or door code, parking, or which entrance to use? You can reply "none".',
+        "es": '¿Hay algo que el tutor deba saber para entrar, como un código de portón o puerta, dónde estacionar o qué entrada usar? Puede responder "ninguno".',
     },
     "ASK_HOME_LABEL": {
         "en": 'Would you like to give this address a short name, such as "Mom\'s" or "Dad\'s"? It makes future bookings quicker. You can reply "skip".',
@@ -288,9 +288,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Please send the street address the tutor should come to, including the city and ZIP code.",
         "es": "Por favor, envíe la dirección a la que debe ir el tutor, con la ciudad y el código postal.",
     },
-    "NUDGE_intake_access_code": {
-        "en": 'Please send the access code or entry instructions for the tutor, or reply "none".',
-        "es": 'Por favor, envíe el código de acceso o las instrucciones de entrada para el tutor, o responda "ninguno".',
+    "NUDGE_intake_directions": {
+        "en": 'Please send any directions the tutor needs to get in, or reply "none".',
+        "es": 'Por favor, envíe las indicaciones que el tutor necesite para entrar, o responda "ninguno".',
     },
     "NUDGE_intake_label": {
         "en": 'Please send a short name for this address, such as "Home", or reply "skip".',

@@ -20,13 +20,13 @@ from app.schemas.client import HomeRead, home_read
 from app.schemas.home import HomeUpdate
 from app.services.home_service import (
     HOME_NOT_FOUND_ERROR,
-    BlankHomeDetails,
+    BlankAddress,
     HomeNotFound,
     update_home,
 )
 from app.services.home_set import guardians_by_home
 
-BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
+BLANK_HOME_DETAILS_ERROR = "address must not be blank"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -43,11 +43,11 @@ def update(
             home_id=home_id,
             label=payload.label,
             address=payload.address,
-            access_code=payload.access_code,
+            directions=payload.directions,
         )
     except HomeNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, HOME_NOT_FOUND_ERROR) from exc
-    except BlankHomeDetails as exc:
+    except BlankAddress as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, BLANK_HOME_DETAILS_ERROR) from exc
 
     db.commit()

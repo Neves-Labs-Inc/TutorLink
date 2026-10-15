@@ -1577,7 +1577,7 @@ def _make_guardian(db: Session) -> Guardian:
 
 
 def _make_home(db: Session, guardian: Guardian) -> Home:
-    home = Home(label="Home", address=f"{uuid.uuid4().hex[:6]} Main St", access_code="1234")
+    home = Home(label="Home", address=f"{uuid.uuid4().hex[:6]} Main St", directions="1234")
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=guardian.id, home_id=home.id))

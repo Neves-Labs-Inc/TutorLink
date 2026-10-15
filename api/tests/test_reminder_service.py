@@ -208,7 +208,7 @@ class World:
         if self._tutor is not None:
             return
         suffix = uuid.uuid4().hex[:12]
-        self._home = Home(label="Home", address="1 Test Street", access_code="1234")
+        self._home = Home(label="Home", address="1 Test Street", directions="1234")
         self._tutor = Tutor(
             user=User(email=f"t-{suffix}@x.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
             phone_number=f"+1{suffix[:10]}",

@@ -711,7 +711,7 @@ def _make_family(db: Session) -> tuple[uuid.UUID, uuid.UUID]:
     shows up as a name that belongs to the other tutor's client, not only as a stray id."""
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
-    home = Home(address=f"{suffix} Test Street", access_code="0000")
+    home = Home(address=f"{suffix} Test Street", directions="0000")
     child = Child(
         name=f"Child {suffix}",
         date_of_birth=CHILD_DATE_OF_BIRTH,

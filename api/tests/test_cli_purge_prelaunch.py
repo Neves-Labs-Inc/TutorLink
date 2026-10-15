@@ -223,7 +223,7 @@ def _make_test_data(db: Session) -> None:
     )
     subject = Subject(name=f"Subject {suffix}")
     guardian = Guardian(name="Guardian", phone_number=f"+2{suffix[:10]}")
-    home = Home(address=f"{suffix} Test Street", access_code="0000")
+    home = Home(address=f"{suffix} Test Street", directions="0000")
     child = Child(name="Child", grade_level=7, school_name="Test School")
     conversation = Conversation(phone_number=guardian.phone_number)
     db.add_all([staff, tutor, subject, guardian, home, child, conversation])

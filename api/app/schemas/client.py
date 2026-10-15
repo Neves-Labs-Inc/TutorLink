@@ -25,11 +25,11 @@ import datetime
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import Language
 from app.models.guardian import Guardian
-from app.models.home import Home
+from app.models.home import DIRECTIONS_MAX_LENGTH, Home
 from app.schemas.archived import ArchivedFlag
 from app.schemas.booking import NamedRef
 
@@ -38,7 +38,7 @@ class HomeRead(BaseModel):
     id: uuid.UUID
     label: str | None
     address: str
-    access_code: str
+    directions: str | None
     archived: ArchivedFlag
     # Every Guardian linked to the Home, archived ones included, by name then id.
     guardians: list[NamedRef]
@@ -49,7 +49,7 @@ def home_read(home: Home, guardians: list[Guardian]) -> HomeRead:
         id=home.id,
         label=home.label,
         address=home.address,
-        access_code=home.access_code,
+        directions=home.directions,
         archived=home.is_archived,
         guardians=[NamedRef(id=guardian.id, name=guardian.name) for guardian in guardians],
     )
@@ -100,7 +100,7 @@ class ClientRead(BaseModel):
 class HomeCreate(BaseModel):
     label: str | None = None
     address: str
-    access_code: str
+    directions: str | None = Field(default=None, max_length=DIRECTIONS_MAX_LENGTH)
 
 
 class ClientCreate(BaseModel):
@@ -110,7 +110,7 @@ class ClientCreate(BaseModel):
 
 
 class ClientUpdate(BaseModel):
-    # No `address` or `access_code`: both belong to a home, which is edited through its own
+    # No `address` or `directions`: both belong to a home, which is edited through its own
     # resource. A client with two homes has no single one for a flat field to mean.
     name: str | None = None
     phone_number: str | None = None

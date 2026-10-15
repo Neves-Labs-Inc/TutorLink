@@ -83,7 +83,7 @@ def _make_client(
 
 
 def _make_home(db: Session, *, client: Guardian, label: str | None = "Mum's") -> Home:
-    home = Home(label=label, address="123 Main St", access_code="1234")
+    home = Home(label=label, address="123 Main St", directions="1234")
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=home.id))
@@ -302,7 +302,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "id": str(home.id),
             "label": "Mum's",
             "address": "123 Main St",
-            "access_code": "1234",
+            "directions": "1234",
             "archived": False,
             "guardians": [{"id": str(client.id), "name": client.name}],
         }
@@ -399,7 +399,7 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
         json={
             "name": "Jane Doe",
             "phone_number": PHONE,
-            "home": {"label": "Mum's", "address": "123 Main St", "access_code": "1234"},
+            "home": {"label": "Mum's", "address": "123 Main St", "directions": "1234"},
         },
     ).json()
 
@@ -411,11 +411,68 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
             "id": str(links[0].home_id),
             "label": "Mum's",
             "address": "123 Main St",
-            "access_code": "1234",
+            "directions": "1234",
             "archived": False,
             "guardians": [{"id": body["id"], "name": "Jane Doe"}],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("home", "stored"),
+    [
+        ({"address": "123 Main St"}, None),
+        ({"address": "123 Main St", "directions": "  "}, None),
+        ({"address": "123 Main St", "directions": " Gate 1234 "}, "Gate 1234"),
+        ({"address": "123 Main St", "directions": "x" * 500}, "x" * 500),
+    ],
+)
+def test_post_with_a_home_stores_its_directions_trimmed_and_blank_as_null(
+    api: TestClient, db: Session, home: dict[str, str], stored: str | None
+) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={"name": "Jane Doe", "phone_number": PHONE, "home": home},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["homes"][0]["directions"] == stored
+    assert db.scalars(select(Home)).one().directions == stored
+
+
+def test_post_refuses_directions_over_500_characters(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Jane Doe",
+            "phone_number": PHONE,
+            "home": {"address": "123 Main St", "directions": "x" * 501},
+        },
+    )
+
+    assert response.status_code == 400
+    assert db.scalars(select(Guardian)).all() == []
+
+
+def test_post_refuses_a_blank_address_and_writes_nothing(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={"name": "Jane Doe", "phone_number": PHONE, "home": {"address": "  "}},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "address must not be blank"}
+    assert db.scalars(select(Guardian)).all() == []
+    assert db.scalars(select(Home)).all() == []
 
 
 def test_post_without_a_home_creates_neither_row(api: TestClient, db: Session) -> None:

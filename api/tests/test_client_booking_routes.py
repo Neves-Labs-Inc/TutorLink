@@ -394,7 +394,7 @@ def _make_family(db: Session) -> Family:
     tutor = _make_tutor(db)
     other_tutor = _make_tutor(db)
     subject = Subject(name=f"Subject {suffix}")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     db.add_all([subject, home])
     db.flush()
 

@@ -3,12 +3,14 @@
 Both routes answer with `HomeRead` from `schemas/client.py`, the nested home shape
 `GET /api/clients/{id}` already returns; it is imported, not duplicated, so the two cannot drift.
 
-Trimming, and the blank-label-is-`null` and blank-address-is-400 rules, belong to
-`home_service` rather than to a validator (CONSTITUTION §7). The length bounds are here because
-they mirror the `String(64)` columns and need no database read.
+Trimming, and the blank-label-and-directions-are-`null` and blank-address-is-400 rules, belong
+to `home_service` rather than to a validator (CONSTITUTION §7). The length bounds are here
+because they mirror the `String` columns and need no database read.
 """
 
 from pydantic import BaseModel, Field
+
+from app.models.home import DIRECTIONS_MAX_LENGTH
 
 HOME_FIELD_MAX_LENGTH = 64
 
@@ -16,10 +18,10 @@ HOME_FIELD_MAX_LENGTH = 64
 class ClientHomeCreate(BaseModel):
     label: str | None = Field(default=None, max_length=HOME_FIELD_MAX_LENGTH)
     address: str
-    access_code: str = Field(max_length=HOME_FIELD_MAX_LENGTH)
+    directions: str | None = Field(default=None, max_length=DIRECTIONS_MAX_LENGTH)
 
 
 class HomeUpdate(BaseModel):
     label: str | None = Field(default=None, max_length=HOME_FIELD_MAX_LENGTH)
     address: str | None = None
-    access_code: str | None = Field(default=None, max_length=HOME_FIELD_MAX_LENGTH)
+    directions: str | None = Field(default=None, max_length=DIRECTIONS_MAX_LENGTH)

@@ -82,7 +82,7 @@ def parents(db: Session) -> BookingParents:
 
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     subject = Subject(name=f"Subject {suffix}")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     db.add_all([child, subject, home])
 
     tutor = _make_tutor(db)

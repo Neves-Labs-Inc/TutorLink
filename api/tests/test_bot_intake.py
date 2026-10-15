@@ -350,7 +350,7 @@ def test_a_first_intake_ends_with_one_evaluation_notice_and_the_reminder_questio
 ) -> None:
     script: list[tuple[str, str, str]] = [
         ("Ada Guardian", render("ASK_ADDRESS", language), bot_service.STEP_INTAKE_ADDRESS),
-        ("1 Test Street", render("ASK_ACCESS_CODE", language), bot_service.STEP_INTAKE_ACCESS_CODE),
+        ("1 Test Street", render("ASK_DIRECTIONS", language), bot_service.STEP_INTAKE_DIRECTIONS),
         ("1234", render("ASK_HOME_LABEL", language), bot_service.STEP_INTAKE_LABEL),
         ("Home", render("ASK_CHILD_REGISTERED", language), bot_service.STEP_CHILD_REGISTERED),
         ("no", render("ASK_CHILD_NAME", language), bot_service.STEP_CHILD_NAME),
@@ -450,7 +450,7 @@ def test_an_existing_guardian_adding_a_child_is_asked_about_reminders_only_witho
         db,
         name="Ada Guardian",
         phone_number=CANONICAL_NUMBER,
-        home=client_service.HomeInput(label="Home", address="1 Test Street", access_code="1234"),
+        home=client_service.HomeInput(label="Home", address="1 Test Street", directions="1234"),
     )
     if earlier is not None:
         reminder_consent_service.record_consent(

@@ -68,6 +68,8 @@ def read_week(
         has_run=week.has_run,
         preview=None if week.preview is None else [_preview_item(item) for item in week.preview],
         rows=[_row(row) for row in week.rows],
+        # The service works in naive business wall-clock; the zone is attached at the edge.
+        next_run_at=week.next_run_at.replace(tzinfo=clock.business_zone()),
     )
 
 

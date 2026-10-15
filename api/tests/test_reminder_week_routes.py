@@ -243,12 +243,18 @@ def test_the_default_week_midweek_is_the_one_the_next_run_covers(
     assert body["preview"] is not None
 
 
-def test_the_response_carries_no_send_time(
+def test_the_response_carries_the_next_run_but_not_the_weekday_or_hour(
     api: TestClient, db: Session, at: Callable[..., None]
 ) -> None:
     at(SUNDAY_NOON)
 
-    assert set(_get(api, db)) == {"week_start", "has_run", "preview", "rows"}
+    assert set(_get(api, db)) == {
+        "week_start",
+        "has_run",
+        "preview",
+        "rows",
+        "next_run_at",
+    }
 
 
 # --- an explicit week, and the worklist ---------------------------------------------------------
@@ -364,3 +370,63 @@ def test_a_tutor_is_refused(api: TestClient, db: Session, at: Callable[..., None
 
     assert response.status_code == 403
     assert response.json() == {"detail": OFFICE_REQUIRED_ERROR}
+
+
+# --- when the next run sends ----------------------------------------------------------------------
+
+NEW_YORK_OCTOBER = datetime.timezone(datetime.timedelta(hours=-4))
+SUNDAY_EVENING = datetime.datetime(2026, 10, 11, 19, 30)
+
+
+def _next_run_at(api: TestClient, db: Session, query: str = "") -> datetime.datetime:
+    value = _get(api, db, query)["next_run_at"]
+    assert isinstance(value, str)
+
+    return datetime.datetime.fromisoformat(value)
+
+
+def test_next_run_at_is_the_coming_run_day_at_the_hour_in_the_business_zone(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(datetime.datetime(2026, 10, 7, 9, 0))
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 11, 18, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_is_today_on_run_day_after_the_hour_until_the_run_happens(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_EVENING)
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 11, 18, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_moves_a_week_on_once_the_week_has_run(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_EVENING)
+    db.add(BookingReminderRun(week_start=WEEK_START))
+    db.flush()
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 18, 18, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_follows_the_settings(
+    api: TestClient,
+    db: Session,
+    at: Callable[..., None],
+    set_int_setting: Callable[[str, int], None],
+) -> None:
+    at(datetime.datetime(2026, 10, 7, 9, 0))
+    set_int_setting("reminder_weekday", 5)
+    set_int_setting("reminder_hour", 8)
+
+    assert _next_run_at(api, db) == datetime.datetime(2026, 10, 9, 8, 0, tzinfo=NEW_YORK_OCTOBER)
+
+
+def test_next_run_at_ignores_the_week_asked_for(
+    api: TestClient, db: Session, at: Callable[..., None]
+) -> None:
+    at(SUNDAY_NOON)
+
+    assert _next_run_at(api, db, "?week_start=2026-09-14") == _next_run_at(api, db)

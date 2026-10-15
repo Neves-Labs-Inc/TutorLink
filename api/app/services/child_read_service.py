@@ -93,19 +93,18 @@ def list_children(
     `subject_ids` keeps Children with a level in any of those Subjects, archived or not, and
     `is_evaluated` splits on `evaluated_at`; `None` is no filter. Both AND with the rest.
     """
+    matching = _matching_list(
+        is_archived=is_archived,
+        q=q,
+        awaiting_evaluation=awaiting_evaluation,
+        evaluable=evaluable,
+        subject_ids=subject_ids,
+        is_evaluated=is_evaluated,
+    )
     if awaiting_evaluation or evaluable:
-        matching = _matching(is_archived=False, q=q).where(Child.evaluated_at.is_(None))
-        if evaluable:
-            matching = matching.where(~_has_live_evaluation().exists())
         order = (Child.created_at, Child.id)
     else:
-        matching = _matching(is_archived=is_archived, q=q)
         order = (Child.name, Child.id)
-
-    if subject_ids:
-        matching = matching.where(_has_level_in(subject_ids).exists())
-    if is_evaluated is not None:
-        matching = matching.where(Child.evaluated_at.is_not(None) == is_evaluated)
 
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     children = list(
@@ -133,6 +132,20 @@ def list_children(
     ]
 
     return rows, total
+
+
+def count_evaluable_children(db: Session) -> int:
+    """What `list_children(evaluable=True)` totals with no other filter, without its rows."""
+    matching = _matching_list(
+        is_archived=False,
+        q=None,
+        awaiting_evaluation=False,
+        evaluable=True,
+        subject_ids=(),
+        is_evaluated=None,
+    )
+
+    return db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
 
 def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
@@ -172,6 +185,31 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         levels=levels,
         guardian_states=guardian_states(db, [guardian.id for guardian in guardians]),
     )
+
+
+def _matching_list(
+    *,
+    is_archived: bool,
+    q: str | None,
+    awaiting_evaluation: bool,
+    evaluable: bool,
+    subject_ids: Collection[uuid.UUID],
+    is_evaluated: bool | None,
+) -> Select[tuple[Child]]:
+    """Every `list_children` filter applied; see there for what each means."""
+    if awaiting_evaluation or evaluable:
+        matching = _matching(is_archived=False, q=q).where(Child.evaluated_at.is_(None))
+        if evaluable:
+            matching = matching.where(~_has_live_evaluation().exists())
+    else:
+        matching = _matching(is_archived=is_archived, q=q)
+
+    if subject_ids:
+        matching = matching.where(_has_level_in(subject_ids).exists())
+    if is_evaluated is not None:
+        matching = matching.where(Child.evaluated_at.is_not(None) == is_evaluated)
+
+    return matching
 
 
 def _matching(*, is_archived: bool, q: str | None) -> Select[tuple[Child]]:

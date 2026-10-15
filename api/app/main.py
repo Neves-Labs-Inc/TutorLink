@@ -28,6 +28,7 @@ from app.routers import (
     clients,
     conversation_stream,
     conversations,
+    counts,
     exceptions,
     health,
     homes,
@@ -152,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(booking_clash.router)
     app.include_router(staff.router)
     app.include_router(stats.router)
+    app.include_router(counts.router)
     app.include_router(reminders.router)
     app.include_router(webhook.router)
     app.include_router(conversations.router)

@@ -88,6 +88,11 @@ def list_bookings(
     return bookings, total
 
 
+def count_bookings(db: Session, *, tutor_id: uuid.UUID | None, filters: BookingFilters) -> int:
+    """What `list_bookings` totals for the same arguments, without loading its rows."""
+    return _count_matching(db, tutor_id=tutor_id, filters=filters)
+
+
 def count_bookings_by_kind(
     db: Session, *, tutor_id: uuid.UUID | None, filters: BookingFilters
 ) -> dict[BookingKind, int]:

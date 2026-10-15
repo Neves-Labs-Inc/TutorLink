@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, and_, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.dependencies import ADMIN_ROLES
@@ -384,20 +384,9 @@ def list_all_exceptions(
     ties in both so paging is stable. `now` is the caller's clock reading, so the status filter
     and the statuses the caller renders agree on a row ending between two reads.
     """
-    matching = (
-        select(TutorAvailabilityException)
-        .join(User, TutorAvailabilityException.user_id == User.id)
-        .where(User.role != UserRole.DEVELOPER)
+    matching = _matching_all_exceptions(
+        status=status, user_id=user_id, date_from=date_from, date_to=date_to, now=now
     )
-    if user_id is not None:
-        matching = matching.where(TutorAvailabilityException.user_id == user_id)
-    if date_from is not None:
-        matching = matching.where(TutorAvailabilityException.end_date >= date_from)
-    if date_to is not None:
-        matching = matching.where(TutorAvailabilityException.start_date <= date_to)
-    if status is not None:
-        matching = matching.where(_matches_wire_status(status, now=now))
-
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
     if sort == SORT_BY_REQUESTED:
@@ -423,6 +412,17 @@ def list_all_exceptions(
     )
 
     return rows, total
+
+
+def count_all_exceptions(
+    db: Session, *, status: ExceptionReadStatus | None, now: datetime.datetime
+) -> int:
+    """What `list_all_exceptions` totals for `status` with no other filter, without its rows."""
+    matching = _matching_all_exceptions(
+        status=status, user_id=None, date_from=None, date_to=None, now=now
+    )
+
+    return db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
 
 def has_ended(
@@ -554,6 +554,32 @@ def _window_of(row: TutorAvailabilityException) -> _Window:
         start_time=row.start_time,
         end_time=row.end_time,
     )
+
+
+def _matching_all_exceptions(
+    *,
+    status: ExceptionReadStatus | None,
+    user_id: uuid.UUID | None,
+    date_from: datetime.date | None,
+    date_to: datetime.date | None,
+    now: datetime.datetime,
+) -> Select[tuple[TutorAvailabilityException]]:
+    # An inner join to `users` on a non-null FK: one row per exception, so `total` stays a count.
+    matching = (
+        select(TutorAvailabilityException)
+        .join(User, TutorAvailabilityException.user_id == User.id)
+        .where(User.role != UserRole.DEVELOPER)
+    )
+    if user_id is not None:
+        matching = matching.where(TutorAvailabilityException.user_id == user_id)
+    if date_from is not None:
+        matching = matching.where(TutorAvailabilityException.end_date >= date_from)
+    if date_to is not None:
+        matching = matching.where(TutorAvailabilityException.start_date <= date_to)
+    if status is not None:
+        matching = matching.where(_matches_wire_status(status, now=now))
+
+    return matching
 
 
 def _matches_wire_status(

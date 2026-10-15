@@ -414,7 +414,7 @@ def list_conversations(
         if flagged
         else LATEST_CONVERSATION_FIRST
     )
-    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
+    total = _count(db, matching)
     rows = db.execute(
         matching.add_columns(Guardian, User, _last_message_preview(), _unread())
         .outerjoin(User, User.id == Conversation.taken_over_by_user_id)
@@ -434,6 +434,13 @@ def list_conversations(
     ]
 
     return items, total
+
+
+def count_conversations(
+    db: Session, *, unread: bool | None = None, flagged: bool | None = None
+) -> int:
+    """What `list_conversations` totals for these filters (no status, no search), without rows."""
+    return _count(db, _matching_conversations(status=None, unread=unread, flagged=flagged, q=None))
 
 
 def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> OwnershipChange:
@@ -777,6 +784,10 @@ def _matching_conversations(
         )
 
     return statement
+
+
+def _count(db: Session, matching: Select[tuple[Conversation]]) -> int:
+    return db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
 
 def _unread() -> ColumnElement[bool]:

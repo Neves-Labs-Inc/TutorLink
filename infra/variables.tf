@@ -24,12 +24,12 @@ variable "domain" {
 
 variable "elastic_ip_allocation_id" {
   description = <<-EOT
-    Allocation ID of the Elastic IP after its transfer into tutorlink-prod. Leave null until the transfer
-    is accepted (apply 1), then set it for apply 2, which imports the address. See Neves-Labs-Infra
-    database/RUNBOOK.md. Never set it back to null to roll back: use `terraform state rm`.
+    Allocation ID of the site's Elastic IP (52.87.65.127), transferred into tutorlink-prod during the
+    cutover (Neves-Labs-Infra database/RUNBOOK.md). Null only before the transfer (apply 1). Never set it
+    back to null to roll back: use `terraform state rm`.
   EOT
   type        = string
-  default     = null
+  default     = "eipalloc-0f1a4ca7010c7fba3"
 
   validation {
     condition     = var.elastic_ip_allocation_id == null || can(regex("^eipalloc-[0-9a-f]+$", var.elastic_ip_allocation_id))

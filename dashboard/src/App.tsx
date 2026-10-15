@@ -23,6 +23,8 @@ import { Schedule } from '@/pages/tutor/Schedule'
 import { Sessions } from '@/pages/tutor/Sessions'
 import { TimeOff } from '@/pages/tutor/TimeOff'
 import { NotFound } from '@/pages/NotFound'
+import { VisualDirectionPrototype } from '@/pages/prototype/visual-direction/VisualDirectionPrototype'
+import ShellKitPrototype from '@/pages/prototype/shell-kit/shell-kit-prototype'
 
 export const App = () => (
   <BrowserRouter>
@@ -183,6 +185,12 @@ export const App = () => (
             </RouteGuard>
           }
         />
+        {import.meta.env.DEV && (
+          <Route path="/prototype/visual-direction" element={<VisualDirectionPrototype />} />
+        )}
+        {import.meta.env.DEV && (
+          <Route path="/prototype/shell-kit" element={<ShellKitPrototype />} />
+        )}
         <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="*" element={<NotFound />} />
       </Routes>

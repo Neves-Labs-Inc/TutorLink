@@ -22,12 +22,12 @@ from app.dependencies import OfficePrincipal
 from app.models.enums import Language
 from app.schemas.booking import NamedRef
 from app.schemas.client import (
-    ChildRead,
     ClientCreate,
     ClientRead,
     ClientSummary,
     ClientUpdate,
     HomeCreate,
+    child_read,
     home_read,
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
@@ -188,7 +188,7 @@ def _to_read(db: Session, detail: ClientDetail) -> ClientRead:
         phone_number=detail.client.phone_number,
         archived=detail.client.is_archived,
         homes=[home_read(home, owners[home.id]) for home in detail.homes],
-        children=[ChildRead.model_validate(child) for child in detail.children],
+        children=[child_read(child) for child in detail.children],
         language=None if conversation is None else conversation.language,
         language_conversation_id=None if conversation is None else conversation.id,
     )

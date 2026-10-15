@@ -27,6 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.child import Child
 from app.models.enums import Language
 from app.models.guardian import Guardian
 from app.models.home import DIRECTIONS_MAX_LENGTH, Home
@@ -55,6 +56,16 @@ def home_read(home: Home, guardians: list[Guardian]) -> HomeRead:
     )
 
 
+class StaffRef(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class EvaluatedRead(BaseModel):
+    at: datetime.datetime
+    by: StaffRef
+
+
 class ChildRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -65,6 +76,27 @@ class ChildRead(BaseModel):
     school_name: str
     notes: str | None
     archived: ArchivedFlag
+    # Null unless the Child is Evaluated (`at` and the evaluator both set).
+    evaluated: EvaluatedRead | None
+
+
+def child_read(child: Child) -> ChildRead:
+    by = child.evaluated_by
+
+    return ChildRead(
+        id=child.id,
+        name=child.name,
+        date_of_birth=child.date_of_birth,
+        grade_level=child.grade_level,
+        school_name=child.school_name,
+        notes=child.notes,
+        archived=child.is_archived,
+        evaluated=(
+            None
+            if child.evaluated_at is None or by is None
+            else EvaluatedRead(at=child.evaluated_at, by=StaffRef(id=by.id, name=by.name))
+        ),
+    )
 
 
 class ClientSummary(BaseModel):

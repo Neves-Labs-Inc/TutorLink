@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, ScalarSelect, Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.child import Child
 from app.models.conversation import Conversation
@@ -502,6 +502,7 @@ def _detail(db: Session, client: Guardian) -> ClientDetail:
             .join(ChildGuardian, ChildGuardian.child_id == Child.id)
             .where(ChildGuardian.guardian_id == client.id)
             .order_by(Child.name, Child.id)
+            .options(selectinload(Child.evaluated_by))
         ).all()
     )
 

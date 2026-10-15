@@ -31,10 +31,12 @@ member behind it as a `StaffRef` (Display name). `created_at` on `ChildSummary` 
 
 import datetime
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH
+from app.models.enums import Language
 from app.schemas.booking import NamedRef
 
 
@@ -118,6 +120,12 @@ class NextSession(BaseModel):
     subject: NamedRef | None
 
 
+class ChildLevelRef(BaseModel):
+    subject_id: uuid.UUID
+    name: str
+    level: int
+
+
 class ChildSummary(BaseModel):
     id: uuid.UUID
     name: str
@@ -127,6 +135,8 @@ class ChildSummary(BaseModel):
     guardians: list[NamedRef]
     homes: list[ChildHomeRef]
     next_session: NextSession | None
+    # Levels in non-archived Subjects only, by Subject name; `ChildDetail.levels` has them all.
+    levels: list[ChildLevelRef]
     evaluated: EvaluatedRead | None
     created_at: datetime.datetime
 
@@ -136,6 +146,10 @@ class ChildGuardianRead(BaseModel):
     name: str
     phone_number: str
     archived: bool
+    # Never null: an undetected language reads English. Same values as the Guardians list row.
+    language: Language
+    reminders: Literal["opt_in", "opt_out", "never"]
+    reminders_blocked_by_whatsapp: bool
 
 
 class ChildDetail(BaseModel):
@@ -147,6 +161,7 @@ class ChildDetail(BaseModel):
     notes: str | None
     archived: bool
     upcoming_session_count: int
+    next_session: NextSession | None
     guardians: list[ChildGuardianRead]
     homes: list[ChildHomeRead]
     levels: list[ChildLevelRead]

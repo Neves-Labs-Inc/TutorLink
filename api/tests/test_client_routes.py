@@ -316,8 +316,29 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "school_name": "Lincoln Middle School",
             "notes": "Peanut allergy",
             "archived": False,
+            "evaluated": None,
         }
     ]
+
+
+def test_an_evaluated_child_carries_when_and_by_whom_on_the_guardian_details(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    evaluator = _make_user(db)
+    evaluator.name = "Marta"
+    child = _make_child(db, guardians=[client])
+    child.evaluated_at = datetime.datetime(2026, 9, 1, 10, 0, tzinfo=datetime.UTC)
+    child.evaluated_by_user_id = evaluator.id
+    db.flush()
+    db.expire_all()
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    [row] = body["children"]
+    assert row["evaluated"]["by"] == {"id": str(evaluator.id), "name": "Marta"}
+    assert datetime.datetime.fromisoformat(row["evaluated"]["at"]) == child.evaluated_at
 
 
 def test_a_child_registered_before_date_of_birth_renders_it_as_null(

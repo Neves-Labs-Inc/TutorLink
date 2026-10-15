@@ -33,6 +33,7 @@ from app.schemas.child import (
     ChildHomeRead,
     ChildHomeRef,
     ChildLevelRead,
+    ChildLevelRef,
     ChildSummary,
     EvaluatedRead,
     NextSession,
@@ -65,6 +66,8 @@ def list_all(
     q: str | None = None,
     awaiting_evaluation: bool = False,
     evaluable: bool = False,
+    subject_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    evaluated: bool | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ChildSummary]:
@@ -76,6 +79,8 @@ def list_all(
         offset=(page - 1) * page_size,
         awaiting_evaluation=awaiting_evaluation,
         evaluable=evaluable,
+        subject_ids=subject_id or (),
+        is_evaluated=evaluated,
     )
 
     owners = guardians_by_home(db, home_ids=[home.id for row in rows for home in row.homes])
@@ -119,6 +124,10 @@ def _summary(row: ChildRow, owners: Owners) -> ChildSummary:
             for home in row.homes
         ],
         next_session=_next_session(row.next_session),
+        levels=[
+            ChildLevelRef(subject_id=level.subject_id, name=level.subject.name, level=level.level)
+            for level in row.levels
+        ],
         evaluated=_evaluated(row.child),
         created_at=row.child.created_at,
     )
@@ -153,12 +162,18 @@ def _detail(row: ChildDetailRow, owners: Owners) -> ChildDetail:
         notes=row.child.notes,
         archived=row.child.is_archived,
         upcoming_session_count=row.upcoming_session_count,
+        next_session=_next_session(row.next_session),
         guardians=[
             ChildGuardianRead(
                 id=guardian.id,
                 name=guardian.name,
                 phone_number=guardian.phone_number,
                 archived=guardian.is_archived,
+                language=row.guardian_states[guardian.id].language,
+                reminders=row.guardian_states[guardian.id].reminders,
+                reminders_blocked_by_whatsapp=row.guardian_states[
+                    guardian.id
+                ].is_blocked_by_whatsapp,
             )
             for guardian in row.guardians
         ],

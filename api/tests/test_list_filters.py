@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
     BookingKind,
@@ -154,6 +155,67 @@ def schedule(db: Session) -> Schedule:
             status=BookingStatus.CONFIRMED,
         ),
     )
+
+
+# --- GET /api/children: ?subject_id= and ?evaluated= -----------------------------------------
+
+
+def test_children_subject_id_is_any_of_and_counts_a_child_once(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    guardian = _make_client(db)
+    suffix = uuid.uuid4().hex[:12]
+    math, art, music = (_make_subject(db) for _ in range(3))
+    both = _make_child(db, guardians=[guardian], name=f"Both {suffix}")
+    only_art = _make_child(db, guardians=[guardian], name=f"Art {suffix}")
+    _make_child(db, guardians=[guardian], name=f"Neither {suffix}")
+    for child, subject in [(both, math), (both, art), (only_art, art)]:
+        _give_level(db, admin, child, subject)
+    music.is_archived = True
+    _give_level(db, admin, only_art, music)
+
+    def listed(*subjects: Subject) -> dict[str, object]:
+        params = [("q", suffix)] + [("subject_id", str(one.id)) for one in subjects]
+        return api.get("/api/children", headers=_auth(admin), params=params).json()
+
+    single = listed(math)
+    either = listed(math, art)
+    archived = listed(music)
+
+    assert [row["id"] for row in single["items"]] == [str(both.id)]
+    assert sorted(row["id"] for row in either["items"]) == sorted([str(both.id), str(only_art.id)])
+    assert either["total"] == 2
+    assert [row["id"] for row in archived["items"]] == [str(only_art.id)]
+
+
+def test_children_evaluated_filter_composes_with_subject_id(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    guardian = _make_client(db)
+    suffix = uuid.uuid4().hex[:12]
+    math = _make_subject(db)
+    done = _make_child(db, guardians=[guardian], name=f"Done {suffix}")
+    waiting = _make_child(db, guardians=[guardian], name=f"Waiting {suffix}")
+    for child in (done, waiting):
+        _give_level(db, admin, child, math)
+    done.evaluated_at = datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC)
+    done.evaluated_by_user_id = admin.id
+    db.flush()
+
+    def ids(evaluated: str) -> list[str]:
+        params = {"q": suffix, "subject_id": str(math.id), "evaluated": evaluated}
+        body = api.get("/api/children", headers=_auth(admin), params=params).json()
+        return [row["id"] for row in body["items"]]
+
+    assert ids("true") == [str(done.id)]
+    assert ids("false") == [str(waiting.id)]
+
+
+def _give_level(db: Session, user: User, child: Child, subject: Subject) -> None:
+    db.add(
+        ChildSubjectLevel(child_id=child.id, subject_id=subject.id, level=4, set_by_user_id=user.id)
+    )
+    db.flush()
 
 
 def _archived_and_live(db: Session, kind: str) -> tuple[uuid.UUID, uuid.UUID]:

@@ -22,9 +22,19 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.conversation import Conversation
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ConsentAction,
+    ConsentSource,
+    Language,
+    UserRole,
+)
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.models.reminder_consent import ReminderConsent
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -206,6 +216,7 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
         "guardians",
         "homes",
         "next_session",
+        "levels",
         "evaluated",
         "created_at",
     }
@@ -225,13 +236,21 @@ def test_detail_nests_every_guardian_and_every_home(
     body = response.json()
 
     assert response.status_code == 200
+    state = {"language": "en", "reminders": "never", "reminders_blocked_by_whatsapp": False}
     assert body["guardians"] == [
-        {"id": str(amy.id), "name": "Amy Doe", "phone_number": amy.phone_number, "archived": False},
+        {
+            "id": str(amy.id),
+            "name": "Amy Doe",
+            "phone_number": amy.phone_number,
+            "archived": False,
+            **state,
+        },
         {
             "id": str(zed.id),
             "name": "Zed Doe",
             "phone_number": zed.phone_number,
             "archived": True,
+            **state,
         },
     ]
     assert body["homes"] == [
@@ -493,6 +512,73 @@ def test_the_list_runs_the_same_statements_for_one_child_or_five(
     assert counts[0] == counts[1] > 0
 
 
+# --- guardian cards and the detail's next session ---------------------------------------------
+
+
+def test_detail_guardian_cards_carry_the_state_the_guardians_list_reports(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    talker = _make_guardian(db, name="Aa Talker")
+    quiet = _make_guardian(db, name="Bb Quiet")
+    db.add(
+        Conversation(
+            phone_number=talker.phone_number,
+            guardian_id=talker.id,
+            last_message_at=NOW.replace(tzinfo=datetime.UTC),
+            language=Language.ES,
+        )
+    )
+    db.add(
+        ReminderConsent(
+            guardian_id=talker.id,
+            action=ConsentAction.OPT_IN,
+            source=ConsentSource.INTAKE,
+            phone_number=talker.phone_number,
+        )
+    )
+    child = _make_child(db, guardians=[talker, quiet])
+    headers = _auth(admin)
+
+    cards = api.get(f"/api/children/{child.id}", headers=headers).json()["guardians"]
+    listed = {
+        row["id"]: row
+        for row in api.get("/api/clients?page_size=100", headers=headers).json()["items"]
+    }
+
+    assert [(c["language"], c["reminders"]) for c in cards] == [("es", "opt_in"), ("en", "never")]
+    for card in cards:
+        row = listed[card["id"]]
+        assert (card["language"], card["reminders"], card["reminders_blocked_by_whatsapp"]) == (
+            row["language"],
+            row["reminders"],
+            row["reminders_blocked_by_whatsapp"],
+        )
+
+
+def test_detail_next_session_equals_the_list_rows_and_is_null_without_one(
+    api: TestClient, db: Session, token: str, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    booked = _make_child(db, name=f"Booked {token}")
+    idle = _make_child(db, name=f"Idle {token}")
+    _book(db, child=booked, on=YESTERDAY, start=NINE, status=BookingStatus.CONFIRMED)
+    _book(db, child=booked, on=TOMORROW, start=NINE, status=BookingStatus.CANCELLED)
+    expected = _book(db, child=booked, on=IN_THREE_DAYS, start=NINE, status=BookingStatus.PENDING)
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()["items"]
+    detail = api.get(f"/api/children/{booked.id}", headers=headers).json()
+    idle_detail = api.get(f"/api/children/{idle.id}", headers=headers).json()
+
+    assert detail["next_session"]["id"] == str(expected.id)
+    assert (
+        detail["next_session"]
+        == next(r for r in listed if r["id"] == str(booked.id))["next_session"]
+    )
+    assert idle_detail["next_session"] is None
+
+
 # --- the by-id read ---------------------------------------------------------------------------
 
 
@@ -538,6 +624,7 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
         "notes",
         "archived",
         "upcoming_session_count",
+        "next_session",
         "guardians",
         "homes",
         "levels",

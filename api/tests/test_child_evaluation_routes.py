@@ -217,6 +217,51 @@ def test_clearing_evaluated_keeps_the_levels(api: TestClient, db: Session) -> No
     assert [row["level"] for row in detail["levels"]] == [5]
 
 
+# --- levels on the list row, and the Evaluated filter ------------------------------------------
+
+
+def test_the_list_row_levels_skip_archived_subjects_and_follow_subject_name(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db, name=f"Lv {_suffix()}")
+    zoology = _make_subject(db, name=f"Zoology {_suffix()}")
+    algebra = _make_subject(db, name=f"Algebra {_suffix()}")
+    retired = _make_subject(db, name=f"Aaa {_suffix()}")
+    for subject, level in [(zoology, 2), (algebra, 6), (retired, 9)]:
+        api.put(_level_url(child, subject), headers=_auth(admin), json={"level": level})
+    retired.is_archived = True
+    db.flush()
+
+    [row] = api.get(f"/api/children?q={child.name}", headers=_auth(admin)).json()["items"]
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert row["levels"] == [
+        {"subject_id": str(algebra.id), "name": algebra.name, "level": 6},
+        {"subject_id": str(zoology.id), "name": zoology.name, "level": 2},
+    ]
+    assert len(detail["levels"]) == 3
+
+
+def test_evaluated_true_and_false_split_the_children(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    token = _suffix()
+    done = _make_child(db, name=f"Done {token}")
+    waiting = _make_child(db, name=f"Waiting {token}")
+    api.put(_level_url(done, _make_subject(db)), headers=_auth(admin), json={"level": 5})
+    api.post(_evaluated_url(done), headers=_auth(admin))
+
+    def ids(query: str) -> list[str]:
+        body = api.get(f"/api/children?q={token}{query}", headers=_auth(admin)).json()
+        return [row["id"] for row in body["items"]]
+
+    assert ids("&evaluated=true") == [str(done.id)]
+    assert ids("&evaluated=false") == [str(waiting.id)]
+    assert sorted(ids("")) == sorted([str(done.id), str(waiting.id)])
+    assert ids("&awaiting_evaluation=true&evaluated=true") == []
+    assert ids("&awaiting_evaluation=true&evaluated=false") == [str(waiting.id)]
+
+
 # --- Evaluated and the Evaluation booking stay separate acts (#133) -------------------------
 
 

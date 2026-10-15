@@ -17,6 +17,7 @@ rows `PATCH` cancels cannot be defined differently. `now` is the naive business 
 
 import uuid
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from sqlalchemy import Select, func, or_, select
@@ -30,6 +31,7 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
 from app.services import clock
+from app.services.guardian_state import GuardianState, guardian_states
 from app.services.home_set import homes_by_child
 
 _LIKE_ESCAPE = "\\"
@@ -42,6 +44,8 @@ class ChildRow:
     guardians: list[Guardian]
     homes: list[Home]
     next_session: Booking | None
+    # Levels in non-archived Subjects, by Subject name then id.
+    levels: list[ChildSubjectLevel]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +54,9 @@ class ChildDetailRow:
     guardians: list[Guardian]
     homes: list[Home]
     upcoming_session_count: int
+    next_session: Booking | None
     levels: list[ChildSubjectLevel]
+    guardian_states: dict[uuid.UUID, GuardianState]
 
 
 class ChildReadServiceError(Exception):
@@ -70,6 +76,8 @@ def list_children(
     offset: int,
     awaiting_evaluation: bool = False,
     evaluable: bool = False,
+    subject_ids: Collection[uuid.UUID] = (),
+    is_evaluated: bool | None = None,
 ) -> tuple[list[ChildRow], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -81,6 +89,9 @@ def list_children(
 
     `evaluable` is `awaiting_evaluation` minus Children with a live Evaluation: the ones the
     booking form may offer for an Evaluation. Same order, so the two tabs read alike.
+
+    `subject_ids` keeps Children with a level in any of those Subjects, archived or not, and
+    `is_evaluated` splits on `evaluated_at`; `None` is no filter. Both AND with the rest.
     """
     if awaiting_evaluation or evaluable:
         matching = _matching(is_archived=False, q=q).where(Child.evaluated_at.is_(None))
@@ -90,6 +101,11 @@ def list_children(
     else:
         matching = _matching(is_archived=is_archived, q=q)
         order = (Child.name, Child.id)
+
+    if subject_ids:
+        matching = matching.where(_has_level_in(subject_ids).exists())
+    if is_evaluated is not None:
+        matching = matching.where(Child.evaluated_at.is_not(None) == is_evaluated)
 
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     children = list(
@@ -104,12 +120,14 @@ def list_children(
     guardians = _guardians_by_child(db, child_ids=child_ids)
     homes = homes_by_child(db, child_ids=child_ids, include_archived=False)
     next_sessions = _next_sessions_by_child(db, child_ids=child_ids)
+    levels = _active_levels_by_child(db, child_ids=child_ids)
     rows = [
         ChildRow(
             child=child,
             guardians=guardians[child.id],
             homes=homes[child.id],
             next_session=next_sessions.get(child.id),
+            levels=levels[child.id],
         )
         for child in children
     ]
@@ -134,6 +152,7 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         or 0
     )
 
+    guardians = _guardians_by_child(db, child_ids=[child.id])[child.id]
     levels = list(
         db.scalars(
             select(ChildSubjectLevel)
@@ -146,10 +165,12 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
 
     return ChildDetailRow(
         child=child,
-        guardians=_guardians_by_child(db, child_ids=[child.id])[child.id],
+        guardians=guardians,
         homes=homes_by_child(db, child_ids=[child.id], include_archived=True)[child.id],
         upcoming_session_count=upcoming_session_count,
+        next_session=_next_sessions_by_child(db, child_ids=[child.id]).get(child.id),
         levels=levels,
+        guardian_states=guardian_states(db, [guardian.id for guardian in guardians]),
     )
 
 
@@ -174,6 +195,17 @@ def _matching(*, is_archived: bool, q: str | None) -> Select[tuple[Child]]:
         )
 
     return statement
+
+
+def _has_level_in(subject_ids: Collection[uuid.UUID]) -> Select[tuple[int]]:
+    return (
+        select(1)
+        .select_from(ChildSubjectLevel)
+        .where(
+            ChildSubjectLevel.child_id == Child.id,
+            ChildSubjectLevel.subject_id.in_(subject_ids),
+        )
+    )
 
 
 def _has_live_evaluation() -> Select[tuple[int]]:
@@ -228,3 +260,22 @@ def _next_sessions_by_child(db: Session, *, child_ids: list[uuid.UUID]) -> dict[
     ).all()
 
     return {booking.child_id: booking for booking in bookings}
+
+
+def _active_levels_by_child(
+    db: Session, *, child_ids: list[uuid.UUID]
+) -> defaultdict[uuid.UUID, list[ChildSubjectLevel]]:
+    """One statement for the page; levels in archived Subjects are left out of the list row."""
+    levels = db.scalars(
+        select(ChildSubjectLevel)
+        .join(Subject, Subject.id == ChildSubjectLevel.subject_id)
+        .where(ChildSubjectLevel.child_id.in_(child_ids), Subject.is_archived.is_(False))
+        .order_by(Subject.name, Subject.id)
+        .options(joinedload(ChildSubjectLevel.subject))
+    ).all()
+    grouped: defaultdict[uuid.UUID, list[ChildSubjectLevel]] = defaultdict(list)
+
+    for level in levels:
+        grouped[level.child_id].append(level)
+
+    return grouped

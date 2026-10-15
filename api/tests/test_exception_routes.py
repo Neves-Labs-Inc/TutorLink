@@ -15,17 +15,25 @@ drifts into "ended" as the calendar moves.
 
 import datetime
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import REASON_MAX_LENGTH, TutorAvailabilityException
-from app.models.enums import ExceptionStatus, UserRole
+from app.models.booking import Booking
+from app.models.child import Child
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ExceptionStatus,
+    UserRole,
+)
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.routers.exceptions import (
@@ -36,6 +44,7 @@ from app.routers.exceptions import (
     OTHERS_TIME_OFF_ERROR,
     TIME_OFF_CANCELLED_ERROR,
     TIME_OFF_ENDED_ERROR,
+    UNCONFIRMED_WARNINGS_ERROR,
     USER_ARCHIVED_ERROR,
     USER_NOT_FOUND_ERROR,
     WINDOW_ENDED_ERROR,
@@ -49,7 +58,31 @@ REQUESTER_ROLE_CASES = [UserRole.TUTOR, UserRole.MANAGER]
 FUTURE = datetime.date(2099, 9, 1)
 # A partial-day window on `FROZEN_DAY`, and clock readings either side of its end.
 FROZEN_DAY = datetime.date(2099, 9, 1)
+WINDOW_START = datetime.time(9, 0)
 WINDOW_END = datetime.time(11, 0)
+CHILD_GRADE = 5
+
+
+@pytest.fixture
+def statements(db: Session) -> Generator[list[str], None, None]:
+    captured: list[str] = []
+
+    def record(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        captured.append(statement)
+
+    bind = db.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        yield captured
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
 
 
 # --- create: who asks, and the status it lands at -------------------------------------------
@@ -1518,6 +1551,322 @@ def test_a_developers_time_off_never_appears(api: TestClient, db: Session) -> No
     assert as_developer["items"] == []
 
 
+# --- clashing Bookings and the `booking_clash` warning (#204) -------------------------------
+
+
+def test_a_pending_row_lists_the_live_bookings_it_overlaps_and_nothing_else(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    stranger = _make_staff(db, role=UserRole.TUTOR)
+    row = _make_exception(
+        db,
+        user_id=owner.id,
+        status=ExceptionStatus.PENDING,
+        start_time=WINDOW_START,
+        end_time=WINDOW_END,
+    )
+    clash = _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+    _make_booking(
+        db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0), status=BookingStatus.CANCELLED
+    )
+    _make_booking(
+        db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0), status=BookingStatus.COMPLETED
+    )
+    _make_booking(db, user_id=stranger.id, on=FUTURE, start=datetime.time(10, 0))
+    # Touching the window's end is not overlapping it.
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=WINDOW_END)
+
+    body = api.get(f"/api/users/{owner.id}/exceptions", headers=_bearer(owner)).json()
+    [item] = [item for item in body["items"] if item["id"] == str(row.id)]
+
+    assert item["clashing_bookings"] == [
+        {
+            "booking_id": str(clash.id),
+            "date": FUTURE.isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "11:00:00",
+            "child_name": clash.child.name,
+            "status": "confirmed",
+        }
+    ]
+    assert item["clashing_bookings_count"] == 1
+
+
+def test_a_multi_day_partial_window_clashes_on_a_middle_day(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    row = _make_exception(
+        db,
+        user_id=owner.id,
+        status=ExceptionStatus.APPROVED,
+        start_time=WINDOW_START,
+        end_time=WINDOW_END,
+    )
+    middle_day = FUTURE + datetime.timedelta(days=1)
+    later = _make_booking(db, user_id=owner.id, on=middle_day, start=datetime.time(10, 30))
+    earlier = _make_booking(
+        db,
+        user_id=owner.id,
+        on=middle_day,
+        start=datetime.time(8, 30),
+        status=BookingStatus.PENDING,
+    )
+    # The window applies on each day: the afternoon of a covered day is free.
+    _make_booking(db, user_id=owner.id, on=middle_day, start=datetime.time(14, 0))
+
+    body = api.get(f"/api/users/{owner.id}/exceptions", headers=_bearer(owner)).json()
+    [item] = [item for item in body["items"] if item["id"] == str(row.id)]
+
+    assert [clash["booking_id"] for clash in item["clashing_bookings"]] == [
+        str(earlier.id),
+        str(later.id),
+    ]
+    assert item["clashing_bookings_count"] == 2
+
+
+def test_a_whole_day_row_clashes_with_any_booking_inside_its_dates(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.APPROVED)
+    last_day = _make_booking(
+        db, user_id=owner.id, on=FUTURE + datetime.timedelta(days=2), start=datetime.time(18, 0)
+    )
+    _make_booking(
+        db, user_id=owner.id, on=FUTURE + datetime.timedelta(days=3), start=datetime.time(9, 0)
+    )
+
+    body = api.get(f"/api/users/{owner.id}/exceptions", headers=_bearer(owner)).json()
+    [item] = [item for item in body["items"] if item["id"] == str(row.id)]
+
+    assert [clash["booking_id"] for clash in item["clashing_bookings"]] == [str(last_day.id)]
+
+
+def test_approving_a_clashing_row_warns_and_lands_once_confirmed(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+    clash = _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+
+    refused = api.patch(
+        f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(admin)
+    )
+
+    assert refused.status_code == 409
+    assert refused.json() == {
+        "detail": UNCONFIRMED_WARNINGS_ERROR,
+        "warnings": [
+            {"code": "booking_clash", "message": "This time off clashes with 1 booking(s)"}
+        ],
+    }
+    assert _row(db, row.id).status is ExceptionStatus.PENDING
+
+    confirmed = api.patch(
+        f"/api/exceptions/{row.id}",
+        json={"status": "approved", "confirm_warnings": ["booking_clash"]},
+        headers=_bearer(admin),
+    )
+    body = confirmed.json()
+
+    assert confirmed.status_code == 200
+    assert body["status"] == "approved"
+    assert [item["booking_id"] for item in body["clashing_bookings"]] == [str(clash.id)]
+    assert _row(db, row.id).status is ExceptionStatus.APPROVED
+
+
+def test_the_warning_counts_every_clash(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(12, 0))
+
+    response = api.patch(
+        f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(admin)
+    )
+
+    assert response.status_code == 409
+    assert response.json()["warnings"][0]["message"] == "This time off clashes with 2 booking(s)"
+
+
+def test_approving_a_row_with_no_clashes_lands_straight_away(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+
+    response = api.patch(
+        f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(admin)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["clashing_bookings"] == []
+    assert response.json()["clashing_bookings_count"] == 0
+
+
+def test_rejecting_a_clashing_row_never_warns(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+
+    response = api.patch(
+        f"/api/exceptions/{row.id}", json={"status": "rejected"}, headers=_bearer(admin)
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "rejected"
+    assert body["clashing_bookings"] == []
+    assert body["clashing_bookings_count"] == 0
+
+
+def test_approving_a_rejected_clashing_row_warns_the_same_way(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.REJECTED)
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+
+    refused = api.patch(
+        f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(admin)
+    )
+    confirmed = api.patch(
+        f"/api/exceptions/{row.id}",
+        json={"status": "approved", "confirm_warnings": ["booking_clash"]},
+        headers=_bearer(admin),
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["warnings"][0]["code"] == "booking_clash"
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "approved"
+
+
+def test_an_admin_creating_over_a_booking_warns_and_lands_once_confirmed(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    clash = _make_booking(
+        db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0), status=BookingStatus.PENDING
+    )
+
+    refused = api.post(f"/api/users/{owner.id}/exceptions", json=_payload(), headers=_bearer(admin))
+
+    assert refused.status_code == 409
+    assert refused.json()["warnings"] == [
+        {"code": "booking_clash", "message": "This time off clashes with 1 booking(s)"}
+    ]
+    assert _count_for(db, owner.id) == 0
+
+    confirmed = api.post(
+        f"/api/users/{owner.id}/exceptions",
+        json=_payload(confirm_warnings=["booking_clash"]),
+        headers=_bearer(admin),
+    )
+    body = confirmed.json()
+
+    assert confirmed.status_code == 201
+    assert body["status"] == "approved"
+    assert [item["booking_id"] for item in body["clashing_bookings"]] == [str(clash.id)]
+    assert body["clashing_bookings_count"] == 1
+
+
+def test_a_tutors_request_over_a_booking_lands_pending_with_the_clash_listed(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    clash = _make_booking(
+        db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0), status=BookingStatus.PENDING
+    )
+
+    response = api.post(
+        f"/api/users/{owner.id}/exceptions", json=_payload(), headers=_bearer(owner)
+    )
+    body = response.json()
+
+    assert response.status_code == 201
+    assert body["status"] == "pending"
+    assert [item["booking_id"] for item in body["clashing_bookings"]] == [str(clash.id)]
+    assert body["clashing_bookings_count"] == 1
+
+
+@pytest.mark.parametrize("stored", [ExceptionStatus.REJECTED, ExceptionStatus.CANCELLED])
+def test_rejected_and_cancelled_rows_carry_no_clashes(
+    api: TestClient, db: Session, stored: ExceptionStatus
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    row = _make_exception(db, user_id=owner.id, status=stored)
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+
+    body = api.get(f"/api/users/{owner.id}/exceptions", headers=_bearer(owner)).json()
+    [item] = [item for item in body["items"] if item["id"] == str(row.id)]
+
+    assert item["clashing_bookings"] == []
+    assert item["clashing_bookings_count"] == 0
+
+
+def test_an_expired_row_carries_no_clashes(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(
+        db, user_id=owner.id, status=ExceptionStatus.PENDING, start_date=_long_ago()
+    )
+    _make_booking(db, user_id=owner.id, on=_long_ago(), start=datetime.time(10, 0))
+
+    body = api.get(f"/api/exceptions?user_id={owner.id}", headers=_bearer(admin)).json()
+    [item] = body["items"]
+
+    assert item["id"] == str(row.id)
+    assert item["status"] == "expired"
+    assert item["clashing_bookings"] == []
+    assert item["clashing_bookings_count"] == 0
+
+
+def test_cancelling_the_time_off_makes_its_clash_disappear(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.APPROVED)
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+
+    cancelled = api.post(f"/api/exceptions/{row.id}/cancel", headers=_bearer(owner)).json()
+    listed = api.get(f"/api/users/{owner.id}/exceptions", headers=_bearer(owner)).json()
+
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["clashing_bookings"] == []
+    assert listed["items"][0]["clashing_bookings_count"] == 0
+
+
+@pytest.mark.parametrize("path", ["users", "all"])
+def test_a_page_of_clashing_rows_costs_the_same_statements_as_one(
+    api: TestClient, db: Session, statements: list[str], path: str
+) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    for week in range(5):
+        start = FUTURE + datetime.timedelta(weeks=week)
+        _make_exception(db, user_id=owner.id, status=ExceptionStatus.APPROVED, start_date=start)
+        _make_booking(db, user_id=owner.id, on=start, start=datetime.time(10, 0))
+    url = (
+        f"/api/users/{owner.id}/exceptions"
+        if path == "users"
+        else f"/api/exceptions?user_id={owner.id}"
+    )
+    separator = "&" if "?" in url else "?"
+    counts = []
+
+    for page_size in (1, 5):
+        db.expire_all()
+        statements.clear()
+        body = api.get(f"{url}{separator}page_size={page_size}", headers=_bearer(admin)).json()
+
+        assert len(body["items"]) == page_size
+        assert all(item["clashing_bookings_count"] == 1 for item in body["items"])
+        counts.append(len(statements))
+
+    assert counts[0] == counts[1] > 0
+
+
 def _payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "start_date": FUTURE.isoformat(),
@@ -1583,17 +1932,49 @@ def _make_exception(
     user_id: uuid.UUID,
     status: ExceptionStatus,
     start_date: datetime.date = FUTURE,
+    start_time: datetime.time | None = None,
+    end_time: datetime.time | None = None,
 ) -> TutorAvailabilityException:
     row = TutorAvailabilityException(
         user_id=user_id,
         start_date=start_date,
         end_date=start_date + datetime.timedelta(days=2),
+        start_time=start_time,
+        end_time=end_time,
         reason="dentist",
         status=status,
     )
     db.add(row)
     db.flush()
     return row
+
+
+def _make_booking(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    on: datetime.date,
+    start: datetime.time,
+    status: BookingStatus = BookingStatus.CONFIRMED,
+) -> Booking:
+    """An hour-long office Evaluation: the booking shape that needs no Subject, slot or Home.
+    Each gets its own Child, since a Child holds one live Evaluation at a time."""
+    child = Child(
+        name=f"Child {uuid.uuid4().hex[:8]}", grade_level=CHILD_GRADE, school_name="School"
+    )
+    booking = Booking(
+        child=child,
+        user_id=user_id,
+        kind=BookingKind.EVALUATION,
+        location=BookingLocation.IN_OFFICE,
+        scheduled_date=on,
+        start_time=start,
+        end_time=start.replace(hour=start.hour + 1),
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+    return booking
 
 
 def _row(db: Session, exception_id: uuid.UUID) -> TutorAvailabilityException:

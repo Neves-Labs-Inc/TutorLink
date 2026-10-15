@@ -14,7 +14,9 @@ target's role for the Developer boundary); this module maps its refusals to stat
 - `POST /api/exceptions/{exception_id}/cancel` takes `Principal`: the owner or an Admin role,
   checked on the loaded row before its status. It replaced `DELETE`; the row is kept.
 
-Every response carries the wire status, which adds `expired` for a pending row that has ended.
+Every response carries the wire status, which adds `expired` for a pending row that has ended,
+and the row's clashing Bookings. An Admin write that would land a row approved over clashes is
+the #151 409 `{"detail", "warnings": [booking_clash]}` until the caller confirms it.
 """
 
 import datetime
@@ -22,6 +24,7 @@ import uuid
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -31,13 +34,17 @@ from app.models.user import User
 from app.schemas.booking import NamedRef, StaffRef
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.exceptions import (
+    ClashingBooking,
     ExceptionCreate,
     ExceptionDecision,
     ExceptionRead,
     ExceptionReadStatus,
+    TimeOffWarning,
 )
 from app.services import clock
 from app.services.exception_service import (
+    BOOKING_CLASH_WARNING,
+    Clash,
     DeveloperTimeOff,
     ExceptionAlreadyDecided,
     ExceptionCancelled,
@@ -46,10 +53,12 @@ from app.services.exception_service import (
     ExceptionNotFound,
     ExceptionRequestError,
     NotYourTimeOff,
+    UnconfirmedBookingClash,
     UserArchived,
     UserNotFound,
     WindowEnded,
     cancel_exception,
+    clashes_by_exception,
     create_exception,
     decide_exception,
     list_all_exceptions,
@@ -67,6 +76,7 @@ ALREADY_DECIDED_ERROR = "This time off has already been decided"
 TIME_OFF_CANCELLED_ERROR = "This time off has been cancelled"
 TIME_OFF_ENDED_ERROR = "This time off has ended"
 NOT_CANCELLABLE_ERROR = "Only pending or approved time off can be cancelled"
+UNCONFIRMED_WARNINGS_ERROR = "This time off needs the listed warnings confirmed"
 
 _ERRORS: dict[type[ExceptionRequestError], tuple[int, str]] = {
     UserNotFound: (status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR),
@@ -110,10 +120,8 @@ def list_user_exceptions(
     except ExceptionRequestError as exc:
         raise _http_error(exc) from exc
 
-    now = clock.business_now()
-
     return Page[ExceptionRead](
-        items=[_read(row, now=now) for row in rows],
+        items=_reads(db, rows, now=clock.business_now()),
         total=total,
         page=page,
         page_size=page_size,
@@ -132,6 +140,8 @@ def list_all_staff_exceptions(
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ExceptionRead]:
+    # One reading for both the status filter and the rendered statuses, so they agree.
+    now = clock.business_now()
     rows, total = list_all_exceptions(
         db,
         status=status_filter,
@@ -141,12 +151,11 @@ def list_all_staff_exceptions(
         sort=sort,
         limit=page_size,
         offset=(page - 1) * page_size,
+        now=now,
     )
 
-    now = clock.business_now()
-
     return Page[ExceptionRead](
-        items=[_read(row, now=now) for row in rows],
+        items=_reads(db, rows, now=now),
         total=total,
         page=page,
         page_size=page_size,
@@ -163,7 +172,7 @@ def create_user_exception(
     payload: ExceptionCreate,
     user: Principal,
     db: DbSession,
-) -> ExceptionRead:
+) -> ExceptionRead | JSONResponse:
     try:
         row = create_exception(
             db,
@@ -175,13 +184,16 @@ def create_user_exception(
             start_time=payload.start_time,
             end_time=payload.end_time,
             reason=payload.reason,
+            confirm_warnings=frozenset(payload.confirm_warnings),
         )
+    except UnconfirmedBookingClash as exc:
+        return _warnings_response(exc)
     except ExceptionRequestError as exc:
         raise _http_error(exc) from exc
 
     db.commit()
 
-    return _read(row, now=clock.business_now())
+    return _reads(db, [row], now=clock.business_now())[0]
 
 
 @router.patch("/exceptions/{exception_id}", response_model=ExceptionRead)
@@ -190,7 +202,7 @@ def decide_staff_exception(
     payload: ExceptionDecision,
     user: AdminPrincipal,
     db: DbSession,
-) -> ExceptionRead:
+) -> ExceptionRead | JSONResponse:
     try:
         row = decide_exception(
             db,
@@ -198,13 +210,16 @@ def decide_staff_exception(
             actor_role=user.role,
             exception_id=exception_id,
             decision=payload.status,
+            confirm_warnings=frozenset(payload.confirm_warnings),
         )
+    except UnconfirmedBookingClash as exc:
+        return _warnings_response(exc)
     except ExceptionRequestError as exc:
         raise _http_error(exc) from exc
 
     db.commit()
 
-    return _read(row, now=clock.business_now())
+    return _reads(db, [row], now=clock.business_now())[0]
 
 
 @router.post("/exceptions/{exception_id}/cancel", response_model=ExceptionRead)
@@ -220,7 +235,7 @@ def cancel_staff_exception(
 
     db.commit()
 
-    return _read(row, now=clock.business_now())
+    return _reads(db, [row], now=clock.business_now())[0]
 
 
 def _http_error(exc: ExceptionRequestError) -> HTTPException:
@@ -228,7 +243,33 @@ def _http_error(exc: ExceptionRequestError) -> HTTPException:
     return HTTPException(status_code=status_code, detail=detail)
 
 
-def _read(row: TutorAvailabilityException, *, now: datetime.datetime) -> ExceptionRead:
+def _warnings_response(exc: UnconfirmedBookingClash) -> JSONResponse:
+    warning = TimeOffWarning(
+        code=BOOKING_CLASH_WARNING,
+        message=f"This time off clashes with {exc.clash_count} booking(s)",
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": UNCONFIRMED_WARNINGS_ERROR,
+            "warnings": [warning.model_dump(mode="json")],
+        },
+    )
+
+
+def _reads(
+    db: Session, rows: list[TutorAvailabilityException], *, now: datetime.datetime
+) -> list[ExceptionRead]:
+    """The rows as read, their clashes fetched for the whole batch at once."""
+    clashes = clashes_by_exception(db, rows, now=now)
+
+    return [_read(row, now=now, clashes=clashes.get(row.id, [])) for row in rows]
+
+
+def _read(
+    row: TutorAvailabilityException, *, now: datetime.datetime, clashes: list[Clash]
+) -> ExceptionRead:
     # Built field by field rather than with `model_validate(row)`: the constitution forbids an
     # ORM instance crossing the HTTP boundary, and an explicit constructor is what makes adding
     # a column to the table a decision to expose it rather than an accident.
@@ -246,6 +287,19 @@ def _read(row: TutorAvailabilityException, *, now: datetime.datetime) -> Excepti
         decided_at=row.decided_at,
         cancelled_by=_named(row.canceller),
         cancelled_at=row.cancelled_at,
+        clashing_bookings=[_clashing(clash) for clash in clashes],
+        clashing_bookings_count=len(clashes),
+    )
+
+
+def _clashing(clash: Clash) -> ClashingBooking:
+    return ClashingBooking(
+        booking_id=clash.booking_id,
+        date=clash.date,
+        start_time=clash.start_time,
+        end_time=clash.end_time,
+        child_name=clash.child_name,
+        status=clash.status,
     )
 
 

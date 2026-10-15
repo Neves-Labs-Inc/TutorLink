@@ -13,12 +13,16 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from app.models.availability import REASON_MAX_LENGTH
-from app.models.enums import ExceptionStatus
+from app.models.enums import BookingStatus, ExceptionStatus
 from app.schemas.booking import NamedRef, StaffRef
 
 # The stored statuses plus `expired`: a stored `pending` row whose window has ended. Derived at
 # read time, never stored, so it is a wire type rather than a member of `ExceptionStatus`.
 ExceptionReadStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
+
+# The one warning a Time off write can raise (#204): the row would land approved over live
+# Bookings. Confirmed by naming it in `confirm_warnings`, as the #151 booking warnings are.
+TimeOffWarningCode = Literal["booking_clash"]
 
 
 def _strip_reason(raw: object) -> object:
@@ -41,6 +45,7 @@ class ExceptionCreate(BaseModel):
     start_time: datetime.time | None = None
     end_time: datetime.time | None = None
     reason: Reason = None
+    confirm_warnings: list[TimeOffWarningCode] = []
 
     @model_validator(mode="after")
     def _window_is_coherent(self) -> Self:
@@ -69,6 +74,23 @@ class ExceptionDecision(BaseModel):
     # cancelling has its own route with its own rules (the owner may cancel; only Admin roles
     # decide).
     status: Literal[ExceptionStatus.APPROVED, ExceptionStatus.REJECTED]
+    confirm_warnings: list[TimeOffWarningCode] = []
+
+
+class TimeOffWarning(BaseModel):
+    code: TimeOffWarningCode
+    message: str
+
+
+class ClashingBooking(BaseModel):
+    """A live Booking of the same person inside the Time off's window. Computed, never stored."""
+
+    booking_id: uuid.UUID
+    date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    child_name: str
+    status: BookingStatus
 
 
 class ExceptionRead(BaseModel):
@@ -86,3 +108,6 @@ class ExceptionRead(BaseModel):
     decided_at: datetime.datetime | None
     cancelled_by: NamedRef | None
     cancelled_at: datetime.datetime | None
+    # Empty unless the wire status is `pending` (not Expired) or `approved`.
+    clashing_bookings: list[ClashingBooking]
+    clashing_bookings_count: int

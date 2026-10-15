@@ -9,6 +9,13 @@ Once a row's window has **ended** nothing changes it any more: no decide, no can
 row that has ended reads `expired` on the wire (`read_status`). Nothing is stored for that and
 no job runs; it is derived from the business clock on every read.
 
+Approving Time off never refuses or cancels a Booking; it surfaces them (#204). A **clash** is a
+live (pending or confirmed) Booking of the same person dated inside the row's dates and, for a
+partial-day row, overlapping its window on that day: the bare-overlap test rule 4 of a Booking
+write uses. Clashes are computed on every read (`clashes_by_exception`), never stored. A write
+that would land a row approved over clashes is refused with `UnconfirmedBookingClash` unless
+the caller confirmed `booking_clash`.
+
 Who may touch whose Time off is decided here, not in the router, because the Developer
 boundary needs the target's role and only this module loads it:
 
@@ -27,21 +34,29 @@ lock that is only released by that commit or rollback.
 import datetime
 import logging
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.dependencies import ADMIN_ROLES
 from app.models.availability import TutorAvailabilityException
-from app.models.enums import ExceptionStatus, UserRole
+from app.models.booking import LIVE_BOOKING_STATUSES, Booking
+from app.models.child import Child
+from app.models.enums import BookingStatus, ExceptionStatus, UserRole
 from app.models.user import User
-from app.schemas.exceptions import ExceptionReadStatus
-from app.services import clock
+from app.schemas.exceptions import ExceptionReadStatus, TimeOffWarningCode
+from app.services import clock, scheduling_service
 
 EXPIRED_STATUS = "expired"
 PENDING_STATUS = "pending"
 SORT_BY_START = "start"
 SORT_BY_REQUESTED = "requested"
+BOOKING_CLASH_WARNING: TimeOffWarningCode = "booking_clash"
+
+# The wire statuses whose rows still matter to a Booking; every other row lists no clashes.
+_CLASHING_READ_STATUSES = frozenset({PENDING_STATUS, ExceptionStatus.APPROVED.value})
 
 # The only decisions there are, keyed by the status they leave. Approving a rejected row is
 # allowed (an Admin changing their mind before it starts); declining an approved one is not,
@@ -99,6 +114,36 @@ class ExceptionNotCancellable(ExceptionRequestError):
     """A cancel on a row that is neither pending nor approved."""
 
 
+class UnconfirmedBookingClash(ExceptionRequestError):
+    """The write would land a row approved over live Bookings and `booking_clash` was not
+    confirmed. Nothing was written."""
+
+    def __init__(self, clash_count: int) -> None:
+        super().__init__(f"{clash_count} clashing booking(s)")
+        self.clash_count = clash_count
+
+
+@dataclass(frozen=True)
+class Clash:
+    """A live Booking inside a Time off row's window."""
+
+    booking_id: uuid.UUID
+    date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    child_name: str
+    status: BookingStatus
+
+
+@dataclass(frozen=True)
+class _Window:
+    user_id: uuid.UUID
+    start_date: datetime.date
+    end_date: datetime.date
+    start_time: datetime.time | None
+    end_time: datetime.time | None
+
+
 def create_exception(
     db: Session,
     *,
@@ -110,6 +155,7 @@ def create_exception(
     start_time: datetime.time | None,
     end_time: datetime.time | None,
     reason: str | None,
+    confirm_warnings: frozenset[TimeOffWarningCode] = frozenset(),
 ) -> TutorAvailabilityException:
     """Record Time off for `user_id`, at the status the creator's role earns.
 
@@ -117,6 +163,8 @@ def create_exception(
     requester probing another id gets 403 whether or not it exists), the person exists, the
     Developer boundary, the person is not archived, and a requester's window has not ended.
     An Admin role may log an ended window; it lands approved and is frozen from then on.
+    An Admin role's entry over clashing Bookings needs `booking_clash` confirmed; a
+    requester's pending entry never does.
     """
     _assert_may_reach(actor_id=actor_id, actor_role=actor_role, owner_id=user_id)
 
@@ -135,6 +183,18 @@ def create_exception(
     if not is_admin and has_ended(end_date=end_date, end_time=end_time, now=clock.business_now()):
         logger.warning("exception_service.create: actor %s filed an ended window", actor_id)
         raise WindowEnded(f"window ending {end_date} {end_time} has ended")
+
+    if is_admin:
+        window = _Window(
+            user_id=user_id,
+            start_date=start_date,
+            end_date=end_date,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        _assert_clashes_confirmed(
+            db, window, confirm_warnings=confirm_warnings, actor_id=actor_id, operation="create"
+        )
 
     row = TutorAvailabilityException(
         staff=staff,
@@ -160,11 +220,13 @@ def decide_exception(
     actor_role: UserRole,
     exception_id: uuid.UUID,
     decision: ExceptionStatus,
+    confirm_warnings: frozenset[TimeOffWarningCode] = frozenset(),
 ) -> TutorAvailabilityException:
     """Approve or reject a live row. The caller has already established an Admin role.
 
     The Developer boundary is checked before the status, so a non-Developer learns nothing
-    about a Developer's row. Then: cancelled, ended, and finally whether the move is allowed.
+    about a Developer's row. Then: cancelled, ended, whether the move is allowed, and last,
+    for an approval, whether its clashing Bookings were confirmed. Rejecting never warns.
     """
     row = _lock(db, exception_id=exception_id, actor_id=actor_id)
 
@@ -187,6 +249,15 @@ def decide_exception(
             decision.value,
         )
         raise ExceptionAlreadyDecided(f"exception {exception_id} is already {row.status.value}")
+
+    if decision is ExceptionStatus.APPROVED:
+        _assert_clashes_confirmed(
+            db,
+            _window_of(row),
+            confirm_warnings=confirm_warnings,
+            actor_id=actor_id,
+            operation="decide",
+        )
 
     _record_decision(db, row, decision=decision, actor_id=actor_id)
     db.flush()
@@ -300,6 +371,7 @@ def list_all_exceptions(
     sort: str = SORT_BY_START,
     limit: int,
     offset: int,
+    now: datetime.datetime,
 ) -> tuple[list[TutorAvailabilityException], int]:
     """Every Staff member's Time off, filtered, and the count before paging.
 
@@ -309,7 +381,8 @@ def list_all_exceptions(
     `status` is the wire status: `pending` is stored pending that has not ended and `expired`
     is stored pending that has, so the two never overlap. `date_from`/`date_to` overlap the
     window as in `list_exceptions`. `sort` is `start` (the default) or `requested`; `id` breaks
-    ties in both so paging is stable.
+    ties in both so paging is stable. `now` is the caller's clock reading, so the status filter
+    and the statuses the caller renders agree on a row ending between two reads.
     """
     matching = (
         select(TutorAvailabilityException)
@@ -323,7 +396,7 @@ def list_all_exceptions(
     if date_to is not None:
         matching = matching.where(TutorAvailabilityException.start_date <= date_to)
     if status is not None:
-        matching = matching.where(_matches_wire_status(status, now=clock.business_now()))
+        matching = matching.where(_matches_wire_status(status, now=now))
 
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
@@ -376,6 +449,109 @@ def read_status(row: TutorAvailabilityException, *, now: datetime.datetime) -> s
     )
 
     return EXPIRED_STATUS if is_expired else row.status.value
+
+
+def clashes_by_exception(
+    db: Session, rows: Sequence[TutorAvailabilityException], *, now: datetime.datetime
+) -> dict[uuid.UUID, list[Clash]]:
+    """Each row's clashing Bookings, ordered by date, start time and id, in one query.
+
+    Only rows whose wire status at `now` is `pending` or `approved` are keyed; a caller reads a
+    missing key as no clashes.
+    """
+    live_rows = [row for row in rows if read_status(row, now=now) in _CLASHING_READ_STATUSES]
+    clashes = _find_clashes(db, [_window_of(row) for row in live_rows])
+
+    return {row.id: row_clashes for row, row_clashes in zip(live_rows, clashes, strict=True)}
+
+
+def _find_clashes(db: Session, windows: Sequence[_Window]) -> list[list[Clash]]:
+    """Every window's clashes, in the windows' order, from one query over all of them."""
+    if not windows:
+        return []
+
+    candidates = db.execute(
+        select(Booking, Child.name)
+        .join(Child, Booking.child_id == Child.id)
+        .where(
+            Booking.status.in_(LIVE_BOOKING_STATUSES),
+            or_(
+                *(
+                    and_(
+                        Booking.user_id == window.user_id,
+                        Booking.scheduled_date.between(window.start_date, window.end_date),
+                    )
+                    for window in windows
+                )
+            ),
+        )
+        .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
+    ).all()
+
+    return [
+        [
+            Clash(
+                booking_id=booking.id,
+                date=booking.scheduled_date,
+                start_time=booking.start_time,
+                end_time=booking.end_time,
+                child_name=child_name,
+                status=booking.status,
+            )
+            for booking, child_name in candidates
+            if _clashes_with(window, booking)
+        ]
+        for window in windows
+    ]
+
+
+def _clashes_with(window: _Window, booking: Booking) -> bool:
+    # The same bare overlap, no gap padding, as rule 4's `_exception_blocks`.
+    if booking.user_id != window.user_id:
+        return False
+    if not window.start_date <= booking.scheduled_date <= window.end_date:
+        return False
+    if window.start_time is None or window.end_time is None:
+        return True
+
+    return scheduling_service.overlaps(
+        booking.start_time, booking.end_time, window.start_time, window.end_time
+    )
+
+
+def _assert_clashes_confirmed(
+    db: Session,
+    window: _Window,
+    *,
+    confirm_warnings: frozenset[TimeOffWarningCode],
+    actor_id: uuid.UUID,
+    operation: str,
+) -> None:
+    """Refuse a write landing `window` approved over Bookings unless `booking_clash` is
+    confirmed. Confirmed, the query is skipped: nothing would come of it."""
+    if BOOKING_CLASH_WARNING in confirm_warnings:
+        return
+
+    [clashes] = _find_clashes(db, [window])
+    if clashes:
+        logger.warning(
+            "exception_service.%s: actor %s, user %s, %d unconfirmed clash(es)",
+            operation,
+            actor_id,
+            window.user_id,
+            len(clashes),
+        )
+        raise UnconfirmedBookingClash(len(clashes))
+
+
+def _window_of(row: TutorAvailabilityException) -> _Window:
+    return _Window(
+        user_id=row.user_id,
+        start_date=row.start_date,
+        end_date=row.end_date,
+        start_time=row.start_time,
+        end_time=row.end_time,
+    )
 
 
 def _matches_wire_status(

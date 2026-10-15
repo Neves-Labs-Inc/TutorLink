@@ -314,7 +314,7 @@ def test_an_invite_link_sets_the_password_and_signs_the_user_in(
     body = response.json()
     set_cookie = response.headers["set-cookie"]
     claims = decode_token(body["access_token"], expected_type=ACCESS_TOKEN_TYPE)
-    read_back = api.get(f"/api/users/{invitee.id}", headers=_admin_auth(db)).json()
+    read_back = api.get(f"/api/staff/{invitee.id}", headers=_admin_auth(db)).json()
     api.cookies.clear()
     login = _login(api, email=INVITEE_EMAIL, password=NEW_PASSWORD)
 

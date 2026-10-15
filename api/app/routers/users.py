@@ -1,7 +1,8 @@
 """`/api/users` — admin only (a Manager is 403), and the one router that guards the developer
 boundary. Another admin's account sits behind the same boundary: an admin may invite a peer
 admin but not edit or reset them, and may not change their own role (#173, see `user_service`).
-Archiving and restoring a Staff member is `POST /api/archive` with `type: "staff"`.
+Archiving and restoring a Staff member is `POST /api/archive` with `type: "staff"`. There are
+no reads here: `GET /api/staff` lists and reads Staff, and every write answers with that same row.
 
 A thin HTTP shell over `user_service`, matching `auth.py`: the service raises domain
 exceptions, this maps them to status codes and owns the commit.
@@ -16,19 +17,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.user import User
 from app.dependencies import AdminPrincipal
-from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
-from app.schemas.user import TutorProfileCreate, UserCreate, UserRead, UserUpdate
+from app.schemas.staff import StaffRead
+from app.schemas.user import TutorProfileCreate, UserCreate, UserUpdate
 from app.services.mail_service import MailServiceError
 from app.services.name_rules import InvalidName
-from app.services.password_link_service import live_invite_expiries, live_invite_expiry
 from app.services.phone_service import InvalidPhoneNumber
-from app.services.sign_in_state import SignInState, sign_in_states
+from app.services.staff_service import build_staff_rows
 from app.services.tutor_service import TutorPhoneNumberTaken, TutorUniqueViolation
 from app.services.user_service import (
     EmailTaken,
@@ -45,14 +45,12 @@ from app.services.user_service import (
     create_user,
     get_user,
     invite_user,
-    list_users,
     send_password_reset,
     update_user,
 )
 
 EMAIL_TAKEN_ERROR = "A user with that email already exists"
 USER_NOT_FOUND_ERROR = "User not found"
-INVALID_SIGN_IN_STATE_ERROR = "sign_in_state must be one of: not_invited, invited, active"
 DEVELOPER_FORBIDDEN_ERROR = "Only a developer may create or modify a developer account"
 PEER_ADMIN_FORBIDDEN_ERROR = "Only a developer may modify another admin's account"
 SELF_CHANGE_FORBIDDEN_ERROR = "You cannot change your own role"
@@ -77,58 +75,8 @@ DbSession = Annotated[Session, Depends(get_db)]
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-@router.get("", response_model=Page[UserRead])
-def list_all(
-    user: AdminPrincipal,
-    db: DbSession,
-    archived: bool = False,
-    sign_in_state: str | None = None,
-    page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
-    page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
-) -> Page[UserRead]:
-    try:
-        wanted_state = None if sign_in_state is None else SignInState(sign_in_state)
-    except ValueError as exc:
-        # 422, not the app-wide 400 for a malformed query: the value is well-formed but unknown.
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_SIGN_IN_STATE_ERROR
-        ) from exc
-
-    users, total = list_users(
-        db,
-        is_archived=archived,
-        sign_in_state=wanted_state,
-        limit=page_size,
-        offset=(page - 1) * page_size,
-    )
-    # One query each for the page, not one per row.
-    ids = [row.id for row in users]
-    expiries = live_invite_expiries(db, user_ids=ids, now=datetime.now(UTC))
-    states = sign_in_states(db, user_ids=ids)
-
-    return Page[UserRead](
-        items=[
-            _read(row, sign_in_state=states[row.id], invite_expires_at=expiries.get(row.id))
-            for row in users
-        ],
-        total=total,
-        page=page,
-        page_size=page_size,
-    )
-
-
-@router.get("/{user_id}", response_model=UserRead)
-def read_one(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
-    try:
-        found = get_user(db, user_id=user_id)
-    except UserNotFound as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
-
-    return _read_with_invite(db, found)
-
-
-@router.post("", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead:
+@router.post("", response_model=StaffRead, status_code=status.HTTP_201_CREATED)
+def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> StaffRead:
     try:
         created = create_user(
             db,
@@ -159,13 +107,13 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> UserRead
 
     db.commit()
 
-    return _read_with_invite(db, created)
+    return _staff_row(db, created)
 
 
-@router.patch("/{user_id}", response_model=UserRead)
+@router.patch("/{user_id}", response_model=StaffRead)
 def update(
     user_id: uuid.UUID, payload: UserUpdate, user: AdminPrincipal, db: DbSession
-) -> UserRead:
+) -> StaffRead:
     try:
         updated = update_user(
             db,
@@ -195,11 +143,11 @@ def update(
 
     db.commit()
 
-    return _read_with_invite(db, updated)
+    return _staff_row(db, updated)
 
 
-@router.post("/{user_id}/invite", response_model=UserRead)
-def invite(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
+@router.post("/{user_id}/invite", response_model=StaffRead)
+def invite(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> StaffRead:
     """Email the user a single-use link to choose a password; they show as Invited until it is
     used, replaced, revoked or expired. Nothing is committed unless the email went out."""
     actor = get_user(db, user_id=user.id)
@@ -229,7 +177,7 @@ def invite(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> UserRead:
 
     db.commit()
 
-    return _read_with_invite(db, invited, now=now)
+    return _staff_row(db, invited, now=now)
 
 
 @router.post("/{user_id}/password-reset", status_code=status.HTTP_204_NO_CONTENT)
@@ -258,27 +206,8 @@ def password_reset(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> N
     db.commit()
 
 
-def _read_with_invite(db: Session, user: User, *, now: datetime | None = None) -> UserRead:
-    expiry = live_invite_expiry(db, user_id=user.id, now=now or datetime.now(UTC))
-
-    state = sign_in_states(db, user_ids=[user.id])[user.id]
-
-    return _read(user, sign_in_state=state, invite_expires_at=expiry)
-
-
-def _read(
-    user: User, *, sign_in_state: SignInState, invite_expires_at: datetime | None
-) -> UserRead:
-    return UserRead(
-        id=user.id,
-        email=user.email,
-        name=user.name,
-        role=user.role,
-        tutor_id=user.profile_id,
-        archived=user.is_archived,
-        sign_in_state=sign_in_state,
-        invite_expires_at=invite_expires_at,
-    )
+def _staff_row(db: Session, user: User, *, now: datetime | None = None) -> StaffRead:
+    return build_staff_rows(db, [user], now=now)[0]
 
 
 def _tutor_profile_input(tutor: TutorProfileCreate | None) -> TutorProfileInput | None:

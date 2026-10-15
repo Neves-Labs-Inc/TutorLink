@@ -132,8 +132,6 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/conversations/{conversation_id}/reactivation/deny"): Access.STAFF,
     ("POST", "/api/conversations/{conversation_id}/handled"): Access.STAFF,
     (WEBSOCKET, "/api/conversations/stream"): Access.STAFF,
-    ("GET", "/api/users"): Access.ADMIN,
-    ("GET", "/api/users/{user_id}"): Access.ADMIN,
     ("POST", "/api/users"): Access.ADMIN,
     ("PATCH", "/api/users/{user_id}"): Access.ADMIN,
     ("POST", "/api/users/{user_id}/invite"): Access.ADMIN,

@@ -71,13 +71,19 @@ def get_staff(db: Session, *, user_id: uuid.UUID) -> StaffRead:
     return build_staff_rows(db, [user])[0]
 
 
-def build_staff_rows(db: Session, users: Sequence[User]) -> list[StaffRead]:
+def build_staff_rows(
+    db: Session, users: Sequence[User], *, now: datetime.datetime | None = None
+) -> list[StaffRead]:
     """One row per user, in the order given: one query each for profiles, sign-in states,
-    Invite expiries, subjects and session counts, never one per row."""
+    Invite expiries, subjects and session counts, never one per row. `now` is the moment
+    Invite expiries are judged at; a caller that just issued an Invite passes the `now` it
+    issued with."""
     ids = [user.id for user in users]
     profile_ids = _profile_ids(db, ids)
     states = sign_in_states(db, user_ids=ids)
-    expiries = live_invite_expiries(db, user_ids=ids, now=datetime.datetime.now(datetime.UTC))
+    expiries = live_invite_expiries(
+        db, user_ids=ids, now=now or datetime.datetime.now(datetime.UTC)
+    )
     teacher_ids = [user.id for user in users if user.role in TEACHING_ROLES]
     subjects = _subjects(db, teacher_ids)
     sessions = _sessions_this_week(db, ids)

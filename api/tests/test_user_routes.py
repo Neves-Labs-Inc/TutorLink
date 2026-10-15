@@ -118,93 +118,6 @@ def _profile(**overrides: object) -> dict[str, object]:
 # --- the envelope and the RBAC gate ---------------------------------------------------------
 
 
-def test_list_returns_the_page_envelope_never_a_bare_array(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-
-    body = api.get("/api/users", headers=_auth(admin)).json()
-
-    assert set(body) == {"items", "total", "page", "page_size"}
-    assert isinstance(body["items"], list)
-    assert body["page"] == 1
-
-
-def test_total_counts_matches_not_returned_rows(api: TestClient, db: Session) -> None:
-    """The envelope's whole point: `total` is what the caller pages against."""
-    admin = _make_user(db)
-    for _ in range(4):
-        _make_user(db)
-
-    body = api.get("/api/users?page_size=2", headers=_auth(admin)).json()
-
-    assert len(body["items"]) == 2
-    assert body["total"] == 5
-    assert body["page_size"] == 2
-
-
-def test_deactivated_users_are_hidden_until_asked_for(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-    dormant = _make_user(db, is_archived=True)
-    headers = _auth(admin)
-
-    default = api.get("/api/users", headers=headers).json()
-    asked = api.get("/api/users?archived=true", headers=headers).json()
-
-    assert dormant.email not in [row["email"] for row in default["items"]]
-    assert [row["email"] for row in asked["items"]] == [dormant.email]
-
-
-def test_total_respects_the_is_active_filter_even_when_the_page_truncates(
-    api: TestClient, db: Session
-) -> None:
-    admin = _make_user(db)
-    for _ in range(2):
-        _make_user(db, is_archived=True)
-    headers = _auth(admin)
-
-    asked = api.get("/api/users?archived=true&page_size=1", headers=headers).json()
-
-    assert len(asked["items"]) == 1
-    assert asked["total"] == 2
-
-
-def test_a_deactivated_user_is_still_readable_by_id(api: TestClient, db: Session) -> None:
-    """The by-id path takes no `?is_active` and deliberately does not filter, because the
-    surface that deactivated a row has to be able to open it in order to reactivate it — a 404
-    would make a soft delete indistinguishable from a hard one."""
-    admin = _make_user(db)
-    dormant = _make_user(db, is_archived=True)
-
-    response = api.get(f"/api/users/{dormant.id}", headers=_auth(admin))
-
-    assert response.status_code == 200
-    assert response.json()["archived"] is True
-
-
-def test_malformed_archived_query_is_400_not_422(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-
-    response = api.get("/api/users?archived=sideways", headers=_auth(admin))
-
-    assert response.status_code == 400
-    assert "archived" in response.json()["detail"]
-
-
-def test_a_tutor_is_refused(api: TestClient, db: Session) -> None:
-    tutor = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
-
-    response = api.get("/api/users", headers=_auth(tutor))
-
-    assert response.status_code == 403
-    assert isinstance(response.json()["detail"], str)
-
-
-def test_no_token_is_401_not_403(api: TestClient) -> None:
-    response = api.get("/api/users")
-
-    assert response.status_code == 401
-    assert isinstance(response.json()["detail"], str)
-
-
 # --- #13: the developer boundary ------------------------------------------------------------
 
 
@@ -381,12 +294,13 @@ def test_malformed_body_is_400_not_422(api: TestClient, db: Session) -> None:
     assert isinstance(response.json()["detail"], str)
 
 
-def test_unknown_id_is_404(api: TestClient, db: Session) -> None:
+def test_the_user_read_routes_are_gone(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
-    response = api.get(f"/api/users/{uuid.uuid4()}", headers=_auth(admin))
+    listed = api.get("/api/users", headers=_auth(admin))
+    one = api.get(f"/api/users/{admin.id}", headers=_auth(admin))
 
-    assert response.status_code == 404
+    assert (listed.status_code, one.status_code) == (405, 405)
 
 
 def test_the_removed_delete_route_is_405(api: TestClient, db: Session) -> None:
@@ -496,18 +410,79 @@ def test_a_password_in_a_patch_leaves_the_hash_alone(api: TestClient, db: Sessio
     assert passwordless.hashed_password is None
 
 
-def test_the_list_says_who_is_active(api: TestClient, db: Session) -> None:
+# --- writes answer with the Staff row -------------------------------------------------------
+
+STAFF_ROW_KEYS = {
+    "id",
+    "name",
+    "role",
+    "tutor_id",
+    "email",
+    "sign_in_state",
+    "invite_expires_at",
+    "archived",
+    "subjects",
+    "sessions_this_week",
+}
+
+
+def test_create_answers_with_a_staff_row(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    passwordless = _make_user(db)
-    passwordless.hashed_password = None
-    db.flush()
 
-    items = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
-    by_id = {item["id"]: item["sign_in_state"] for item in items}
+    response = api.post("/api/users", headers=_auth(admin), json=_create_payload(tutor=_profile()))
+    body = response.json()
 
-    assert by_id[str(admin.id)] == "active"
-    assert by_id[str(passwordless.id)] == "not_invited"
-    assert all("has_password" not in item for item in items)
+    assert response.status_code == 201
+    assert set(body) == STAFF_ROW_KEYS
+    assert body["subjects"] == []
+    assert body["sessions_this_week"] == 0
+    assert body["sign_in_state"] == "not_invited"
+    assert body["archived"] is False
+    assert body["tutor_id"] is not None
+
+
+def test_update_answers_with_a_staff_row_holding_the_new_values(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    target = _make_tutor_user(db)
+
+    response = api.patch(
+        f"/api/users/{target.id}", headers=_auth(admin), json={"name": "Renamed Person"}
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert set(body) == STAFF_ROW_KEYS
+    assert body["name"] == "Renamed Person"
+
+
+def test_invite_answers_with_a_staff_row_showing_the_new_expiry(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    invitee = _make_invitee(db)
+
+    response = api.post(f"/api/users/{invitee.id}/invite", headers=_auth(admin))
+    body = response.json()
+
+    (link,) = _live_links(db, invitee)
+    assert response.status_code == 200
+    assert set(body) == STAFF_ROW_KEYS
+    assert body["sign_in_state"] == "invited"
+    assert datetime.fromisoformat(body["invite_expires_at"]) == link.expires_at
+
+
+def test_a_developer_creating_a_developer_gets_the_full_row(api: TestClient, db: Session) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = api.post(
+        "/api/users", headers=_auth(developer), json=_create_payload(role="developer")
+    )
+
+    assert response.status_code == 201
+    assert set(response.json()) == STAFF_ROW_KEYS
+    assert response.json()["role"] == "developer"
 
 
 # --- the two ways a tutor account names its profile -----------------------------------------
@@ -799,8 +774,8 @@ def test_the_name_is_listed_and_read_back(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     target = _make_user(db, role=UserRole.MANAGER)
 
-    read = api.get(f"/api/users/{target.id}", headers=_auth(admin)).json()
-    listed = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
+    read = api.get(f"/api/staff/{target.id}", headers=_auth(admin)).json()
+    listed = api.get("/api/staff?page_size=100", headers=_auth(admin)).json()["items"]
 
     assert read["name"] == "Test User"
     assert {"id": str(target.id), "name": "Test User"}.items() <= next(
@@ -866,7 +841,7 @@ def test_renaming_the_tutor_renames_the_account_and_back(api: TestClient, db: Se
         headers=_auth(admin),
         json={"name": "Renamed Tutor", "email": "renamed@example.com"},
     )
-    as_user = api.get(f"/api/users/{account.id}", headers=_auth(admin)).json()
+    as_user = api.get(f"/api/staff/{account.id}", headers=_auth(admin)).json()
     via_user = api.patch(
         f"/api/users/{account.id}",
         headers=_auth(admin),
@@ -1001,8 +976,6 @@ def test_a_user_without_a_profile_may_not_become_a_tutor_or_a_manager(
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [
-        ("GET", "/api/users", None),
-        ("GET", "/api/users/{id}", None),
         ("POST", "/api/users", "create"),
         ("PATCH", "/api/users/{id}", {"name": "Hijack"}),
         ("GET", "/api/settings", None),
@@ -1193,7 +1166,7 @@ def test_a_failed_send_keeps_no_link_and_the_user_is_not_invited(
     assert response.json()["detail"] == "Could not send the invite email. Try again."
     assert fake_mail.sent == []
     assert _links(db, invitee) == []
-    shown = api.get(f"/api/users/{invitee.id}", headers=headers).json()
+    shown = api.get(f"/api/staff/{invitee.id}", headers=headers).json()
     assert shown["invite_expires_at"] is None
     assert shown["sign_in_state"] == "not_invited"
 
@@ -1259,7 +1232,7 @@ def test_the_list_shows_an_expiry_only_for_a_live_invite(api: TestClient, db: Se
     stale.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     db.flush()
 
-    items = api.get("/api/users?page_size=100", headers=headers).json()["items"]
+    items = api.get("/api/staff?page_size=100", headers=headers).json()["items"]
 
     by_id = {item["id"]: item["invite_expires_at"] for item in items}
     assert by_id[str(invited.id)] is not None
@@ -1691,7 +1664,7 @@ def test_a_developer_may_still_change_their_own_role(api: TestClient, db: Sessio
 
 
 def _state_of(api: TestClient, headers: dict[str, str], user: User) -> dict[str, object]:
-    return api.get(f"/api/users/{user.id}", headers=headers).json()
+    return api.get(f"/api/staff/{user.id}", headers=headers).json()
 
 
 def test_a_lapsed_invite_still_reads_invited_without_an_expiry(
@@ -1736,52 +1709,6 @@ def test_a_user_with_a_password_and_a_live_reset_link_reads_active(
     api.post(f"/api/users/{target.id}/password-reset", headers=headers)
 
     assert _state_of(api, headers, target)["sign_in_state"] == "active"
-
-
-def test_an_archived_invited_user_reads_invited_and_is_filterable(
-    api: TestClient, db: Session
-) -> None:
-    admin = _make_user(db)
-    invitee = _make_invitee(db, role=UserRole.TUTOR)
-    headers = _auth(admin)
-    api.post(f"/api/users/{invitee.id}/invite", headers=headers)
-    _archive_staff(api, invitee.id, actor=admin)
-
-    body = api.get("/api/users?archived=true&sign_in_state=invited", headers=headers).json()
-
-    assert [item["id"] for item in body["items"]] == [str(invitee.id)]
-    assert body["items"][0]["sign_in_state"] == "invited"
-    assert body["total"] == 1
-
-
-def test_the_list_filters_by_sign_in_state_with_a_matching_total(
-    api: TestClient, db: Session
-) -> None:
-    admin = _make_user(db)
-    invited = [_make_invitee(db) for _ in range(3)]
-    never = _make_invitee(db)
-    headers = _auth(admin)
-    for invitee in invited:
-        api.post(f"/api/users/{invitee.id}/invite", headers=headers)
-
-    def ids_for(state: str, extra: str = "") -> tuple[set[str], int]:
-        body = api.get(f"/api/users?sign_in_state={state}{extra}", headers=headers).json()
-        return {item["id"] for item in body["items"]}, body["total"]
-
-    assert ids_for("invited") == ({str(user.id) for user in invited}, 3)
-    assert ids_for("not_invited") == ({str(never.id)}, 1)
-    assert ids_for("active") == ({str(admin.id)}, 1)
-    page, total = ids_for("invited", "&page_size=2")
-    assert len(page) == 2
-    assert total == 3
-
-
-def test_a_bogus_sign_in_state_filter_is_422(api: TestClient, db: Session) -> None:
-    admin = _make_user(db)
-
-    response = api.get("/api/users?sign_in_state=sideways", headers=_auth(admin))
-
-    assert response.status_code == 422
 
 
 def _archive_staff(api: TestClient, user_id: object, *, actor: User) -> Response:

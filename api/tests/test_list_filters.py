@@ -158,10 +158,7 @@ def schedule(db: Session) -> Schedule:
 
 def _archived_and_live(db: Session, kind: str) -> tuple[uuid.UUID, uuid.UUID]:
     """Ids of one archived and one live row of the resource behind `kind`."""
-    if kind == "users":
-        archived, live = _make_user(db), _make_user(db)
-        archived.is_archived = True
-    elif kind == "tutors":
+    if kind == "tutors":
         archived, live = _make_tutor(db), _make_tutor(db)
         archived.user.is_archived = True
     elif kind == "children":
@@ -178,7 +175,7 @@ def _archived_and_live(db: Session, kind: str) -> tuple[uuid.UUID, uuid.UUID]:
     return archived.id, live.id
 
 
-@pytest.mark.parametrize("kind", ["users", "tutors", "children", "clients", "subjects"])
+@pytest.mark.parametrize("kind", ["tutors", "children", "clients", "subjects"])
 def test_a_list_hides_archived_rows_unless_archived_is_true(
     api: TestClient, db: Session, kind: str
 ) -> None:
@@ -199,7 +196,7 @@ def test_a_list_hides_archived_rows_unless_archived_is_true(
     assert all("is_active" not in row for row in default["items"])
 
 
-@pytest.mark.parametrize("kind", ["users", "tutors", "children", "clients", "subjects"])
+@pytest.mark.parametrize("kind", ["tutors", "children", "clients", "subjects"])
 def test_a_list_no_longer_recognises_is_active(api: TestClient, db: Session, kind: str) -> None:
     admin = _make_user(db)
     archived_id, live_id = _archived_and_live(db, kind)

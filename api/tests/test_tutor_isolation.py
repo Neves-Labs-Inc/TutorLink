@@ -522,7 +522,7 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
     ("template", "detail"),
     [
         ("/api/clients", OFFICE_REQUIRED_ERROR),
-        ("/api/users", ADMIN_REQUIRED_ERROR),
+        ("/api/staff", OFFICE_REQUIRED_ERROR),
         ("/api/settings", ADMIN_REQUIRED_ERROR),
         ("/api/stats/overview?date=2026-09-07", OFFICE_REQUIRED_ERROR),
         (
@@ -530,7 +530,7 @@ def test_a_tutor_may_not_create_a_booking_even_entirely_from_their_own_rows(
             OFFICE_REQUIRED_ERROR,
         ),
     ],
-    ids=["clients", "users", "settings", "stats", "slots"],
+    ids=["clients", "staff", "settings", "stats", "slots"],
 )
 def test_a_staff_only_surface_is_403_for_a_tutor(
     api: TestClient, world: World, template: str, detail: str

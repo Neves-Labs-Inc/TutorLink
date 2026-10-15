@@ -1,11 +1,9 @@
 import uuid
-from datetime import datetime
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel
 
 from app.models.enums import UserRole
-from app.services.sign_in_state import SignInState
 
 
 def _looks_like_an_email(value: str) -> str:
@@ -22,20 +20,6 @@ def _looks_like_an_email(value: str) -> str:
 
 
 Email = Annotated[str, AfterValidator(_looks_like_an_email)]
-
-
-class UserRead(BaseModel):
-    id: uuid.UUID
-    email: str
-    name: str
-    role: UserRole
-    # Derived: the user's profile id, or null for a user with none. Read-only on every route.
-    tutor_id: uuid.UUID | None
-    archived: bool
-    # Computed on read, never stored; the password hash itself is never exposed.
-    sign_in_state: SignInState
-    # The live Invite's expiry; null when none is live, even for an `invited` user.
-    invite_expires_at: datetime | None
 
 
 class MeRead(BaseModel):

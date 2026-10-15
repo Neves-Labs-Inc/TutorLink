@@ -688,7 +688,7 @@ def test_create_makes_a_person_who_cannot_sign_in_yet(api: TestClient, db: Sessi
     response = api.post("/api/tutors", headers=_auth(admin), json=_payload(name="Ada Lovelace"))
     body = response.json()
     tutor = db.get_one(Tutor, uuid.UUID(body["id"]))
-    listed = api.get("/api/users?page_size=100", headers=_auth(admin)).json()["items"]
+    listed = api.get("/api/staff?page_size=100", headers=_auth(admin)).json()["items"]
 
     assert response.status_code == 201
     assert (tutor.user.role, tutor.user.hashed_password, tutor.user.name) == (

@@ -194,6 +194,7 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
             "label": "Mum's",
             "address": active_home.address,
             "archived": False,
+            "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         }
     ]
     assert set(row) == {
@@ -240,6 +241,7 @@ def test_detail_nests_every_guardian_and_every_home(
             "address": older.address,
             "access_code": "1234",
             "archived": True,
+            "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         },
         {
             "id": str(newer.id),
@@ -247,6 +249,7 @@ def test_detail_nests_every_guardian_and_every_home(
             "address": newer.address,
             "access_code": "1234",
             "archived": False,
+            "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         },
     ]
 
@@ -275,6 +278,24 @@ def test_a_home_two_guardians_share_appears_once(api: TestClient, db: Session, t
 
     assert [home["id"] for home in listed["items"][0]["homes"]] == [str(shared.id)]
     assert [home["id"] for home in detail["homes"]] == [str(shared.id)]
+
+
+def test_a_shared_home_names_both_owners_by_name_on_list_and_detail(
+    api: TestClient, db: Session, token: str
+) -> None:
+    admin = _make_user(db)
+    zed, amy = _make_guardian(db, name="Zed"), _make_guardian(db, name="Amy")
+    shared = _make_home(db)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[zed, amy], homes=[shared])
+    _give_home(db, amy, shared)
+    headers = _auth(admin)
+    expected = [{"id": str(amy.id), "name": "Amy"}, {"id": str(zed.id), "name": "Zed"}]
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert listed["items"][0]["homes"][0]["guardians"] == expected
+    assert detail["homes"][0]["guardians"] == expected
 
 
 def test_a_home_added_to_a_guardian_later_is_one_of_the_childs_homes(

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
-from app.schemas.client import HomeRead
+from app.schemas.client import HomeRead, home_read
 from app.schemas.home import HomeUpdate
 from app.services.home_service import (
     HOME_NOT_FOUND_ERROR,
@@ -24,6 +24,7 @@ from app.services.home_service import (
     HomeNotFound,
     update_home,
 )
+from app.services.home_set import guardians_by_home
 
 BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
 
@@ -51,4 +52,4 @@ def update(
 
     db.commit()
 
-    return HomeRead.model_validate(home)
+    return home_read(home, guardians_by_home(db, home_ids=[home.id])[home.id])

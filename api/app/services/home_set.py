@@ -16,7 +16,7 @@ from collections.abc import Collection
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from app.models.guardian import ChildGuardian
+from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 
 
@@ -64,5 +64,23 @@ def homes_by_child(
 
     for child_id, home in db.execute(statement).all():
         grouped[child_id].append(home)
+
+    return grouped
+
+
+def guardians_by_home(
+    db: Session, *, home_ids: Collection[uuid.UUID]
+) -> defaultdict[uuid.UUID, list[Guardian]]:
+    """Each Home's owners, archived Guardians included, in one statement ordered by name, id."""
+    statement = (
+        select(GuardianHome.home_id, Guardian)
+        .join(Guardian, Guardian.id == GuardianHome.guardian_id)
+        .where(GuardianHome.home_id.in_(home_ids))
+        .order_by(Guardian.name, Guardian.id)
+    )
+    grouped: defaultdict[uuid.UUID, list[Guardian]] = defaultdict(list)
+
+    for home_id, guardian in db.execute(statement).all():
+        grouped[home_id].append(guardian)
 
     return grouped

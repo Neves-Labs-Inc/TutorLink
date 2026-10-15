@@ -28,7 +28,7 @@ from app.schemas.client import (
     ClientSummary,
     ClientUpdate,
     HomeCreate,
-    HomeRead,
+    home_read,
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.client_service import (
@@ -46,6 +46,7 @@ from app.services.client_service import (
     update_client,
 )
 from app.services.guardian_state import ReminderState
+from app.services.home_set import guardians_by_home
 from app.services.phone_service import InvalidPhoneNumber
 
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
@@ -100,7 +101,7 @@ def read_one(client_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> Clie
     except ClientNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CLIENT_NOT_FOUND_ERROR) from exc
 
-    return _to_read(found)
+    return _to_read(db, found)
 
 
 @router.post("", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
@@ -119,7 +120,7 @@ def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> Clien
 
     db.commit()
 
-    return _to_read(created)
+    return _to_read(db, created)
 
 
 @router.patch("/{client_id}", response_model=ClientRead)
@@ -147,7 +148,7 @@ def update(
 
     db.commit()
 
-    return _to_read(updated)
+    return _to_read(db, updated)
 
 
 def _summary(row: ClientWithCounts) -> ClientSummary:
@@ -173,7 +174,8 @@ def _home_input(home: HomeCreate | None) -> HomeInput | None:
     )
 
 
-def _to_read(detail: ClientDetail) -> ClientRead:
+def _to_read(db: Session, detail: ClientDetail) -> ClientRead:
+    owners = guardians_by_home(db, home_ids=[home.id for home in detail.homes])
     conversation = detail.language_conversation
 
     return ClientRead(
@@ -181,7 +183,7 @@ def _to_read(detail: ClientDetail) -> ClientRead:
         name=detail.client.name,
         phone_number=detail.client.phone_number,
         archived=detail.client.is_archived,
-        homes=[HomeRead.model_validate(home) for home in detail.homes],
+        homes=[home_read(home, owners[home.id]) for home in detail.homes],
         children=[ChildRead.model_validate(child) for child in detail.children],
         language=None if conversation is None else conversation.language,
         language_conversation_id=None if conversation is None else conversation.id,

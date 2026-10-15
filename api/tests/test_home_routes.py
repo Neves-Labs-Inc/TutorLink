@@ -36,7 +36,7 @@ CLIENT_NOT_FOUND_ERROR = "Client not found"
 HOME_NOT_FOUND_ERROR = "Home not found"
 BLANK_HOME_DETAILS_ERROR = "address and access_code must not be blank"
 
-HOME_READ_KEYS = {"id", "label", "address", "access_code", "archived"}
+HOME_READ_KEYS = {"id", "label", "address", "access_code", "archived", "guardians"}
 
 NINE = datetime.time(9, 0)
 TWELVE = datetime.time(12, 0)
@@ -63,6 +63,7 @@ def test_add_home_links_only_the_client_and_its_children_have_it(
     assert body["address"] == "9 Elm St"
     assert body["access_code"] == "4321"
     assert body["archived"] is False
+    assert body["guardians"] == [{"id": str(client.id), "name": client.name}]
 
     home_id = uuid.UUID(body["id"])
     assert _guardian_home_ids(db, client) == [home_id]
@@ -163,7 +164,8 @@ def test_add_home_for_an_unknown_client_is_404(api: TestClient, db: Session) -> 
 
 def test_patch_access_code_changes_only_that_field(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    home = _make_home(db, client=_make_client(db))
+    owner = _make_client(db)
+    home = _make_home(db, client=owner)
 
     response = _patch(api, admin, home.id, {"access_code": "0000"})
 
@@ -174,7 +176,28 @@ def test_patch_access_code_changes_only_that_field(api: TestClient, db: Session)
         "address": "123 Main St",
         "access_code": "0000",
         "archived": False,
+        "guardians": [{"id": str(owner.id), "name": owner.name}],
     }
+
+
+def test_patch_returns_every_current_owner_archived_ones_included(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    zed = _make_client(db)
+    zed.name, zed.is_archived = "Zed Doe", True
+    amy = _make_client(db)
+    amy.name = "Amy Doe"
+    home = _make_home(db, client=zed)
+    db.add(GuardianHome(guardian_id=amy.id, home_id=home.id))
+    db.flush()
+
+    response = _patch(api, admin, home.id, {"label": "Shared"})
+
+    assert response.json()["guardians"] == [
+        {"id": str(amy.id), "name": "Amy Doe"},
+        {"id": str(zed.id), "name": "Zed Doe"},
+    ]
 
 
 @pytest.mark.parametrize(

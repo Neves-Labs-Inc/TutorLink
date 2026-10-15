@@ -99,6 +99,8 @@ class ChildHomeRef(BaseModel):
     label: str | None
     address: str
     archived: bool
+    # Every Guardian linked to the Home, archived ones included, by name then id.
+    guardians: list[NamedRef]
 
 
 class ChildHomeRead(ChildHomeRef):

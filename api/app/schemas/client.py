@@ -28,18 +28,31 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import Language
+from app.models.guardian import Guardian
+from app.models.home import Home
 from app.schemas.archived import ArchivedFlag
 from app.schemas.booking import NamedRef
 
 
 class HomeRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     label: str | None
     address: str
     access_code: str
     archived: ArchivedFlag
+    # Every Guardian linked to the Home, archived ones included, by name then id.
+    guardians: list[NamedRef]
+
+
+def home_read(home: Home, guardians: list[Guardian]) -> HomeRead:
+    return HomeRead(
+        id=home.id,
+        label=home.label,
+        address=home.address,
+        access_code=home.access_code,
+        archived=home.is_archived,
+        guardians=[NamedRef(id=guardian.id, name=guardian.name) for guardian in guardians],
+    )
 
 
 class ChildRead(BaseModel):

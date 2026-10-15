@@ -14,6 +14,7 @@ Evaluation: who the booking form may offer for an Evaluation.
 """
 
 import uuid
+from collections import defaultdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,6 +25,7 @@ from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
+from app.models.guardian import Guardian
 from app.schemas.booking import NamedRef, subject_ref
 from app.schemas.child import (
     ChildDetail,
@@ -44,8 +46,11 @@ from app.services.child_read_service import (
     get_child,
     list_children,
 )
+from app.services.home_set import guardians_by_home
 
 CHILD_NOT_FOUND_ERROR = "Child not found"
+
+Owners = defaultdict[uuid.UUID, list[Guardian]]
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -73,8 +78,10 @@ def list_all(
         evaluable=evaluable,
     )
 
+    owners = guardians_by_home(db, home_ids=[home.id for row in rows for home in row.homes])
+
     return Page[ChildSummary](
-        items=[_summary(row) for row in rows],
+        items=[_summary(row, owners) for row in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -88,10 +95,12 @@ def read_one(child_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> Child
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
 
-    return _detail(found)
+    owners = guardians_by_home(db, home_ids=[home.id for home in found.homes])
+
+    return _detail(found, owners)
 
 
-def _summary(row: ChildRow) -> ChildSummary:
+def _summary(row: ChildRow, owners: Owners) -> ChildSummary:
     return ChildSummary(
         id=row.child.id,
         name=row.child.name,
@@ -101,7 +110,11 @@ def _summary(row: ChildRow) -> ChildSummary:
         guardians=[NamedRef(id=guardian.id, name=guardian.name) for guardian in row.guardians],
         homes=[
             ChildHomeRef(
-                id=home.id, label=home.label, address=home.address, archived=home.is_archived
+                id=home.id,
+                label=home.label,
+                address=home.address,
+                archived=home.is_archived,
+                guardians=_owner_refs(owners[home.id]),
             )
             for home in row.homes
         ],
@@ -109,6 +122,10 @@ def _summary(row: ChildRow) -> ChildSummary:
         evaluated=_evaluated(row.child),
         created_at=row.child.created_at,
     )
+
+
+def _owner_refs(guardians: list[Guardian]) -> list[NamedRef]:
+    return [NamedRef(id=guardian.id, name=guardian.name) for guardian in guardians]
 
 
 def _next_session(booking: Booking | None) -> NextSession | None:
@@ -126,7 +143,7 @@ def _next_session(booking: Booking | None) -> NextSession | None:
     )
 
 
-def _detail(row: ChildDetailRow) -> ChildDetail:
+def _detail(row: ChildDetailRow, owners: Owners) -> ChildDetail:
     return ChildDetail(
         id=row.child.id,
         name=row.child.name,
@@ -152,6 +169,7 @@ def _detail(row: ChildDetailRow) -> ChildDetail:
                 address=home.address,
                 access_code=home.access_code,
                 archived=home.is_archived,
+                guardians=_owner_refs(owners[home.id]),
             )
             for home in row.homes
         ],

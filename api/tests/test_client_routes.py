@@ -270,6 +270,24 @@ def test_phone_number_lookup_does_not_special_case_the_is_active_default(
 # --- REQ-032.4: the by-id shape --------------------------------------------------------------
 
 
+def test_get_by_id_names_every_owner_of_a_shared_home_archived_ones_included(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    zed = _make_client(db, name="Zed Doe", phone_number="+15550000001", is_archived=True)
+    amy = _make_client(db, name="Amy Doe", phone_number="+15550000002")
+    home = _make_home(db, client=zed)
+    db.add(GuardianHome(guardian_id=amy.id, home_id=home.id))
+    db.flush()
+
+    body = api.get(f"/api/clients/{amy.id}", headers=_auth(admin)).json()
+
+    assert body["homes"][0]["guardians"] == [
+        {"id": str(amy.id), "name": "Amy Doe"},
+        {"id": str(zed.id), "name": "Zed Doe"},
+    ]
+
+
 def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     client = _make_client(db)
@@ -286,6 +304,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "address": "123 Main St",
             "access_code": "1234",
             "archived": False,
+            "guardians": [{"id": str(client.id), "name": client.name}],
         }
     ]
     assert body["children"] == [
@@ -394,6 +413,7 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
             "address": "123 Main St",
             "access_code": "1234",
             "archived": False,
+            "guardians": [{"id": body["id"], "name": "Jane Doe"}],
         }
     ]
 

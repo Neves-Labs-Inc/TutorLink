@@ -8,6 +8,7 @@ import { ArrowLeft, X } from "lucide-react";
 import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
 import { IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
 import { useEnterAnimation, PUSH_FROM_RIGHT, RISE_AS_SHEET } from "@/pages/prototype/shell-kit/kit/overlays/use-enter-animation";
+import { OverlayLayer } from "@/pages/prototype/shell-kit/kit/overlays/overlay-layer";
 import { useDialogFocus } from "@/pages/prototype/shell-kit/kit/overlays/use-dialog-focus";
 
 export type PhoneDetailMode = "page" | "sheet";
@@ -22,6 +23,9 @@ type DetailOverlayProps = {
   backLabel: string;
   phoneMode: PhoneDetailMode;
   header?: ReactNode;
+  // Keeps the header slot and the desktop close X at the top while the
+  // content scrolls under them (long threads, long Bookings).
+  isHeaderPinned?: boolean;
   footer?: ReactNode;
   children: ReactNode;
 };
@@ -34,6 +38,7 @@ export function DetailOverlay({
   backLabel,
   phoneMode,
   header,
+  isHeaderPinned = false,
   footer,
   children,
 }: DetailOverlayProps): ReactNode {
@@ -44,63 +49,80 @@ export function DetailOverlay({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50">
-      <div
-        aria-hidden
-        onClick={onClose}
-        className={cn(
-          "kit-fade absolute inset-0 bg-(--tl-scrim)",
-          isPage && "hidden @2xl:block",
-        )}
-      />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        tabIndex={-1}
-        className={cn(
-          "kit-shadow-raised absolute flex flex-col overflow-hidden outline-none",
-          isPage
-            ? "inset-0 bg-(--tl-canvas)"
-            : "inset-x-0 bottom-0 max-h-[92%] rounded-t-[28px] border border-(--tl-card-border) bg-(--tl-surface)",
-          "@2xl:inset-y-4 @2xl:right-4 @2xl:bottom-4 @2xl:left-auto @2xl:max-h-none @2xl:w-[440px] @2xl:rounded-[28px] @2xl:border @2xl:border-(--tl-card-border) @2xl:bg-(--tl-surface)",
-        )}
-      >
-        {isPage ? (
-          <div className="flex h-14 shrink-0 items-center gap-1 border-b border-(--tl-border) bg-(--tl-surface) px-1 @2xl:hidden">
-            <button
-              type="button"
-              onClick={onBack ?? onClose}
-              className="inline-flex h-11 cursor-pointer items-center gap-1 rounded-full pr-4 pl-2 text-[15px] font-medium text-(--tl-link) hover:bg-(--tl-tint)"
+    <OverlayLayer>
+      <div className="fixed inset-0 z-50">
+        <div
+          aria-hidden
+          onClick={onClose}
+          className={cn(
+            "kit-fade absolute inset-0 bg-(--tl-scrim)",
+            isPage && "hidden @2xl:block",
+          )}
+        />
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+          tabIndex={-1}
+          className={cn(
+            "kit-shadow-raised absolute flex flex-col overflow-hidden outline-none",
+            isPage
+              ? "inset-0 bg-(--tl-canvas)"
+              : "inset-x-0 bottom-0 max-h-[92%] rounded-t-[28px] border border-(--tl-card-border) bg-(--tl-surface)",
+            "@2xl:inset-y-4 @2xl:right-4 @2xl:bottom-4 @2xl:left-auto @2xl:max-h-none @2xl:w-[440px] @2xl:rounded-[28px] @2xl:border @2xl:border-(--tl-card-border) @2xl:bg-(--tl-surface)",
+          )}
+        >
+          {isPage ? (
+            <div className="flex h-14 shrink-0 items-center gap-1 border-b border-(--tl-border) bg-(--tl-surface) px-1 @2xl:hidden">
+              <button
+                type="button"
+                onClick={onBack ?? onClose}
+                className="inline-flex h-11 cursor-pointer items-center gap-1 rounded-full pr-4 pl-2 text-[15px] font-medium text-(--tl-link) hover:bg-(--tl-tint)"
+              >
+                <ArrowLeft aria-hidden className="size-5" />
+                {backLabel}
+              </button>
+            </div>
+          ) : (
+            <div className="flex shrink-0 justify-center pt-2 @2xl:hidden">
+              <span
+                aria-hidden
+                className="h-1.5 w-10 rounded-full bg-(--tl-border)"
+              />
+            </div>
+          )}
+          <div className="flex-1 overflow-y-auto">
+            <div
+              className={cn(
+                "flex items-start justify-between gap-3 px-5 pt-4 @2xl:px-6 @2xl:pt-6",
+                // Pinned, it sits on the panel's own background: canvas on
+                // the phone page, surface everywhere else.
+                isHeaderPinned && "sticky top-0 z-10 pb-2",
+                isHeaderPinned &&
+                  (isPage
+                    ? "bg-(--tl-canvas) @2xl:bg-(--tl-surface)"
+                    : "bg-(--tl-surface)"),
+              )}
             >
-              <ArrowLeft aria-hidden className="size-5" />
-              {backLabel}
-            </button>
+              <div className="min-w-0 flex-1">{header}</div>
+              <span className={cn("-mt-1 -mr-2", isPage && "hidden @2xl:block")}>
+                <IconButton icon={X} label="Close" onClick={onClose} />
+              </span>
+            </div>
+            <div
+              className={cn("px-5 pb-6 @2xl:px-6", !isHeaderPinned && "pt-2")}
+            >
+              {children}
+            </div>
           </div>
-        ) : (
-          <div className="flex shrink-0 justify-center pt-2 @2xl:hidden">
-            <span
-              aria-hidden
-              className="h-1.5 w-10 rounded-full bg-(--tl-border)"
-            />
-          </div>
-        )}
-        <div className="flex-1 overflow-y-auto">
-          <div className="flex items-start justify-between gap-3 px-5 pt-4 @2xl:px-6 @2xl:pt-6">
-            <div className="min-w-0 flex-1">{header}</div>
-            <span className={cn("-mt-1 -mr-2", isPage && "hidden @2xl:block")}>
-              <IconButton icon={X} label="Close" onClick={onClose} />
-            </span>
-          </div>
-          <div className="px-5 pt-2 pb-6 @2xl:px-6">{children}</div>
+          {footer && (
+            <div className="flex shrink-0 flex-col gap-2 border-t border-(--tl-border) bg-(--tl-surface) px-5 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] @md:flex-row @2xl:px-6 @2xl:pb-6">
+              {footer}
+            </div>
+          )}
         </div>
-        {footer && (
-          <div className="flex shrink-0 flex-col gap-2 border-t border-(--tl-border) bg-(--tl-surface) px-5 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] @md:flex-row @2xl:px-6 @2xl:pb-6">
-            {footer}
-          </div>
-        )}
       </div>
-    </div>
+    </OverlayLayer>
   );
 }

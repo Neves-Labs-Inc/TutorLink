@@ -96,6 +96,7 @@ export default function BadgesScreen(): ReactNode {
         <Row label="Handled by">
           <ChatHandlerBadge handler="Bot" />
           <ChatHandlerBadge handler="Maria Lopez" />
+          <ChatHandlerBadge handler="Maria Lopez" isYou />
         </Row>
         <Row label="Needs attention: handoff">
           {HANDOFFS.map((reason) => (

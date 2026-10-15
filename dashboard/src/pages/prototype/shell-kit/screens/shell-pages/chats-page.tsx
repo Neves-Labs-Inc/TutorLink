@@ -6,8 +6,10 @@ import { BellRing, MessageCircle } from "lucide-react";
 import {
   CHATS_UNREAD,
   CONVERSATIONS,
+  CURRENT_USER,
   GUARDIANS,
 } from "@/pages/prototype/shell-kit/kit/mock-data";
+import type { Role } from "@/pages/prototype/shell-kit/kit/mock-data";
 import { CARD, cn, HEADING } from "@/pages/prototype/shell-kit/kit/tokens";
 import {
   AttentionBadge,
@@ -31,7 +33,11 @@ const ATTENTION_OPTIONS = [
   ...new Set(CONVERSATIONS.flatMap((chat) => (chat.attention ? [chat.attention] : []))),
 ].map((reason) => ({ value: reason, label: reason }));
 
-export default function ChatsPage(): ReactNode {
+type ChatsPageProps = { role?: Role };
+
+export default function ChatsPage({
+  role = "admin",
+}: ChatsPageProps): ReactNode {
   const [tab, setTab] = useState("conversations");
   const [query, setQuery] = useState("");
   const filters = useFilters({ handler: [], attention: [] });
@@ -92,7 +98,7 @@ export default function ChatsPage(): ReactNode {
         )}
       </PageHeader>
       {tab === "conversations" ? (
-        <ConversationList chats={visible} />
+        <ConversationList chats={visible} myName={CURRENT_USER[role].name} />
       ) : (
         <RemindersPanel />
       )}
@@ -100,9 +106,15 @@ export default function ChatsPage(): ReactNode {
   );
 }
 
-type ConversationListProps = { chats: typeof CONVERSATIONS };
+type ConversationListProps = {
+  chats: typeof CONVERSATIONS;
+  myName: string;
+};
 
-function ConversationList({ chats }: ConversationListProps): ReactNode {
+function ConversationList({
+  chats,
+  myName,
+}: ConversationListProps): ReactNode {
   if (chats.length === 0) {
     return (
       <EmptyState
@@ -126,7 +138,7 @@ function ConversationList({ chats }: ConversationListProps): ReactNode {
                 <span
                   className={cn(
                     "truncate text-[15px] leading-6",
-                    chat.unread > 0 ? "font-bold" : "font-semibold",
+                    chat.unread ? "font-bold" : "font-semibold",
                   )}
                 >
                   {chat.guardian}
@@ -139,22 +151,28 @@ function ConversationList({ chats }: ConversationListProps): ReactNode {
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate text-[14px] leading-5",
-                    chat.unread > 0
+                    chat.unread
                       ? "font-medium text-(--tl-ink)"
                       : "text-(--tl-muted)",
                   )}
                 >
                   {chat.preview}
                 </span>
-                {chat.unread > 0 && (
-                  <span className="inline-flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-(--tl-primary) px-2 text-[12px] font-semibold text-(--tl-on-primary) tabular-nums">
-                    {chat.unread}
-                    <span className="sr-only"> unread</span>
-                  </span>
+                {chat.unread && (
+                  <>
+                    <span
+                      aria-hidden
+                      className="size-2.5 shrink-0 rounded-full bg-(--tl-primary)"
+                    />
+                    <span className="sr-only">unread</span>
+                  </>
                 )}
               </span>
               <span className="mt-2 flex flex-wrap gap-1.5">
-                <ChatHandlerBadge handler={chat.handler} />
+                <ChatHandlerBadge
+                  handler={chat.handler}
+                  isYou={chat.handler === myName}
+                />
                 {chat.attention && <AttentionBadge reason={chat.attention} />}
               </span>
             </span>

@@ -12,12 +12,11 @@
 //     switcher no longer shows the arrows.
 // Later area prototypes import from ./kit (tokens, kit-root, components,
 // overlays, shell, states); ./screens is this page's own demo content.
-import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import KitRoot from "@/pages/prototype/shell-kit/kit/kit-root";
+import { DeviceFrame } from "@/pages/prototype/shell-kit/kit/device-frame";
 import type { Role } from "@/pages/prototype/shell-kit/kit/mock-data";
 import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
 import BadgesScreen from "@/pages/prototype/shell-kit/screens/badges-screen";
@@ -28,13 +27,6 @@ import ListsScreen from "@/pages/prototype/shell-kit/screens/lists-screen";
 import OverlaysScreen from "@/pages/prototype/shell-kit/screens/overlays-screen";
 import ShellScreen from "@/pages/prototype/shell-kit/screens/shell-screen";
 import StatesScreen from "@/pages/prototype/shell-kit/screens/states-screen";
-
-const PHONE_WIDTH = 390;
-const PHONE_HEIGHT = 844;
-// Below this the window is already phone-sized, so no frame.
-const FRAME_MIN_WIDTH = 640;
-// Room around the frame: a margin on top, the switcher below.
-const FRAME_CHROME_PX = 96;
 
 const SCREENS: SwitcherOption[] = [
   { id: "shell", label: "Shell" },
@@ -58,33 +50,6 @@ const DEVICES: SwitcherOption[] = [
   { id: "phone", label: "Phone" },
 ];
 
-function useIsWide(): boolean {
-  const query = `(min-width: ${FRAME_MIN_WIDTH}px)`;
-  const [isWide, setIsWide] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const media = window.matchMedia(query);
-    const handleChange = (): void => setIsWide(media.matches);
-    media.addEventListener("change", handleChange);
-    return () => media.removeEventListener("change", handleChange);
-  }, [query]);
-  return isWide;
-}
-
-// Shrinks the phone frame to fit short windows (laptops) without
-// changing its 390px layout width.
-function useFrameScale(): number {
-  const [scale, setScale] = useState(1);
-  useEffect(() => {
-    function handleResize(): void {
-      setScale(Math.min(1, (window.innerHeight - FRAME_CHROME_PX) / PHONE_HEIGHT));
-    }
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-  return scale;
-}
-
 function readRole(value: string | null): Role {
   return value === "manager" || value === "tutor" ? value : "admin";
 }
@@ -106,37 +71,20 @@ function renderScreen(screen: string, role: Role, variant: string): ReactNode {
 
 export default function ShellKitPrototype(): ReactNode {
   const [params] = useSearchParams();
-  const isWide = useIsWide();
-  const frameScale = useFrameScale();
   const screen = SCREENS.some((item) => item.id === params.get("screen"))
     ? (params.get("screen") ?? "shell")
     : "shell";
   const role = readRole(params.get("role"));
   const theme: Theme = params.get("theme") === "dark" ? "dark" : "light";
   const variant = params.get("variant") === "B" ? "B" : "A";
-  const isFramed = params.get("device") === "phone" && isWide;
+  const isPhone = params.get("device") === "phone";
 
   const content = renderScreen(screen, role, variant);
   return (
     <>
-      {isFramed ? (
-        <div className="flex h-dvh items-start justify-center overflow-hidden bg-neutral-300 pt-4">
-          <div
-            className="shrink-0 origin-top overflow-hidden rounded-[44px] shadow-2xl ring-[10px] ring-neutral-800"
-            style={{
-              width: PHONE_WIDTH,
-              height: PHONE_HEIGHT,
-              transform: frameScale < 1 ? `scale(${frameScale})` : undefined,
-            }}
-          >
-            <KitRoot theme={theme} height={`${PHONE_HEIGHT}px`}>
-              {content}
-            </KitRoot>
-          </div>
-        </div>
-      ) : (
-        <KitRoot theme={theme}>{content}</KitRoot>
-      )}
+      <DeviceFrame theme={theme} isPhone={isPhone}>
+        {content}
+      </DeviceFrame>
       <PrototypeSwitcher
         position="bottom"
         screens={SCREENS}

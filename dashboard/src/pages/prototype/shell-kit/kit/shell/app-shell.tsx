@@ -9,7 +9,7 @@ import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
 import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
 import { BottomTabBar } from "@/pages/prototype/shell-kit/kit/shell/bottom-tab-bar";
 import { getNav } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
+import type { CountsRead, NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
 import { Sidebar } from "@/pages/prototype/shell-kit/kit/shell/sidebar";
 import { Wordmark } from "@/pages/prototype/shell-kit/kit/shell/wordmark";
 
@@ -17,6 +17,8 @@ type AppShellProps = {
   role: Role;
   activeId: NavId;
   onNavigate: (id: NavId) => void;
+  // Left out: mock badges. null: loading, no badges.
+  counts?: CountsRead | null;
   children: ReactNode;
 };
 
@@ -24,10 +26,11 @@ export function AppShell({
   role,
   activeId,
   onNavigate,
+  counts,
   children,
 }: AppShellProps): ReactNode {
   const user = CURRENT_USER[role];
-  const items = getNav(role);
+  const items = getNav(role, counts);
   const isProfile = activeId === "profile";
 
   return (

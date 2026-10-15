@@ -2,12 +2,18 @@
 // class queries (`@5xl:` = 1024px wide). The root is a fixed-height box
 // that scrolls inside, and `contain: layout` makes it the containing
 // block for `fixed` overlays, so they pin to it: to the window on a real
-// screen, and to the frame when the prototype fakes a phone.
-import { useEffect } from "react";
+// screen, and to the frame when the prototype fakes a phone. Overlays
+// portal to a host beside the scroll area, so the page can go inert
+// under them while they still pin here.
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { getTokenStyle } from "@/pages/prototype/shell-kit/kit/tokens";
 import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
 import ToastProvider from "@/pages/prototype/shell-kit/kit/overlays/toast-provider";
+import {
+  createOverlayStack,
+  OverlayHostContext,
+} from "@/pages/prototype/shell-kit/kit/overlays/overlay-stack";
 import "./kit.css";
 
 const FONTS_LINK_ID = "shell-kit-fonts";
@@ -37,6 +43,17 @@ export default function KitRoot({
   children,
 }: KitRootProps): ReactNode {
   useKitFonts();
+  const [hostElement, setHostElement] = useState<HTMLDivElement | null>(null);
+  const [scrollArea, setScrollArea] = useState<HTMLDivElement | null>(null);
+  const [stack] = useState(createOverlayStack);
+  // A layout effect, so the stack has the page before any overlay opens.
+  useLayoutEffect(() => {
+    stack.setScrollArea(scrollArea);
+  }, [stack, scrollArea]);
+  const overlayHost = useMemo(
+    () => ({ element: hostElement, stack }),
+    [hostElement, stack],
+  );
   // --kit-h lets sticky panels (the sidebar) size to the visible height.
   const style = {
     ...getTokenStyle(theme),
@@ -51,11 +68,18 @@ export default function KitRoot({
       style={style}
       className="@container relative overflow-hidden text-[15px] leading-6 [contain:layout]"
     >
-      <ToastProvider>
-        <div data-kit-scroll className="h-full overflow-y-auto">
-          {children}
-        </div>
-      </ToastProvider>
+      <OverlayHostContext.Provider value={overlayHost}>
+        <ToastProvider>
+          <div
+            ref={setScrollArea}
+            data-kit-scroll
+            className="h-full overflow-y-auto"
+          >
+            {children}
+          </div>
+          <div ref={setHostElement} data-kit-overlays className="contents" />
+        </ToastProvider>
+      </OverlayHostContext.Provider>
     </div>
   );
 }

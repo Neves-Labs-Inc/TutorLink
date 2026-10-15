@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import {
   CalendarDays,
   CheckCheck,
+  ListOrdered,
   PanelRight,
   Rows3,
   TriangleAlert,
@@ -21,6 +22,7 @@ import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
 import BookingDetail from "@/pages/prototype/shell-kit/screens/booking-detail";
 import { Gallery, Specimen } from "@/pages/prototype/shell-kit/screens/gallery";
 import StaffDetail from "@/pages/prototype/shell-kit/screens/staff-detail";
+import WeekDetail from "@/pages/prototype/shell-kit/screens/week-detail";
 
 const SAMPLE_BOOKING = BOOKINGS.find((booking) => booking.id === "b04") ?? BOOKINGS[0];
 const SAMPLE_STAFF = STAFF.find((staff) => staff.signIn === "Invited") ?? STAFF[0];
@@ -34,6 +36,7 @@ export default function OverlaysScreen({
 }: OverlaysScreenProps): ReactNode {
   const [booking, setBooking] = useState<Booking | null>(null);
   const [staff, setStaff] = useState<Staff | null>(null);
+  const [isWeekOpen, setIsWeekOpen] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [tutors, setTutors] = useState<string[]>(["Ana Ruiz"]);
   const [isMarkOpen, setIsMarkOpen] = useState(false);
@@ -83,6 +86,14 @@ export default function OverlaysScreen({
             Open a Staff member
           </Button>
         </div>
+      </Specimen>
+      <Specimen
+        title="Detail: pinned header"
+        note="For long details (a chat thread, a long Booking): the header and close stay at the top while the content scrolls under them."
+      >
+        <Button icon={ListOrdered} onClick={() => setIsWeekOpen(true)}>
+          Open this week’s Bookings
+        </Button>
       </Specimen>
       <Specimen
         title="Bottom sheet"
@@ -167,6 +178,11 @@ export default function OverlaysScreen({
       <StaffDetail
         staff={staff}
         onClose={() => setStaff(null)}
+        phoneMode={phoneMode}
+      />
+      <WeekDetail
+        isOpen={isWeekOpen}
+        onClose={() => setIsWeekOpen(false)}
         phoneMode={phoneMode}
       />
       <BottomSheet

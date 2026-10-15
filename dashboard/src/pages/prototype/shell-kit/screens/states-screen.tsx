@@ -1,5 +1,6 @@
 // screen=states: empty, loading, error, offline and permission states,
 // with a live list driven by the dashed prototype control.
+import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   CalendarPlus,
@@ -7,6 +8,7 @@ import {
   Check,
   Plus,
 } from "lucide-react";
+import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
 import { BOOKINGS } from "@/pages/prototype/shell-kit/kit/mock-data";
 import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
 import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
@@ -14,6 +16,7 @@ import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
 import {
   EmptyState,
   ErrorState,
+  InlineError,
   ListSkeleton,
   OfflineBanner,
   PermissionState,
@@ -31,7 +34,28 @@ import {
 } from "@/pages/prototype/shell-kit/screens/use-simulated-state";
 import type { DataState } from "@/pages/prototype/shell-kit/screens/use-simulated-state";
 
+const RETRY_DEMO_MS = 1200;
 const SAMPLE_ROWS = BOOKINGS.slice(3, 6);
+
+function CardErrorDemo(): ReactNode {
+  const [isRetrying, setIsRetrying] = useState(false);
+
+  function handleRetry(): void {
+    setIsRetrying(true);
+    window.setTimeout(() => setIsRetrying(false), RETRY_DEMO_MS);
+  }
+
+  return (
+    <section className={cn(CARD, "flex flex-col gap-3 p-4")}>
+      <h3 className="text-[15px] leading-6 font-semibold">Today’s bookings</h3>
+      <InlineError
+        message="Couldn’t load today’s bookings. Check your connection."
+        onRetry={handleRetry}
+        isRetrying={isRetrying}
+      />
+    </section>
+  );
+}
 
 export default function StatesScreen(): ReactNode {
   const simulated = useSimulatedState();
@@ -89,6 +113,13 @@ export default function StatesScreen(): ReactNode {
           />
         </PrototypeControls>
         {renderLive(simulated.state)}
+      </Specimen>
+      <Specimen
+        title="Error: one card"
+        isBare
+        note="For one card failing inside a page; the rest of the page stays usable."
+      >
+        <CardErrorDemo />
       </Specimen>
       <Specimen title="Empty" isBare>
         <div className="grid gap-4 @3xl:grid-cols-2">

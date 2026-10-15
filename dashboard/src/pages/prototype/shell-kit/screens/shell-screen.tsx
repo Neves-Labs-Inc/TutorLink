@@ -25,7 +25,7 @@ function renderPage(
   const pages: Record<NavId, ReactNode> = {
     home: <HomePage role={role} onNavigate={onNavigate} />,
     bookings: <BookingsPage role={role} />,
-    chats: <ChatsPage />,
+    chats: <ChatsPage role={role} />,
     accounts: <AccountsPage />,
     staff: <StaffPage role={role} />,
     settings: <SettingsPage />,

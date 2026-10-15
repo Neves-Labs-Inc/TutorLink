@@ -61,14 +61,33 @@ const BOOKING_STATUS_TONE: Record<BookingStatus, Tone> = {
   Cancelled: "danger",
 };
 
+// The API sends lowercase values; the badge shows the capitalised label.
+export type BookingStatusWire = "pending" | "confirmed" | "completed" | "cancelled";
+
+const BOOKING_STATUS_LABEL: Record<BookingStatusWire, BookingStatus> = {
+  pending: "Pending",
+  confirmed: "Confirmed",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+function isBookingStatusWire(
+  status: BookingStatus | BookingStatusWire,
+): status is BookingStatusWire {
+  return status in BOOKING_STATUS_LABEL;
+}
+
 export function BookingStatusBadge({
   status,
 }: {
-  status: BookingStatus;
+  status: BookingStatus | BookingStatusWire;
 }): ReactNode {
+  const label = isBookingStatusWire(status)
+    ? BOOKING_STATUS_LABEL[status]
+    : status;
   return (
-    <Badge tone={BOOKING_STATUS_TONE[status]} hasDot>
-      {status}
+    <Badge tone={BOOKING_STATUS_TONE[label]} hasDot>
+      {label}
     </Badge>
   );
 }
@@ -78,11 +97,29 @@ const KIND_STYLE: Record<BookingKind, { tone: Tone; icon: LucideIcon }> = {
   Evaluation: { tone: "pink", icon: Sparkles },
 };
 
-export function KindBadge({ kind }: { kind: BookingKind }): ReactNode {
-  const style = KIND_STYLE[kind];
+export type BookingKindWire = "regular" | "evaluation";
+
+const KIND_LABEL: Record<BookingKindWire, BookingKind> = {
+  regular: "Tutoring",
+  evaluation: "Evaluation",
+};
+
+function isBookingKindWire(
+  kind: BookingKind | BookingKindWire,
+): kind is BookingKindWire {
+  return kind in KIND_LABEL;
+}
+
+export function KindBadge({
+  kind,
+}: {
+  kind: BookingKind | BookingKindWire;
+}): ReactNode {
+  const label = isBookingKindWire(kind) ? KIND_LABEL[kind] : kind;
+  const style = KIND_STYLE[label];
   return (
     <Badge tone={style.tone} icon={style.icon}>
-      {kind}
+      {label}
     </Badge>
   );
 }
@@ -102,12 +139,22 @@ export function TimeOffBadge({ status }: { status: TimeOffStatus }): ReactNode {
   );
 }
 
+type ChatHandlerBadgeProps = {
+  handler: string;
+  // The viewer is the Office member who took the chat over.
+  isYou?: boolean;
+};
+
 // A chat is handled by the Bot, or Taken over by a named Office member.
-export function ChatHandlerBadge({ handler }: { handler: string }): ReactNode {
+export function ChatHandlerBadge({
+  handler,
+  isYou = false,
+}: ChatHandlerBadgeProps): ReactNode {
   const isBot = handler === "Bot";
+  const takenBy = isYou ? "you" : handler.split(" ")[0];
   return (
     <Badge tone={isBot ? "neutral" : "primary"} icon={isBot ? Bot : UserRound}>
-      {isBot ? "Bot" : `Taken over · ${handler.split(" ")[0]}`}
+      {isBot ? "Bot" : `Taken over by ${takenBy}`}
     </Badge>
   );
 }

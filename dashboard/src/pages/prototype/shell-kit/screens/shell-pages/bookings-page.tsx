@@ -1,23 +1,18 @@
 // Bookings: header with "New booking", search, filters and the List /
-// Calendar view switch, then the "To sort out" banner (Evaluations to
-// book, Bookings to sort out), then the list grouped by day.
+// Calendar view switch, then the list grouped by day.
 import { useState } from "react";
 import type { ReactNode } from "react";
 import {
-  CalendarClock,
   CalendarDays,
   CalendarSearch,
   List,
   Plus,
-  Sparkles,
   UserRound,
 } from "lucide-react";
 import {
   BOOKINGS,
   CURRENT_USER,
-  getBookingAttentionFor,
 } from "@/pages/prototype/shell-kit/kit/mock-data";
-import { AttentionBanner } from "@/pages/prototype/shell-kit/kit/components/attention-banner";
 import AccountDetails from "@/pages/prototype/shell-kit/screens/account-details";
 import type { AccountEntry } from "@/pages/prototype/shell-kit/screens/account-details";
 import type { Booking, Role } from "@/pages/prototype/shell-kit/kit/mock-data";
@@ -61,7 +56,6 @@ export default function BookingsPage({
   const [view, setView] = useState("list");
   const [openBooking, setOpenBooking] = useState<Booking | null>(null);
   const [accountStack, setAccountStack] = useState<AccountEntry[]>([]);
-  const attention = getBookingAttentionFor(role);
   const { showToast } = useToast();
 
   const needle = query.trim().toLowerCase();
@@ -131,40 +125,6 @@ export default function BookingsPage({
           }
         />
       </PageHeader>
-      <AttentionBanner
-        title="To sort out"
-        groups={[
-          {
-            title: "Evaluations to book",
-            rows: attention
-              .filter((item) => item.kind === "evaluation")
-              .map((item) => ({
-                id: item.id,
-                icon: Sparkles,
-                iconClasses: "bg-(--tl-pink-tint) text-(--tl-pink-ink)",
-                title: item.title,
-                detail: item.detail,
-                cue: "Book evaluation",
-                onOpen: () => setAccountStack([{ kind: "child", id: item.refId }]),
-              })),
-          },
-          {
-            title: "Bookings to sort out",
-            rows: attention
-              .filter((item) => item.kind === "booking")
-              .map((item) => ({
-                id: item.id,
-                icon: CalendarClock,
-                iconClasses: "bg-(--tl-green-tint) text-(--tl-green-ink)",
-                title: item.title,
-                detail: item.detail,
-                cue: "Open booking",
-                onOpen: () =>
-                  setOpenBooking(BOOKINGS.find((booking) => booking.id === item.refId) ?? null),
-              })),
-          },
-        ]}
-      />
 
       {view === "calendar" && (
         <EmptyState

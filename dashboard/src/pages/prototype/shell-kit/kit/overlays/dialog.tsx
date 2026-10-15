@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { TriangleAlert } from "lucide-react";
 import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
 import { useEnterAnimation, POP } from "@/pages/prototype/shell-kit/kit/overlays/use-enter-animation";
+import { OverlayLayer } from "@/pages/prototype/shell-kit/kit/overlays/overlay-layer";
 import { useDialogFocus } from "@/pages/prototype/shell-kit/kit/overlays/use-dialog-focus";
 
 type DialogProps = {
@@ -35,39 +36,41 @@ export function Dialog({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div
-        aria-hidden
-        onClick={onClose}
-        className="kit-fade absolute inset-0 bg-(--tl-scrim)"
-      />
-      <div
-        ref={panelRef}
-        role={role}
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={bodyId}
-        tabIndex={-1}
-        className="kit-shadow-raised relative w-full max-w-[440px] rounded-[28px] border border-(--tl-card-border) bg-(--tl-surface) p-6 outline-none"
-      >
-        {icon}
-        <h2
-          id={titleId}
-          className="kit-display text-[22px] leading-[30px] font-bold"
-        >
-          {title}
-        </h2>
+    <OverlayLayer>
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
-          id={bodyId}
-          className="mt-2 text-[15px] leading-6 text-(--tl-ink-soft)"
+          aria-hidden
+          onClick={onClose}
+          className="kit-fade absolute inset-0 bg-(--tl-scrim)"
+        />
+        <div
+          ref={panelRef}
+          role={role}
+          aria-modal="true"
+          aria-labelledby={titleId}
+          aria-describedby={bodyId}
+          tabIndex={-1}
+          className="kit-shadow-raised relative w-full max-w-[440px] rounded-[28px] border border-(--tl-card-border) bg-(--tl-surface) p-6 outline-none"
         >
-          {children}
-        </div>
-        <div className="mt-6 flex flex-col-reverse gap-2 @md:flex-row @md:justify-end">
-          {footer}
+          {icon}
+          <h2
+            id={titleId}
+            className="kit-display text-[22px] leading-[30px] font-bold"
+          >
+            {title}
+          </h2>
+          <div
+            id={bodyId}
+            className="mt-2 text-[15px] leading-6 text-(--tl-ink-soft)"
+          >
+            {children}
+          </div>
+          <div className="mt-6 flex flex-col-reverse gap-2 @md:flex-row @md:justify-end">
+            {footer}
+          </div>
         </div>
       </div>
-    </div>
+    </OverlayLayer>
   );
 }
 

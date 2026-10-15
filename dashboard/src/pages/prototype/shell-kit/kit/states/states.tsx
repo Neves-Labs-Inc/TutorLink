@@ -97,6 +97,44 @@ export function ErrorState({
   );
 }
 
+type InlineErrorProps = {
+  message: string;
+  onRetry: () => void;
+  isRetrying?: boolean;
+};
+
+// One card failing inside a page; ErrorState is for the whole page.
+// Copy: `Couldn't load {what}. Check your connection.`
+export function InlineError({
+  message,
+  onRetry,
+  isRetrying = false,
+}: InlineErrorProps): ReactNode {
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[20px] bg-(--tl-danger-tint) py-2 pr-2 pl-4 text-(--tl-danger)"
+    >
+      <TriangleAlert aria-hidden className="size-4 shrink-0" />
+      <p className="min-w-0 flex-1 text-[14px] leading-5 font-medium">
+        {message}
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={isRetrying}
+        className="inline-flex h-11 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[14px] font-semibold underline-offset-4 hover:underline disabled:cursor-default disabled:opacity-70"
+      >
+        <RotateCw
+          aria-hidden
+          className={cn("size-4", isRetrying && "animate-spin")}
+        />
+        {isRetrying ? "Trying again…" : "Try again"}
+      </button>
+    </div>
+  );
+}
+
 type PermissionStateProps = { title: string; body: string; action?: ReactNode };
 
 export function PermissionState({

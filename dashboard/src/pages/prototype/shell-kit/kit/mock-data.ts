@@ -78,7 +78,7 @@ export type Conversation = {
   guardian: string;
   preview: string;
   at: string;
-  unread: number;
+  unread: boolean;
   handler: "Bot" | string;
   attention: AttentionReason | null;
 };
@@ -165,12 +165,12 @@ export const CHILDREN: Child[] = [
 ];
 
 export const CONVERSATIONS: Conversation[] = [
-  { id: "ch1", guardian: "Laura Martinez", preview: "¿Podemos mover la sesión del jueves a las 6?", at: "8:31 AM", unread: 2, handler: "Bot", attention: "Wants to book" },
-  { id: "ch2", guardian: "Carlos Rojas", preview: "What did the evaluation show for Valentina?", at: "8:02 AM", unread: 1, handler: "Bot", attention: "Has a question" },
-  { id: "ch3", guardian: "Patricia Ortiz", preview: "Thanks! See you at 11:30.", at: "Yesterday", unread: 0, handler: "Maria Lopez", attention: null },
-  { id: "ch4", guardian: "Sandra Reyes", preview: "I sent a photo of the homework", at: "Yesterday", unread: 0, handler: "Bot", attention: "Bot didn't understand" },
-  { id: "ch6", guardian: "Andrea Silva", preview: "Can I add my son Diego to my account?", at: "7:15 AM", unread: 0, handler: "Bot", attention: "Link request" },
-  { id: "ch5", guardian: "Ricardo Torres", preview: "Ok, perfecto. Gracias.", at: "Mon", unread: 0, handler: "Bot", attention: null },
+  { id: "ch1", guardian: "Laura Martinez", preview: "¿Podemos mover la sesión del jueves a las 6?", at: "8:31 AM", unread: true, handler: "Bot", attention: "Wants to book" },
+  { id: "ch2", guardian: "Carlos Rojas", preview: "What did the evaluation show for Valentina?", at: "8:02 AM", unread: true, handler: "Bot", attention: "Has a question" },
+  { id: "ch3", guardian: "Patricia Ortiz", preview: "Thanks! See you at 11:30.", at: "Yesterday", unread: false, handler: "Maria Lopez", attention: null },
+  { id: "ch4", guardian: "Sandra Reyes", preview: "I sent a photo of the homework", at: "Yesterday", unread: false, handler: "Bot", attention: "Bot didn't understand" },
+  { id: "ch6", guardian: "Andrea Silva", preview: "Can I add my son Diego to my account?", at: "7:15 AM", unread: false, handler: "Bot", attention: "Link request" },
+  { id: "ch5", guardian: "Ricardo Torres", preview: "Ok, perfecto. Gracias.", at: "Mon", unread: false, handler: "Bot", attention: null },
 ];
 
 export const TIME_OFF: TimeOff[] = [
@@ -282,10 +282,7 @@ export function getGuardiansOf(childName: string): Guardian[] {
 
 export const SUBJECTS = ["Math", "Reading", "Writing", "Science"];
 
-export const CHATS_UNREAD = CONVERSATIONS.reduce(
-  (total, chat) => total + chat.unread,
-  0,
-);
+export const CHATS_UNREAD = CONVERSATIONS.filter((chat) => chat.unread).length;
 
 export function getSessionsFor(name: string): Booking[] {
   return BOOKINGS.filter((booking) => booking.staff === name).sort((a, b) =>

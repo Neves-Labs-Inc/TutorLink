@@ -1,7 +1,12 @@
 // Date and name formatting for the sample pages. Business time is fixed
-// (Doral, FL), so local Date maths is enough here.
-import { TODAY } from "@/pages/prototype/shell-kit/kit/mock-data";
+// (Doral, FL), and the data is naive business-local strings, so most
+// helpers use plain local Date maths. Only getGreeting and
+// formatUpdatedAt cross zones, so they pin BUSINESS_TIME_ZONE.
+import { NOW, TODAY } from "@/pages/prototype/shell-kit/kit/mock-data";
 import type { Booking } from "@/pages/prototype/shell-kit/kit/mock-data";
+
+// The business's clock; fixed, it never changes.
+export const BUSINESS_TIME_ZONE = "America/New_York";
 
 const NOON = 12;
 const EVENING = 17;
@@ -50,8 +55,23 @@ function formatDayKey(date: Date): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-export function getGreeting(iso: string): string {
-  const hour = new Date(iso).getHours();
+const HAS_OFFSET = /(Z|[+-]\d{2}:?\d{2})$/i;
+
+function getBusinessHour(at: string | Date): number {
+  // A naive ISO string is already business wall-clock time.
+  if (typeof at === "string" && !HAS_OFFSET.test(at)) {
+    return Number(at.slice(11, 13));
+  }
+  const parts = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    hourCycle: "h23",
+    timeZone: BUSINESS_TIME_ZONE,
+  }).formatToParts(new Date(at));
+  return Number(parts.find((part) => part.type === "hour")?.value);
+}
+
+export function getGreeting(at: string | Date = NOW): string {
+  const hour = getBusinessHour(at);
   let greeting = "Good evening";
   if (hour < NOON) {
     greeting = "Good morning";
@@ -59,6 +79,15 @@ export function getGreeting(iso: string): string {
     greeting = "Good afternoon";
   }
   return greeting;
+}
+
+// "9:41 AM" on the business's clock, whatever the viewer's time zone.
+export function formatUpdatedAt(at: Date): string {
+  return at.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: BUSINESS_TIME_ZONE,
+  });
 }
 
 export function getInitials(name: string): string {

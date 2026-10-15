@@ -86,8 +86,47 @@ const TUTOR_NAV: NavItem[] = [
   { id: "time-off", label: "Time off", icon: Plane },
 ];
 
-export function getNav(role: Role): NavItem[] {
-  return role === "tutor" ? TUTOR_NAV : getOfficeNav(role);
+// Mirrors api/app/schemas/counts.py (GET /api/counts).
+export type CountsRead = {
+  needs_attention: number;
+  time_off_pending: number | null;
+  children_awaiting_evaluation: number;
+  bookings_to_sort_out: number;
+  unread_chats: number;
+};
+
+function getCountBadge(id: NavId, counts: CountsRead): NavBadge | undefined {
+  let badge: NavBadge | undefined;
+  if (id === "bookings") {
+    badge = {
+      count: counts.bookings_to_sort_out + counts.children_awaiting_evaluation,
+      label: "to sort out",
+      tone: "pink",
+    };
+  } else if (id === "chats") {
+    badge = { count: counts.unread_chats, label: "unread", tone: "primary" };
+  } else if (id === "time-off" && counts.time_off_pending !== null) {
+    badge = { count: counts.time_off_pending, label: "to review", tone: "pink" };
+  }
+  return badge;
+}
+
+// Swaps every item's badge for the one the counts give it. `null` means
+// the counts are still loading, so no item carries a badge.
+export function applyCounts(
+  items: NavItem[],
+  counts: CountsRead | null,
+): NavItem[] {
+  return items.map((item) => ({
+    ...item,
+    badge: counts ? getCountBadge(item.id, counts) : undefined,
+  }));
+}
+
+// `counts` left out keeps the mock badges; see applyCounts for the rest.
+export function getNav(role: Role, counts?: CountsRead | null): NavItem[] {
+  const items = role === "tutor" ? TUTOR_NAV : getOfficeNav(role);
+  return counts === undefined ? items : applyCounts(items, counts);
 }
 
 export function getLandingNavId(role: Role): NavId {

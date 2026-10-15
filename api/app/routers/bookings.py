@@ -40,9 +40,10 @@ def list_bookings_route(
     statuses: Annotated[list[BookingStatus] | None, Query(alias="status")] = None,
     subject_id: uuid.UUID | None = None,
     child_id: uuid.UUID | None = None,
-    kind: BookingKind | None = None,
+    kinds: Annotated[list[BookingKind] | None, Query(alias="kind")] = None,
     location: BookingLocation | None = None,
-    user_id: uuid.UUID | None = None,
+    user_ids: Annotated[list[uuid.UUID] | None, Query(alias="user_id")] = None,
+    q: str | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
@@ -59,9 +60,10 @@ def list_bookings_route(
         date_to=date_to,
         subject_id=subject_id,
         child_id=child_id,
-        kind=kind,
+        kinds=tuple(kinds or ()),
         location=location,
-        user_id=user_id,
+        user_ids=tuple(user_ids or ()),
+        q=q,
     )
 
     bookings, total = list_bookings(

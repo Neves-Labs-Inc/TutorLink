@@ -86,7 +86,10 @@ def _live_sessions(
     return apply_booking_filters(
         select(Booking),
         BookingFilters(
-            statuses=LIVE_SESSION_STATUSES, date_from=date_from, date_to=date_to, kind=kind
+            statuses=LIVE_SESSION_STATUSES,
+            date_from=date_from,
+            date_to=date_to,
+            kinds=() if kind is None else (kind,),
         ),
     )
 

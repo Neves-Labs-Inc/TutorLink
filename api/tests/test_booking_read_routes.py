@@ -219,6 +219,153 @@ def test_a_tutor_naming_another_user_id_ands_with_their_scope_to_empty(
     assert body["counts_by_kind"] == {"regular": 0, "evaluation": 0}
 
 
+# --- ?q=, repeatable ?kind= and ?user_id= (spec 05 ticket 02) ---------------------------------
+
+
+def _ids(response: Response) -> set[str]:
+    return {row["id"] for row in response.json()["items"]}
+
+
+def test_q_matches_the_childs_name_or_the_staff_members_name_case_insensitively(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.child.name = "Alice"
+    family.other_tutor.user.name = "Alina"
+    family.tutor.user.name = "Zed"
+    other_child = _make_child(db, guardians=[family.guardian])
+    other_child.name = "Bob"
+    by_child = _book(db, family)
+    by_staff = _book(db, family, tutor=family.other_tutor, child=other_child)
+    _book(db, family, child=other_child, start=TWELVE, end=TWELVE.replace(hour=13))
+    db.flush()
+
+    response = api.get("/api/bookings?q=ALI", headers=_auth(admin))
+
+    assert _ids(response) == {str(by_child.id), str(by_staff.id)}
+    assert response.json()["total"] == 2
+
+
+def test_q_wildcards_match_only_literal_characters(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.child.name = "100% Sure"
+    family.tutor.user.name = "Plain"
+    underscore_child = _make_child(db, guardians=[family.guardian])
+    underscore_child.name = "a_b"
+    percent = _book(db, family)
+    underscore = _book(
+        db, family, child=underscore_child, start=TWELVE, end=TWELVE.replace(hour=13)
+    )
+    db.flush()
+
+    percent_ids = _ids(api.get("/api/bookings?q=%25", headers=_auth(admin)))
+    underscore_ids = _ids(api.get("/api/bookings?q=_", headers=_auth(admin)))
+
+    assert percent_ids == {str(percent.id)}
+    assert underscore_ids == {str(underscore.id)}
+
+
+@pytest.mark.parametrize("blank", ["", "%20%20"])
+def test_a_blank_q_is_ignored(api: TestClient, db: Session, family: Family, blank: str) -> None:
+    admin = _make_user(db)
+    _book(db, family)
+    _book(db, family, start=TWELVE, end=TWELVE.replace(hour=13))
+
+    body = api.get(f"/api/bookings?q={blank}", headers=_auth(admin)).json()
+
+    assert body["total"] == 2
+
+
+def test_q_ands_with_other_filters_and_never_duplicates_a_row(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.child.name = "Sam Child"
+    family.tutor.user.name = "Sam Tutor"
+    kept = _book(db, family, status=BookingStatus.PENDING)
+    _book(db, family, start=TWELVE, end=TWELVE.replace(hour=13), status=BookingStatus.CANCELLED)
+    _book(db, family, on=LATEST, status=BookingStatus.PENDING)
+    db.flush()
+
+    path = (
+        f"/api/bookings?q=sam&status=pending&kind=regular&user_id={family.tutor.user_id}"
+        f"&from={DATE}&to={LATER}"
+    )
+    body = api.get(path, headers=_auth(admin)).json()
+
+    assert [row["id"] for row in body["items"]] == [str(kept.id)]
+    assert body["total"] == 1
+
+
+def test_q_matches_an_archived_staff_member(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db)
+    family.tutor.user.name = "Retired Rita"
+    family.tutor.user.is_archived = True
+    booking = _book(db, family)
+    db.flush()
+
+    response = api.get("/api/bookings?q=rita", headers=_auth(admin))
+
+    assert _ids(response) == {str(booking.id)}
+
+
+def test_repeated_kind_returns_both_kinds_and_counts_keep_their_meaning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    regular = _book(db, family)
+    evaluation = _evaluation(db, family, staff=admin)
+
+    both = api.get("/api/bookings?kind=regular&kind=evaluation", headers=_auth(admin)).json()
+    one = api.get("/api/bookings?kind=regular", headers=_auth(admin)).json()
+
+    assert {row["id"] for row in both["items"]} == {str(regular.id), str(evaluation.id)}
+    assert both["total"] == 2
+    assert one["total"] == 1
+    assert both["counts_by_kind"] == one["counts_by_kind"] == {"regular": 1, "evaluation": 1}
+
+
+def test_an_unknown_kind_is_a_400(api: TestClient, db: Session, family: Family) -> None:
+    admin = _make_user(db)
+
+    response = api.get("/api/bookings?kind=regular&kind=bogus", headers=_auth(admin))
+
+    assert response.status_code == 400
+
+
+def test_repeated_user_id_returns_each_staff_members_bookings(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    first = _book(db, family)
+    second = _book(db, family, tutor=family.other_tutor)
+    third = _evaluation(db, family, staff=admin)
+
+    path = f"/api/bookings?user_id={first.user_id}&user_id={second.user_id}"
+    response = api.get(path, headers=_auth(admin))
+
+    assert _ids(response) == {str(first.id), str(second.id)}
+    assert str(third.id) not in _ids(response)
+
+
+def test_a_tutors_q_naming_another_staff_member_still_sees_only_their_own(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    family.other_tutor.user.name = "Zelda Other"
+    family.child.name = "Plain Child"
+    _book(db, family, tutor=family.tutor)
+    _book(db, family, tutor=family.other_tutor)
+    db.flush()
+
+    body = api.get("/api/bookings?q=zelda", headers=_auth(user)).json()
+
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
 def test_counts_by_kind_equal_the_totals_of_the_same_request_per_kind(
     api: TestClient, db: Session, family: Family
 ) -> None:

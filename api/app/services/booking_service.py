@@ -8,13 +8,18 @@ import datetime
 import uuid
 from dataclasses import dataclass, replace
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.booking import Booking
+from app.models.child import Child
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.tutor import Tutor
+from app.models.user import User
+
+_LIKE_ESCAPE = "\\"
+_LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,10 +32,12 @@ class BookingFilters:
     date_to: datetime.date | None = None
     subject_id: uuid.UUID | None = None
     child_id: uuid.UUID | None = None
-    kind: BookingKind | None = None
+    kinds: tuple[BookingKind, ...] = ()
     location: BookingLocation | None = None
-    # The Staff member's user id (`bookings.user_id`); `tutor_id` above is the profile-keyed twin.
-    user_id: uuid.UUID | None = None
+    # Staff members' user ids (`bookings.user_id`); `tutor_id` above is the profile-keyed twin.
+    user_ids: tuple[uuid.UUID, ...] = ()
+    # Case-insensitive substring of the Child's or the Staff member's name.
+    q: str | None = None
 
 
 class BookingServiceError(Exception): ...
@@ -73,9 +80,9 @@ def list_bookings(
 def count_bookings_by_kind(
     db: Session, *, tutor_id: uuid.UUID | None, filters: BookingFilters
 ) -> dict[BookingKind, int]:
-    """What `list_bookings` would total with `kind` forced to each value, `filters.kind` ignored."""
+    """What `list_bookings` would total with `kind` forced to each value, `filters.kinds` ignored."""
     return {
-        kind: _count_matching(db, tutor_id=tutor_id, filters=replace(filters, kind=kind))
+        kind: _count_matching(db, tutor_id=tutor_id, filters=replace(filters, kinds=(kind,)))
         for kind in BookingKind
     }
 
@@ -183,14 +190,25 @@ def apply_booking_filters(
     if filters.child_id is not None:
         statement = statement.where(Booking.child_id == filters.child_id)
 
-    if filters.kind is not None:
-        statement = statement.where(Booking.kind == filters.kind)
+    if filters.kinds:
+        statement = statement.where(Booking.kind.in_(filters.kinds))
 
     if filters.location is not None:
         statement = statement.where(Booking.location == filters.location)
 
-    if filters.user_id is not None:
-        statement = statement.where(Booking.user_id == filters.user_id)
+    if filters.user_ids:
+        statement = statement.where(Booking.user_id.in_(filters.user_ids))
+
+    pattern = _substring_pattern(filters.q)
+    if pattern is not None:
+        # Correlated EXISTS, never a join: `total` counts this statement.
+        child_named = select(1).where(
+            Child.id == Booking.child_id, Child.name.ilike(pattern, escape=_LIKE_ESCAPE)
+        )
+        staff_named = select(1).where(
+            User.id == Booking.user_id, User.name.ilike(pattern, escape=_LIKE_ESCAPE)
+        )
+        statement = statement.where(or_(child_named.exists(), staff_named.exists()))
 
     if filters.date_from is not None:
         statement = statement.where(Booking.scheduled_date >= filters.date_from)
@@ -199,3 +217,14 @@ def apply_booking_filters(
         statement = statement.where(Booking.scheduled_date <= filters.date_to)
 
     return statement
+
+
+def _substring_pattern(raw: str | None) -> str | None:
+    trimmed = "" if raw is None else raw.strip()
+
+    if not trimmed:
+        pattern = None
+    else:
+        pattern = f"%{trimmed.translate(_LIKE_WILDCARDS)}%"
+
+    return pattern

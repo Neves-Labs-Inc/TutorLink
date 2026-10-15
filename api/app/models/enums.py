@@ -38,17 +38,18 @@ class BookingStatus(str, enum.Enum):
 
 
 class ExceptionStatus(str, enum.Enum):
-    """Approval state of a tutor availability exception.
+    """Approval state of a Staff member's Time off.
 
-    Only `APPROVED` blocks bookings. A `PENDING` request is a tutor asking for time off and
-    has no effect on availability until an admin decides it, and `REJECTED` is terminal — so
-    any query that subtracts exceptions from a tutor's schedule must filter on `APPROVED`
-    rather than on the row's existence.
+    Only `APPROVED` blocks bookings. A `PENDING` request is someone asking for time off and
+    has no effect on availability until an admin decides it; `REJECTED` and `CANCELLED` block
+    nothing — so any query that subtracts Time off from a schedule must filter on `APPROVED`
+    rather than on the row's existence. `CANCELLED` is stored but not yet written by anything.
     """
 
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    CANCELLED = "cancelled"
 
 
 class ConversationStatus(str, enum.Enum):

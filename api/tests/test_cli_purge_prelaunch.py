@@ -244,7 +244,7 @@ def _make_test_data(db: Session) -> None:
     db.add_all(
         [
             TutorAvailabilityException(
-                tutor_id=tutor.id, start_date=MONDAY, end_date=MONDAY, reason="sick"
+                user_id=tutor.user_id, start_date=MONDAY, end_date=MONDAY, reason="sick"
             ),
             SystemSetting(key=f"k-{suffix}", value="1", value_type="integer"),
             RefreshToken(

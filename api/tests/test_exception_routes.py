@@ -1,4 +1,4 @@
-"""The tutor time-off request and the admin decision on it, exercised over HTTP.
+"""A Staff member's time-off request and the admin decision on it, exercised over HTTP.
 
 This is the REQ-063 tutor-isolation assertion set. Every negative case asserts the exact
 status **and** that the body is `{"detail": "<string>"}`: `status_code != 200` would pass on a
@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
-from app.models.availability import TutorAvailabilityException
+from app.models.availability import REASON_MAX_LENGTH, TutorAvailabilityException
 from app.models.enums import ExceptionStatus, UserRole
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -28,7 +28,7 @@ from app.routers.exceptions import (
     ALREADY_DECIDED_ERROR,
     EXCEPTION_NOT_DELETABLE_ERROR,
     EXCEPTION_NOT_FOUND_ERROR,
-    TUTOR_NOT_FOUND_ERROR,
+    USER_NOT_FOUND_ERROR,
 )
 from app.security import create_access_token, hash_password
 
@@ -43,13 +43,13 @@ def test_tutor_creating_their_own_request_lands_pending(api: TestClient, db: Ses
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions", json=_payload(), headers=_bearer(user)
+        f"/api/users/{tutor.user_id}/exceptions", json=_payload(), headers=_bearer(user)
     )
     body = response.json()
 
     assert response.status_code == 201
     assert body["status"] == "pending"
-    assert body["tutor_id"] == str(tutor.id)
+    assert body["staff"] == {"id": str(user.id), "name": user.name, "role": "tutor"}
     assert body["reason"] == "vacation"
     assert _row(db, uuid.UUID(body["id"])).status is ExceptionStatus.PENDING
 
@@ -57,19 +57,19 @@ def test_tutor_creating_their_own_request_lands_pending(api: TestClient, db: Ses
 def test_tutor_creating_for_another_tutor_is_403_and_writes_nothing(
     api: TestClient, db: Session
 ) -> None:
-    """Not 404, not an empty 201: the 403 comes from dependency resolution, so the route body
-    never runs and no row exists for either tutor afterwards."""
+    """Not 404, not an empty 201: the 403 comes before the lookup, so no row exists for either
+    tutor afterwards."""
     own = _make_tutor(db)
     other = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
 
     response = api.post(
-        f"/api/tutors/{other.id}/exceptions", json=_payload(), headers=_bearer(user)
+        f"/api/users/{other.user_id}/exceptions", json=_payload(), headers=_bearer(user)
     )
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
-    assert _count_for(db, other.id) == 0
-    assert _count_for(db, own.id) == 0
+    assert _count_for(db, other.user_id) == 0
+    assert _count_for(db, own.user_id) == 0
 
 
 @pytest.mark.parametrize("role", STAFF_ROLE_CASES)
@@ -82,13 +82,14 @@ def test_admin_creating_for_any_tutor_is_approved_immediately(
     user = _make_user(db, role=role)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions", json=_payload(), headers=_bearer(user)
+        f"/api/users/{tutor.user_id}/exceptions", json=_payload(), headers=_bearer(user)
     )
     body = response.json()
 
     assert response.status_code == 201
     assert body["status"] == "approved"
-    assert body["tutor_id"] == str(tutor.id)
+    assert body["staff"]["id"] == str(tutor.user_id)
+    assert body["staff"]["role"] == "tutor"
     assert _row(db, uuid.UUID(body["id"])).status is ExceptionStatus.APPROVED
 
 
@@ -99,7 +100,7 @@ def test_a_status_in_the_create_body_cannot_self_approve(api: TestClient, db: Se
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions",
+        f"/api/users/{tutor.user_id}/exceptions",
         json=_payload(status="approved"),
         headers=_bearer(user),
     )
@@ -113,8 +114,8 @@ def test_a_partial_day_request_round_trips_its_window(api: TestClient, db: Sessi
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions",
-        json=_payload(start_time="09:00:00", end_time="11:30:00", notes="back after lunch"),
+        f"/api/users/{tutor.user_id}/exceptions",
+        json=_payload(start_time="09:00:00", end_time="11:30:00", reason="back after lunch"),
         headers=_bearer(user),
     )
     body = response.json()
@@ -122,7 +123,7 @@ def test_a_partial_day_request_round_trips_its_window(api: TestClient, db: Sessi
     assert response.status_code == 201
     assert body["start_time"] == "09:00:00"
     assert body["end_time"] == "11:30:00"
-    assert body["notes"] == "back after lunch"
+    assert body["reason"] == "back after lunch"
 
 
 def test_a_whole_day_request_carries_a_null_window(api: TestClient, db: Session) -> None:
@@ -130,12 +131,11 @@ def test_a_whole_day_request_carries_a_null_window(api: TestClient, db: Session)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     body = api.post(
-        f"/api/tutors/{tutor.id}/exceptions", json=_payload(), headers=_bearer(user)
+        f"/api/users/{tutor.user_id}/exceptions", json=_payload(), headers=_bearer(user)
     ).json()
 
     assert body["start_time"] is None
     assert body["end_time"] is None
-    assert body["notes"] is None
 
 
 @pytest.mark.parametrize(
@@ -145,9 +145,8 @@ def test_a_whole_day_request_carries_a_null_window(api: TestClient, db: Session)
         {"end_time": "09:00:00"},
         {"start_time": "11:00:00", "end_time": "09:00:00"},
         {"start_date": "2026-09-05", "end_date": "2026-09-01"},
-        {"reason": ""},
     ],
-    ids=["start-only", "end-only", "backwards-window", "backwards-dates", "empty-reason"],
+    ids=["start-only", "end-only", "backwards-window", "backwards-dates"],
 )
 def test_an_incoherent_window_is_400_not_a_constraint_violation(
     api: TestClient, db: Session, overrides: dict[str, str]
@@ -158,41 +157,109 @@ def test_an_incoherent_window_is_400_not_a_constraint_violation(
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions", json=_payload(**overrides), headers=_bearer(user)
+        f"/api/users/{tutor.user_id}/exceptions", json=_payload(**overrides), headers=_bearer(user)
     )
 
     _assert_detail_shape(response, 400)
-    assert _count_for(db, tutor.id) == 0
+    assert _count_for(db, tutor.user_id) == 0
 
 
-def test_an_unrecognised_reason_is_400_not_a_constraint_violation(
-    api: TestClient, db: Session
-) -> None:
-    """The set mirrors docs/erd.md's documented values and the admin dashboard's reason
-    dropdown. A value outside it would reach that dropdown with no matching option."""
+def test_a_reason_over_the_limit_is_400(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions",
-        json=_payload(reason="dentist"),
+        f"/api/users/{user.id}/exceptions",
+        json=_payload(reason="x" * (REASON_MAX_LENGTH + 1)),
         headers=_bearer(user),
     )
 
     _assert_detail_shape(response, 400)
-    assert _count_for(db, tutor.id) == 0
+    assert _count_for(db, user.id) == 0
 
 
-def test_admin_creating_for_an_unknown_tutor_is_404(api: TestClient, db: Session) -> None:
-    """Only an admin can reach this: a tutor's own id is a foreign key, and any other id is
-    already a 403."""
+def test_a_reason_at_the_limit_is_kept(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+    reason = "x" * REASON_MAX_LENGTH
+
+    response = api.post(
+        f"/api/users/{user.id}/exceptions", json=_payload(reason=reason), headers=_bearer(user)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["reason"] == reason
+
+
+def test_a_reason_is_trimmed(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = api.post(
+        f"/api/users/{user.id}/exceptions",
+        json=_payload(reason="  Dentist  "),
+        headers=_bearer(user),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["reason"] == "Dentist"
+
+
+@pytest.mark.parametrize("overrides", [{"reason": "   "}, {"reason": None}, {}])
+def test_a_blank_or_missing_reason_is_stored_as_null(
+    api: TestClient, db: Session, overrides: dict[str, object]
+) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+    payload = {key: value for key, value in _payload().items() if key != "reason"}
+
+    response = api.post(
+        f"/api/users/{user.id}/exceptions", json={**payload, **overrides}, headers=_bearer(user)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["reason"] is None
+    assert _row(db, uuid.UUID(response.json()["id"])).reason is None
+
+
+def test_admin_creating_for_an_unknown_user_is_404(api: TestClient, db: Session) -> None:
+    """Only Office can reach this: any id but a Tutor's own is already a 403."""
     user = _make_user(db, role=UserRole.ADMIN)
 
     response = api.post(
-        f"/api/tutors/{uuid.uuid4()}/exceptions", json=_payload(), headers=_bearer(user)
+        f"/api/users/{uuid.uuid4()}/exceptions", json=_payload(), headers=_bearer(user)
     )
 
-    _assert_detail(response, 404, TUTOR_NOT_FOUND_ERROR)
+    _assert_detail(response, 404, USER_NOT_FOUND_ERROR)
+
+
+def test_an_admin_without_a_profile_holds_their_own_time_off(api: TestClient, db: Session) -> None:
+    """Time off belongs to the person, so an Admin with no teaching profile can hold it."""
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    created = api.post(f"/api/users/{user.id}/exceptions", json=_payload(), headers=_bearer(user))
+    listed = api.get(f"/api/users/{user.id}/exceptions", headers=_bearer(user))
+
+    assert created.status_code == 201
+    assert created.json()["status"] == "approved"
+    assert created.json()["staff"] == {"id": str(user.id), "name": user.name, "role": "admin"}
+    assert [item["staff"]["role"] for item in listed.json()["items"]] == ["admin"]
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_the_old_tutor_paths_are_gone(api: TestClient, db: Session, method: str) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.request(
+        method,
+        f"/api/tutors/{tutor.id}/exceptions",
+        json=_payload() if method == "POST" else None,
+        headers=_bearer(user),
+    )
+
+    assert response.status_code == 404
+    assert _count_for(db, tutor.user_id) == 0
 
 
 # --- decide: only an admin, and only once ---------------------------------------------------
@@ -204,7 +271,7 @@ def test_admin_decides_a_pending_exception(
     api: TestClient, db: Session, role: UserRole, decision: str
 ) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=role)
 
     response = api.patch(
@@ -220,7 +287,7 @@ def test_tutor_cannot_decide_their_own_pending_request(api: TestClient, db: Sess
     """The assertion this feature exists for. A tutor who can approve their own time off has
     not been gated by anything, and the row must still be pending afterwards."""
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.patch(
@@ -234,7 +301,7 @@ def test_tutor_cannot_decide_their_own_pending_request(api: TestClient, db: Sess
 def test_tutor_cannot_decide_another_tutors_exception(api: TestClient, db: Session) -> None:
     own = _make_tutor(db)
     other = _make_tutor(db)
-    row = _make_exception(db, tutor_id=other.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=other.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
 
     response = api.patch(
@@ -250,7 +317,7 @@ def test_admin_redeciding_a_decided_exception_is_409(
     api: TestClient, db: Session, decided: ExceptionStatus
 ) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=decided)
+    row = _make_exception(db, user_id=tutor.user_id, status=decided)
     user = _make_user(db, role=UserRole.ADMIN)
 
     response = api.patch(
@@ -275,7 +342,7 @@ def test_pending_is_not_an_accepted_decision(api: TestClient, db: Session) -> No
     """Both decisions are terminal. A decided row pushed back to pending would stop blocking
     bookings without anyone having rejected it."""
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.APPROVED)
     user = _make_user(db, role=UserRole.ADMIN)
 
     response = api.patch(
@@ -291,10 +358,10 @@ def test_pending_is_not_an_accepted_decision(api: TestClient, db: Session) -> No
 
 def test_tutor_lists_their_own_exceptions(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions", headers=_bearer(user))
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions", headers=_bearer(user))
     body = response.json()
 
     assert response.status_code == 200
@@ -311,10 +378,10 @@ def test_tutor_listing_another_tutors_exceptions_is_403(api: TestClient, db: Ses
     while proving nothing about whether the caller was denied."""
     own = _make_tutor(db)
     other = _make_tutor(db)
-    _make_exception(db, tutor_id=other.id, status=ExceptionStatus.PENDING)
+    _make_exception(db, user_id=other.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
 
-    response = api.get(f"/api/tutors/{other.id}/exceptions", headers=_bearer(user))
+    response = api.get(f"/api/users/{other.user_id}/exceptions", headers=_bearer(user))
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
 
@@ -323,11 +390,11 @@ def test_tutor_listing_another_tutors_exceptions_is_403(api: TestClient, db: Ses
 def test_admin_lists_any_tutors_exceptions(api: TestClient, db: Session, role: UserRole) -> None:
     tutor = _make_tutor(db)
     other = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
-    _make_exception(db, tutor_id=other.id, status=ExceptionStatus.APPROVED)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
+    _make_exception(db, user_id=other.user_id, status=ExceptionStatus.APPROVED)
     user = _make_user(db, role=role)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions", headers=_bearer(user))
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions", headers=_bearer(user))
     body = response.json()
 
     assert response.status_code == 200
@@ -340,27 +407,34 @@ def test_pending_and_rejected_rows_are_listed_too(api: TestClient, db: Session) 
     still waiting and how an admin finds what is left to decide."""
     tutor = _make_tutor(db)
     for exception_status in ExceptionStatus:
-        _make_exception(db, tutor_id=tutor.id, status=exception_status)
+        _make_exception(db, user_id=tutor.user_id, status=exception_status)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions", headers=_bearer(user))
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions", headers=_bearer(user))
     body = response.json()
 
     assert response.status_code == 200
-    assert body["total"] == 3
-    assert {item["status"] for item in body["items"]} == {"pending", "approved", "rejected"}
+    assert body["total"] == 4
+    assert {item["status"] for item in body["items"]} == {
+        "pending",
+        "approved",
+        "rejected",
+        "cancelled",
+    }
 
 
 def test_total_counts_rows_the_page_did_not_return(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     for exception_status in ExceptionStatus:
-        _make_exception(db, tutor_id=tutor.id, status=exception_status)
+        _make_exception(db, user_id=tutor.user_id, status=exception_status)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    body = api.get(f"/api/tutors/{tutor.id}/exceptions?page_size=2", headers=_bearer(user)).json()
+    body = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?page_size=2", headers=_bearer(user)
+    ).json()
 
     assert len(body["items"]) == 2
-    assert body["total"] == 3
+    assert body["total"] == 4
     assert body["page_size"] == 2
 
 
@@ -372,7 +446,7 @@ def test_rows_are_ordered_by_start_date_then_id(api: TestClient, db: Session) ->
     same_day = [
         _make_exception(
             db,
-            tutor_id=tutor.id,
+            user_id=tutor.user_id,
             status=ExceptionStatus.PENDING,
             start_date=datetime.date(2026, 9, 5),
         ).id
@@ -380,13 +454,13 @@ def test_rows_are_ordered_by_start_date_then_id(api: TestClient, db: Session) ->
     ]
     earliest = _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.PENDING,
         start_date=datetime.date(2026, 9, 1),
     ).id
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    url = f"/api/tutors/{tutor.id}/exceptions"
+    url = f"/api/users/{tutor.user_id}/exceptions"
     first = api.get(url, headers=_bearer(user)).json()
     again = api.get(url, headers=_bearer(user)).json()
 
@@ -402,7 +476,7 @@ def test_a_malformed_page_parameter_is_400_never_422(
     tutor = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?{query}", headers=_bearer(user))
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions?{query}", headers=_bearer(user))
 
     _assert_detail_shape(response, 400)
     assert query.split("=")[0] in response.json()["detail"]
@@ -414,13 +488,18 @@ def test_a_malformed_page_parameter_is_400_never_422(
 def test_a_row_ending_exactly_on_from_is_included(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     row = _make_exception(
-        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 9, 5)
+        db,
+        user_id=tutor.user_id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 5),
     )
     row.end_date = datetime.date(2026, 9, 7)
     db.flush()
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=2026-09-07", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-07", headers=_bearer(user)
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -430,13 +509,18 @@ def test_a_row_ending_exactly_on_from_is_included(api: TestClient, db: Session) 
 def test_a_row_ending_the_day_before_from_is_excluded(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     row = _make_exception(
-        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 9, 5)
+        db,
+        user_id=tutor.user_id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 5),
     )
     row.end_date = datetime.date(2026, 9, 6)
     db.flush()
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=2026-09-07", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-07", headers=_bearer(user)
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -448,13 +532,15 @@ def test_a_row_starting_exactly_on_to_is_included(api: TestClient, db: Session) 
     tutor = _make_tutor(db)
     row = _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.APPROVED,
         start_date=datetime.date(2026, 9, 10),
     )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?to=2026-09-10", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?to=2026-09-10", headers=_bearer(user)
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -465,13 +551,15 @@ def test_a_row_starting_the_day_after_to_is_excluded(api: TestClient, db: Sessio
     tutor = _make_tutor(db)
     _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.APPROVED,
         start_date=datetime.date(2026, 9, 11),
     )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?to=2026-09-10", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?to=2026-09-10", headers=_bearer(user)
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -484,14 +572,17 @@ def test_a_row_spanning_the_whole_window_is_included(api: TestClient, db: Sessio
     starts before the window and ends after it still overlaps every day the window covers."""
     tutor = _make_tutor(db)
     row = _make_exception(
-        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 9, 1)
+        db,
+        user_id=tutor.user_id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 9, 1),
     )
     row.end_date = datetime.date(2026, 9, 30)
     db.flush()
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.get(
-        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-10&to=2026-09-20",
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-10&to=2026-09-20",
         headers=_bearer(user),
     )
     body = response.json()
@@ -504,17 +595,20 @@ def test_from_and_to_together_narrow_to_the_overlapping_rows(api: TestClient, db
     tutor = _make_tutor(db)
     inside = _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.APPROVED,
         start_date=datetime.date(2026, 9, 10),
     )
     _make_exception(
-        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 1, 1)
+        db,
+        user_id=tutor.user_id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 1, 1),
     )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.get(
-        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01&to=2026-09-30",
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-01&to=2026-09-30",
         headers=_bearer(user),
     )
     body = response.json()
@@ -527,16 +621,21 @@ def test_from_alone_excludes_rows_that_end_before_it(api: TestClient, db: Sessio
     tutor = _make_tutor(db)
     later = _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.APPROVED,
         start_date=datetime.date(2026, 9, 15),
     )
     _make_exception(
-        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 1, 1)
+        db,
+        user_id=tutor.user_id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 1, 1),
     )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-01", headers=_bearer(user)
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -546,17 +645,22 @@ def test_from_alone_excludes_rows_that_end_before_it(api: TestClient, db: Sessio
 def test_to_alone_excludes_rows_that_start_after_it(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     earlier = _make_exception(
-        db, tutor_id=tutor.id, status=ExceptionStatus.APPROVED, start_date=datetime.date(2026, 1, 1)
+        db,
+        user_id=tutor.user_id,
+        status=ExceptionStatus.APPROVED,
+        start_date=datetime.date(2026, 1, 1),
     )
     _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.APPROVED,
         start_date=datetime.date(2026, 9, 15),
     )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?to=2026-09-01", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?to=2026-09-01", headers=_bearer(user)
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -566,14 +670,14 @@ def test_to_alone_excludes_rows_that_start_after_it(api: TestClient, db: Session
 def test_neither_from_nor_to_returns_every_row_as_before(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     for exception_status in ExceptionStatus:
-        _make_exception(db, tutor_id=tutor.id, status=exception_status)
+        _make_exception(db, user_id=tutor.user_id, status=exception_status)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions", headers=_bearer(user))
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions", headers=_bearer(user))
     body = response.json()
 
     assert response.status_code == 200
-    assert body["total"] == 3
+    assert body["total"] == 4
 
 
 def test_windowed_total_counts_the_filtered_query_before_paging(
@@ -583,21 +687,21 @@ def test_windowed_total_counts_the_filtered_query_before_paging(
     for offset in range(3):
         _make_exception(
             db,
-            tutor_id=tutor.id,
+            user_id=tutor.user_id,
             status=ExceptionStatus.APPROVED,
             start_date=datetime.date(2026, 9, 10 + offset),
         )
     for offset in range(2):
         _make_exception(
             db,
-            tutor_id=tutor.id,
+            user_id=tutor.user_id,
             status=ExceptionStatus.APPROVED,
             start_date=datetime.date(2026, 1, 1 + offset),
         )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.get(
-        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01&to=2026-09-30&page_size=2",
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-01&to=2026-09-30&page_size=2",
         headers=_bearer(user),
     )
     body = response.json()
@@ -611,7 +715,9 @@ def test_a_malformed_from_is_400_not_422(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions?from=notadate", headers=_bearer(user))
+    response = api.get(
+        f"/api/users/{tutor.user_id}/exceptions?from=notadate", headers=_bearer(user)
+    )
 
     _assert_detail_shape(response, 400)
 
@@ -619,11 +725,11 @@ def test_a_malformed_from_is_400_not_422(api: TestClient, db: Session) -> None:
 def test_windowing_another_tutors_exceptions_is_still_403(api: TestClient, db: Session) -> None:
     own = _make_tutor(db)
     other = _make_tutor(db)
-    _make_exception(db, tutor_id=other.id, status=ExceptionStatus.APPROVED)
+    _make_exception(db, user_id=other.user_id, status=ExceptionStatus.APPROVED)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
 
     response = api.get(
-        f"/api/tutors/{other.id}/exceptions?from=2026-09-01&to=2026-09-30",
+        f"/api/users/{other.user_id}/exceptions?from=2026-09-01&to=2026-09-30",
         headers=_bearer(user),
     )
 
@@ -634,14 +740,14 @@ def test_a_tutor_windowing_their_own_id_still_gets_their_rows(api: TestClient, d
     tutor = _make_tutor(db)
     row = _make_exception(
         db,
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         status=ExceptionStatus.APPROVED,
         start_date=datetime.date(2026, 9, 15),
     )
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.get(
-        f"/api/tutors/{tutor.id}/exceptions?from=2026-09-01&to=2026-09-30",
+        f"/api/users/{tutor.user_id}/exceptions?from=2026-09-01&to=2026-09-30",
         headers=_bearer(user),
     )
     body = response.json()
@@ -655,14 +761,14 @@ def test_a_tutor_windowing_their_own_id_still_gets_their_rows(api: TestClient, d
 
 def test_tutor_deletes_their_own_pending_request(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.delete(f"/api/exceptions/{row.id}", headers=_bearer(user))
 
     assert response.status_code == 204
     assert response.content == b""
-    assert _count_for(db, tutor.id) == 0
+    assert _count_for(db, tutor.user_id) == 0
 
 
 @pytest.mark.parametrize("decided", [ExceptionStatus.APPROVED, ExceptionStatus.REJECTED])
@@ -672,7 +778,7 @@ def test_tutor_deleting_their_own_decided_request_is_403(
     """Once an admin has ruled, a tutor must not undo it in either direction — neither erasing
     a block they would rather not have nor a rejection they disagree with."""
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=decided)
+    row = _make_exception(db, user_id=tutor.user_id, status=decided)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
 
     response = api.delete(f"/api/exceptions/{row.id}", headers=_bearer(user))
@@ -684,13 +790,13 @@ def test_tutor_deleting_their_own_decided_request_is_403(
 def test_tutor_deleting_another_tutors_pending_request_is_403(api: TestClient, db: Session) -> None:
     own = _make_tutor(db)
     other = _make_tutor(db)
-    row = _make_exception(db, tutor_id=other.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=other.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
 
     response = api.delete(f"/api/exceptions/{row.id}", headers=_bearer(user))
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
-    assert _count_for(db, other.id) == 1
+    assert _count_for(db, other.user_id) == 1
 
 
 def test_the_ownership_403_fires_before_the_status_403(api: TestClient, db: Session) -> None:
@@ -699,13 +805,13 @@ def test_the_ownership_403_fires_before_the_status_403(api: TestClient, db: Sess
     requests have been ruled on."""
     own = _make_tutor(db)
     other = _make_tutor(db)
-    row = _make_exception(db, tutor_id=other.id, status=ExceptionStatus.APPROVED)
+    row = _make_exception(db, user_id=other.user_id, status=ExceptionStatus.APPROVED)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
 
     response = api.delete(f"/api/exceptions/{row.id}", headers=_bearer(user))
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
-    assert _count_for(db, other.id) == 1
+    assert _count_for(db, other.user_id) == 1
 
 
 @pytest.mark.parametrize("role", STAFF_ROLE_CASES)
@@ -716,13 +822,13 @@ def test_admin_deletes_an_exception_at_any_status(
     """The documented recovery path for a mistaken approval: `PATCH` refuses to re-decide, so
     deleting the row is the only reversal there is."""
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=existing)
+    row = _make_exception(db, user_id=tutor.user_id, status=existing)
     user = _make_user(db, role=role)
 
     response = api.delete(f"/api/exceptions/{row.id}", headers=_bearer(user))
 
     assert response.status_code == 204
-    assert _count_for(db, tutor.id) == 0
+    assert _count_for(db, tutor.user_id) == 0
 
 
 @pytest.mark.parametrize("role", [UserRole.TUTOR, *STAFF_ROLE_CASES])
@@ -738,23 +844,23 @@ def test_deleting_an_unknown_exception_is_404(api: TestClient, db: Session, role
     _assert_detail(response, 404, EXCEPTION_NOT_FOUND_ERROR)
 
 
-# --- 401 and the null-tutor_id data error ----------------------------------------------------
+# --- 401, and a profile-less Tutor reaching for someone else ----------------------------------------------------
 
 
 def test_unauthenticated_create_is_401(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
 
-    response = api.post(f"/api/tutors/{tutor.id}/exceptions", json=_payload())
+    response = api.post(f"/api/users/{tutor.user_id}/exceptions", json=_payload())
 
     _assert_detail(response, 401, CREDENTIALS_ERROR)
-    assert _count_for(db, tutor.id) == 0
+    assert _count_for(db, tutor.user_id) == 0
 
 
 def test_unauthenticated_decide_is_401(api: TestClient, db: Session) -> None:
     """`require_admin` depends on `get_current_user`, so authentication fails first — 401,
     never the 403 that would tell an anonymous caller the row exists."""
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
 
     response = api.patch(f"/api/exceptions/{row.id}", json={"status": "approved"})
 
@@ -763,61 +869,60 @@ def test_unauthenticated_decide_is_401(api: TestClient, db: Session) -> None:
 
 
 def test_tutor_with_null_tutor_id_cannot_create(api: TestClient, db: Session) -> None:
-    """Only admins have no profile, so a `tutor` user with none is a data error and must fail
-    loudly rather than be treated as unscoped."""
+    """A `tutor` user with no profile is still only themselves: anyone else's id is a 403."""
     tutor = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
 
     response = api.post(
-        f"/api/tutors/{tutor.id}/exceptions", json=_payload(), headers=_bearer(user)
+        f"/api/users/{tutor.user_id}/exceptions", json=_payload(), headers=_bearer(user)
     )
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
-    assert _count_for(db, tutor.id) == 0
+    assert _count_for(db, tutor.user_id) == 0
 
 
 def test_unauthenticated_list_is_401(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
-    _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions")
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions")
 
     _assert_detail(response, 401, CREDENTIALS_ERROR)
 
 
 def test_unauthenticated_delete_is_401(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
 
     response = api.delete(f"/api/exceptions/{row.id}")
 
     _assert_detail(response, 401, CREDENTIALS_ERROR)
-    assert _count_for(db, tutor.id) == 1
+    assert _count_for(db, tutor.user_id) == 1
 
 
 def test_tutor_with_null_tutor_id_cannot_list(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
 
-    response = api.get(f"/api/tutors/{tutor.id}/exceptions", headers=_bearer(user))
+    response = api.get(f"/api/users/{tutor.user_id}/exceptions", headers=_bearer(user))
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
 
 
 def test_tutor_with_null_tutor_id_cannot_delete(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
 
     response = api.delete(f"/api/exceptions/{row.id}", headers=_bearer(user))
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
-    assert _count_for(db, tutor.id) == 1
+    assert _count_for(db, tutor.user_id) == 1
 
 
 def test_tutor_with_null_tutor_id_cannot_decide(api: TestClient, db: Session) -> None:
     tutor = _make_tutor(db)
-    row = _make_exception(db, tutor_id=tutor.id, status=ExceptionStatus.PENDING)
+    row = _make_exception(db, user_id=tutor.user_id, status=ExceptionStatus.PENDING)
     user = _make_user(db, role=UserRole.TUTOR, tutor_id=None)
 
     response = api.patch(
@@ -836,7 +941,7 @@ def test_a_row_written_without_a_status_defaults_to_approved(db: Session) -> Non
     about `status` still produces a blocking exception, never an inert one."""
     tutor = _make_tutor(db)
     row = TutorAvailabilityException(
-        tutor_id=tutor.id,
+        user_id=tutor.user_id,
         start_date=datetime.date(2026, 9, 1),
         end_date=datetime.date(2026, 9, 1),
         reason="dentist",
@@ -890,12 +995,12 @@ def _make_user(db: Session, *, role: UserRole, tutor_id: uuid.UUID | None = None
 def _make_exception(
     db: Session,
     *,
-    tutor_id: uuid.UUID,
+    user_id: uuid.UUID,
     status: ExceptionStatus,
     start_date: datetime.date = datetime.date(2026, 9, 1),
 ) -> TutorAvailabilityException:
     row = TutorAvailabilityException(
-        tutor_id=tutor_id,
+        user_id=user_id,
         start_date=start_date,
         end_date=start_date + datetime.timedelta(days=2),
         reason="dentist",
@@ -911,11 +1016,11 @@ def _row(db: Session, exception_id: uuid.UUID) -> TutorAvailabilityException:
     return db.get_one(TutorAvailabilityException, exception_id)
 
 
-def _count_for(db: Session, tutor_id: uuid.UUID) -> int:
+def _count_for(db: Session, user_id: uuid.UUID) -> int:
     return db.execute(
         select(func.count())
         .select_from(TutorAvailabilityException)
-        .where(TutorAvailabilityException.tutor_id == tutor_id)
+        .where(TutorAvailabilityException.user_id == user_id)
     ).scalar_one()
 
 

@@ -74,7 +74,7 @@ APPROVED_FROM = datetime.date(2026, 9, 21)
 # meaning what it means now — that a date window narrows rows, never widens the tutor scope.
 WINDOW = "from=2026-09-01&to=2026-12-31"
 
-# The smallest body `POST /api/tutors/{id}/exceptions` accepts. Every use of it below expects
+# The smallest body `POST /api/users/{id}/exceptions` accepts. Every use of it below expects
 # a refusal, so it is well-formed on purpose: a 400 from validation would prove nothing about
 # who the caller is.
 EXCEPTION_BODY = {"start_date": "2026-10-05", "end_date": "2026-10-06", "reason": "vacation"}
@@ -168,7 +168,7 @@ def test_both_tutors_rows_exist_and_an_admin_reaches_them(
     came back" would be true of an empty database and would prove nothing at all."""
     bookings = api.get("/api/bookings", headers=world.admin_headers).json()
     exceptions = api.get(
-        f"/api/tutors/{world.other_tutor.id}/exceptions", headers=world.admin_headers
+        f"/api/users/{world.other_tutor.user_id}/exceptions", headers=world.admin_headers
     ).json()
     availability = api.get(
         f"/api/tutors/{world.other_tutor.id}/availability", headers=world.admin_headers
@@ -212,7 +212,7 @@ def test_a_tutor_lists_their_own_availability_and_not_the_other_tutors(
 def test_a_tutor_lists_both_of_their_exceptions_and_none_of_the_other_tutors(
     api: TestClient, world: World
 ) -> None:
-    response = api.get(f"/api/tutors/{world.tutor.id}/exceptions", headers=world.tutor_headers)
+    response = api.get(f"/api/users/{world.tutor.user_id}/exceptions", headers=world.tutor_headers)
     body = response.json()
 
     assert response.status_code == 200
@@ -222,7 +222,7 @@ def test_a_tutor_lists_both_of_their_exceptions_and_none_of_the_other_tutors(
         str(world.approved_id),
     }
     assert {row["status"] for row in body["items"]} == {"pending", "approved"}
-    assert {row["tutor_id"] for row in body["items"]} == {str(world.tutor.id)}
+    assert {row["staff"]["id"] for row in body["items"]} == {str(world.tutor.user_id)}
 
 
 def test_a_date_window_narrows_the_rows_and_never_widens_the_scope(
@@ -231,12 +231,12 @@ def test_a_date_window_narrows_the_rows_and_never_widens_the_scope(
     """Tutor B's two exceptions sit inside this window as well. A window parameter is a filter
     on rows the caller may already see, not a second way of naming whose rows they are."""
     response = api.get(
-        f"/api/tutors/{world.tutor.id}/exceptions?{WINDOW}", headers=world.tutor_headers
+        f"/api/users/{world.tutor.user_id}/exceptions?{WINDOW}", headers=world.tutor_headers
     )
     body = response.json()
 
     assert response.status_code == 200
-    assert {row["tutor_id"] for row in body["items"]} == {str(world.tutor.id)}
+    assert {row["staff"]["id"] for row in body["items"]} == {str(world.tutor.user_id)}
     assert str(world.other_pending_id) not in {row["id"] for row in body["items"]}
     assert str(world.other_approved_id) not in {row["id"] for row in body["items"]}
 
@@ -306,7 +306,7 @@ def test_a_tutor_creating_their_own_time_off_lands_pending(
     """The role decides the status, never the body — `ExceptionCreate` has no `status` field,
     so the key below is inert rather than honoured."""
     response = api.post(
-        f"/api/tutors/{world.tutor.id}/exceptions",
+        f"/api/users/{world.tutor.user_id}/exceptions",
         json={
             "start_date": "2026-10-05",
             "end_date": "2026-10-06",
@@ -319,7 +319,7 @@ def test_a_tutor_creating_their_own_time_off_lands_pending(
 
     assert response.status_code == 201
     assert body["status"] == "pending"
-    assert body["tutor_id"] == str(world.tutor.id)
+    assert body["staff"]["id"] == str(world.tutor.user_id)
     assert body["reason"] == "personal"
     assert _row(db, uuid.UUID(body["id"])).status is ExceptionStatus.PENDING
     assert _exception_ids(db, world.other_tutor.id) == {
@@ -350,9 +350,9 @@ def test_a_tutor_deletes_their_own_pending_request_and_nothing_else(
     ("method", "template", "body"),
     [
         ("GET", "/api/tutors/{tutor_id}/availability", None),
-        ("GET", "/api/tutors/{tutor_id}/exceptions", None),
-        ("GET", "/api/tutors/{tutor_id}/exceptions?" + WINDOW, None),
-        ("POST", "/api/tutors/{tutor_id}/exceptions", EXCEPTION_BODY),
+        ("GET", "/api/users/{user_id}/exceptions", None),
+        ("GET", "/api/users/{user_id}/exceptions?" + WINDOW, None),
+        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY),
         ("GET", "/api/bookings?tutor_id={tutor_id}", None),
     ],
     ids=["availability", "exceptions", "exceptions-windowed", "create-exception", "bookings"],
@@ -368,12 +368,18 @@ def test_a_tutor_naming_a_tutor_id_that_is_not_theirs_is_403(
 ) -> None:
     """An id matching no tutor at all is 403 too, and deliberately so: a 404 there would turn
     the endpoint into an oracle for which tutor ids exist, the documented choice recorded at
-    `test_tutor_routes.py:1-9` rather than an oversight to harden. The refusal is raised while
-    dependencies resolve, so the route body never runs and nothing is written."""
-    tutor_id = world.other_tutor.id if target == "another-tutor" else uuid.uuid4()
+    `test_tutor_routes.py:1-9` rather than an oversight to harden. The refusal comes before
+    any lookup, so nothing is written. Time off names its holder by user id, the rest by
+    profile id."""
+    is_other = target == "another-tutor"
+    tutor_id = world.other_tutor.id if is_other else uuid.uuid4()
+    user_id = world.other_tutor.user_id if is_other else uuid.uuid4()
 
     response = api.request(
-        method, template.format(tutor_id=tutor_id), json=body, headers=world.tutor_headers
+        method,
+        template.format(tutor_id=tutor_id, user_id=user_id),
+        json=body,
+        headers=world.tutor_headers,
     )
 
     _assert_detail(response, 403, TUTOR_SCOPE_ERROR)
@@ -556,8 +562,8 @@ def test_a_tutor_may_read_every_subject_including_the_other_tutors(
     ("method", "template", "body"),
     [
         ("GET", "/api/tutors/{tutor_id}/availability", None),
-        ("GET", "/api/tutors/{tutor_id}/exceptions", None),
-        ("POST", "/api/tutors/{tutor_id}/exceptions", EXCEPTION_BODY),
+        ("GET", "/api/users/{user_id}/exceptions", None),
+        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY),
         ("GET", "/api/bookings", None),
         ("GET", "/api/bookings?tutor_id={tutor_id}", None),
         ("GET", "/api/bookings/{booking_id}", None),
@@ -599,8 +605,8 @@ def test_a_tutor_account_with_no_tutor_id_reaches_nothing(
     ("method", "template", "body"),
     [
         ("GET", "/api/tutors/{tutor_id}/availability", None),
-        ("GET", "/api/tutors/{tutor_id}/exceptions", None),
-        ("POST", "/api/tutors/{tutor_id}/exceptions", EXCEPTION_BODY),
+        ("GET", "/api/users/{user_id}/exceptions", None),
+        ("POST", "/api/users/{user_id}/exceptions", EXCEPTION_BODY),
         ("GET", "/api/bookings", None),
         ("GET", "/api/bookings/{booking_id}", None),
         ("PATCH", "/api/exceptions/{pending_id}", {"status": "approved"}),
@@ -640,6 +646,7 @@ def test_an_anonymous_call_is_401_even_on_an_admin_only_route(
 def _targets(world: World) -> dict[str, str]:
     return {
         "tutor_id": str(world.tutor.id),
+        "user_id": str(world.tutor.user_id),
         "other_tutor_id": str(world.other_tutor.id),
         "subject_id": str(world.subject.id),
         "slot_id": str(world.slot_id),
@@ -734,7 +741,7 @@ def _make_exception(
     db: Session, tutor_id: uuid.UUID, status: ExceptionStatus, start_date: datetime.date
 ) -> uuid.UUID:
     row = TutorAvailabilityException(
-        tutor_id=tutor_id,
+        user_id=user_id_of(db, tutor_id),
         start_date=start_date,
         end_date=start_date + datetime.timedelta(days=1),
         reason="vacation",
@@ -788,7 +795,7 @@ def _exception_ids(db: Session, tutor_id: uuid.UUID) -> set[uuid.UUID]:
     return set(
         db.scalars(
             select(TutorAvailabilityException.id).where(
-                TutorAvailabilityException.tutor_id == tutor_id
+                TutorAvailabilityException.user_id == user_id_of(db, tutor_id)
             )
         ).all()
     )

@@ -1,4 +1,4 @@
-"""Request and response shapes for tutor availability exceptions.
+"""Request and response shapes for a Staff member's Time off (availability exceptions).
 
 `status` is deliberately absent from `ExceptionCreate`. Who may create an already-approved
 exception is an authorisation decision, and a field on the request body would let a tutor
@@ -8,16 +8,27 @@ instead — see `app.services.exception_service.create_exception`.
 
 import datetime
 import uuid
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
+from app.models.availability import REASON_MAX_LENGTH
 from app.models.enums import ExceptionStatus
+from app.schemas.booking import StaffRef
 
-# Mirrors the reason column's documented values in docs/erd.md and the admin dashboard's
-# reason dropdown. The column itself stays a plain String(32) with no DB-level constraint, so
-# this is the only place an unrecognised reason is rejected.
-type ExceptionReason = Literal["vacation", "personal", "sick", "other"]
+
+def _strip_reason(raw: object) -> object:
+    """Trimmed, and blank means no reason at all."""
+    if not isinstance(raw, str):
+        return raw
+
+    return raw.strip() or None
+
+
+# Checked after trimming, so surrounding spaces don't count toward the limit.
+Reason = Annotated[
+    Annotated[str, Field(max_length=REASON_MAX_LENGTH)] | None, BeforeValidator(_strip_reason)
+]
 
 
 class ExceptionCreate(BaseModel):
@@ -25,8 +36,7 @@ class ExceptionCreate(BaseModel):
     end_date: datetime.date
     start_time: datetime.time | None = None
     end_time: datetime.time | None = None
-    reason: ExceptionReason
-    notes: str | None = None
+    reason: Reason = None
 
     @model_validator(mode="after")
     def _window_is_coherent(self) -> Self:
@@ -59,12 +69,12 @@ class ExceptionDecision(BaseModel):
 
 class ExceptionRead(BaseModel):
     id: uuid.UUID
-    tutor_id: uuid.UUID
+    # The person holding the Time off: their user id, name and role.
+    staff: StaffRef
     start_date: datetime.date
     end_date: datetime.date
     start_time: datetime.time | None
     end_time: datetime.time | None
-    reason: str
-    notes: str | None
+    reason: str | None
     status: ExceptionStatus
     created_at: datetime.datetime

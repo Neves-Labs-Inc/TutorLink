@@ -291,14 +291,19 @@ def _approved_exceptions(
     `rejected` blocks nothing ever (#24). The date comparison is inclusive at both ends, so a
     range covers its middle days as well as its edges, and a set time window applies to every
     day in the range rather than as one continuous absence across it.
+
+    Time off is held by the person, so it is reached through `tutors.user_id`; the result is
+    still keyed by profile, like every other step.
     """
     rows = db.execute(
         select(
-            TutorAvailabilityException.tutor_id,
+            Tutor.id,
             TutorAvailabilityException.start_time,
             TutorAvailabilityException.end_time,
-        ).where(
-            TutorAvailabilityException.tutor_id.in_(tutor_ids),
+        )
+        .join(Tutor, Tutor.user_id == TutorAvailabilityException.user_id)
+        .where(
+            Tutor.id.in_(tutor_ids),
             TutorAvailabilityException.status == ExceptionStatus.APPROVED,
             TutorAvailabilityException.start_date <= date,
             TutorAvailabilityException.end_date >= date,

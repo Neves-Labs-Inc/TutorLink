@@ -7,8 +7,8 @@ longer exists fails too, so the table cannot rot.
 
 "Allowed" means the gate let the caller through: anything but 401, 403 or a 5xx. The probes
 send random ids and an empty body, so a 404 or a 422 is the expected shape of "you got past
-the gate". A tutor-scoped route is probed with the tutor's own `tutor_id`, so the tutor is
-asking for their own data.
+the gate". A tutor-scoped route is probed with the tutor's own `tutor_id` and `user_id`, so the
+tutor is asking for their own data.
 
 The chat websocket is classified here and probed in `test_conversation_stream.py`, where the
 socket fixtures live.
@@ -69,8 +69,9 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("GET", "/api/subjects"): Access.SHARED_CATALOGUE,
     ("GET", "/api/tutors"): Access.TUTOR_SCOPED,
     ("GET", "/api/tutors/{tutor_id}"): Access.TUTOR_SCOPED,
-    ("GET", "/api/tutors/{tutor_id}/exceptions"): Access.TUTOR_SCOPED,
-    ("POST", "/api/tutors/{tutor_id}/exceptions"): Access.TUTOR_SCOPED,
+    # Time off is held by a user: a Tutor reaches only their own `user_id`.
+    ("GET", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
+    ("POST", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
     ("DELETE", "/api/exceptions/{exception_id}"): Access.TUTOR_SCOPED,
     ("GET", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings"): Access.TUTOR_SCOPED,
@@ -171,6 +172,7 @@ class Caller:
     role: UserRole
     headers: dict[str, str]
     tutor_id: uuid.UUID | None
+    user_id: uuid.UUID
 
 
 @pytest.fixture
@@ -218,17 +220,24 @@ def callers(db: Session) -> dict[UserRole, Caller]:
             user.is_archived = False
         db.flush()
         token = create_access_token(user_id=user.id, role=role, tutor_id=tutor_id)
-        return Caller(role=role, headers={"Authorization": f"Bearer {token}"}, tutor_id=tutor_id)
+        return Caller(
+            role=role,
+            headers={"Authorization": f"Bearer {token}"},
+            tutor_id=tutor_id,
+            user_id=user.id,
+        )
 
     return {role: make(role, tutor.id if role is UserRole.TUTOR else None) for role in UserRole}
 
 
-def _url(path: str, *, tutor_id: uuid.UUID | None) -> str:
-    """Random ids for every segment, except a tutor-scoped route's `tutor_id`, which is the
-    tutor's own so the tutor is asking for their own rows."""
+def _url(path: str, *, owner: Caller | None) -> str:
+    """Random ids for every segment, except a tutor-scoped route's `tutor_id` and `user_id`,
+    which are the tutor's own so the tutor is asking for their own rows."""
     url = path
-    if tutor_id is not None:
-        url = url.replace("{tutor_id}", str(tutor_id))
+    if owner is not None and owner.tutor_id is not None:
+        url = url.replace("{tutor_id}", str(owner.tutor_id)).replace(
+            "{user_id}", str(owner.user_id)
+        )
     while "{" in url:
         start = url.index("{")
         end = url.index("}", start)
@@ -286,8 +295,8 @@ def test_each_role_reaches_exactly_its_class(
 ) -> None:
     outcomes: dict[UserRole, int] = {}
     for role, caller in callers.items():
-        scoped_tutor_id = caller.tutor_id if access is Access.TUTOR_SCOPED else None
-        url = _url(path, tutor_id=scoped_tutor_id)
+        owner = caller if access is Access.TUTOR_SCOPED else None
+        url = _url(path, owner=owner)
         outcomes[role] = _call(gate_client, method, url, caller.headers)
 
     allowed = {role for role, code in outcomes.items() if code not in {401, 403} and code < 500}
@@ -299,4 +308,4 @@ def test_each_role_reaches_exactly_its_class(
 
 @pytest.mark.parametrize(("method", "path", "access"), _gated_routes())
 def test_no_token_is_401(gate_client: TestClient, method: str, path: str, access: Access) -> None:
-    assert _call(gate_client, method, _url(path, tutor_id=None), {}) == 401
+    assert _call(gate_client, method, _url(path, owner=None), {}) == 401

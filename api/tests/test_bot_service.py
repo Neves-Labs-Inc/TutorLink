@@ -1371,7 +1371,7 @@ def test_time_off_approved_since_the_offer_re_offers_rather_than_erroring(
     _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
     db.add(
         TutorAvailabilityException(
-            tutor_id=world.first_tutor_id,
+            user_id=db.get_one(Tutor, world.first_tutor_id).user_id,
             start_date=DATE,
             end_date=DATE,
             start_time=NINE,

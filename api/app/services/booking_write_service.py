@@ -576,7 +576,7 @@ def _rule_4_not_blocked_by_exception(db: Session, context: _Context, teaching: _
     """
     request = context.request
 
-    for row in _approved_exceptions(db, tutor_id=teaching.tutor_id, on=request.scheduled_date):
+    for row in _approved_exceptions(db, user_id=request.user_id, on=request.scheduled_date):
         if _exception_blocks(row, start_time=request.start_time, end_time=request.end_time):
             raise BlockedByException
 
@@ -1010,12 +1010,13 @@ def _not_the_booking(exclude_booking_id: uuid.UUID | None) -> ColumnElement[bool
 
 
 def _approved_exceptions(
-    db: Session, *, tutor_id: uuid.UUID, on: datetime.date
+    db: Session, *, user_id: uuid.UUID, on: datetime.date
 ) -> list[TutorAvailabilityException]:
+    # Time off is held by the person, so it is looked up by the Booking's Staff user.
     return list(
         db.scalars(
             select(TutorAvailabilityException).where(
-                TutorAvailabilityException.tutor_id == tutor_id,
+                TutorAvailabilityException.user_id == user_id,
                 TutorAvailabilityException.status == ExceptionStatus.APPROVED,
                 TutorAvailabilityException.start_date <= on,
                 TutorAvailabilityException.end_date >= on,

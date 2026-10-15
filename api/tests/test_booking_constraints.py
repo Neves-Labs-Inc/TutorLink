@@ -389,7 +389,7 @@ def test_an_exception_with_end_date_before_start_date_is_rejected(db: Session) -
     tutor = _make_tutor(db)
 
     with pytest.raises(IntegrityError, match=DATE_ORDER_CONSTRAINT), db.begin_nested():
-        db.add(_exception(tutor.id, start_date=NEXT_DATE, end_date=DATE))
+        db.add(_exception(tutor.user_id, start_date=NEXT_DATE, end_date=DATE))
         db.flush()
 
 
@@ -399,7 +399,7 @@ def test_a_single_day_exception_with_equal_start_and_end_date_is_accepted(
     """The comparison is inclusive on both ends, so a one-day exception must not be caught by
     the same check that rejects an inverted range."""
     tutor = _make_tutor(db)
-    exception = _exception(tutor.id, start_date=DATE, end_date=DATE)
+    exception = _exception(tutor.user_id, start_date=DATE, end_date=DATE)
     db.add(exception)
     db.flush()
 
@@ -453,10 +453,10 @@ def _evaluation(
 
 
 def _exception(
-    tutor_id: uuid.UUID, *, start_date: datetime.date, end_date: datetime.date
+    user_id: uuid.UUID, *, start_date: datetime.date, end_date: datetime.date
 ) -> TutorAvailabilityException:
     return TutorAvailabilityException(
-        tutor_id=tutor_id, start_date=start_date, end_date=end_date, reason="vacation"
+        user_id=user_id, start_date=start_date, end_date=end_date, reason="vacation"
     )
 
 

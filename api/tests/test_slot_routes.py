@@ -1191,7 +1191,7 @@ def _make_exception(
     end_time: datetime.time | None = None,
 ) -> TutorAvailabilityException:
     row = TutorAvailabilityException(
-        tutor_id=tutor_id,
+        user_id=db.get_one(Tutor, tutor_id).user_id,
         start_date=start_date,
         end_date=end_date,
         start_time=start_time,

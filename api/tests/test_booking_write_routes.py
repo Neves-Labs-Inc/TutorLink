@@ -1605,7 +1605,7 @@ def _make_exception(
     end_time: datetime.time | None = None,
 ) -> TutorAvailabilityException:
     row = TutorAvailabilityException(
-        tutor_id=family.tutor.id,
+        user_id=family.tutor.user_id,
         start_date=MONDAY,
         end_date=MONDAY,
         start_time=start_time,

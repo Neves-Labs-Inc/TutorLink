@@ -78,6 +78,7 @@ owns the transaction boundary.
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import phonenumbers
@@ -87,6 +88,7 @@ from sqlalchemy.orm import Session
 from app.models.booking import Booking
 from app.models.enums import UserRole
 from app.models.system_setting import (
+    SETTING_VALUE_TYPE_BOOLEAN,
     SETTING_VALUE_TYPE_INTEGER,
     SETTING_VALUE_TYPE_STRING,
     SystemSetting,
@@ -101,6 +103,14 @@ from app.services.mail_templates import (
 BUSINESS_TIMEZONE_SETTING = "business_timezone"
 REMINDER_TEMPLATE_SID_EN_SETTING = "reminder_template_sid_en"
 REMINDER_TEMPLATE_SID_ES_SETTING = "reminder_template_sid_es"
+# Migration 0041's row: the Admin's "Send Booking reminders" switch.
+REMINDERS_ENABLED_SETTING = "reminders_enabled"
+# The only stored forms of a boolean row; anything else is refused rather than guessed at.
+_BOOLEAN_VALUES = {"true": True, "false": False}
+
+# What the weekly reminder pass may do: `not_set_up` wins over the switch, because with no
+# template approved there is nothing to send whichever way it is set.
+RemindersState = Literal["on", "off", "not_set_up"]
 
 _INTEGER_VALUE_PATTERN = re.compile(r"[+-]?[0-9]{1,18}")
 
@@ -214,6 +224,11 @@ class SettingNotAString(SettingsError):
     """The row exists but its `value_type` is not `string`."""
 
 
+class SettingNotABoolean(SettingsError):
+    """The row exists but its `value_type` is not `boolean`, or it holds neither `true` nor
+    `false` (a hand edit in SQL; the write path refuses both)."""
+
+
 class SettingNotEditable(SettingsError):
     """The row exists but the actor's role may not write it."""
 
@@ -259,7 +274,8 @@ class EmailTemplateSettingInvalid(SettingValueInvalid):
 
 
 class SettingRuleBroken(SettingValueInvalid):
-    """A string row was given a value its key's rule in `_STRING_RULES` refuses.
+    """A string row was given a value its key's rule in `_STRING_RULES` refuses, or a boolean
+    row a value other than `true` or `false`.
 
     Carries the rule's message, which the router returns as-is, for the same reason as
     `EmailTemplateSettingInvalid`: the Admin needs to know what a valid value looks like.
@@ -313,18 +329,34 @@ def get_str_setting(db: Session, *, key: str) -> str:
     return row.value
 
 
-def read_settings_flags(db: Session) -> SettingsFlags:
-    # Both reminder ids blank is the documented "paused" state: no template is approved yet, so
-    # the weekly run would skip every Guardian.
-    reminder_sids = [
-        get_str_setting(db, key=REMINDER_TEMPLATE_SID_EN_SETTING),
-        get_str_setting(db, key=REMINDER_TEMPLATE_SID_ES_SETTING),
-    ]
+def get_bool_setting(db: Session, *, key: str) -> bool:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
 
+    if row is None:
+        raise SettingNotFound(f"no system setting {key!r}")
+
+    if row.value_type != SETTING_VALUE_TYPE_BOOLEAN:
+        raise SettingNotABoolean(f"system setting {key!r} is {row.value_type!r}, not a boolean")
+
+    if row.value not in _BOOLEAN_VALUES:
+        raise SettingNotABoolean(f"system setting {key!r} holds {row.value!r}")
+
+    return _BOOLEAN_VALUES[row.value]
+
+
+def read_settings_flags(db: Session) -> SettingsFlags:
     return SettingsFlags(
         business_timezone_locked=has_any_booking(db),
-        reminders_paused=all(sid.strip() == "" for sid in reminder_sids),
+        reminders_paused=_are_reminder_templates_unset(db),
     )
+
+
+def reminders_state(db: Session) -> RemindersState:
+    """Whether the weekly reminder pass should run: set up, and switched on by an Admin."""
+    if _are_reminder_templates_unset(db):
+        return "not_set_up"
+
+    return "on" if get_bool_setting(db, key=REMINDERS_ENABLED_SETTING) else "off"
 
 
 def list_settings(db: Session, *, actor_role: UserRole) -> list[SystemSetting]:
@@ -391,6 +423,8 @@ def apply_setting_updates(
             value = update.value
         elif row.value_type == SETTING_VALUE_TYPE_STRING:
             value = _checked_string_value(update)
+        elif row.value_type == SETTING_VALUE_TYPE_BOOLEAN:
+            value = _checked_boolean_value(update)
         else:
             raise SettingValueTypeUnsupported(
                 f"system setting {update.key!r} is {row.value_type!r}, which has no validator"
@@ -446,6 +480,28 @@ def _check_integer_value(update: SettingUpdate) -> None:
         raise SettingValueInvalid(
             f"system setting {update.key!r} rejects {update.value!r}: accepts {bounds}"
         )
+
+
+def _checked_boolean_value(update: SettingUpdate) -> str:
+    # Exactly lowercase `true` or `false`: the stored form `get_bool_setting` reads back, so a
+    # value that saves is always one the scheduler can read.
+    value = update.value.strip()
+
+    if value not in _BOOLEAN_VALUES:
+        raise SettingRuleBroken(f"{update.key} must be true or false")
+
+    return value
+
+
+def _are_reminder_templates_unset(db: Session) -> bool:
+    # Both reminder ids blank is the documented "paused" state: no template is approved yet, so
+    # the weekly run would skip every Guardian.
+    reminder_sids = [
+        get_str_setting(db, key=REMINDER_TEMPLATE_SID_EN_SETTING),
+        get_str_setting(db, key=REMINDER_TEMPLATE_SID_ES_SETTING),
+    ]
+
+    return all(sid.strip() == "" for sid in reminder_sids)
 
 
 def _check_email_templates(updates: Sequence[SettingUpdate]) -> None:

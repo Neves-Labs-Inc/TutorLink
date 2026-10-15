@@ -24,13 +24,14 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Emailed links can be built (`mail_service.public_url`) without configuring SMTP.
 os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 
-# 0034 holds the default email copy, 0035 the default brand colour and 0039 the blank office
-# phone; the harness seeds from them so each default has one source.
+# 0034 holds the default email copy, 0035 the default brand colour, 0039 the blank office phone
+# and 0041 the reminders switch; the harness seeds from them so each default has one source.
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
 SEEDED_SETTING_MIGRATIONS = (
     MIGRATIONS_DIR / "0034_email_template_settings.py",
     MIGRATIONS_DIR / "0035_email_brand_color_setting.py",
     MIGRATIONS_DIR / "0039_office_phone_setting.py",
+    MIGRATIONS_DIR / "0041_reminders_enabled_setting.py",
 )
 
 

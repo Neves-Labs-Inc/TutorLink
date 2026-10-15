@@ -65,6 +65,8 @@ OFFICE_PHONE = "office_phone"
 OFFICE_PHONE_NUMBER = "+15551234567"
 OFFICE_PHONE_INVALID_ERROR = "office_phone must be a phone number in E.164 form, like +15551234567"
 PASSWORD = "correct horse battery staple"
+REMINDERS_ENABLED = "reminders_enabled"
+REMINDERS_ENABLED_INVALID_ERROR = "reminders_enabled must be true or false"
 SETTINGS_URL = "/api/settings"
 
 # Seeded developer-only by 0021, so a developer always sees these beyond what an admin sees.
@@ -602,6 +604,72 @@ def test_a_manager_may_not_set_the_office_phone(api: TestClient, db: Session) ->
     )
 
     assert response.status_code == 403
+
+
+# --- reminders switch ------------------------------------------------------------------------
+
+
+def test_an_admin_sees_reminders_switched_on_as_an_editable_boolean(
+    api: TestClient, db: Session
+) -> None:
+    body = api.get(SETTINGS_URL, headers=_auth(_make_user(db))).json()
+
+    assert _item(body, REMINDERS_ENABLED) == {
+        "key": REMINDERS_ENABLED,
+        "value": "true",
+        "value_type": "boolean",
+        "is_developer_only": False,
+    }
+
+
+def test_an_admin_switches_reminders_off_and_on_again(api: TestClient, db: Session) -> None:
+    headers = _auth(_make_user(db))
+
+    responses = [
+        api.patch(SETTINGS_URL, headers=headers, json=_updates(REMINDERS_ENABLED, value))
+        for value in ["false", "true", " false "]
+    ]
+
+    saved = [_item(response.json(), REMINDERS_ENABLED)["value"] for response in responses]
+    assert saved == ["false", "true", "false"]
+
+
+@pytest.mark.parametrize("value", ["False", "1", "yes", ""])
+def test_a_reminders_switch_that_is_not_true_or_false_is_refused_with_the_whole_batch(
+    api: TestClient, db: Session, value: str
+) -> None:
+    other_key = _unique_key("batched")
+    other = _make_setting(db, key=other_key, value="1")
+    payload = {
+        "updates": [{"key": other_key, "value": "2"}, {"key": REMINDERS_ENABLED, "value": value}]
+    }
+
+    response = api.patch(SETTINGS_URL, headers=_auth(_make_user(db)), json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": REMINDERS_ENABLED_INVALID_ERROR}
+    assert _stored_value(db, other) == "1"
+
+
+def test_a_manager_may_not_switch_reminders(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER, tutor_id=_make_tutor(db).id)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(manager), json=_updates(REMINDERS_ENABLED, "false")
+    )
+
+    assert response.status_code == 403
+
+
+def test_switching_reminders_off_does_not_report_them_paused(api: TestClient, db: Session) -> None:
+    developer = _auth(_make_user(db, role=UserRole.DEVELOPER))
+    api.patch(SETTINGS_URL, headers=developer, json=_updates("reminder_template_sid_en", "HX1"))
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(_make_user(db)), json=_updates(REMINDERS_ENABLED, "false")
+    )
+
+    assert response.json()["reminders_paused"] is False
 
 
 def _make_tutor(db: Session) -> Tutor:

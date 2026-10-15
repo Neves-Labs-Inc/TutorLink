@@ -58,6 +58,12 @@ override_data {
   }
 }
 
+# The real default is the transferred address, whose import block mock providers can't
+# plan. Runs start without it; the Elastic IP runs set their own ID and override the import.
+variables {
+  elastic_ip_allocation_id = null
+}
+
 run "app_security_group_allows_only_web_ports_in" {
   command = plan
 

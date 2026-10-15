@@ -175,9 +175,11 @@ exist at apply 1. `elastic_ip_allocation_id` makes the two applies plain applies
 1. **Apply 1** (variable null): no Elastic IP, no association, no `SITE_ADDRESS` parameter.
    `public_ip`, `site_address` and `site_url` are null.
 2. **Apply 2** (after the transfer is accepted): set `elastic_ip_allocation_id` to the new
-   allocation ID, e.g. in `infra/terraform.tfvars` (gitignored), then run
-   `AWS_PROFILE=tutorlink-prod terraform -chdir=infra apply`. An `import` block adopts the address,
-   and the association and `SITE_ADDRESS` are created.
+   allocation ID, then run `AWS_PROFILE=tutorlink-prod terraform -chdir=infra apply`. An `import`
+   block adopts the address, and the association and `SITE_ADDRESS` are created.
+
+The cutover is done, so the variable's default is now the transferred address,
+`eipalloc-0f1a4ca7010c7fba3` (52.87.65.127). A plain apply keeps it; there's nothing to pass.
 
 The address has `prevent_destroy`, because a released address can't be recovered and the site URL
 is built from it. **Never set the variable back to null to remove it:** the plan fails on purpose,
@@ -199,7 +201,7 @@ The transfer steps, the order around the deploy and the rollback are in Neves-La
 | `instance_type` | `t3.micro` | EC2 instance type. It must be offered in `use1-az1`. |
 | `data_volume_size_gb` | `5` | Size of the data volume (Caddy certificates and deploy files). Can be grown later (apply, then `sudo xfs_growfs /srv/tutorlink` in a shell on the instance), never shrunk. |
 | `domain` | `null` | Real hostname; when null the site uses `<ip-with-dashes>.sslip.io`. |
-| `elastic_ip_allocation_id` | `null` | Allocation ID (`eipalloc-...`) of the transferred Elastic IP; set for apply 2. See [Elastic IP](#elastic-ip). |
+| `elastic_ip_allocation_id` | `eipalloc-0f1a4ca7010c7fba3` | Allocation ID of the site's transferred Elastic IP (52.87.65.127). See [Elastic IP](#elastic-ip). |
 | `github_repo` | `Neves-Labs-Inc@313945357/TutorLink@1325618027` | Repository allowed to assume the deploy role, in GitHub's immutable `owner@id/repo@id` subject format. |
 | `github_deploy_ref` | `refs/heads/main` | Git ref whose workflow runs may deploy. |
 

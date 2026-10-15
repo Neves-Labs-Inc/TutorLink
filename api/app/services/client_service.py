@@ -26,20 +26,29 @@ is unreachable by any test this harness can run.
 
 import logging
 import uuid
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import ScalarSelect, Select, func, or_, select
+from sqlalchemy import ColumnElement, ScalarSelect, Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.conversation import Conversation
+from app.models.enums import Language
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.user import User
 from app.services import conversation_service, message_service
 from app.services.bot_state import clear_state
 from app.services.conversation_service import LATEST_CONVERSATION_FIRST
+from app.services.guardian_state import (
+    GuardianState,
+    ReminderState,
+    effective_language,
+    guardian_states,
+    reminders_state,
+)
 from app.services.phone_service import normalize_phone_number
 
 logger = logging.getLogger(__name__)
@@ -79,9 +88,14 @@ class ClientDetail:
 
 @dataclass(frozen=True, slots=True)
 class ClientWithCounts:
+    """One list row. `children` are the non-archived ones, by name, so `child_count` is their
+    number."""
+
     client: Guardian
     home_count: int
     child_count: int
+    children: list[Child]
+    state: GuardianState
 
 
 class ClientServiceError(Exception):
@@ -115,6 +129,8 @@ def list_clients(
     limit: int,
     offset: int,
     q: str | None = None,
+    languages: Collection[Language] = (),
+    reminders: Collection[ReminderState] = (),
 ) -> tuple[list[ClientWithCounts], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -128,11 +144,23 @@ def list_clients(
     normalising it would turn a search into a 400. It is a raw case-insensitive substring of
     the stored name or the stored E.164 string.
 
-    The filters compose, and `is_archived` is **not** special-cased for the lookup: a
-    deactivated client is found only with `is_archived=True`.
+    It also matches the name of any of the Guardian's non-archived Children.
+
+    `languages` and `reminders` keep a Guardian whose state is any of the listed values; empty
+    means no filter. The filters compose, and `is_archived` is **not** special-cased for the
+    lookup: a deactivated client is found only with `is_archived=True`.
+
+    A constant number of statements whatever the page size: the Children and the Guardian
+    state are read for the whole page at once.
     """
     canonical = None if phone_number is None else normalize_phone_number(db, raw=phone_number)
-    matching = visible_clients(is_archived=is_archived, phone_number=canonical, q=q)
+    matching = visible_clients(
+        is_archived=is_archived,
+        phone_number=canonical,
+        q=q,
+        languages=languages,
+        reminders=reminders,
+    )
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     rows = db.execute(
         matching.add_columns(_home_count(), _child_count())
@@ -140,9 +168,18 @@ def list_clients(
         .limit(limit)
         .offset(offset)
     ).all()
+    guardian_ids = [client.id for client, _, _ in rows]
+    children = _active_children(db, guardian_ids=guardian_ids)
+    states = guardian_states(db, guardian_ids)
     clients = [
-        ClientWithCounts(client=client, home_count=homes, child_count=children)
-        for client, homes, children in rows
+        ClientWithCounts(
+            client=client,
+            home_count=home_count,
+            child_count=child_count,
+            children=children.get(client.id, []),
+            state=states[client.id],
+        )
+        for client, home_count, child_count in rows
     ]
 
     return clients, total
@@ -285,7 +322,12 @@ def update_client(
 
 
 def visible_clients(
-    *, is_archived: bool, phone_number: str | None, q: str | None = None
+    *,
+    is_archived: bool,
+    phone_number: str | None,
+    q: str | None = None,
+    languages: Collection[Language] = (),
+    reminders: Collection[ReminderState] = (),
 ) -> Select[tuple[Guardian]]:
     statement = select(Guardian).where(Guardian.is_archived.is_(is_archived))
     pattern = _substring_pattern(q)
@@ -298,10 +340,31 @@ def visible_clients(
             or_(
                 Guardian.name.ilike(pattern, escape=_LIKE_ESCAPE),
                 Guardian.phone_number.ilike(pattern, escape=_LIKE_ESCAPE),
+                _has_active_child_named(pattern),
             )
         )
 
+    if languages:
+        statement = statement.where(effective_language().in_(languages))
+
+    if reminders:
+        statement = statement.where(reminders_state().in_(reminders))
+
     return statement
+
+
+def _has_active_child_named(pattern: str) -> ColumnElement[bool]:
+    # `EXISTS` rather than a join, so a Guardian with two matching Children is one row.
+    return (
+        select(ChildGuardian.child_id)
+        .join(Child, Child.id == ChildGuardian.child_id)
+        .where(
+            ChildGuardian.guardian_id == Guardian.id,
+            Child.is_archived.is_(False),
+            Child.name.ilike(pattern, escape=_LIKE_ESCAPE),
+        )
+        .exists()
+    )
 
 
 def _substring_pattern(raw: str | None) -> str | None:
@@ -315,8 +378,9 @@ def _substring_pattern(raw: str | None) -> str | None:
     return pattern
 
 
-# `homes` carries `is_archived`, so an archived home is not counted; `child_count` counts every
-# linked child, active or not, by decision P7C-N. The two subqueries are scalar and
+# Neither count includes archived rows: an archived home or Child is not counted (#213, which
+# replaced decision P7C-N's count of every linked Child), so `child_count` is the number of
+# Children the row names. The two subqueries are scalar and
 # correlated rather than joined: a join over `guardian_homes` would multiply the guardian row
 # and turn `total` into a count of links (CONSTITUTION §8).
 #
@@ -338,9 +402,28 @@ def _child_count() -> ScalarSelect[int]:
     return (
         select(func.count())
         .select_from(ChildGuardian)
-        .where(ChildGuardian.guardian_id == Guardian.id)
+        .join(Child, Child.id == ChildGuardian.child_id)
+        .where(ChildGuardian.guardian_id == Guardian.id, Child.is_archived.is_(False))
         .scalar_subquery()
     )
+
+
+def _active_children(
+    db: Session, *, guardian_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[Child]]:
+    """Each Guardian's non-archived Children by name, for a whole page in one statement."""
+    rows = db.execute(
+        select(ChildGuardian.guardian_id, Child)
+        .join(Child, Child.id == ChildGuardian.child_id)
+        .where(ChildGuardian.guardian_id.in_(guardian_ids), Child.is_archived.is_(False))
+        .order_by(Child.name, Child.id)
+    ).all()
+
+    children: dict[uuid.UUID, list[Child]] = {}
+    for guardian_id, child in rows:
+        children.setdefault(guardian_id, []).append(child)
+
+    return children
 
 
 def _phone_number_taken(db: Session, *, phone_number: str, exclude_id: uuid.UUID | None) -> bool:

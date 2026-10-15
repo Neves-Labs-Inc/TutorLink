@@ -23,11 +23,13 @@ validator, because the canonical form depends on a `system_settings` row and a v
 
 import datetime
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import Language
 from app.schemas.archived import ArchivedFlag
+from app.schemas.booking import NamedRef
 
 
 class HomeRead(BaseModel):
@@ -58,7 +60,14 @@ class ClientSummary(BaseModel):
     phone_number: str
     archived: bool
     home_count: int
+    # Non-archived Children only, so it is the length of `children`.
     child_count: int
+    # Never null on the list: an undetected language reads English, the language used.
+    language: Language
+    reminders: Literal["opt_in", "opt_out", "never"]
+    reminders_blocked_by_whatsapp: bool
+    # The non-archived Children, by name.
+    children: list[NamedRef]
 
 
 class ClientRead(BaseModel):

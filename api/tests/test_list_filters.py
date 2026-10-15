@@ -18,19 +18,30 @@ lacks those digits.
 
 import datetime
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.conversation import Conversation
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ConsentAction,
+    ConsentSource,
+    Language,
+    UserRole,
+)
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.models.reminder_consent import ReminderConsent
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
@@ -63,6 +74,17 @@ class Roster:
 class Household:
     full: Guardian
     empty: Guardian
+
+
+@dataclass(frozen=True, slots=True)
+class Languages:
+    """Five Guardians, one per language and reminder state the filters tell apart."""
+
+    undetected: Guardian
+    english: Guardian
+    spanish: Guardian
+    silent: Guardian
+    spanish_out: Guardian
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,12 +379,11 @@ def test_client_items_carry_the_home_and_child_counts(
     assert counts == {"Empty Nest": (0, 0), "Full House": (2, 3)}
 
 
-def test_a_deactivated_home_is_not_counted_but_every_linked_child_is(
+def test_neither_a_deactivated_home_nor_an_archived_child_is_counted(
     api: TestClient, db: Session, household: Household
 ) -> None:
-    """`homes` carries `is_archived`; `children` has no such column, so there is nothing to filter
-    a child on and none is filtered."""
     admin = _make_user(db)
+    _make_child(db, guardians=[household.full], is_archived=True)
 
     body = api.get("/api/clients", params={"q": "Full House"}, headers=_auth(admin)).json()
 
@@ -559,6 +580,170 @@ def test_a_malformed_booking_subject_id_is_400_not_422(
     assert "subject_id" in response.json()["detail"]
 
 
+# --- the Guardians list's language and reminders filters ------------------------------------
+
+
+@pytest.fixture
+def languages(db: Session) -> Languages:
+    undetected = _make_client(db, name="Ana Undetected")
+    _make_conversation(db, guardian=undetected, language=None)
+    english = _make_client(db, name="Ben English")
+    _make_conversation(db, guardian=english, language=Language.EN)
+    spanish = _make_client(db, name="Carla Spanish")
+    _make_conversation(db, guardian=spanish, language=Language.ES)
+    _consent(db, guardian=spanish, action=ConsentAction.OPT_IN)
+    silent = _make_client(db, name="Dan Silent")
+    spanish_out = _make_client(db, name="Eva Spanish")
+    _make_conversation(db, guardian=spanish_out, language=Language.ES)
+    _consent(db, guardian=spanish_out, action=ConsentAction.OPT_OUT)
+
+    return Languages(
+        undetected=undetected,
+        english=english,
+        spanish=spanish,
+        silent=silent,
+        spanish_out=spanish_out,
+    )
+
+
+def _listed(api: TestClient, headers: dict[str, str], params: dict[str, object]) -> list[str]:
+    body = api.get("/api/clients", params=params, headers=headers).json()
+    names = [row["name"] for row in body["items"]]
+    assert body["total"] == len(names)
+
+    return names
+
+
+def test_language_en_returns_undetected_and_english_guardians(
+    api: TestClient, db: Session, languages: Languages
+) -> None:
+    names = _listed(api, _auth(_make_user(db)), {"language": "en"})
+
+    assert names == ["Ana Undetected", "Ben English", "Dan Silent"]
+
+
+def test_two_languages_return_guardians_in_either(
+    api: TestClient, db: Session, languages: Languages
+) -> None:
+    names = _listed(api, _auth(_make_user(db)), {"language": ["en", "es"]})
+
+    assert names == ["Ana Undetected", "Ben English", "Carla Spanish", "Dan Silent", "Eva Spanish"]
+
+
+def test_two_reminder_states_return_guardians_in_either(
+    api: TestClient, db: Session, languages: Languages
+) -> None:
+    names = _listed(api, _auth(_make_user(db)), {"reminders": ["never", "opt_out"]})
+
+    assert names == ["Ana Undetected", "Ben English", "Dan Silent", "Eva Spanish"]
+
+
+def test_language_and_reminders_must_both_match(
+    api: TestClient, db: Session, languages: Languages
+) -> None:
+    names = _listed(api, _auth(_make_user(db)), {"language": "es", "reminders": "opt_in"})
+
+    assert names == ["Carla Spanish"]
+
+
+def test_the_state_filters_compose_with_archived_and_q(
+    api: TestClient, db: Session, languages: Languages
+) -> None:
+    languages.english.is_archived = True
+    db.flush()
+    headers = _auth(_make_user(db))
+
+    # "ana" is no hex fragment, so it can't match the generated phone numbers.
+    assert _listed(api, headers, {"language": "en", "q": "ana"}) == ["Ana Undetected"]
+    assert _listed(api, headers, {"language": "en", "archived": True}) == ["Ben English"]
+
+
+@pytest.mark.parametrize("params", [{"language": "fr"}, {"reminders": "maybe"}])
+def test_an_unknown_language_or_reminder_state_is_a_validation_error(
+    api: TestClient, db: Session, params: dict[str, str]
+) -> None:
+    """The app answers every request validation error 400 (`main.handle_validation_error`)."""
+    response = api.get("/api/clients", params=params, headers=_auth(_make_user(db)))
+    [name] = params
+
+    assert response.status_code == 400
+    assert name in response.json()["detail"]
+
+
+def test_client_q_finds_a_guardian_by_a_childs_name(api: TestClient, db: Session) -> None:
+    guardian = _make_client(db, name="Priya Raman", phone_number=PHONE)
+    _make_child(db, guardians=[guardian], name="Kiran Raman")
+    _make_client(db, name="Tomas Silva", phone_number=FOREIGN_PHONE)
+
+    body = api.get("/api/clients", params={"q": "kiran"}, headers=_auth(_make_user(db))).json()
+
+    assert body["total"] == 1
+    assert [row["id"] for row in body["items"]] == [str(guardian.id)]
+
+
+def test_client_q_does_not_match_an_archived_childs_name(api: TestClient, db: Session) -> None:
+    guardian = _make_client(db, name="Priya Raman", phone_number=PHONE)
+    _make_child(db, guardians=[guardian], name="Kiran Raman", is_archived=True)
+
+    body = api.get("/api/clients", params={"q": "kiran"}, headers=_auth(_make_user(db))).json()
+
+    assert (body["total"], body["items"]) == (0, [])
+
+
+def test_a_guardian_with_two_matching_children_is_counted_once(
+    api: TestClient, db: Session
+) -> None:
+    guardian = _make_client(db, name="Priya Raman", phone_number=PHONE)
+    _make_child(db, guardians=[guardian], name="Kiran Twin")
+    _make_child(db, guardians=[guardian], name="Kavya Twin")
+
+    body = api.get("/api/clients", params={"q": "twin"}, headers=_auth(_make_user(db))).json()
+
+    assert body["total"] == 1
+    assert [row["id"] for row in body["items"]] == [str(guardian.id)]
+
+
+def test_a_client_page_reads_in_the_same_number_of_statements_whatever_its_size(
+    api: TestClient, db: Session
+) -> None:
+    headers = _auth(_make_user(db))
+    for _ in range(4):
+        guardian = _make_client(db)
+        _make_home(db, guardian=guardian)
+        _make_child(db, guardians=[guardian])
+        _make_conversation(db, guardian=guardian, language=Language.ES)
+        _consent(db, guardian=guardian, action=ConsentAction.OPT_IN)
+
+    small = _statements_for(db, lambda: api.get("/api/clients?page_size=1", headers=headers))
+    large = _statements_for(db, lambda: api.get("/api/clients?page_size=4", headers=headers))
+
+    assert small
+    assert len(large) == len(small)
+
+
+def _statements_for(db: Session, call: Callable[[], object]) -> list[str]:
+    captured: list[str] = []
+
+    def record(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        captured.append(statement)
+
+    bind = db.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        call()
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+
+    return captured
+
+
 def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
     user = User(
         email=f"user-{uuid.uuid4().hex[:12]}@example.com",
@@ -635,14 +820,45 @@ def _make_home(db: Session, *, guardian: Guardian, is_archived: bool = False) ->
     return home
 
 
-def _make_child(db: Session, *, guardians: list[Guardian]) -> Child:
-    child = Child(name=f"Child {uuid.uuid4().hex[:12]}", grade_level=7, school_name="Test School")
+def _make_child(
+    db: Session, *, guardians: list[Guardian], name: str | None = None, is_archived: bool = False
+) -> Child:
+    child = Child(
+        name=name or f"Child {uuid.uuid4().hex[:12]}",
+        grade_level=7,
+        school_name="Test School",
+        is_archived=is_archived,
+    )
     db.add(child)
     db.flush()
     db.add_all([ChildGuardian(child_id=child.id, guardian_id=one.id) for one in guardians])
     db.flush()
 
     return child
+
+
+def _make_conversation(db: Session, *, guardian: Guardian, language: Language | None) -> None:
+    db.add(
+        Conversation(
+            phone_number=guardian.phone_number,
+            guardian_id=guardian.id,
+            last_message_at=datetime.datetime(2026, 9, 1, 15, 0, tzinfo=datetime.UTC),
+            language=language,
+        )
+    )
+    db.flush()
+
+
+def _consent(db: Session, *, guardian: Guardian, action: ConsentAction) -> None:
+    db.add(
+        ReminderConsent(
+            guardian_id=guardian.id,
+            action=action,
+            source=ConsentSource.INTAKE,
+            phone_number=guardian.phone_number,
+        )
+    )
+    db.flush()
 
 
 def _book(

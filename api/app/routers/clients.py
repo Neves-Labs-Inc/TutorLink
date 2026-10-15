@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
+from app.models.enums import Language
+from app.schemas.booking import NamedRef
 from app.schemas.client import (
     ChildRead,
     ClientCreate,
@@ -43,6 +45,7 @@ from app.services.client_service import (
     list_clients,
     update_client,
 )
+from app.services.guardian_state import ReminderState
 from app.services.phone_service import InvalidPhoneNumber
 
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
@@ -62,6 +65,9 @@ def list_all(
     archived: bool = False,
     phone_number: str | None = None,
     q: str | None = None,
+    # Repeatable; OR within one, AND with every other filter.
+    language: Annotated[list[Language] | None, Query()] = None,
+    reminders: Annotated[list[ReminderState] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ClientSummary]:
@@ -71,6 +77,8 @@ def list_all(
             is_archived=archived,
             phone_number=phone_number,
             q=q,
+            languages=language or (),
+            reminders=reminders or (),
             limit=page_size,
             offset=(page - 1) * page_size,
         )
@@ -150,6 +158,10 @@ def _summary(row: ClientWithCounts) -> ClientSummary:
         archived=row.client.is_archived,
         home_count=row.home_count,
         child_count=row.child_count,
+        language=row.state.language,
+        reminders=row.state.reminders,
+        reminders_blocked_by_whatsapp=row.state.is_blocked_by_whatsapp,
+        children=[NamedRef(id=child.id, name=child.name) for child in row.children],
     )
 
 

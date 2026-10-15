@@ -336,6 +336,49 @@ def test_a_tutor_may_neither_read_nor_record_consent(api: TestClient, db: Sessio
     assert (read.status_code, record.status_code) == (403, 403)
 
 
+# --- the Guardians list agrees with the Guardian screen ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("history", "expected"),
+    [
+        ([], ("never", False)),
+        ([(ConsentAction.OPT_IN, ConsentSource.INTAKE)], ("opt_in", False)),
+        (
+            [
+                (ConsentAction.OPT_IN, ConsentSource.INTAKE),
+                (ConsentAction.OPT_OUT, ConsentSource.MESSAGE),
+            ],
+            ("opt_out", False),
+        ),
+        ([(ConsentAction.OPT_OUT, ConsentSource.SYSTEM)], ("opt_out", True)),
+        (
+            [
+                (ConsentAction.OPT_OUT, ConsentSource.SYSTEM),
+                (ConsentAction.OPT_IN, ConsentSource.MESSAGE),
+            ],
+            ("opt_in", False),
+        ),
+    ],
+)
+def test_the_guardians_list_row_reads_the_same_consent_as_the_guardian_screen(
+    api: TestClient,
+    db: Session,
+    history: list[tuple[ConsentAction, ConsentSource]],
+    expected: tuple[str, bool],
+) -> None:
+    guardian = _make_guardian(db)
+    for offset, (action, source) in enumerate(history):
+        _consent(db, guardian, action, source, at=INTAKE_AT + datetime.timedelta(days=offset))
+    headers = _auth(_make_user(db))
+
+    consent = api.get(f"/api/clients/{guardian.id}/reminders", headers=headers).json()["consent"]
+    [row] = api.get("/api/clients", params={"q": guardian.name}, headers=headers).json()["items"]
+
+    assert (consent["state"], consent["blocked_by_whatsapp"]) == expected
+    assert (row["reminders"], row["reminders_blocked_by_whatsapp"]) == expected
+
+
 # --- helpers -------------------------------------------------------------------------------------
 
 

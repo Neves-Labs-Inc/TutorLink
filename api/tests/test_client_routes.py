@@ -681,6 +681,70 @@ def test_a_guardian_with_no_conversation_has_no_language_conversation(
     assert (body["language"], body["language_conversation_id"]) == (None, None)
 
 
+# --- the list row's Guardian state ---------------------------------------------------------
+
+
+def test_a_listed_guardian_without_a_conversation_reads_english(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    _make_client(db)
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["language"] == "en"
+
+
+def test_a_listed_guardian_whose_latest_conversation_is_undetected_reads_english(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _make_conversation(db, client=client, language=Language.ES, last_message_at=NOON)
+    _make_conversation(
+        db, client=client, language=None, last_message_at=NOON + datetime.timedelta(hours=1)
+    )
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["language"] == "en"
+
+
+def test_a_listed_guardian_reads_the_language_of_their_latest_conversation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _make_conversation(db, client=client, language=Language.EN, last_message_at=NOON)
+    _make_conversation(
+        db, client=client, language=Language.ES, last_message_at=NOON + datetime.timedelta(hours=1)
+    )
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["language"] == "es"
+
+
+def test_a_listed_guardian_names_their_non_archived_children_by_name(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    zoe = _make_child(db, guardians=[client], name="Zoe Doe")
+    adam = _make_child(db, guardians=[client], name="Adam Doe")
+    gone = _make_child(db, guardians=[client], name="Beth Doe")
+    gone.is_archived = True
+    db.flush()
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["children"] == [
+        {"id": str(adam.id), "name": "Adam Doe"},
+        {"id": str(zoe.id), "name": "Zoe Doe"},
+    ]
+    assert row["child_count"] == 2
+
+
 def _make_conversation(
     db: Session,
     *,

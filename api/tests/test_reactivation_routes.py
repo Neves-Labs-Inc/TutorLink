@@ -58,7 +58,6 @@ CONVERSATION_READ_KEYS = {
     "flag_reason",
     "flagged_at",
     "message_count",
-    "unread_count",
     "created_at",
     "reactivation_request",
     "is_window_open",

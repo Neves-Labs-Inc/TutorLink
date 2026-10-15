@@ -413,7 +413,6 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         flag_reason=detail.conversation.flag_reason,
         flagged_at=detail.conversation.flagged_at,
         message_count=detail.message_count,
-        unread_count=detail.unread_count,
         created_at=detail.conversation.created_at,
         reactivation_request=_reactivation_request(detail.reactivation_child),
         is_window_open=detail.is_window_open,

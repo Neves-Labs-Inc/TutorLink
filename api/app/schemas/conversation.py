@@ -94,7 +94,6 @@ class ConversationRead(BaseModel):
     flag_reason: FlagReason | None
     flagged_at: datetime.datetime | None
     message_count: int
-    unread_count: int
     created_at: datetime.datetime
     reactivation_request: ReactivationRequestRead | None
     # The composer's two facts (#109): whether a free-form reply can still reach the Guardian,

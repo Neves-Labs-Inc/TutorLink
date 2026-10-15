@@ -31,8 +31,8 @@ leaves the `Session` usable when it fires. The predicate is a named seam rather 
 query so the constraint path is reachable by a test (**D-I**).
 
 **Every timestamp this module writes comes from Python's clock**, as `auth_service` writes
-`revoked_at`. One clock matters here: `unread` compares `messages.created_at` against
-`conversations.last_read_at`, and a server-side `now()` on one side of that comparison with a
+`revoked_at`. One clock matters here: `unread` compares an inbound `messages.created_at`
+against `conversations.last_read_at`, and a server-side `now()` on one side of that comparison with a
 process-side `datetime` on the other would make the watermark wrong by whatever the two clocks
 disagree by. `resolve_or_create` therefore sets `last_message_at` explicitly rather than letting
 the column's `now()` default fire.
@@ -122,7 +122,6 @@ class ConversationDetail:
     guardian: Guardian | None
     holder: User | None
     message_count: int
-    unread_count: int
     reactivation_child: Child | None
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
@@ -393,10 +392,11 @@ def list_conversations(
 ) -> tuple[list[ConversationListItem], int]:
     """One page of the inbox, newest activity first, plus the total matching before paging.
 
-    Ordered `last_message_at DESC` because the list is an inbox and nothing reads it the other
-    way (`api-design.md:1434-1435`); `id` is the tiebreaker so that two conversations sharing a
-    timestamp cannot be ordered differently by two executions and make page two repeat or skip
-    a row page one already showed.
+    Ordered `last_message_at DESC` because the list is an inbox (`api-design.md:1434-1435`);
+    `id` is the tiebreaker so that two conversations sharing a timestamp cannot be ordered
+    differently by two executions and make page two repeat or skip a row page one already
+    showed. `flagged=True` is the Needs attention queue and flips to `flagged_at ASC`, oldest
+    flag first, because the longest-waiting chat is the one to open next.
 
     `q` is a case-insensitive substring of the stored phone number **or** the linked guardian's
     name (`api-design.md:1437`), and is deliberately **not** phone-normalised (**P5-C**): a
@@ -404,16 +404,21 @@ def list_conversations(
     400. A conversation with no guardian is still matched on its number, which is the whole
     point of the outer join — those are the threads an admin most wants to find.
 
-    `unread` is computed against `last_read_at`, one watermark shared by every admin
-    (`erd.md:281-284`). The same predicate decides the filter and the flag on each row, so the
-    two can never disagree.
+    `unread` is a Guardian message newer than `last_read_at`, one watermark shared by every
+    admin (`erd.md:281-284`); bot, office and system messages never make a chat Unread. The
+    same predicate decides the filter and the flag on each row, so the two can never disagree.
     """
     matching = _matching_conversations(status=status, unread=unread, flagged=flagged, q=q)
+    order = (
+        (Conversation.flagged_at.asc(), Conversation.id.asc())
+        if flagged
+        else LATEST_CONVERSATION_FIRST
+    )
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
     rows = db.execute(
         matching.add_columns(Guardian, User, _last_message_preview(), _unread())
         .outerjoin(User, User.id == Conversation.taken_over_by_user_id)
-        .order_by(Conversation.last_message_at.desc(), Conversation.id.desc())
+        .order_by(*order)
         .limit(limit)
         .offset(offset)
     ).all()
@@ -554,8 +559,7 @@ def touch_last_message(
 
     Called by `message_service` on every insert rather than by each of its callers, so the
     inbox's ordering key and the newest message's `created_at` are the same instant by
-    construction. That equality is what lets `unread` be decided from the conversation row
-    alone, without a correlated read of `messages`.
+    construction. `unread` does not read it: that is decided from the inbound messages.
     """
     conversation.last_message_at = at
     db.flush()
@@ -776,16 +780,23 @@ def _matching_conversations(
 
 
 def _unread() -> ColumnElement[bool]:
-    """Messages have arrived since the shared watermark — or nobody has read the thread yet.
+    """A Guardian message has arrived since the shared watermark, or the thread was never read.
 
-    `last_message_at` is the newest message's `created_at` exactly (`touch_last_message`), so
-    this answers the same question a correlated `EXISTS` over `messages` would, off the one row
-    the list already has. Never NULL: the `IS NULL` branch decides the case where `last_read_at`
-    is missing, so the comparison is only reached with both sides present.
+    Only `MessageAuthor.CLIENT` counts: bot, office and system messages are ours. Every inbound
+    message counts, including those before a number-change note (that cut is for the WhatsApp
+    window only). `ix_messages_conversation_id_created_at` serves the correlated `EXISTS`.
     """
-    return or_(
-        Conversation.last_read_at.is_(None),
-        Conversation.last_message_at > Conversation.last_read_at,
+    return (
+        select(Message.id)
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.author_kind == MessageAuthor.CLIENT,
+            or_(
+                Conversation.last_read_at.is_(None),
+                Message.created_at > Conversation.last_read_at,
+            ),
+        )
+        .exists()
     )
 
 
@@ -912,8 +923,7 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         conversation=conversation,
         guardian=_guardian(db, conversation),
         holder=_holder_or_none(db, conversation),
-        message_count=_message_count(db, conversation, unread_only=False),
-        unread_count=_message_count(db, conversation, unread_only=True),
+        message_count=_message_count(db, conversation),
         reactivation_child=_reactivation_child(db, conversation),
         last_client_message_at=last_client_message_at,
         is_window_open=is_window_open(
@@ -959,13 +969,10 @@ def _last_client_message_at(db: Session, conversation_id: uuid.UUID) -> datetime
     )
 
 
-def _message_count(db: Session, conversation: Conversation, *, unread_only: bool) -> int:
+def _message_count(db: Session, conversation: Conversation) -> int:
     statement = (
         select(func.count()).select_from(Message).where(Message.conversation_id == conversation.id)
     )
-
-    if unread_only and conversation.last_read_at is not None:
-        statement = statement.where(Message.created_at > conversation.last_read_at)
 
     return db.scalar(statement) or 0
 

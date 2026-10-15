@@ -244,6 +244,8 @@ def test_a_conversation_is_unread_until_the_watermark_passes_its_last_message(
     read.last_read_at = NOON + _minutes(1)
     caught_up = _make_conversation(db, marker=marker, last_message_at=NOON + _minutes(2))
     caught_up.last_read_at = NOON + _minutes(1)
+    for conversation in (never_read, read, caught_up):
+        _make_message(db, conversation, body="hi", at=conversation.last_message_at)
     db.flush()
 
     unread, unread_total = _page(db, q=marker, unread=True)
@@ -442,33 +444,17 @@ def test_a_concurrent_claim_is_serialized_by_the_row_lock(
         _delete_committed_conversation(committed_sessions, committed)
 
 
-def test_marking_read_clears_the_unread_count_without_touching_the_messages(
+def test_marking_read_stamps_the_watermark_without_touching_the_messages(
     db: Session,
 ) -> None:
     conversation = _make_conversation(db, last_message_at=NOON)
     _make_message(db, conversation, body="one", at=NOON - _minutes(2))
     _make_message(db, conversation, body="two", at=NOON)
 
-    before = get_detail(db, conversation_id=conversation.id)
     after = mark_read(db, conversation_id=conversation.id)
 
-    assert before.unread_count == 2
-    assert after.unread_count == 0
     assert after.message_count == 2
     assert after.conversation.last_read_at is not None
-
-
-def test_the_unread_count_is_the_messages_newer_than_the_watermark(db: Session) -> None:
-    conversation = _make_conversation(db, last_message_at=NOON + _minutes(5))
-    _make_message(db, conversation, body="read", at=NOON)
-    _make_message(db, conversation, body="unread", at=NOON + _minutes(5))
-    conversation.last_read_at = NOON + _minutes(1)
-    db.flush()
-
-    detail = get_detail(db, conversation_id=conversation.id)
-
-    assert detail.message_count == 2
-    assert detail.unread_count == 1
 
 
 def test_linking_a_guardian_attaches_intake_to_the_thread(db: Session) -> None:

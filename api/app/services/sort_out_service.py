@@ -35,12 +35,15 @@ def sort_out_predicate(
     return or_(*predicates.values()) if reason is None else predicates[reason]
 
 
-def time_off_clash_predicate() -> ColumnElement[bool]:
-    """Live, and inside some approved Time off of its Staff member, past Bookings included.
+def time_off_clash_predicate(*, ignore_acknowledgement: bool = False) -> ColumnElement[bool]:
+    """Live, inside some approved Time off of its Staff member, past Bookings included, and not
+    acknowledged by an Admin; `ignore_acknowledgement` drops that last condition, which is the
+    acknowledgement route's "current clash" test.
 
     The same bare overlap as `exception_service._clashes_with` (keep the two in step): a
     whole-day Time off blocks every day of its range, a partial-day one only its window on each
-    day, and touching times don't clash.
+    day, and touching times don't clash. That one ignores acknowledgements: it is the Time
+    off's view of its clashes.
     """
     time_off = TutorAvailabilityException
     clashing_time_off = select(1).where(
@@ -54,7 +57,9 @@ def time_off_clash_predicate() -> ColumnElement[bool]:
         ),
     )
 
-    return and_(_is_live(), clashing_time_off.exists())
+    clash = and_(_is_live(), clashing_time_off.exists())
+
+    return clash if ignore_acknowledgement else and_(clash, Booking.clash_acknowledged_at.is_(None))
 
 
 def sort_out_reasons(

@@ -69,6 +69,10 @@ class BookingSummary(BaseModel):
     home: HomeSummaryRef | None
     # Why the Booking is to sort out, in `SORT_OUT_REASONS` order; [] when it isn't.
     sort_out_reasons: list[SortOutReason]
+    # Who kept the Booking over Time off on purpose, and when; both None when nobody did. An
+    # archived user is still named.
+    clash_acknowledged_by: NamedRef | None
+    clash_acknowledged_at: datetime.datetime | None
     updated_at: datetime.datetime
 
 
@@ -116,11 +120,19 @@ class BookingDetail(BaseModel):
     booked_by_guardian: NamedRef | None
     guardians: list[BookingGuardian]
     sort_out_reasons: list[SortOutReason]
+    # Who kept the Booking over Time off on purpose, and when; both None when nobody did. An
+    # archived user is still named.
+    clash_acknowledged_by: NamedRef | None
+    clash_acknowledged_at: datetime.datetime | None
     updated_at: datetime.datetime
 
 
 def staff_ref(user: "User") -> StaffRef:
     return StaffRef(id=user.id, name=user.name, role=user.role)
+
+
+def user_ref(user: "User | None") -> NamedRef | None:
+    return None if user is None else NamedRef(id=user.id, name=user.name)
 
 
 def subject_ref(subject: "Subject | None") -> NamedRef | None:

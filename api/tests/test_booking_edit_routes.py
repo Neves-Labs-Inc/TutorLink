@@ -54,6 +54,7 @@ from tests.test_booking_write_routes import (
     OUTSIDE_SLOT,
     TEN,
     TIME_OFF,
+    TUESDAY,
     TWELVE,
     Family,
     _assert_detail,
@@ -520,6 +521,85 @@ def test_moving_a_booking_off_its_staff_members_time_off_clears_the_clash(
     assert before["sort_out_reasons"] == ["time_off_clash"]
     assert response.status_code == 200
     assert response.json()["sort_out_reasons"] == []
+
+
+# --- what an edit does to a clash acknowledgement (#209) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("change", "still_clashes"),
+    [
+        ("date", False),
+        ("start", True),
+        ("end", True),
+        ("staff", False),
+    ],
+)
+def test_moving_an_acknowledged_booking_clears_the_acknowledgement(
+    api: TestClient, db: Session, family: Family, change: str, still_clashes: bool
+) -> None:
+    """The whole-day Time off covers only `MONDAY`, so a Booking still on it clashes again."""
+    booking = _acknowledged_booking(api, db, family)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    overrides: dict[str, Any] = {
+        "date": {"scheduled_date": TUESDAY.isoformat()},
+        "start": {"start_time": "09:30:00"},
+        "end": {"end_time": "10:30:00"},
+        "staff": {"user_id": str(admin.id), "availability_id": None},
+    }[change]
+
+    response = _put(
+        api,
+        _make_user(db),
+        booking,
+        family,
+        confirm_warnings=[OUTSIDE_SLOT, TIME_OFF],
+        **overrides,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["clash_acknowledged_by"] is None
+    assert body["clash_acknowledged_at"] is None
+    assert body["sort_out_reasons"] == (["time_off_clash"] if still_clashes else [])
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"location": "in_office", "home_id": None},
+        {"notes": "Bring the workbook"},
+        # The values it already has, restated: nothing moved.
+        {},
+    ],
+    ids=["location", "notes", "restated"],
+)
+def test_an_edit_that_does_not_move_the_booking_keeps_the_acknowledgement(
+    api: TestClient, db: Session, family: Family, overrides: dict[str, Any]
+) -> None:
+    booking = _acknowledged_booking(api, db, family)
+    acknowledged = api.get(f"/api/bookings/{booking.id}", headers=_auth(_make_user(db))).json()
+
+    response = _put(api, _make_user(db), booking, family, confirm_warnings=[TIME_OFF], **overrides)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["clash_acknowledged_by"] == acknowledged["clash_acknowledged_by"]
+    assert body["clash_acknowledged_at"] == acknowledged["clash_acknowledged_at"]
+    assert body["sort_out_reasons"] == []
+
+
+def _acknowledged_booking(api: TestClient, db: Session, family: Family) -> Booking:
+    """A booking on `MONDAY` inside its tutor's whole-day Time off, kept by an Admin."""
+    booking = _book(db, family)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    acknowledged = api.post(
+        f"/api/bookings/{booking.id}/clash-acknowledgement", headers=_auth(admin)
+    )
+    assert acknowledged.json()["clash_acknowledged_by"]["id"] == str(admin.id)
+
+    return booking
 
 
 def test_moving_a_booking_from_archived_staff_to_active_staff_clears_it(

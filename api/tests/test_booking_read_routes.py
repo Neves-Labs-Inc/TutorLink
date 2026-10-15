@@ -20,7 +20,7 @@ from httpx import Response
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from app.dependencies import CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
+from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR, TUTOR_SCOPE_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -1018,6 +1018,240 @@ def test_an_admin_sorts_out_everyones_bookings(
     body = api.get("/api/bookings?to_sort_out=true", headers=_auth(admin)).json()
 
     assert body["total"] == 3
+
+
+# --- acknowledging a Time off clash (#209) ------------------------------------------------------
+
+
+def test_an_admin_acknowledging_a_clash_takes_it_off_to_sort_out(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+    booking = sort_out_stage.past_clash
+
+    response = api.post(_acknowledgement_url(booking), headers=_auth(admin))
+    to_sort_out = api.get("/api/bookings?to_sort_out=true", headers=_auth(admin)).json()
+    by_reason = api.get("/api/bookings?reason=time_off_clash", headers=_auth(admin)).json()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(booking.id)
+    assert body["clash_acknowledged_by"] == {"id": str(admin.id), "name": admin.name}
+    acknowledged_at = datetime.datetime.fromisoformat(body["clash_acknowledged_at"])
+    assert acknowledged_at.tzinfo is not None
+    assert body["sort_out_reasons"] == ["not_completed"]
+    assert _reasons_by_id_of(to_sort_out)[str(booking.id)] == ["not_completed"]
+    assert by_reason["items"] == []
+
+
+def test_acknowledging_again_keeps_the_first_acknowledgement(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    first_admin = _make_user(db)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    booking = sort_out_stage.past_clash
+
+    first = api.post(_acknowledgement_url(booking), headers=_auth(first_admin)).json()
+    again = api.post(_acknowledgement_url(booking), headers=_auth(developer))
+
+    assert again.status_code == 200
+    assert again.json()["clash_acknowledged_by"] == {
+        "id": str(first_admin.id),
+        "name": first_admin.name,
+    }
+    assert again.json()["clash_acknowledged_at"] == first["clash_acknowledged_at"]
+
+
+def test_a_developer_may_acknowledge_a_clash(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+
+    response = api.post(_acknowledgement_url(sort_out_stage.past_clash), headers=_auth(developer))
+
+    assert response.status_code == 200
+    assert response.json()["clash_acknowledged_by"]["id"] == str(developer.id)
+
+
+def test_acknowledging_neither_bumps_updated_at_nor_changes_anything_else(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+    booking = sort_out_stage.past_clash
+    # Older than the test transaction's `now()`, which a bump would write.
+    booking.updated_at = datetime.datetime(2026, 1, 1, tzinfo=UTC)
+    db.flush()
+    before = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    acknowledged = api.post(_acknowledgement_url(booking), headers=_auth(admin)).json()
+    withdrawn = api.delete(_acknowledgement_url(booking), headers=_auth(admin)).json()
+
+    assert acknowledged["updated_at"] == before["updated_at"]
+    assert withdrawn == before
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["no_time_off", "pending_time_off", "cancelled_booking"],
+)
+def test_acknowledging_a_booking_with_no_clash_is_409(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+    setup: str,
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    status = BookingStatus.CANCELLED if setup == "cancelled_booking" else BookingStatus.PENDING
+    booking = _book(db, family, status=status)
+    if setup != "no_time_off":
+        time_off_status = (
+            ExceptionStatus.PENDING if setup == "pending_time_off" else ExceptionStatus.APPROVED
+        )
+        _time_off(db, family.tutor.user_id, status=time_off_status)
+
+    response = api.post(_acknowledgement_url(booking), headers=_auth(admin))
+
+    _assert_detail(response, 409, "This booking has no time off clash to acknowledge")
+
+
+def test_acknowledging_again_after_the_time_off_is_cancelled_is_409(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family)
+    time_off = _time_off(db, family.tutor.user_id)
+    acknowledged = api.post(_acknowledgement_url(booking), headers=_auth(admin))
+    api.post(f"/api/exceptions/{time_off.id}/cancel", headers=_auth(admin))
+
+    response = api.post(_acknowledgement_url(booking), headers=_auth(admin))
+
+    assert acknowledged.status_code == 200
+    _assert_detail(response, 409, "This booking has no time off clash to acknowledge")
+
+
+def test_withdrawing_an_acknowledgement_brings_the_clash_back(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+    booking = sort_out_stage.past_clash
+    api.post(_acknowledgement_url(booking), headers=_auth(admin))
+
+    withdrawn = api.delete(_acknowledgement_url(booking), headers=_auth(admin))
+    again = api.delete(_acknowledgement_url(booking), headers=_auth(admin))
+
+    assert withdrawn.status_code == 200
+    body = withdrawn.json()
+    assert body["clash_acknowledged_by"] is None
+    assert body["clash_acknowledged_at"] is None
+    assert body["sort_out_reasons"] == ["not_completed", "time_off_clash"]
+    assert again.status_code == 200
+    assert again.json() == body
+
+
+@pytest.mark.parametrize("method", ["post", "delete"])
+def test_acknowledging_an_unknown_booking_is_404(api: TestClient, db: Session, method: str) -> None:
+    admin = _make_user(db)
+
+    response = api.request(
+        method.upper(), f"/api/bookings/{uuid.uuid4()}/clash-acknowledgement", headers=_auth(admin)
+    )
+
+    _assert_detail(response, 404, BOOKING_NOT_FOUND_ERROR)
+
+
+@pytest.mark.parametrize("method", ["post", "delete"])
+@pytest.mark.parametrize("role", [UserRole.MANAGER, UserRole.TUTOR])
+def test_only_an_admin_may_acknowledge_or_withdraw(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    sort_out_stage: SortOutStage,
+    method: str,
+    role: UserRole,
+) -> None:
+    caller = _make_user(db, role=role, tutor_id=family.tutor.id)
+
+    response = api.request(
+        method.upper(), _acknowledgement_url(sort_out_stage.past_clash), headers=_auth(caller)
+    )
+
+    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+
+
+def test_list_rows_carry_the_acknowledgement(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+    acknowledged = api.post(
+        _acknowledgement_url(sort_out_stage.past_clash), headers=_auth(admin)
+    ).json()
+
+    rows = {
+        row["id"]: row for row in api.get("/api/bookings", headers=_auth(admin)).json()["items"]
+    }
+
+    assert rows[str(sort_out_stage.past_clash.id)]["clash_acknowledged_by"] == {
+        "id": str(admin.id),
+        "name": admin.name,
+    }
+    assert (
+        rows[str(sort_out_stage.past_clash.id)]["clash_acknowledged_at"]
+        == acknowledged["clash_acknowledged_at"]
+    )
+    assert rows[str(sort_out_stage.clean.id)]["clash_acknowledged_by"] is None
+    assert rows[str(sort_out_stage.clean.id)]["clash_acknowledged_at"] is None
+
+
+def test_an_archived_acknowledger_is_still_named(
+    api: TestClient, db: Session, sort_out_stage: SortOutStage
+) -> None:
+    admin = _make_user(db)
+    acknowledger = _make_user(db)
+    api.post(_acknowledgement_url(sort_out_stage.past_clash), headers=_auth(acknowledger))
+    acknowledger.is_archived = True
+    db.flush()
+
+    body = api.get(f"/api/bookings/{sort_out_stage.past_clash.id}", headers=_auth(admin)).json()
+
+    assert body["clash_acknowledged_by"] == {"id": str(acknowledger.id), "name": acknowledger.name}
+
+
+def test_a_page_of_acknowledged_rows_runs_the_same_statements_for_two_rows_or_six(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    """Each row acknowledged by a different Admin, so a per-row user load would show."""
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    for offset in range(6):
+        day = DATE + datetime.timedelta(days=offset)
+        booking = _book(db, family, on=day)
+        _time_off(db, family.tutor.user_id, start=day, end=day)
+        acknowledged = api.post(_acknowledgement_url(booking), headers=_auth(_make_user(db)))
+        assert acknowledged.status_code == 200
+    db.expire_all()
+    headers = _auth(admin)
+    counts = []
+
+    for page_size in (2, 6):
+        statements = _statements_for(
+            db, lambda: api.get(f"/api/bookings?page_size={page_size}", headers=headers)
+        )
+        counts.append(len(statements))
+
+    assert counts[0] == counts[1]
+
+
+def _acknowledgement_url(booking: Booking) -> str:
+    return f"/api/bookings/{booking.id}/clash-acknowledgement"
 
 
 def _reasons_by_id(response: Response) -> dict[str, list[str]]:

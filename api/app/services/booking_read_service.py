@@ -5,7 +5,8 @@
 Bookings through this module, so a field added to the read lands on every one of them at once.
 
 **A fixed number of statements per call, never one per row**: the caller loads `child`, `staff`,
-`subject` and `home` (the detail also `booked_by_guardian`) with its query, and everything else
+`subject`, `home` and `clash_acknowledged_by_user` (the detail also `booked_by_guardian`) with
+its query, and everything else
 is one batched query per field here. A per-row lazy load would turn a page of 100 into hundreds
 of round trips.
 
@@ -34,6 +35,7 @@ from app.schemas.booking import (
     home_summary_ref,
     staff_ref,
     subject_ref,
+    user_ref,
 )
 from app.services import conversation_service
 from app.services.sort_out_service import sort_out_reasons
@@ -44,7 +46,7 @@ type _LevelKey = tuple[uuid.UUID, uuid.UUID]
 def booking_summaries(
     db: Session, rows: Sequence[Booking], *, now: datetime.datetime
 ) -> list[BookingSummary]:
-    """Needs `child`, `staff`, `subject` and `home` loaded on each row."""
+    """Needs `child`, `staff`, `subject`, `home` and `clash_acknowledged_by_user` loaded."""
     levels = _subject_levels(db, rows)
     reasons = sort_out_reasons(db, [row.id for row in rows], now)
 
@@ -64,6 +66,8 @@ def booking_summaries(
             notes=row.notes,
             home=home_summary_ref(row.home),
             sort_out_reasons=reasons[row.id],
+            clash_acknowledged_by=user_ref(row.clash_acknowledged_by_user),
+            clash_acknowledged_at=row.clash_acknowledged_at,
             updated_at=row.updated_at,
         )
         for row in rows
@@ -73,7 +77,8 @@ def booking_summaries(
 def booking_detail(
     db: Session, row: Booking, *, now: datetime.datetime, shows_conversations: bool
 ) -> BookingDetail:
-    """Needs `child`, `staff`, `subject`, `home` and `booked_by_guardian` loaded on `row`.
+    """Needs `child`, `staff`, `subject`, `home`, `clash_acknowledged_by_user` and
+    `booked_by_guardian` loaded on `row`.
 
     `shows_conversations` is the caller being Office: a conversation id is the Office inbox's,
     so anyone else (a Tutor reading their own Booking) gets `conversation_id: null`.
@@ -101,6 +106,8 @@ def booking_detail(
         ),
         guardians=_guardians(db, child_id=row.child_id, shows_conversations=shows_conversations),
         sort_out_reasons=sort_out_reasons(db, [row.id], now)[row.id],
+        clash_acknowledged_by=user_ref(row.clash_acknowledged_by_user),
+        clash_acknowledged_at=row.clash_acknowledged_at,
         updated_at=row.updated_at,
     )
 

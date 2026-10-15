@@ -1676,6 +1676,56 @@ def test_approving_a_clashing_row_warns_and_lands_once_confirmed(
     assert _row(db, row.id).status is ExceptionStatus.APPROVED
 
 
+def test_approving_time_off_over_an_acknowledged_booking_leaves_it_acknowledged(
+    api: TestClient, db: Session
+) -> None:
+    """The Admin was warned (`booking_clash`) when approving; the Booking is not raised again."""
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    _make_exception(db, user_id=owner.id, status=ExceptionStatus.APPROVED)
+    clash = _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+    acknowledged = api.post(
+        f"/api/bookings/{clash.id}/clash-acknowledgement", headers=_bearer(admin)
+    ).json()
+    later = _make_exception(
+        db,
+        user_id=owner.id,
+        status=ExceptionStatus.PENDING,
+        start_time=WINDOW_START,
+        end_time=WINDOW_END,
+    )
+
+    approved = api.patch(
+        f"/api/exceptions/{later.id}",
+        json={"status": "approved", "confirm_warnings": ["booking_clash"]},
+        headers=_bearer(admin),
+    )
+    booking = api.get(f"/api/bookings/{clash.id}", headers=_bearer(admin)).json()
+
+    assert approved.status_code == 200
+    assert [item["booking_id"] for item in approved.json()["clashing_bookings"]] == [str(clash.id)]
+    assert booking["clash_acknowledged_by"] == {"id": str(admin.id), "name": admin.name}
+    assert booking["clash_acknowledged_at"] == acknowledged["clash_acknowledged_at"]
+    assert booking["sort_out_reasons"] == []
+
+
+def test_time_off_reads_still_list_an_acknowledged_booking(api: TestClient, db: Session) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.APPROVED)
+    clash = _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+    acknowledged = api.post(
+        f"/api/bookings/{clash.id}/clash-acknowledgement", headers=_bearer(admin)
+    )
+
+    body = api.get(f"/api/users/{owner.id}/exceptions", headers=_bearer(owner)).json()
+    [item] = [item for item in body["items"] if item["id"] == str(row.id)]
+
+    assert acknowledged.status_code == 200
+    assert [clash_row["booking_id"] for clash_row in item["clashing_bookings"]] == [str(clash.id)]
+    assert item["clashing_bookings_count"] == 1
+
+
 def test_the_warning_counts_every_clash(api: TestClient, db: Session) -> None:
     owner = _make_staff(db, role=UserRole.TUTOR)
     admin = _make_staff(db, role=UserRole.ADMIN)

@@ -33,7 +33,9 @@ class User(HasID, HasTimestamps, HasArchivedFlag, Base):
 
     profile: Mapped["Tutor | None"] = relationship(back_populates="user", uselist=False)
     # The sessions this person is the Staff member of (#130).
-    bookings: Mapped[list["Booking"]] = relationship(back_populates="staff")
+    bookings: Mapped[list["Booking"]] = relationship(
+        back_populates="staff", foreign_keys="Booking.user_id"
+    )
 
     @property
     def profile_id(self) -> uuid.UUID | None:

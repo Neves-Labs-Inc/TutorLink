@@ -396,8 +396,15 @@ def replace_booking(
     # create's comment gives: `_take_snapshot` flushes dirty state before emitting SAVEPOINT,
     # so a row dirtied above the `with` would be UPDATEd in the outer transaction and a
     # constraint failure there poisons the `Session`.
+    # Compared before the assignments below overwrite the stored values.
+    is_moved = _moves_booking(row, request)
+
     try:
         with db.begin_nested():
+            if is_moved:
+                # A moved Booking is checked again: an Admin kept the old time, not this one.
+                row.clash_acknowledged_by_user = None
+                row.clash_acknowledged_at = None
             row.user_id = request.user_id
             row.location = request.location
             row.subject_id = request.subject_id
@@ -415,6 +422,16 @@ def replace_booking(
         raise _conflict_of(exc) from exc
 
     return row
+
+
+def _moves_booking(row: Booking, request: BookingRequest) -> bool:
+    """Whether the edit changes when the Booking is, or who it is with."""
+    return (row.scheduled_date, row.start_time, row.end_time, row.user_id) != (
+        request.scheduled_date,
+        request.start_time,
+        request.end_time,
+        request.user_id,
+    )
 
 
 def _validate(

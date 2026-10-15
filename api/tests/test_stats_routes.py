@@ -80,6 +80,8 @@ SUMMARY_FIELDS = {
     "notes",
     "home",
     "sort_out_reasons",
+    "clash_acknowledged_by",
+    "clash_acknowledged_at",
     "updated_at",
 }
 
@@ -472,6 +474,9 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         )
     )
     booking = _book(db, stage, on=WEDNESDAY, status=BookingStatus.CONFIRMED)
+    booking.clash_acknowledged_by = admin.id
+    booking.clash_acknowledged_at = EPOCH
+    db.flush()
 
     item = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()[
         "recent_bookings"
@@ -503,6 +508,8 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         "home": {"id": str(stage.home.id), "label": None, "address": "1 Test Street"},
         # The day after its date, still confirmed.
         "sort_out_reasons": ["not_completed"],
+        "clash_acknowledged_by": {"id": str(admin.id), "name": admin.name},
+        "clash_acknowledged_at": "2026-08-01T12:00:00Z",
     }
 
 

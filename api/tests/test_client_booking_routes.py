@@ -29,6 +29,7 @@ NINE = datetime.time(9, 0)
 TEN = datetime.time(10, 0)
 ELEVEN = datetime.time(11, 0)
 TWELVE = datetime.time(12, 0)
+ACKNOWLEDGED_AT = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=datetime.UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,7 +293,7 @@ def test_paging_over_a_tied_group_repeats_and_drops_nothing(
     assert len(seen) == len(bookings)
 
 
-def test_an_item_is_the_fifteen_field_booking_summary(
+def test_an_item_is_the_booking_summary(
     api: TestClient,
     db: Session,
     family: Family,
@@ -309,6 +310,9 @@ def test_an_item_is_the_fifteen_field_booking_summary(
     )
     db.flush()
     booking = _book(db, family, start=NINE, end=TEN, status=BookingStatus.CONFIRMED)
+    booking.clash_acknowledged_by = admin.id
+    booking.clash_acknowledged_at = ACKNOWLEDGED_AT
+    db.flush()
 
     item = api.get(f"/api/clients/{family.client.id}/bookings", headers=_auth(admin)).json()[
         "items"
@@ -329,6 +333,8 @@ def test_an_item_is_the_fifteen_field_booking_summary(
         "notes",
         "home",
         "sort_out_reasons",
+        "clash_acknowledged_by",
+        "clash_acknowledged_at",
         "updated_at",
     }
     assert item["child"] == {"id": str(family.child.id), "name": family.child.name}
@@ -351,6 +357,8 @@ def test_an_item_is_the_fifteen_field_booking_summary(
     assert item["notes"] is None
     # The day after its date, still confirmed.
     assert item["sort_out_reasons"] == ["not_completed"]
+    assert item["clash_acknowledged_by"] == {"id": str(admin.id), "name": admin.name}
+    assert datetime.datetime.fromisoformat(item["clash_acknowledged_at"]) == ACKNOWLEDGED_AT
 
 
 def test_an_unknown_client_id_is_404(api: TestClient, db: Session) -> None:

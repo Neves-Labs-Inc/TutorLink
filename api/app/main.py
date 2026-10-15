@@ -14,6 +14,7 @@ from app.routers import (
     archive,
     auth,
     availability,
+    booking_clash,
     booking_status,
     booking_writes,
     bookings,
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(bookings.router)
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
+    app.include_router(booking_clash.router)
     app.include_router(staff.router)
     app.include_router(stats.router)
     app.include_router(reminders.router)

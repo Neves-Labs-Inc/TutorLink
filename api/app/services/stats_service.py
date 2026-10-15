@@ -106,6 +106,7 @@ def _recent_bookings(db: Session) -> list[Booking]:
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
                 joinedload(Booking.home),
+                joinedload(Booking.clash_acknowledged_by_user),
             )
             .order_by(Booking.created_at.desc(), Booking.id.desc())
             .limit(RECENT_BOOKING_LIMIT)

@@ -77,6 +77,7 @@ def list_bookings(
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
                 joinedload(Booking.home),
+                joinedload(Booking.clash_acknowledged_by_user),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)
@@ -117,14 +118,18 @@ def booked_with_profile(tutor_id: uuid.UUID) -> ColumnElement[bool]:
 
 
 def get_booking(db: Session, *, booking_id: uuid.UUID) -> Booking:
+    """The row with every relationship a detail read needs, refreshed even when the session
+    already holds it: a write made through a Core `UPDATE` leaves the loaded object stale."""
     booking = db.scalar(
         select(Booking)
         .where(Booking.id == booking_id)
+        .execution_options(populate_existing=True)
         .options(
             joinedload(Booking.child),
             joinedload(Booking.staff),
             joinedload(Booking.subject),
             joinedload(Booking.home),
+            joinedload(Booking.clash_acknowledged_by_user),
             joinedload(Booking.booked_by_guardian),
         )
     )
@@ -154,6 +159,7 @@ def list_client_bookings(
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
                 joinedload(Booking.home),
+                joinedload(Booking.clash_acknowledged_by_user),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)

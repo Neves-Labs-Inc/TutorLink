@@ -21,6 +21,7 @@ from app.schemas.reminder import ReminderPreviewItem, ReminderRowRead, ReminderW
 from app.services import clock
 from app.services.reminder_service import ReminderCandidate
 from app.services.reminder_week_service import ReminderRow, reminder_week
+from app.services.settings_service import reminders_state
 
 NOT_A_MONDAY_ERROR = "week_start must be a Monday"
 UNKNOWN_STATUS_ERROR = "Unknown reminder status: {value}"
@@ -63,13 +64,19 @@ def read_week(
 
     week = reminder_week(db, now=clock.business_now(), week_start=week_start, statuses=statuses)
 
+    reminders = reminders_state(db)
+
     return ReminderWeekRead(
         week_start=week.week_start,
         has_run=week.has_run,
         preview=None if week.preview is None else [_preview_item(item) for item in week.preview],
         rows=[_row(row) for row in week.rows],
         # The service works in naive business wall-clock; the zone is attached at the edge.
-        next_run_at=week.next_run_at.replace(tzinfo=clock.business_zone()),
+        reminders=reminders,
+        # A paused or switched-off run has no next send to promise.
+        next_run_at=(
+            week.next_run_at.replace(tzinfo=clock.business_zone()) if reminders == "on" else None
+        ),
     )
 
 

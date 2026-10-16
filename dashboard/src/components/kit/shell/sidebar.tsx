@@ -86,7 +86,7 @@ export function Sidebar({
         <PersonAvatar name={userName} isError={isUserError} isOnTint />
         <span
           role={isLoading ? "status" : undefined}
-          aria-label={isLoading ? "Loading your profile" : undefined}
+          aria-label={isLoading ? "Loading your name" : undefined}
           className="min-w-0 flex-1"
         >
           {isLoading ? (

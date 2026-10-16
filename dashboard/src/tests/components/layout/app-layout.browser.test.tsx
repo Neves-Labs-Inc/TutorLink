@@ -212,7 +212,7 @@ describe("app shell from 1024px", () => {
   it("shows a skeleton and the role while the person loads", async () => {
     respond({ me: never });
     await renderShell("manager", "/dashboard");
-    const loading = page.getByRole("status", { name: "Loading your profile" });
+    const loading = page.getByRole("status", { name: "Loading your name" });
     await expect.element(loading).toBeVisible();
     await expect.element(page.getByText("Manager")).toBeVisible();
   });
@@ -221,7 +221,7 @@ describe("app shell from 1024px", () => {
     let resolveMe: (me: unknown) => void = () => {};
     respond({ me: () => new Promise((resolve) => (resolveMe = resolve)) });
     await renderShell("admin", "/dashboard");
-    const loading = page.getByRole("status", { name: "Loading your profile" });
+    const loading = page.getByRole("status", { name: "Loading your name" });
     await expect.element(loading).toBeVisible();
     const card = page.getByRole("button", { name: /Your profile/ }).first();
     const loadingHeight = card.element().getBoundingClientRect().height;

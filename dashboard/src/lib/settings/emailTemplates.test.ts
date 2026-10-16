@@ -33,7 +33,8 @@ const savedTemplates = (): Setting[] => [
   setting('email_invite_body', 'Hi {name}, go to {link}'),
   setting('email_reset_subject', 'Reset'),
   setting('email_reset_body', 'Go to {link}'),
-  setting('email_brand_color', '#74C8C9'),
+  setting('email_invite_brand_color', '#74C8C9'),
+  setting('email_reset_brand_color', '#CB9BC3'),
 ]
 
 describe('findPlaceholders', () => {
@@ -101,10 +102,11 @@ describe('validateTemplate', () => {
 describe('key filtering', () => {
   const all = [setting('some_limit', '5'), setting('reminder_hour', '9'), ...savedTemplates()]
 
-  it('keeps the four template keys and the brand colour', () => {
+  it('keeps the four template keys and both brand colours', () => {
     expect(emailTemplateSettings(all).map((item) => item.key)).toEqual([
       ...EMAIL_TEMPLATE_KEYS,
-      'email_brand_color',
+      'email_invite_brand_color',
+      'email_reset_brand_color',
     ])
   })
 
@@ -115,7 +117,8 @@ describe('key filtering', () => {
   it('knows when a key is missing', () => {
     expect(hasAllEmailTemplates(all)).toBe(true)
     expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_reset_body'))).toBe(false)
-    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_brand_color'))).toBe(false)
+    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_invite_brand_color'))).toBe(false)
+    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_reset_brand_color'))).toBe(false)
   })
 })
 
@@ -133,16 +136,22 @@ describe('emailTemplateUpdates', () => {
   })
 
   it('sends a changed brand colour uppercase alongside template changes', () => {
-    const draft = { email_brand_color: '#cb9bc3', email_reset_subject: 'New' }
+    const draft = { email_invite_brand_color: '#cb9bc3', email_reset_subject: 'New' }
 
     expect(emailTemplateUpdates(savedTemplates(), draft)).toEqual([
       { key: 'email_reset_subject', value: 'New' },
-      { key: 'email_brand_color', value: '#CB9BC3' },
+      { key: 'email_invite_brand_color', value: '#CB9BC3' },
     ])
   })
 
   it('treats a colour that differs only in case as unchanged', () => {
-    expect(emailTemplateUpdates(savedTemplates(), { email_brand_color: '#74c8c9' })).toEqual([])
+    expect(emailTemplateUpdates(savedTemplates(), { email_invite_brand_color: '#74c8c9' })).toEqual([])
+  })
+
+  it('sends only the reset colour when only that one changed', () => {
+    expect(emailTemplateUpdates(savedTemplates(), { email_reset_brand_color: '#d6b990' })).toEqual([
+      { key: 'email_reset_brand_color', value: '#D6B990' },
+    ])
   })
 })
 
@@ -155,8 +164,8 @@ describe('hasTemplateErrors', () => {
     expect(hasTemplateErrors(savedTemplates(), { email_reset_body: 'no link' })).toBe(true)
   })
 
-  it('is true when the draft colour is invalid', () => {
-    expect(hasTemplateErrors(savedTemplates(), { email_brand_color: '#74C8C' })).toBe(true)
+  it.each(['email_invite_brand_color', 'email_reset_brand_color'])('is true when the %s draft is invalid', (key) => {
+    expect(hasTemplateErrors(savedTemplates(), { [key]: '#74C8C' })).toBe(true)
   })
 })
 

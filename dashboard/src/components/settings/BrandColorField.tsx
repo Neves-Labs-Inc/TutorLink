@@ -16,15 +16,17 @@ import {
 import { cn } from "@/lib/utils";
 
 type BrandColorFieldProps = {
+  id: string;
+  name: string;
+  label: string;
+  // Names the native picker, which has no visible label of its own.
+  swatchLabel: string;
   value: string;
   error: string | null;
   disabled: boolean;
   onChange: (value: string) => void;
 };
 
-const FIELD_ID = "email-brand-color";
-const HINT_ID = `${FIELD_ID}-hint`;
-const ERROR_ID = `${FIELD_ID}-error`;
 // Room for a pasted CSS declaration like "#74C8C9; "; onChange cleans it down to 7.
 // Case is left as typed: rewriting it mid-edit would move the caret to the end.
 const HEX_MAX_LENGTH = 32;
@@ -37,12 +39,18 @@ const PRESET_CLASSES =
   "size-11 shrink-0 cursor-pointer rounded-lg border border-input transition-[outline-color,border-color,filter,transform] duration-150 ease-out outline-none hover:border-ring hover:brightness-95 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none aria-pressed:outline-2 aria-pressed:outline-offset-2 aria-pressed:outline-solid aria-pressed:outline-foreground md:size-10";
 
 export default function BrandColorField({
+  id,
+  name,
+  label,
+  swatchLabel,
   value,
   error,
   disabled,
   onChange,
 }: BrandColorFieldProps): React.ReactNode {
   // The native picker only takes a valid colour, so it holds the last one while the hex is invalid.
+  const hintId = `${id}-hint`;
+  const errorId = `${id}-error`;
   const [lastValid, setLastValid] = useState(value);
   if (error === null && value !== lastValid) {
     setLastValid(value);
@@ -50,11 +58,11 @@ export default function BrandColorField({
 
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={FIELD_ID}>Brand colour</Label>
+      <Label htmlFor={id}>{label}</Label>
       <div className="flex flex-wrap items-center gap-2">
         <input
           type="color"
-          aria-label="Pick brand colour"
+          aria-label={swatchLabel}
           className={cn(CONTROL_HEIGHT, SWATCH_CLASSES)}
           value={normalizeBrandColor(lastValid).toLowerCase()}
           disabled={disabled}
@@ -63,8 +71,8 @@ export default function BrandColorField({
           }
         />
         <Input
-          id={FIELD_ID}
-          name="email_brand_color"
+          id={id}
+          name={name}
           className={cn(CONTROL_HEIGHT, "w-32 font-mono uppercase")}
           maxLength={HEX_MAX_LENGTH}
           spellCheck={false}
@@ -73,7 +81,7 @@ export default function BrandColorField({
           value={value}
           disabled={disabled}
           aria-invalid={error !== null}
-          aria-describedby={error ? `${ERROR_ID} ${HINT_ID}` : HINT_ID}
+          aria-describedby={error ? `${errorId} ${hintId}` : hintId}
           onChange={(event) =>
             onChange(cleanBrandColor(event.target.value))
           }
@@ -99,11 +107,11 @@ export default function BrandColorField({
           ))}
         </div>
       </div>
-      <p id={HINT_ID} className="text-xs text-muted-foreground">
-        Used for the TutorLink name, buttons and links in both emails.
+      <p id={hintId} className="text-xs text-muted-foreground">
+        Used for the TutorLink name, buttons and links in this email.
       </p>
       {error && (
-        <p id={ERROR_ID} role="alert" className={cn(ERROR_LINE, FADE_IN)}>
+        <p id={errorId} role="alert" className={cn(ERROR_LINE, FADE_IN)}>
           {error}
         </p>
       )}

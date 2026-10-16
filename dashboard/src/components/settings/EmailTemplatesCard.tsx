@@ -27,7 +27,6 @@ import {
   type SettingsPage,
 } from '@/lib/queries/settings'
 import {
-  BRAND_COLOR_KEY,
   TEMPLATE_SECTIONS,
   draftEmailPayload,
   emailTemplateUpdates,
@@ -51,8 +50,10 @@ type TemplateSectionProps = {
   subject: string
   body: string
   // Null while the draft colour is invalid; the preview and test send both need a valid one.
-  brandColor: string | null
+  brandColorValue: string
+  brandColorError: string | null
   disabled: boolean
+  onBrandColorChange: (value: string) => void
   onSubjectChange: (value: string) => void
   onBodyChange: (value: string) => void
   // The section's test-send row; renders after the fields/preview grid.
@@ -86,12 +87,34 @@ const PlaceholderList = ({ placeholders }: { placeholders: readonly string[] }) 
   </>
 )
 
-// Every section sits under the brand colour block, so each has the divider.
-const SkeletonSection = () => (
-  <div className="space-y-6 border-t border-border pt-6">
+// Swatch, hex and the four presets wrap the same way as the real row.
+const BrandColorSkeleton = () => (
+  <div className="space-y-1.5">
+    <div className={cn(SKELETON_BAR, 'h-4 w-24')} />
+    <div className="flex flex-wrap items-center gap-2">
+      <div className={cn(SKELETON_BAR, CONTROL_HEIGHT, 'w-14')} />
+      <div className={cn(SKELETON_BAR, CONTROL_HEIGHT, 'w-32')} />
+      <div className="flex gap-2 sm:border-l sm:border-border sm:pl-2">
+        {BRAND_COLOR_PRESET_SLOTS.map((slot) => (
+          <div key={slot} className={cn(SKELETON_BAR, 'size-11 md:size-10')} />
+        ))}
+      </div>
+    </div>
+    <div className={cn(SKELETON_BAR, 'hidden h-3 w-80 max-w-full sm:block')} />
+    <div className="space-y-1 sm:hidden">
+      <div className={cn(SKELETON_BAR, 'h-3 w-full')} />
+      <div className={cn(SKELETON_BAR, 'h-3 w-40')} />
+    </div>
+  </div>
+)
+
+// Only the sections after the first have the divider.
+const SkeletonSection = ({ hasDivider }: { hasDivider: boolean }) => (
+  <div className={cn('space-y-6', hasDivider && 'border-t border-border pt-6')}>
     <div className={cn(SKELETON_BAR, 'h-4 w-16')} />
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="min-w-0 space-y-4">
+        <BrandColorSkeleton />
         <div className="space-y-1.5">
           <div className={cn(SKELETON_BAR, 'h-4 w-14')} />
           <div className={cn(SKELETON_BAR, 'h-11 w-full md:h-10')} />
@@ -115,27 +138,6 @@ const SkeletonSection = () => (
   </div>
 )
 
-// Swatch, hex and the four presets wrap the same way as the real row.
-const BrandColorSkeleton = () => (
-  <div className="space-y-1.5">
-    <div className={cn(SKELETON_BAR, 'h-4 w-24')} />
-    <div className="flex flex-wrap items-center gap-2">
-      <div className={cn(SKELETON_BAR, CONTROL_HEIGHT, 'w-14')} />
-      <div className={cn(SKELETON_BAR, CONTROL_HEIGHT, 'w-32')} />
-      <div className="flex gap-2 sm:border-l sm:border-border sm:pl-2">
-        {BRAND_COLOR_PRESET_SLOTS.map((slot) => (
-          <div key={slot} className={cn(SKELETON_BAR, 'size-11 md:size-10')} />
-        ))}
-      </div>
-    </div>
-    <div className={cn(SKELETON_BAR, 'hidden h-3 w-80 max-w-full sm:block')} />
-    <div className="space-y-1 sm:hidden">
-      <div className={cn(SKELETON_BAR, 'h-3 w-full')} />
-      <div className={cn(SKELETON_BAR, 'h-3 w-40')} />
-    </div>
-  </div>
-)
-
 export const EmailTemplatesSkeleton = () => (
   <Card aria-busy="true">
     <CardHeader>
@@ -147,9 +149,8 @@ export const EmailTemplatesSkeleton = () => (
       </div>
     </CardHeader>
     <CardContent className="space-y-6">
-      <BrandColorSkeleton />
-      {TEMPLATE_SECTIONS.map((section) => (
-        <SkeletonSection key={section.id} />
+      {TEMPLATE_SECTIONS.map((section, index) => (
+        <SkeletonSection key={section.id} hasDivider={index > 0} />
       ))}
     </CardContent>
     <CardFooter>
@@ -197,8 +198,10 @@ const TemplateSection = ({
   section,
   subject,
   body,
-  brandColor,
+  brandColorValue,
+  brandColorError,
   disabled,
+  onBrandColorChange,
   onSubjectChange,
   onBodyChange,
   actions,
@@ -211,7 +214,7 @@ const TemplateSection = ({
   const error = validateTemplate(section, subject, body)
   const subjectError = error?.field === 'subject' ? error.message : null
   const bodyError = error?.field === 'body' ? error.message : null
-  const previewPayload = error === null && brandColor !== null ? draftEmailPayload(section, subject, body, brandColor) : null
+  const previewPayload = error === null && brandColorError === null ? draftEmailPayload(section, subject, body, brandColorValue) : null
   const hasActions = actions !== undefined && actions !== null && actions !== false
 
   return (
@@ -221,6 +224,16 @@ const TemplateSection = ({
       </h3>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="min-w-0 space-y-4">
+          <BrandColorField
+            id={`${prefix}-brand-color`}
+            name={section.brandColorKey}
+            label="Button colour"
+            swatchLabel={`Pick ${section.id === 'invite' ? 'invite' : 'password reset'} button colour`}
+            value={brandColorValue}
+            error={brandColorError}
+            disabled={disabled}
+            onChange={onBrandColorChange}
+          />
           <div className="space-y-1.5">
             <Label htmlFor={`${prefix}-subject`}>Subject</Label>
             <Input
@@ -277,9 +290,11 @@ const TemplateSectionWithTest = ({
   section,
   subject,
   body,
-  brandColor,
+  brandColorValue,
+  brandColorError,
   disabled,
   email,
+  onBrandColorChange,
   onSubjectChange,
   onBodyChange,
   mutation,
@@ -293,18 +308,20 @@ const TemplateSectionWithTest = ({
     section={section}
     subject={subject}
     body={body}
-    brandColor={brandColor}
+    brandColorValue={brandColorValue}
+    brandColorError={brandColorError}
     disabled={disabled}
+    onBrandColorChange={onBrandColorChange}
     onSubjectChange={onSubjectChange}
     onBodyChange={onBodyChange}
     actions={
       <TestEmailRow
         mutation={mutation}
-        isDisabled={brandColor === null || validateTemplate(section, subject, body) !== null}
+        isDisabled={brandColorError !== null || validateTemplate(section, subject, body) !== null}
         email={email}
         onSend={() => {
           // The ref guard is synchronous; mutation.isPending lags a tick behind a double activation.
-          if (brandColor !== null && flight.current.tryStart()) mutation.mutate(draftEmailPayload(section, subject, body, brandColor))
+          if (brandColorError === null && flight.current.tryStart()) mutation.mutate(draftEmailPayload(section, subject, body, brandColorValue))
         }}
       />
     }
@@ -337,13 +354,11 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
   const canSave = updates.length > 0 && !hasErrors
   const valueOf = (key: string) => draft[key] ?? savedTemplateValue(page.items, key)
   const setValue = (key: string, value: string) => setDraft((current) => ({ ...current, [key]: value }))
-  const brandColor = valueOf(BRAND_COLOR_KEY)
-  const brandColorError = validateBrandColor(brandColor)
 
   const { saveRef, savedRef, focusSave, markDiscarded } = useSettingsFocus({
     status: save.status,
     isSaveEnabled: canSave,
-    firstFieldId: 'email-brand-color',
+    firstFieldId: 'email-invite-brand-color',
   })
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -369,14 +384,8 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
           <CardDescription>{CARD_DESCRIPTION}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <BrandColorField
-            value={brandColor}
-            error={brandColorError}
-            disabled={save.isPending}
-            onChange={(value) => setValue(BRAND_COLOR_KEY, value)}
-          />
-          {TEMPLATE_SECTIONS.map((section) => (
-            <div key={section.id} className="border-t border-border pt-6">
+          {TEMPLATE_SECTIONS.map((section, index) => (
+            <div key={section.id} className={cn(index > 0 && 'border-t border-border pt-6')}>
               <TemplateSectionWithTest
                 section={section}
                 email={me.data?.email}
@@ -384,8 +393,10 @@ export const EmailTemplatesCard = ({ page }: EmailTemplatesCardProps) => {
                 flight={testFlights[section.id]}
                 subject={valueOf(section.keys.subject)}
                 body={valueOf(section.keys.body)}
-                brandColor={brandColorError === null ? brandColor : null}
+                brandColorValue={valueOf(section.brandColorKey)}
+                brandColorError={validateBrandColor(valueOf(section.brandColorKey))}
                 disabled={save.isPending}
+                onBrandColorChange={(value) => setValue(section.brandColorKey, value)}
                 onSubjectChange={(value) => setValue(section.keys.subject, value)}
                 onBodyChange={(value) => setValue(section.keys.body, value)}
               />

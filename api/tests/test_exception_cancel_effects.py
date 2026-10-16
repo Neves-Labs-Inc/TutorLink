@@ -89,13 +89,21 @@ def _make_world(db: Session) -> World:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
     home = Home(label="Home", address=f"{suffix[:6]} Main St", directions="1234")
-    child = Child(name=f"Child {suffix[:8]}", grade_level=GRADE, school_name="Test School")
+    child = Child(
+        name=f"Child {suffix[:8]}",
+        grade_level=GRADE,
+        school_name="Test School",
+    )
     tutor = Tutor(
         user=User(email=f"tutor-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+2{suffix[:10]}",
     )
     subject = Subject(name=f"Subject {suffix[:8]}")
     db.add_all([guardian, home, child, tutor, subject])
+    db.flush()
+    # Tutoring needs an Evaluated Child.
+    child.evaluated_at = datetime.datetime.now(tz=datetime.UTC)
+    child.evaluated_by_user_id = tutor.user_id
     db.flush()
 
     # A week out: inside the booking window and past the lead time, whatever today is.

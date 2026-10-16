@@ -132,6 +132,15 @@ def world(db: Session) -> World:
     _book(
         db, evaluated, subject, staff=staff, on=YESTERDAY, start=14, status=BookingStatus.CANCELLED
     )
+    _book(
+        db,
+        evaluated,
+        subject,
+        staff=staff,
+        on=YESTERDAY,
+        start=16,
+        status=BookingStatus.DIDNT_HAPPEN,
+    )
 
     # Time off pending: two undecided and not ended; ended, decided and a Developer's are not.
     _time_off(db, staff, on=TOMORROW, status=ExceptionStatus.PENDING)

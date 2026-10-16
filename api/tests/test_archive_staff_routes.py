@@ -62,6 +62,7 @@ def test_archiving_staff_signs_them_out_everywhere(
         "id": str(staff.id),
         "archived": True,
         "cancelled_booking_ids": [],
+        "archived_child_ids": [],
     }
     assert api.get("/api/me", headers=_auth(staff)).status_code == 401
     assert _refresh(api, refresh_token).status_code == 401
@@ -209,6 +210,7 @@ def test_restore_clears_the_flag_and_the_password_works_again(api: TestClient, d
         "id": str(staff.id),
         "archived": False,
         "cancelled_booking_ids": [],
+        "archived_child_ids": [],
     }
     assert _refresh(api, refresh_token).status_code == 401
     assert _login(api, staff).status_code == 200

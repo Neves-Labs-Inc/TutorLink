@@ -48,13 +48,14 @@ const PAGE: SettingsPage = {
     setting('business_timezone', LONG_VALUE),
     setting('reminder_template_sid_en', ''),
     setting('reminder_template_sid_es', ''),
-    setting('email_brand_color', '#74C8C9'),
+    setting('email_invite_brand_color', '#74C8C9'),
+    setting('email_reset_brand_color', '#CB9BC3'),
     setting('email_invite_subject', 'Welcome {name}'),
     setting('email_invite_body', 'Open {link}'),
     setting('email_reset_subject', 'Reset'),
     setting('email_reset_body', 'Open {link}'),
   ],
-  total: 11,
+  total: 12,
   page: 1,
   page_size: 50,
   business_timezone_locked: true,
@@ -71,7 +72,10 @@ const renderSettings = async () => {
   await settleLayout()
 }
 
-const hexField = () => page.getByLabelText('Brand colour', { exact: true })
+const inviteSection = () => page.getByRole('region', { name: 'Invite' })
+const resetSection = () => page.getByRole('region', { name: 'Password reset' })
+const hexField = () => inviteSection().getByLabelText('Button colour', { exact: true })
+const resetHexField = () => resetSection().getByLabelText('Button colour', { exact: true })
 
 describe('Settings page layout', () => {
   beforeEach(() => {
@@ -91,7 +95,7 @@ describe('Settings page layout', () => {
   })
 })
 
-describe('Brand colour field', () => {
+describe('Button colour fields', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     await page.viewport(DESKTOP_WIDTH, VIEWPORT_HEIGHT)
@@ -112,7 +116,7 @@ describe('Brand colour field', () => {
 
     await userEvent.click(page.getByRole('button', { name: 'Save changes' }).last())
     await expect.poll(() => api.updateSettings.mock.calls[0]?.[0]).toEqual([
-      { key: 'email_brand_color', value: '#74C9C9' },
+      { key: 'email_invite_brand_color', value: '#74C9C9' },
     ])
   })
 
@@ -125,7 +129,7 @@ describe('Brand colour field', () => {
 
     await userEvent.click(page.getByRole('button', { name: 'Save changes' }).last())
     await expect.poll(() => api.updateSettings.mock.calls[0]?.[0]).toEqual([
-      { key: 'email_brand_color', value: '#74ABC9' },
+      { key: 'email_invite_brand_color', value: '#74ABC9' },
     ])
   })
 
@@ -137,6 +141,35 @@ describe('Brand colour field', () => {
     await expect.element(hexField()).toHaveAttribute('aria-invalid', 'true')
     await expect.element(page.getByText('Enter a colour like #74C8C9.')).toBeVisible()
     await expect.element(page.getByRole('button', { name: 'Save changes' }).last()).toBeDisabled()
+  })
+
+  it('shows one colour field per section and saves only the reset colour when it changes', async () => {
+    await renderSettings()
+    await expect.element(hexField()).toHaveValue('#74C8C9')
+    await expect.element(resetHexField()).toHaveValue('#CB9BC3')
+
+    await resetHexField().click()
+    await userEvent.fill(resetHexField(), '#d6b990')
+    await userEvent.click(page.getByRole('button', { name: 'Save changes' }).last())
+    await expect.poll(() => api.updateSettings.mock.calls[0]?.[0]).toEqual([
+      { key: 'email_reset_brand_color', value: '#D6B990' },
+    ])
+  })
+
+  it('keeps the other section usable when one colour is invalid', async () => {
+    await renderSettings()
+    await resetHexField().click()
+    await userEvent.fill(resetHexField(), '#74C8C')
+
+    await expect.element(resetHexField()).toHaveAttribute('aria-invalid', 'true')
+    await expect.element(hexField()).toHaveAttribute('aria-invalid', 'false')
+    expect(document.body.textContent?.split('Enter a colour like').length).toBe(2)
+    await expect
+      .element(resetSection().getByRole('button', { name: 'Send test email to me' }))
+      .toBeDisabled()
+    await expect
+      .element(inviteSection().getByRole('button', { name: 'Send test email to me' }))
+      .toBeEnabled()
   })
 })
 

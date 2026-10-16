@@ -324,6 +324,7 @@ def test_an_item_is_the_booking_summary(
         "staff",
         "kind",
         "location",
+        "office_address",
         "subject",
         "subject_level",
         "scheduled_date",

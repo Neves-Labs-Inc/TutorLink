@@ -121,11 +121,20 @@ EMAIL_TEMPLATE_SETTINGS = {
     TemplateKind.INVITE: ("email_invite_subject", "email_invite_body"),
     TemplateKind.PASSWORD_RESET: ("email_reset_subject", "email_reset_body"),
 }
-# Migration 0035's row: the colour both emails use.
-EMAIL_BRAND_COLOR_SETTING = "email_brand_color"
+# The rows migration 0051 seeds: each email's own button colour, by template kind.
+EMAIL_BRAND_COLOR_SETTINGS = {
+    TemplateKind.INVITE: "email_invite_brand_color",
+    TemplateKind.PASSWORD_RESET: "email_reset_brand_color",
+}
 # Migration 0039's row: the office number every Staff member reads through `GET /api/me`.
 OFFICE_PHONE_SETTING = "office_phone"
 OFFICE_PHONE_INVALID_ERROR = "office_phone must be a phone number in E.164 form, like +15551234567"
+# Migration 0050's row: where an In office Booking happens, shown on every such Booking read.
+OFFICE_ADDRESS_SETTING = "office_address"
+MAX_OFFICE_ADDRESS_LENGTH = 500
+OFFICE_ADDRESS_TOO_LONG_ERROR = (
+    f"office_address must be at most {MAX_OFFICE_ADDRESS_LENGTH} characters"
+)
 _E164_PATTERN = re.compile(r"\+[1-9][0-9]{1,14}")
 
 
@@ -464,19 +473,19 @@ def apply_setting_updates(
 
 
 def read_email_template(db: Session, *, kind: TemplateKind) -> EmailTemplate:
-    """The saved subject and body of the `kind` email, and the saved brand colour."""
+    """The saved subject, body and brand colour of the `kind` email."""
     subject_key, body_key = EMAIL_TEMPLATE_SETTINGS[kind]
 
     return EmailTemplate(
         subject=get_str_setting(db, key=subject_key),
         body=get_str_setting(db, key=body_key),
-        brand_color=read_email_brand_color(db),
+        brand_color=read_email_brand_color(db, kind=kind),
     )
 
 
-def read_email_brand_color(db: Session) -> str:
-    """The saved `#RRGGBB` colour every email is branded with."""
-    return get_str_setting(db, key=EMAIL_BRAND_COLOR_SETTING)
+def read_email_brand_color(db: Session, *, kind: TemplateKind) -> str:
+    """The saved `#RRGGBB` colour the `kind` email is branded with."""
+    return get_str_setting(db, key=EMAIL_BRAND_COLOR_SETTINGS[kind])
 
 
 def read_office_phone(db: Session) -> str | None:
@@ -484,6 +493,13 @@ def read_office_phone(db: Session) -> str | None:
     phone = get_str_setting(db, key=OFFICE_PHONE_SETTING)
 
     return phone or None
+
+
+def read_office_address(db: Session) -> str | None:
+    """The office's address, or `None` while an Admin has not set one."""
+    address = get_str_setting(db, key=OFFICE_ADDRESS_SETTING)
+
+    return address or None
 
 
 def has_any_booking(db: Session) -> bool:
@@ -552,12 +568,12 @@ def _checked_string_value(update: SettingUpdate) -> str:
     `business_timezone` has a validator here; the template-id rows accept anything, and
     blank is their documented "not approved" value. Email template rows are stored as written:
     their whitespace is the email's layout, and `_check_email_templates` validates them. The
-    brand colour is not stripped either: the spec refuses `#74C8C9 ` rather than repairing it.
+    brand colours are not stripped either: the spec refuses `#74C8C9 ` rather than repairing it.
     """
     if _is_email_template_key(update.key):
         return update.value
 
-    if update.key == EMAIL_BRAND_COLOR_SETTING:
+    if update.key in EMAIL_BRAND_COLOR_SETTINGS.values():
         try:
             return validate_brand_color(update.value)
         except EmailTemplateInvalid as exc:
@@ -586,6 +602,16 @@ def _checked_office_phone(value: str) -> str:
     return phone
 
 
+def _checked_office_address(value: str) -> str:
+    # Line breaks are kept: an address is written over several lines. Blank is "not set".
+    address = value.strip()
+
+    if len(address) > MAX_OFFICE_ADDRESS_LENGTH:
+        raise SettingRuleBroken(OFFICE_ADDRESS_TOO_LONG_ERROR)
+
+    return address
+
+
 def _is_e164_phone(phone: str) -> bool:
     # The pattern first: `phonenumbers.parse` is lenient about spaces and dashes, and the
     # stored form must be exactly what a `tel:` link and Twilio both take.
@@ -606,6 +632,7 @@ def _is_e164_phone(phone: str) -> bool:
 # store, or raises `SettingRuleBroken` with the message the Admin sees.
 _STRING_RULES: dict[str, Callable[[str], str]] = {
     OFFICE_PHONE_SETTING: _checked_office_phone,
+    OFFICE_ADDRESS_SETTING: _checked_office_address,
 }
 
 

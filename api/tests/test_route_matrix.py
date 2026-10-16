@@ -60,11 +60,14 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/auth/password/set"): Access.PUBLIC,
     # Anyone may ask for a reset link; the answer never says whether the account exists.
     ("POST", "/auth/password/forgot"): Access.PUBLIC,
+    # Read-only and rate limited per IP; every refusal reads the same `invalid` body.
+    ("POST", "/auth/password/link"): Access.PUBLIC,
     # Authenticated by Twilio's signature, not by a user token.
     ("POST", "/webhook/whatsapp"): Access.PUBLIC,
     ("POST", "/webhook/whatsapp/status"): Access.PUBLIC,
     ("GET", "/api/me"): Access.AUTHENTICATED,
     ("PATCH", "/api/me"): Access.AUTHENTICATED,
+    ("POST", "/api/me/welcome-seen"): Access.AUTHENTICATED,
     # Tutors read the subject catalogue to see what they teach; writing it is Staff only.
     ("GET", "/api/subjects"): Access.SHARED_CATALOGUE,
     ("GET", "/api/tutors"): Access.TUTOR_SCOPED,
@@ -110,7 +113,11 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/children/{child_id}/assigned-tutors"): Access.STAFF,
     ("DELETE", "/api/children/{child_id}/assigned-tutors/{user_id}"): Access.STAFF,
     ("GET", "/api/households"): Access.STAFF,
+    ("GET", "/api/households/{member_id}"): Access.STAFF,
     ("PATCH", "/api/homes/{home_id}"): Access.STAFF,
+    ("POST", "/api/homes"): Access.STAFF,
+    ("POST", "/api/homes/{home_id}/guardians"): Access.STAFF,
+    ("DELETE", "/api/homes/{home_id}/guardians/{guardian_id}"): Access.STAFF,
     # Staff writes are Admin-only (#208); reading the Tutors page is not.
     ("POST", "/api/tutors"): Access.ADMIN,
     ("PATCH", "/api/tutors/{tutor_id}"): Access.ADMIN,
@@ -140,6 +147,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/conversations/{conversation_id}/reactivation/approve"): Access.STAFF,
     ("POST", "/api/conversations/{conversation_id}/reactivation/deny"): Access.STAFF,
     ("POST", "/api/conversations/{conversation_id}/handled"): Access.STAFF,
+    ("POST", "/api/conversations/{conversation_id}/handled/undo"): Access.STAFF,
     (WEBSOCKET, "/api/conversations/stream"): Access.STAFF,
     ("POST", "/api/users"): Access.ADMIN,
     ("PATCH", "/api/users/{user_id}"): Access.ADMIN,

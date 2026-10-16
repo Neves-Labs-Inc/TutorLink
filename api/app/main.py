@@ -47,6 +47,7 @@ from app.routers import (
     webhook,
 )
 from app.services.reminder_scheduler import run_forever as run_reminders_forever
+from app.services.reply_window_scheduler import run_forever as run_reply_window_checks_forever
 from app.services.retention_scheduler import run_forever
 
 app_logger = logging.getLogger("app")
@@ -59,17 +60,18 @@ if not app_logger.handlers:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the retention and reminder schedulers for exactly as long as the app is served.
+    """Run the retention, reminder and reply-window schedulers for exactly as long as the app
+    is served.
 
     Here rather than in the scheduler modules, which are service code and know nothing about
-    FastAPI. Neither task touches the database until its first top-of-hour tick, so entering
-    this is free. On shutdown both are cancelled and awaited, so neither outlives the process's
-    event loop; a purge or reminder run already on its worker thread finishes or fails on its
-    own.
+    FastAPI. No task touches the database until its first tick, so entering this is free. On
+    shutdown all are cancelled and awaited, so none outlives the process's event loop; a run
+    already on its worker thread finishes or fails on its own.
     """
     schedulers = [
         asyncio.create_task(run_forever(SessionLocal)),
         asyncio.create_task(run_reminders_forever(SessionLocal)),
+        asyncio.create_task(run_reply_window_checks_forever(SessionLocal)),
     ]
     try:
         yield

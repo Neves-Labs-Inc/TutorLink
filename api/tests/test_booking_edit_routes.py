@@ -39,6 +39,8 @@ from app.routers.booking_writes import (
     BOOKING_NOT_LIVE_ERROR,
     BOOKING_OVERLAPS_ERROR,
     BOOKING_SHAPE_INVALID_ERROR,
+    BOOKING_STALE_ERROR,
+    CHILD_NOT_EVALUATED_ERROR,
     DATE_OUT_OF_WINDOW_ERROR,
     HOME_NOT_LINKED_ERROR,
     LEAD_TIME_NOT_MET_ERROR,
@@ -425,6 +427,84 @@ def test_a_past_booking_may_be_moved_to_another_past_time(
 
     assert response.status_code == 200
     assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+def test_a_future_tutoring_booking_of_a_child_whose_evaluation_was_cleared_is_422(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    family.child.evaluated_at = None
+    family.child.evaluated_by_user_id = None
+    db.flush()
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    _assert_detail(response, 422, CHILD_NOT_EVALUATED_ERROR)
+    assert _row(db, booking.id).start_time == datetime.time(9, 0)
+
+
+def test_a_past_tutoring_booking_of_a_child_whose_evaluation_was_cleared_can_be_corrected(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    booking = _book(db, family)
+    family.child.evaluated_at = None
+    family.child.evaluated_by_user_id = None
+    db.flush()
+    freeze_business_clock(datetime.datetime.combine(MONDAY, datetime.time(11, 0)))
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+# --- stale-save guard -----------------------------------------------------------------------
+
+
+def test_an_edit_with_the_current_updated_at_is_accepted(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    user = _make_user(db)
+
+    response = _put(
+        api,
+        user,
+        booking,
+        family,
+        start_time=TEN,
+        end_time=ELEVEN,
+        expected_updated_at=booking.updated_at.isoformat(),
+    )
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+def test_an_edit_with_an_older_updated_at_is_409_and_changes_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    user = _make_user(db)
+    stale = booking.updated_at - datetime.timedelta(minutes=1)
+
+    response = _put(
+        api,
+        user,
+        booking,
+        family,
+        start_time=TEN,
+        end_time=ELEVEN,
+        expected_updated_at=stale.isoformat(),
+    )
+
+    _assert_detail(response, 409, BOOKING_STALE_ERROR)
+    assert _row(db, booking.id).start_time == datetime.time(9, 0)
 
 
 def test_a_future_booking_moved_into_the_past_is_400(

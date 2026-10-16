@@ -144,6 +144,9 @@ class ClientCreate(BaseModel):
     name: str
     phone_number: str
     home: HomeCreate | None = None
+    # Duplicates are ignored. `home_ids` must be bookable Homes of at least one chosen Child.
+    child_ids: list[uuid.UUID] = []
+    home_ids: list[uuid.UUID] = []
 
 
 class ClientUpdate(BaseModel):

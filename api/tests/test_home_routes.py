@@ -30,12 +30,19 @@ from app.models.user import User
 from app.routers import client_homes, clients, homes
 from app.routers.booking_writes import REFERENCE_NOT_FOUND_ERROR
 from app.security import create_access_token, hash_password
+from app.services import home_sharing_service
 
 PASSWORD = "correct horse battery staple"
 
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 HOME_NOT_FOUND_ERROR = "Home not found"
 BLANK_HOME_DETAILS_ERROR = "address must not be blank"
+ARCHIVED_HOME_ERROR = "This home is archived; restore it first"
+LAST_GUARDIAN_ERROR = "A home needs at least one Guardian; archive it instead"
+GUARDIAN_NOT_ON_HOME_ERROR = "This Guardian is not on this home"
+HOME_LOST_WITH_UPCOMING_BOOKINGS_ERROR = (
+    "A Child would lose this home while it has upcoming bookings there; cancel or move them first"
+)
 
 HOME_READ_KEYS = {
     "id",
@@ -196,6 +203,263 @@ def test_add_home_for_an_unknown_client_is_404(api: TestClient, db: Session) -> 
     assert _home_count(db) == homes_before
 
 
+# --- POST /api/homes -----------------------------------------------------------------------
+
+
+def test_create_on_two_guardians_gives_one_home_both_families_can_book(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    amy = _make_client(db)
+    amy.name = "Amy Doe"
+    zed = _make_client(db)
+    zed.name = "Zed Doe"
+    amys_child = _make_child(db, guardians=[amy])
+    zeds_child = _make_child(db, guardians=[zed])
+    homes_before = _home_count(db)
+
+    response = _create(api, admin, [zed.id, amy.id, zed.id], label="Shared", address=" 9 Elm ")
+    body = response.json()
+
+    assert response.status_code == 201
+    assert set(body) == HOME_READ_KEYS
+    assert body["address"] == "9 Elm"
+    assert body["guardians"] == [
+        {"id": str(amy.id), "name": "Amy Doe"},
+        {"id": str(zed.id), "name": "Zed Doe"},
+    ]
+    assert _home_count(db) == homes_before + 1
+    assert _child_home_ids(api, admin, amys_child) == [body["id"]]
+    assert _child_home_ids(api, admin, zeds_child) == [body["id"]]
+
+
+def test_create_allows_an_archived_guardian(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    archived = _make_client(db)
+    archived.is_archived = True
+    db.flush()
+
+    response = _create(api, admin, [archived.id])
+
+    assert response.status_code == 201
+    assert response.json()["guardians"] == [{"id": str(archived.id), "name": archived.name}]
+
+
+def test_create_with_an_unknown_guardian_is_404_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    homes_before = _home_count(db)
+
+    response = _create(api, admin, [client.id, uuid.uuid4()])
+
+    _assert_detail(response, 404, CLIENT_NOT_FOUND_ERROR)
+    assert _home_count(db) == homes_before
+    assert _guardian_home_ids(db, client) == []
+
+
+@pytest.mark.parametrize("address", ["   ", ""])
+def test_create_refuses_a_blank_address_and_writes_nothing(
+    api: TestClient, db: Session, address: str
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    homes_before = _home_count(db)
+
+    response = _create(api, admin, [client.id], address=address)
+
+    _assert_detail(response, 400, BLANK_HOME_DETAILS_ERROR)
+    assert _home_count(db) == homes_before
+
+
+def test_create_without_a_guardian_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    homes_before = _home_count(db)
+
+    response = _create(api, admin, [])
+
+    assert response.status_code == 400
+    assert set(response.json()) == {"detail"}
+    assert _home_count(db) == homes_before
+
+
+# --- POST /api/homes/{id}/guardians ---------------------------------------------------------
+
+
+def test_share_adds_the_guardian_and_their_children_have_the_home(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    owner = _make_client(db)
+    owner.name = "Amy Doe"
+    partner = _make_client(db)
+    partner.name, partner.is_archived = "Zed Doe", True
+    partners_child = _make_child(db, guardians=[partner])
+    home = _make_home(db, client=owner)
+
+    response = _share(api, admin, home.id, partner.id)
+
+    assert response.status_code == 200
+    assert set(response.json()) == HOME_READ_KEYS
+    assert response.json()["guardians"] == [
+        {"id": str(owner.id), "name": "Amy Doe"},
+        {"id": str(partner.id), "name": "Zed Doe"},
+    ]
+    assert _guardian_home_ids(db, partner) == [home.id]
+    assert _child_home_ids(api, admin, partners_child) == [str(home.id)]
+
+
+def test_sharing_with_a_guardian_already_on_the_home_is_a_no_op(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    owner = _make_client(db)
+    home = _make_home(db, client=owner)
+
+    response = _share(api, admin, home.id, owner.id)
+
+    assert response.status_code == 200
+    assert response.json()["guardians"] == [{"id": str(owner.id), "name": owner.name}]
+    assert _guardian_home_ids(db, owner) == [home.id]
+
+
+def test_sharing_an_archived_home_is_409_and_links_nothing(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    home = _make_home(db, client=_make_client(db), is_archived=True)
+    partner = _make_client(db)
+
+    response = _share(api, admin, home.id, partner.id)
+
+    _assert_detail(response, 409, ARCHIVED_HOME_ERROR)
+    assert _guardian_home_ids(db, partner) == []
+
+
+def test_sharing_an_unknown_home_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = _share(api, admin, uuid.uuid4(), _make_client(db).id)
+
+    _assert_detail(response, 404, HOME_NOT_FOUND_ERROR)
+
+
+def test_sharing_with_an_unknown_guardian_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    home = _make_home(db, client=_make_client(db))
+
+    response = _share(api, admin, home.id, uuid.uuid4())
+
+    _assert_detail(response, 404, CLIENT_NOT_FOUND_ERROR)
+
+
+# --- DELETE /api/homes/{id}/guardians/{guardian_id} -----------------------------------------
+
+
+def test_unshare_removes_the_link(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    owner = _make_client(db)
+    partner = _make_client(db)
+    partners_child = _make_child(db, guardians=[partner])
+    home = _make_home(db, client=owner)
+    db.add(GuardianHome(guardian_id=partner.id, home_id=home.id))
+    db.flush()
+
+    response = _unshare(api, admin, home.id, partner.id)
+
+    assert response.status_code == 200
+    assert response.json()["guardians"] == [{"id": str(owner.id), "name": owner.name}]
+    assert _guardian_home_ids(db, partner) == []
+    assert _child_home_ids(api, admin, partners_child) == []
+
+
+def test_unsharing_the_last_guardian_is_409(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    owner = _make_client(db)
+    home = _make_home(db, client=owner)
+
+    response = _unshare(api, admin, home.id, owner.id)
+
+    _assert_detail(response, 409, LAST_GUARDIAN_ERROR)
+    assert _guardian_home_ids(db, owner) == [home.id]
+
+
+def test_unsharing_a_guardian_not_on_the_home_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    home = _make_home(db, client=_make_client(db))
+
+    response = _unshare(api, admin, home.id, _make_client(db).id)
+
+    _assert_detail(response, 404, GUARDIAN_NOT_ON_HOME_ERROR)
+
+
+def test_unsharing_an_unknown_home_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = _unshare(api, admin, uuid.uuid4(), _make_client(db).id)
+
+    _assert_detail(response, 404, HOME_NOT_FOUND_ERROR)
+
+
+def test_unshare_is_refused_while_a_child_losing_the_home_has_an_upcoming_booking_there(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    owner = _make_client(db)
+    partner = _make_client(db)
+    home = _make_home(db, client=owner)
+    db.add(GuardianHome(guardian_id=partner.id, home_id=home.id))
+    db.flush()
+    later = _book(db, client=partner, home=home, on=TOMORROW + datetime.timedelta(days=1))
+    sooner = _book(db, client=partner, home=home, on=TOMORROW)
+    _book(db, client=partner, home=home, on=YESTERDAY)
+    _book(db, client=partner, home=home, on=TOMORROW, status=BookingStatus.CANCELLED)
+
+    response = _unshare(api, admin, home.id, partner.id)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": HOME_LOST_WITH_UPCOMING_BOOKINGS_ERROR,
+        "booking_ids": [str(sooner.id), str(later.id)],
+    }
+    assert _guardian_home_ids(db, partner) == [home.id]
+
+
+def test_unshare_is_allowed_when_the_childs_other_guardian_stays_on_the_home(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    owner = _make_client(db)
+    partner = _make_client(db)
+    home = _make_home(db, client=owner)
+    db.add(GuardianHome(guardian_id=partner.id, home_id=home.id))
+    db.flush()
+    child = _make_child(db, guardians=[owner, partner])
+    _book(db, client=partner, home=home, on=TOMORROW, child=child)
+
+    response = _unshare(api, admin, home.id, partner.id)
+
+    assert response.status_code == 200
+    assert _guardian_home_ids(db, partner) == []
+    assert _child_home_ids(api, admin, child) == [str(home.id)]
+
+
+def test_a_shared_home_is_still_edited_and_archived_by_its_id(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    amy = _make_client(db)
+    zed = _make_client(db)
+    home_id = _create(api, admin, [amy.id, zed.id]).json()["id"]
+
+    patched = _patch(api, admin, uuid.UUID(home_id), {"label": "Renamed"})
+    archived = api.post("/api/archive", json={"type": "home", "id": home_id}, headers=_auth(admin))
+
+    assert patched.status_code == 200
+    assert patched.json()["label"] == "Renamed"
+    assert len(patched.json()["guardians"]) == 2
+    assert archived.status_code == 200
+
+
 # --- PATCH /api/homes/{id} ------------------------------------------------------------------
 
 
@@ -353,6 +617,9 @@ def test_an_archived_home_is_refused_by_post_bookings_and_bookable_once_restored
     client = _make_client(db)
     home = _make_home(db, client=client)
     child = _make_child(db, guardians=[client])
+    # Tutoring needs an Evaluated Child.
+    child.evaluated_at = datetime.datetime.now(tz=datetime.UTC)
+    child.evaluated_by_user_id = admin.id
     tutor = _make_tutor(db)
     subject = _make_subject(db)
     db.add(TutorSubject(tutor_id=tutor.id, subject_id=subject.id, max_grade_level=8))
@@ -434,12 +701,13 @@ def _book(
     client: Guardian,
     home: Home,
     on: datetime.date,
-    status: BookingStatus,
+    status: BookingStatus = BookingStatus.CONFIRMED,
+    child: Child | None = None,
 ) -> Booking:
     tutor = _make_tutor(db)
     availability = _make_availability(db, tutor=tutor, weekday=on.weekday())
     booking = Booking(
-        child_id=_make_child(db, guardians=[client]).id,
+        child_id=(child or _make_child(db, guardians=[client])).id,
         user_id=tutor.user_id,
         kind=BookingKind.REGULAR,
         location=BookingLocation.HOME,
@@ -477,6 +745,30 @@ def test_a_tutor_is_refused_with_403(api: TestClient, db: Session, route: str) -
     assert _reloaded(db, home).label == "Mum's"
 
 
+@pytest.mark.parametrize("route", ["create", "share", "unshare"])
+def test_a_tutor_is_refused_the_sharing_routes_with_403(
+    api: TestClient, db: Session, route: str
+) -> None:
+    tutor_user = _make_tutor_user(db)
+    owner = _make_client(db)
+    partner = _make_client(db)
+    home = _make_home(db, client=owner)
+    db.add(GuardianHome(guardian_id=partner.id, home_id=home.id))
+    db.flush()
+    homes_before = _home_count(db)
+
+    if route == "create":
+        response = _create(api, tutor_user, [owner.id])
+    elif route == "share":
+        response = _share(api, tutor_user, home.id, _make_client(db).id)
+    else:
+        response = _unshare(api, tutor_user, home.id, partner.id)
+
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
+    assert _home_count(db) == homes_before
+    assert _guardian_home_ids(db, partner) == [home.id]
+
+
 @pytest.mark.parametrize("route", ["add", "patch"])
 def test_no_token_is_refused_with_401(api: TestClient, db: Session, route: str) -> None:
     client = _make_client(db)
@@ -506,6 +798,7 @@ def test_the_shared_literals_match_the_routers_that_already_declare_them() -> No
     assert homes.BLANK_HOME_DETAILS_ERROR == client_homes.BLANK_HOME_DETAILS_ERROR
     assert client_homes.BLANK_HOME_DETAILS_ERROR == BLANK_HOME_DETAILS_ERROR
     assert homes.HOME_NOT_FOUND_ERROR == HOME_NOT_FOUND_ERROR
+    assert home_sharing_service.BLANK_ADDRESS_ERROR == BLANK_HOME_DETAILS_ERROR
 
 
 # --- helpers --------------------------------------------------------------------------------
@@ -516,6 +809,26 @@ def _home_body(**overrides: object) -> dict[str, object]:
     body.update(overrides)
 
     return body
+
+
+def _create(
+    api: TestClient, user: User, guardian_ids: list[uuid.UUID], **overrides: object
+) -> Response:
+    body = _home_body(guardian_ids=[str(guardian_id) for guardian_id in guardian_ids], **overrides)
+
+    return api.post("/api/homes", json=body, headers=_auth(user))
+
+
+def _share(api: TestClient, user: User, home_id: uuid.UUID, guardian_id: uuid.UUID) -> Response:
+    return api.post(
+        f"/api/homes/{home_id}/guardians",
+        json={"guardian_id": str(guardian_id)},
+        headers=_auth(user),
+    )
+
+
+def _unshare(api: TestClient, user: User, home_id: uuid.UUID, guardian_id: uuid.UUID) -> Response:
+    return api.delete(f"/api/homes/{home_id}/guardians/{guardian_id}", headers=_auth(user))
 
 
 def _add(api: TestClient, user: User, client_id: uuid.UUID, **overrides: object) -> Response:

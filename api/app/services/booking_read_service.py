@@ -25,7 +25,7 @@ from app.models.booking import Booking
 from app.models.availability import TutorAvailabilityException
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
-from app.models.enums import ExceptionStatus
+from app.models.enums import BookingLocation, ExceptionStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.schemas.booking import (
     BookingChild,
@@ -42,6 +42,7 @@ from app.schemas.booking import (
     user_ref,
 )
 from app.services import conversation_service
+from app.services.settings_service import read_office_address
 from app.services.sort_out_service import sort_out_reasons
 
 type _LevelKey = tuple[uuid.UUID, uuid.UUID]
@@ -54,6 +55,7 @@ def booking_summaries(
     levels = _subject_levels(db, rows)
     reasons = sort_out_reasons(db, [row.id for row in rows], now)
     guardians = _guardian_refs(db, {row.child_id for row in rows})
+    office_address = read_office_address(db)
 
     return [
         BookingSummary(
@@ -62,6 +64,7 @@ def booking_summaries(
             staff=staff_ref(row.staff),
             kind=row.kind,
             location=row.location,
+            office_address=_office_address_of(row, office_address),
             subject=subject_ref(row.subject),
             subject_level=_level_of(row, levels),
             scheduled_date=row.scheduled_date,
@@ -90,6 +93,7 @@ def booking_detail(
     so anyone else (a Tutor reading their own Booking) gets `conversation_id: null`.
     """
     levels = _subject_levels(db, [row])
+    office_address = read_office_address(db)
 
     return BookingDetail(
         id=row.id,
@@ -97,6 +101,7 @@ def booking_detail(
         staff=staff_ref(row.staff),
         kind=row.kind,
         location=row.location,
+        office_address=_office_address_of(row, office_address),
         subject=subject_ref(row.subject),
         subject_level=_level_of(row, levels),
         scheduled_date=row.scheduled_date,
@@ -228,6 +233,10 @@ def _latest_conversations(
     ).all()
 
     return {guardian_id: conversation_id for guardian_id, conversation_id in latest}
+
+
+def _office_address_of(row: Booking, office_address: str | None) -> str | None:
+    return office_address if row.location == BookingLocation.IN_OFFICE else None
 
 
 def _level_of(row: Booking, levels: dict[_LevelKey, int]) -> int | None:

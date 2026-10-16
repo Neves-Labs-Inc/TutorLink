@@ -31,6 +31,8 @@ class MeRead(BaseModel):
     tutor_id: uuid.UUID | None
     # The office's E.164 number, or null while an Admin has not set one. Same for every role.
     office_phone: str | None
+    # True once the person has dismissed their welcome card; never goes back to false.
+    welcome_seen: bool
 
 
 class MeUpdate(BaseModel):

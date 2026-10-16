@@ -894,6 +894,7 @@ def test_deactivating_a_child_with_no_upcoming_sessions_ignores_the_count(
         "id": str(child_id),
         "archived": True,
         "cancelled_booking_ids": [],
+        "archived_child_ids": [],
     }
     assert _child(db, child_id).is_archived is True
 

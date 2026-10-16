@@ -63,6 +63,8 @@ class BookingSummary(BaseModel):
     staff: StaffRef
     kind: BookingKind
     location: BookingLocation
+    # The office address setting when the session is In office and it is set, else None.
+    office_address: str | None
     # None on an Evaluation (`ck_bookings_subject_matches_kind`).
     subject: NamedRef | None
     # The Child's level in `subject`; None with no level set, or with no Subject.
@@ -127,6 +129,8 @@ class BookingDetail(BaseModel):
     staff: StaffRef
     kind: BookingKind
     location: BookingLocation
+    # The office address setting when the session is In office and it is set, else None.
+    office_address: str | None
     subject: NamedRef | None
     subject_level: int | None
     scheduled_date: datetime.date

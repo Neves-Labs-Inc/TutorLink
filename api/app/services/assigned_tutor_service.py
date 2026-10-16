@@ -152,7 +152,7 @@ def assigned_tutors_by_child(
 
 
 def evaluation_run_by(db: Session, *, child_id: uuid.UUID) -> AssignedTutor | None:
-    """Staff of the Child's latest non-cancelled Evaluation, if they're an active Tutor or
+    """Staff of the Child's latest Evaluation that was neither cancelled nor Didn't happen, if they're an active Tutor or
     Manager; an older Evaluation never stands in for a newer one run by someone else."""
     staff = db.scalars(
         select(User)
@@ -160,7 +160,7 @@ def evaluation_run_by(db: Session, *, child_id: uuid.UUID) -> AssignedTutor | No
         .where(
             Booking.child_id == child_id,
             Booking.kind == BookingKind.EVALUATION,
-            Booking.status != BookingStatus.CANCELLED,
+            Booking.status.not_in((BookingStatus.CANCELLED, BookingStatus.DIDNT_HAPPEN)),
         )
         .order_by(Booking.scheduled_date.desc(), Booking.start_time.desc(), Booking.id)
         .limit(1)

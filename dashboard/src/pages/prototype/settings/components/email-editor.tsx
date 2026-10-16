@@ -15,7 +15,6 @@ import {
 import { SegmentedControl } from "@/components/kit/components/tabs";
 import { useToast } from "@/components/kit/overlays/use-toast";
 import {
-  BRAND_COLOR_KEY,
   cleanBrandColor,
   normalizeBrandColor,
   validateBrandColor,
@@ -25,6 +24,9 @@ import ColourPicker from "@/pages/prototype/settings/components/colour-picker";
 import PrototypeNote from "@/pages/prototype/settings/components/prototype-note";
 import type { TemplateSectionConfig } from "@/lib/settings/emailTemplates";
 import type { SettingWrite } from "@/pages/prototype/settings/types/api";
+
+// The live key was split per email; the prototype keeps its own single colour.
+const BRAND_COLOR_KEY = "email_brand_color";
 
 const PLACEHOLDER_LABELS: Record<string, string> = {
   name: "Their name",

@@ -40,12 +40,13 @@ from app.services.client_service import (
     HomeInput,
     PhoneNumberTaken,
     WhatsAppChatTaken,
-    create_client,
     get_client,
     list_clients,
     update_client,
 )
 from app.routers.client_homes import BLANK_HOME_DETAILS_ERROR
+from app.services.child_service import ChildNotFound
+from app.services.guardian_link_service import HomesNotOfChild, create_guardian_in_family
 from app.services.guardian_state import ReminderState, guardian_states
 from app.services.home_service import BlankAddress
 from app.services.home_set import guardians_by_home, upcoming_booking_counts
@@ -54,6 +55,8 @@ from app.services.phone_service import InvalidPhoneNumber
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
 ACTING_USER_NOT_FOUND_ERROR = "Your account no longer exists; sign in again"
+CHILD_NOT_FOUND_ERROR = "Child not found"
+HOMES_NOT_OF_CHILD_ERROR = "home_ids must name active homes of this child"
 WHATSAPP_CHAT_TAKEN_ERROR = "That number's WhatsApp chat belongs to another Guardian"
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -109,11 +112,13 @@ def read_one(client_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> Clie
 @router.post("", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
 def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> ClientRead:
     try:
-        created = create_client(
+        created = create_guardian_in_family(
             db,
             name=payload.name,
             phone_number=payload.phone_number,
             home=_home_input(payload.home),
+            child_ids=payload.child_ids,
+            home_ids=payload.home_ids,
         )
     except PhoneNumberTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, PHONE_NUMBER_TAKEN_ERROR) from exc
@@ -121,6 +126,10 @@ def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> Clien
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
     except BlankAddress as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, BLANK_HOME_DETAILS_ERROR) from exc
+    except ChildNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
+    except HomesNotOfChild as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, HOMES_NOT_OF_CHILD_ERROR) from exc
 
     db.commit()
 

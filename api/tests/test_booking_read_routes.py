@@ -712,8 +712,10 @@ def test_a_booking_is_not_completed_from_midnight_after_its_date_however_old(
     assert rows == {str(yesterday.id): ["not_completed"], str(a_year_ago.id): ["not_completed"]}
 
 
-@pytest.mark.parametrize("closed", [BookingStatus.COMPLETED, BookingStatus.CANCELLED])
-def test_completing_or_cancelling_a_not_completed_booking_clears_it(
+@pytest.mark.parametrize(
+    "closed", [BookingStatus.COMPLETED, BookingStatus.CANCELLED, BookingStatus.DIDNT_HAPPEN]
+)
+def test_closing_a_not_completed_booking_clears_it(
     api: TestClient,
     db: Session,
     family: Family,
@@ -2035,3 +2037,86 @@ def test_a_single_child_id_still_narrows_to_that_child(
     response = api.get(f"/api/bookings?child_id={family.child.id}", headers=_auth(admin))
 
     assert _ids(response) == {str(wanted.id)}
+
+
+# --- The office address on In office Bookings (ticket 07) ------------------------------------
+
+OFFICE_ADDRESS = "12 Main St\nSuite 4"
+
+
+def _set_office_address(api: TestClient, admin: User, address: str) -> None:
+    response = api.patch(
+        "/api/settings",
+        headers=_auth(admin),
+        json={"updates": [{"key": "office_address", "value": address}]},
+    )
+    assert response.status_code == 200
+
+
+def _in_office_booking(db: Session, family: Family) -> Booking:
+    booking = _book(db, family)
+    booking.location = BookingLocation.IN_OFFICE
+    booking.home_id = None
+    db.flush()
+
+    return booking
+
+
+def test_an_in_office_booking_shows_the_address_on_list_detail_and_client_bookings(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _set_office_address(api, admin, OFFICE_ADDRESS)
+    booking = _in_office_booking(db, family)
+    headers = _auth(admin)
+
+    listed = api.get("/api/bookings", headers=headers).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=headers).json()
+    client = api.get(f"/api/clients/{family.guardian.id}/bookings", headers=headers).json()
+
+    assert listed["office_address"] == OFFICE_ADDRESS
+    assert detail["office_address"] == OFFICE_ADDRESS
+    assert client["items"][0]["office_address"] == OFFICE_ADDRESS
+
+
+def test_the_tutor_on_an_in_office_booking_sees_the_address(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _set_office_address(api, admin, OFFICE_ADDRESS)
+    booking = _in_office_booking(db, family)
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    headers = _auth(tutor_user)
+
+    listed = api.get("/api/bookings", headers=headers).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=headers).json()
+
+    assert listed["office_address"] == OFFICE_ADDRESS
+    assert detail["office_address"] == OFFICE_ADDRESS
+
+
+def test_a_home_booking_has_a_null_office_address(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    _set_office_address(api, admin, OFFICE_ADDRESS)
+    booking = _book(db, family)
+
+    listed = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert listed["office_address"] is None
+    assert detail["office_address"] is None
+
+
+def test_an_in_office_booking_has_a_null_office_address_while_the_setting_is_blank(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    booking = _in_office_booking(db, family)
+
+    listed = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+    detail = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert listed["office_address"] is None
+    assert detail["office_address"] is None

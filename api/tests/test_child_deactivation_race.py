@@ -368,7 +368,11 @@ def _make_world(session: Session) -> World:
     guardian = Guardian(name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}")
     home = Home(address=f"{suffix[:6]} Race Street", directions="1234")
     spare_home = Home(address=f"{suffix[:6]} Spare Street", directions="1234")
-    child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
+    child = Child(
+        name=f"Child {suffix}",
+        grade_level=7,
+        school_name="Test School",
+    )
     tutor = Tutor(
         user=User(email=f"t-{suffix}@example.com", name=f"Tutor {suffix}", role=UserRole.TUTOR),
         phone_number=f"+1{suffix[-10:]}",
@@ -382,6 +386,10 @@ def _make_world(session: Session) -> World:
         is_archived=False,
     )
     session.add_all([guardian, home, spare_home, child, tutor, subject, admin])
+    session.flush()
+    # Tutoring needs an Evaluated Child.
+    child.evaluated_at = datetime.datetime.now(tz=datetime.UTC)
+    child.evaluated_by_user_id = admin.id
     session.flush()
     availability = TutorAvailability(
         tutor_id=tutor.id, day_of_week=MONDAY.weekday(), start_time=NINE, end_time=THIRTEEN

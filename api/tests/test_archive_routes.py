@@ -9,6 +9,7 @@ flag was flipped anyway is the failure the guard exists to prevent.
 import datetime
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
@@ -57,6 +58,7 @@ def test_archiving_a_subject_sets_the_flag_and_answers_the_shared_shape(
         "id": str(subject.id),
         "archived": True,
         "cancelled_booking_ids": [],
+        "archived_child_ids": [],
     }
     assert _reloaded(db, Subject, subject.id).is_archived is True
 
@@ -89,32 +91,50 @@ def test_archiving_a_subject_leaves_its_bookings_and_teaching_alone(
     assert _reloaded(db, TutorSubject, teaching.id).subject_id == subject.id
 
 
-def test_archiving_a_guardian_leaves_their_children_and_bookings_alone(
+def test_archiving_one_of_two_guardians_leaves_the_children_bookings_and_home_alone(
     api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
 ) -> None:
     freeze_business_clock(NOW)
     admin = _make_user(db)
-    client = _make_client(db)
-    home = _make_home(db, client=client)
-    booking = _book(
-        db,
-        home=home,
-        on=TOMORROW,
-        start=TEN,
-        end=ELEVEN,
-        status=BookingStatus.CONFIRMED,
-        client=client,
-    )
+    family = _make_family(db, sessions_per_child=[1])
+    other = _make_client(db)
+    db.add(ChildGuardian(child_id=family.children[0].id, guardian_id=other.id))
+    db.flush()
+    [booking] = family.bookings
 
-    response = _archive(api, admin, "guardian", client.id)
+    response = _archive(api, admin, "guardian", family.guardian.id)
 
     assert response.status_code == 200
     assert response.json()["archived"] is True
     assert response.json()["cancelled_booking_ids"] == []
-    assert _reloaded(db, Guardian, client.id).is_archived is True
+    assert response.json()["archived_child_ids"] == []
+    assert _reloaded(db, Guardian, family.guardian.id).is_archived is True
+    assert _reloaded(db, Guardian, other.id).is_archived is False
     assert _reloaded(db, Booking, booking.id).status == BookingStatus.CONFIRMED
     assert _reloaded(db, Child, booking.child_id).is_archived is False
-    assert _reloaded(db, Home, home.id).is_archived is False
+    assert _reloaded(db, Home, booking.home_id).is_archived is False
+
+
+def test_archiving_the_second_of_two_guardians_then_cascades(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[1])
+    other = _make_client(db)
+    db.add(ChildGuardian(child_id=family.children[0].id, guardian_id=other.id))
+    db.flush()
+    [booking] = family.bookings
+    _archive(api, admin, "guardian", family.guardian.id)
+
+    response = _archive_guardian(api, admin, other.id, expected_cancellations=1)
+
+    assert response.status_code == 200
+    assert response.json()["archived_child_ids"] == [str(family.children[0].id)]
+    assert response.json()["cancelled_booking_ids"] == [str(booking.id)]
+    assert _reloaded(db, Child, booking.child_id).is_archived is True
+    assert _reloaded(db, Booking, booking.id).status == BookingStatus.CANCELLED
+    assert _reloaded(db, Home, booking.home_id).is_archived is False
 
 
 @pytest.mark.parametrize(
@@ -253,6 +273,7 @@ def test_restore_clears_the_flag(api: TestClient, db: Session, kind: str) -> Non
         "id": str(row_id),
         "archived": False,
         "cancelled_booking_ids": [],
+        "archived_child_ids": [],
     }
     assert _reloaded(db, model, row_id).is_archived is False
 
@@ -351,8 +372,181 @@ def test_an_unknown_type_is_refused_with_400(api: TestClient, db: Session) -> No
 # --- helpers --------------------------------------------------------------------------------
 
 
+def test_archiving_the_last_guardian_archives_the_children_and_cancels_their_sessions(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[2, 1])
+
+    response = _archive_guardian(api, admin, family.guardian.id, expected_cancellations=3)
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is True
+    assert set(response.json()["archived_child_ids"]) == {str(c.id) for c in family.children}
+    assert set(response.json()["cancelled_booking_ids"]) == {str(b.id) for b in family.bookings}
+    assert _reloaded(db, Guardian, family.guardian.id).is_archived is True
+    assert all(_reloaded(db, Child, c.id).is_archived for c in family.children)
+    assert {_reloaded(db, Booking, b.id).status for b in family.bookings} == {
+        BookingStatus.CANCELLED
+    }
+
+
+@pytest.mark.parametrize("extra", [{}, {"expected_cancellations": 2}], ids=["absent", "stale"])
+def test_archiving_the_last_guardian_with_a_wrong_count_is_409_and_writes_nothing(
+    api: TestClient,
+    db: Session,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+    extra: dict[str, object],
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[2, 1])
+
+    response = _archive_guardian(api, admin, family.guardian.id, **extra)
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Upcoming sessions changed; review them and confirm again"}
+    assert _reloaded(db, Guardian, family.guardian.id).is_archived is False
+    assert not any(_reloaded(db, Child, c.id).is_archived for c in family.children)
+    assert {_reloaded(db, Booking, b.id).status for b in family.bookings} == {
+        BookingStatus.CONFIRMED
+    }
+
+
+def test_a_session_starting_mid_cascade_is_409_not_a_crash(
+    api: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services import clock
+
+    # The first read counts the 12:30 session as upcoming; by the Child's own re-count it began.
+    readings = iter([NOW])
+    later = datetime.datetime.combine(TODAY, datetime.time(12, 45))
+    monkeypatch.setattr(clock, "business_now", lambda: next(readings, later))
+    admin = _make_user(db)
+    guardian = _make_client(db)
+    home = _make_home(db, client=guardian)
+    child = _make_child(db, guardians=[guardian])
+    booking = _book(
+        db,
+        home=home,
+        on=TODAY,
+        start=datetime.time(12, 30),
+        end=datetime.time(13, 30),
+        status=BookingStatus.CONFIRMED,
+        child=child,
+    )
+    tomorrow = _book(
+        db,
+        home=home,
+        on=TOMORROW,
+        start=TEN,
+        end=ELEVEN,
+        status=BookingStatus.CONFIRMED,
+        child=child,
+    )
+
+    response = _archive_guardian(api, admin, guardian.id, expected_cancellations=2)
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Upcoming sessions changed; review them and confirm again"}
+    assert _reloaded(db, Guardian, guardian.id).is_archived is False
+    assert _reloaded(db, Child, child.id).is_archived is False
+    assert _reloaded(db, Booking, booking.id).status == BookingStatus.CONFIRMED
+    assert _reloaded(db, Booking, tomorrow.id).status == BookingStatus.CONFIRMED
+
+
+def test_archiving_the_last_guardian_of_a_family_without_sessions_needs_no_count(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[0])
+
+    response = _archive(api, admin, "guardian", family.guardian.id)
+
+    assert response.status_code == 200
+    assert response.json()["archived_child_ids"] == [str(family.children[0].id)]
+    assert response.json()["cancelled_booking_ids"] == []
+
+
+def test_a_blended_family_cascades_only_when_its_last_guardian_is_archived(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    a, b, c = _make_client(db), _make_client(db), _make_client(db)
+    x = _make_child(db, guardians=[a, b])
+    y = _make_child(db, guardians=[b, c])
+
+    first = _archive(api, admin, "guardian", a.id)
+    second = _archive(api, admin, "guardian", b.id)
+    last = _archive(api, admin, "guardian", c.id)
+
+    assert first.json()["archived_child_ids"] == []
+    assert second.json()["archived_child_ids"] == []
+    assert set(last.json()["archived_child_ids"]) == {str(x.id), str(y.id)}
+    assert _reloaded(db, Child, x.id).is_archived is True
+    assert _reloaded(db, Child, y.id).is_archived is True
+
+
+def test_an_already_archived_child_is_not_archived_again_or_listed(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[0, 1])
+    archived, active = family.children
+    archived.is_archived = True
+    db.flush()
+
+    response = _archive_guardian(api, admin, family.guardian.id, expected_cancellations=1)
+
+    assert response.status_code == 200
+    assert response.json()["archived_child_ids"] == [str(active.id)]
+    assert response.json()["cancelled_booking_ids"] == [str(family.bookings[0].id)]
+
+
+def test_archiving_an_archived_guardian_again_is_a_no_op(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[0])
+    family.guardian.is_archived = True
+    db.flush()
+
+    response = _archive(api, admin, "guardian", family.guardian.id)
+
+    assert response.status_code == 200
+    assert response.json()["archived_child_ids"] == []
+    assert _reloaded(db, Child, family.children[0].id).is_archived is False
+
+
+def test_restoring_the_guardian_leaves_the_children_and_bookings_archived(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    family = _make_family(db, sessions_per_child=[1])
+    _archive_guardian(api, admin, family.guardian.id, expected_cancellations=1)
+
+    response = _restore(api, admin, "guardian", family.guardian.id)
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
+    assert response.json()["archived_child_ids"] == []
+    assert _reloaded(db, Guardian, family.guardian.id).is_archived is False
+    assert _reloaded(db, Child, family.children[0].id).is_archived is True
+    assert _reloaded(db, Booking, family.bookings[0].id).status == BookingStatus.CANCELLED
+
+
 def _archive(api: TestClient, user: User, kind: str, target_id: uuid.UUID) -> Response:
     return api.post("/api/archive", json={"type": kind, "id": str(target_id)}, headers=_auth(user))
+
+
+def _archive_guardian(
+    api: TestClient, user: User, guardian_id: uuid.UUID, **extra: object
+) -> Response:
+    body = {"type": "guardian", "id": str(guardian_id), **extra}
+
+    return api.post("/api/archive", json=body, headers=_auth(user))
 
 
 def _restore(api: TestClient, user: User, kind: str, target_id: uuid.UUID) -> Response:
@@ -379,6 +573,35 @@ def _row(
         found = (Subject, _make_subject(db, is_archived=is_archived).id)
 
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class _Family:
+    guardian: Guardian
+    children: list[Child]
+    bookings: list[Booking]
+
+
+def _make_family(db: Session, *, sessions_per_child: list[int]) -> _Family:
+    """One Guardian with one Child per entry, each with that many upcoming live sessions."""
+    guardian = _make_client(db)
+    home = _make_home(db, client=guardian)
+    children = [_make_child(db, guardians=[guardian]) for _ in sessions_per_child]
+    bookings = [
+        _book(
+            db,
+            home=home,
+            on=TOMORROW + datetime.timedelta(days=day),
+            start=TEN,
+            end=ELEVEN,
+            status=BookingStatus.CONFIRMED,
+            child=child,
+        )
+        for child, count in zip(children, sessions_per_child, strict=True)
+        for day in range(count)
+    ]
+
+    return _Family(guardian=guardian, children=children, bookings=bookings)
 
 
 def _reloaded[Row](db: Session, model: type[Row], row_id: uuid.UUID) -> Row:
@@ -474,16 +697,16 @@ def _book(
     status: BookingStatus,
     subject: Subject | None = None,
     client: Guardian | None = None,
+    child: Child | None = None,
 ) -> Booking:
     tutor = _make_tutor(db)
-    guardian = client or _make_client(db)
     availability = TutorAvailability(
         tutor_id=tutor.id, day_of_week=on.weekday(), start_time=NINE, end_time=FIFTEEN
     )
     db.add(availability)
     db.flush()
     booking = Booking(
-        child_id=_make_child(db, guardians=[guardian]).id,
+        child_id=(child or _make_child(db, guardians=[client or _make_client(db)])).id,
         user_id=tutor.user_id,
         kind=BookingKind.REGULAR,
         location=BookingLocation.HOME,

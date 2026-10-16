@@ -7,6 +7,7 @@ export type TemplateSectionConfig = {
   id: TemplateSectionId
   title: string
   keys: Record<TemplateField, string>
+  brandColorKey: string
   placeholders: readonly string[]
 }
 
@@ -27,12 +28,14 @@ export const TEMPLATE_SECTIONS: readonly TemplateSectionConfig[] = [
     id: 'invite',
     title: 'Invite',
     keys: { subject: 'email_invite_subject', body: 'email_invite_body' },
+    brandColorKey: 'email_invite_brand_color',
     placeholders: ['name', 'actor_name', 'link'],
   },
   {
     id: 'password_reset',
     title: 'Password reset',
     keys: { subject: 'email_reset_subject', body: 'email_reset_body' },
+    brandColorKey: 'email_reset_brand_color',
     placeholders: ['name', 'link'],
   },
 ]
@@ -42,10 +45,10 @@ export const EMAIL_TEMPLATE_KEYS: readonly string[] = TEMPLATE_SECTIONS.flatMap(
   section.keys.body,
 ])
 
-export const BRAND_COLOR_KEY = 'email_brand_color'
+const BRAND_COLOR_KEYS: readonly string[] = TEMPLATE_SECTIONS.map((section) => section.brandColorKey)
 
 // Every key the Email templates card owns, so the general Settings card skips them all.
-const EMAIL_CARD_KEYS: readonly string[] = [...EMAIL_TEMPLATE_KEYS, BRAND_COLOR_KEY]
+const EMAIL_CARD_KEYS: readonly string[] = [...EMAIL_TEMPLATE_KEYS, ...BRAND_COLOR_KEYS]
 
 // Franklin's brand palette; all four are light, so the API picks the dark button label.
 export const BRAND_COLOR_PRESETS: readonly BrandColorPreset[] = [
@@ -142,7 +145,7 @@ export const savedTemplateValue = (settings: Setting[], key: string): string =>
 
 // Templates go as typed, since line breaks in a body matter; the colour goes uppercase.
 const outgoingValue = (key: string, value: string): string =>
-  key === BRAND_COLOR_KEY ? normalizeBrandColor(value) : value
+  BRAND_COLOR_KEYS.includes(key) ? normalizeBrandColor(value) : value
 
 // Only changed keys, so a colour that differs only in case is not a change.
 export const emailTemplateUpdates = (
@@ -159,19 +162,17 @@ export const emailTemplateUpdates = (
   })
 
 // Any invalid section draft or an invalid draft colour blocks Save.
-export const hasTemplateErrors = (settings: Setting[], draft: Record<string, string>): boolean => {
-  const colour = draft[BRAND_COLOR_KEY] ?? savedTemplateValue(settings, BRAND_COLOR_KEY)
-  const hasTemplateError = TEMPLATE_SECTIONS.some(
-    (section) =>
-      validateTemplate(
-        section,
-        draft[section.keys.subject] ?? savedTemplateValue(settings, section.keys.subject),
-        draft[section.keys.body] ?? savedTemplateValue(settings, section.keys.body),
-      ) !== null,
-  )
+export const hasTemplateErrors = (settings: Setting[], draft: Record<string, string>): boolean =>
+  TEMPLATE_SECTIONS.some((section) => {
+    const colour = draft[section.brandColorKey] ?? savedTemplateValue(settings, section.brandColorKey)
+    const template = validateTemplate(
+      section,
+      draft[section.keys.subject] ?? savedTemplateValue(settings, section.keys.subject),
+      draft[section.keys.body] ?? savedTemplateValue(settings, section.keys.body),
+    )
 
-  return hasTemplateError || validateBrandColor(colour) !== null
-}
+    return template !== null || validateBrandColor(colour) !== null
+  })
 
 export const draftEmailPayload = (
   section: TemplateSectionConfig,

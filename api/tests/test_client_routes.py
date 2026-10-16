@@ -566,6 +566,97 @@ def test_post_refuses_a_blank_address_and_writes_nothing(api: TestClient, db: Se
     assert db.scalars(select(Home)).all() == []
 
 
+def test_post_with_child_ids_links_every_child_and_shares_their_homes(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    home = _make_home(db, client=mum)
+    first = _make_child(db, guardians=[mum], name="Ann")
+    second = _make_child(db, guardians=[mum], name="Ben")
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Dad",
+            "phone_number": PHONE,
+            "child_ids": [str(first.id), str(second.id), str(first.id)],
+            "home_ids": [str(home.id), str(home.id)],
+        },
+    )
+
+    body = response.json()
+    assert response.status_code == 201
+    assert [child["name"] for child in body["children"]] == ["Ann", "Ben"]
+    assert [shared["id"] for shared in body["homes"]] == [str(home.id)]
+    assert {guardian["name"] for guardian in body["homes"][0]["guardians"]} == {"Mum", "Dad"}
+    child_read = api.get(f"/api/children/{first.id}", headers=_auth(admin)).json()
+    assert "Dad" in [guardian["name"] for guardian in child_read["guardians"]]
+
+
+def test_post_with_a_home_id_of_no_chosen_child_is_400_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    child = _make_child(db, guardians=[mum])
+    stranger = _make_client(db, name="Stranger", phone_number="+12025550199")
+    elsewhere = _make_home(db, client=stranger)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Dad",
+            "phone_number": PHONE,
+            "child_ids": [str(child.id)],
+            "home_ids": [str(elsewhere.id)],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "home_ids must name active homes of this child"}
+    assert db.scalars(select(Guardian).where(Guardian.name == "Dad")).all() == []
+
+
+def test_post_with_an_unknown_child_id_is_404_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    child = _make_child(db, guardians=[mum])
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Dad",
+            "phone_number": PHONE,
+            "child_ids": [str(child.id), str(uuid.uuid4())],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Child not found"}
+    assert db.scalars(select(Guardian).where(Guardian.name == "Dad")).all() == []
+
+
+def test_post_with_home_ids_but_no_child_ids_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    home = _make_home(db, client=mum)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={"name": "Dad", "phone_number": PHONE, "home_ids": [str(home.id)]},
+    )
+
+    assert response.status_code == 400
+    assert db.scalars(select(Guardian).where(Guardian.name == "Dad")).all() == []
+
+
 def test_post_without_a_home_creates_neither_row(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 

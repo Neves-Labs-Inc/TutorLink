@@ -13,11 +13,13 @@ import uuid
 from collections import defaultdict
 from collections.abc import Collection
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
+from app.models.booking import Booking, upcoming_live_bookings
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.services import clock
 
 
 def guardian_home_ids(
@@ -84,3 +86,20 @@ def guardians_by_home(
         grouped[home_id].append(guardian)
 
     return grouped
+
+
+def upcoming_booking_counts(
+    db: Session, *, home_ids: Collection[uuid.UUID]
+) -> defaultdict[uuid.UUID, int]:
+    """Each Home's upcoming live Bookings, the set that blocks archiving it; absent means 0."""
+    statement = (
+        select(Booking.home_id, func.count())
+        .where(Booking.home_id.in_(home_ids), upcoming_live_bookings(clock.business_now()))
+        .group_by(Booking.home_id)
+    )
+    counts: defaultdict[uuid.UUID, int] = defaultdict(int)
+
+    for home_id, count in db.execute(statement).all():
+        counts[home_id] = count
+
+    return counts

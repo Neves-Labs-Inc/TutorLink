@@ -24,7 +24,7 @@ from app.services.home_service import (
     HomeNotFound,
     update_home,
 )
-from app.services.home_set import guardians_by_home
+from app.services.home_set import guardians_by_home, upcoming_booking_counts
 
 BLANK_HOME_DETAILS_ERROR = "address must not be blank"
 
@@ -52,4 +52,8 @@ def update(
 
     db.commit()
 
-    return home_read(home, guardians_by_home(db, home_ids=[home.id])[home.id])
+    return home_read(
+        home,
+        guardians_by_home(db, home_ids=[home.id])[home.id],
+        upcoming_booking_counts(db, home_ids=[home.id])[home.id],
+    )

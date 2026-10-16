@@ -19,9 +19,10 @@ from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import Language, UserRole
+from app.models.enums import ConsentAction, ConsentSource, Language, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.models.reminder_consent import ReminderConsent
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import create_access_token, hash_password
@@ -305,6 +306,7 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "directions": "1234",
             "archived": False,
             "guardians": [{"id": str(client.id), "name": client.name}],
+            "upcoming_booking_count": 0,
         }
     ]
     assert body["children"] == [
@@ -319,6 +321,73 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "evaluated": None,
         }
     ]
+
+
+def test_details_say_reminders_never_when_the_guardian_was_never_asked(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert body["reminders"] == "never"
+    assert body["reminders_blocked_by_whatsapp"] is False
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [(ConsentAction.OPT_IN, "opt_in"), (ConsentAction.OPT_OUT, "opt_out")],
+)
+def test_details_carry_the_current_reminders_state(
+    api: TestClient, db: Session, action: ConsentAction, expected: str
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _add_consent(db, client, action, ConsentSource.INTAKE)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert body["reminders"] == expected
+    assert body["reminders_blocked_by_whatsapp"] is False
+
+
+def test_details_flag_a_guardian_blocked_by_whatsapp(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _add_consent(db, client, ConsentAction.OPT_OUT, ConsentSource.SYSTEM)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert body["reminders"] == "opt_out"
+    assert body["reminders_blocked_by_whatsapp"] is True
+
+
+def test_the_patch_response_carries_the_reminders_state_too(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _add_consent(db, client, ConsentAction.OPT_IN, ConsentSource.INTAKE)
+
+    body = api.patch(
+        f"/api/clients/{client.id}", json={"name": "New Name"}, headers=_auth(admin)
+    ).json()
+
+    assert body["reminders"] == "opt_in"
+    assert body["reminders_blocked_by_whatsapp"] is False
+
+
+def _add_consent(
+    db: Session, client: Guardian, action: ConsentAction, source: ConsentSource
+) -> None:
+    db.add(
+        ReminderConsent(
+            guardian_id=client.id,
+            action=action,
+            source=source,
+            phone_number=client.phone_number,
+        )
+    )
+    db.flush()
 
 
 def test_an_evaluated_child_carries_when_and_by_whom_on_the_guardian_details(
@@ -435,6 +504,7 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
             "directions": "1234",
             "archived": False,
             "guardians": [{"id": body["id"], "name": "Jane Doe"}],
+            "upcoming_booking_count": 0,
         }
     ]
 

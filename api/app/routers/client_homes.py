@@ -20,7 +20,7 @@ from app.dependencies import OfficePrincipal
 from app.schemas.client import HomeRead, home_read
 from app.schemas.home import ClientHomeCreate
 from app.services.home_service import BlankAddress, ClientNotFound, add_home
-from app.services.home_set import guardians_by_home
+from app.services.home_set import guardians_by_home, upcoming_booking_counts
 
 CLIENT_NOT_FOUND_ERROR = "Client not found"
 BLANK_HOME_DETAILS_ERROR = "address must not be blank"
@@ -49,4 +49,8 @@ def create(
 
     db.commit()
 
-    return home_read(home, guardians_by_home(db, home_ids=[home.id])[home.id])
+    return home_read(
+        home,
+        guardians_by_home(db, home_ids=[home.id])[home.id],
+        upcoming_booking_counts(db, home_ids=[home.id])[home.id],
+    )

@@ -46,9 +46,9 @@ from app.services.client_service import (
     update_client,
 )
 from app.routers.client_homes import BLANK_HOME_DETAILS_ERROR
-from app.services.guardian_state import ReminderState
+from app.services.guardian_state import ReminderState, guardian_states
 from app.services.home_service import BlankAddress
-from app.services.home_set import guardians_by_home
+from app.services.home_set import guardians_by_home, upcoming_booking_counts
 from app.services.phone_service import InvalidPhoneNumber
 
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
@@ -180,6 +180,8 @@ def _home_input(home: HomeCreate | None) -> HomeInput | None:
 
 def _to_read(db: Session, detail: ClientDetail) -> ClientRead:
     owners = guardians_by_home(db, home_ids=[home.id for home in detail.homes])
+    counts = upcoming_booking_counts(db, home_ids=[home.id for home in detail.homes])
+    state = guardian_states(db, [detail.client.id])[detail.client.id]
     conversation = detail.language_conversation
 
     return ClientRead(
@@ -187,8 +189,10 @@ def _to_read(db: Session, detail: ClientDetail) -> ClientRead:
         name=detail.client.name,
         phone_number=detail.client.phone_number,
         archived=detail.client.is_archived,
-        homes=[home_read(home, owners[home.id]) for home in detail.homes],
+        homes=[home_read(home, owners[home.id], counts[home.id]) for home in detail.homes],
         children=[child_read(child) for child in detail.children],
         language=None if conversation is None else conversation.language,
         language_conversation_id=None if conversation is None else conversation.id,
+        reminders=state.reminders,
+        reminders_blocked_by_whatsapp=state.is_blocked_by_whatsapp,
     )

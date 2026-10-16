@@ -3,6 +3,7 @@
 // to the native element. Errors replace the help text and say what to do.
 import { useId } from "react";
 import type {
+  ComponentPropsWithRef,
   InputHTMLAttributes,
   ReactNode,
   TextareaHTMLAttributes,
@@ -216,11 +217,15 @@ export function SelectField({
   );
 }
 
-type SearchInputProps = {
+// The rest goes to the input, so a combobox can drive it (role, ARIA,
+// keys, ref).
+type SearchInputProps = Omit<
+  ComponentPropsWithRef<"input">,
+  "id" | "type" | "value" | "onChange" | "className"
+> & {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  placeholder?: string;
   className?: string;
 };
 
@@ -230,8 +235,8 @@ export function SearchInput({
   label,
   value,
   onChange,
-  placeholder,
   className,
+  ...rest
 }: SearchInputProps): ReactNode {
   const id = useId();
   return (
@@ -248,17 +253,21 @@ export function SearchInput({
         type="search"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
         className={cn(
           getControlClasses(false),
           "h-11 rounded-full pr-11 pl-11 [&::-webkit-search-cancel-button]:hidden",
         )}
+        {...rest}
       />
       {value && (
         <button
           type="button"
           aria-label="Clear search"
-          onClick={() => onChange("")}
+          onClick={() => {
+            onChange("");
+            // The clear button is about to vanish; keep the user typing.
+            document.getElementById(id)?.focus();
+          }}
           className="absolute top-0 right-0 inline-flex size-11 cursor-pointer items-center justify-center rounded-full text-(--tl-muted) hover:text-(--tl-ink)"
         >
           <X aria-hidden className="size-[18px]" />

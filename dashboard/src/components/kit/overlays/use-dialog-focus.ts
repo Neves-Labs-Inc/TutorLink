@@ -56,7 +56,9 @@ export function useDialogFocus(
         ? document.activeElement
         : null;
     stack?.open(panel);
-    panel.focus();
+    // preventScroll: a sheet starts its enter below the kit, and focusing
+    // it there would scroll the (overflow-hidden) kit root to reveal it.
+    panel.focus({ preventScroll: true });
 
     function isActive(event: KeyboardEvent): boolean {
       if (!panel) return false;

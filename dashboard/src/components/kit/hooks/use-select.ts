@@ -5,14 +5,13 @@
 // rows take real focus.
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { FocusEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
+import { isKitWide } from "@/components/kit/overlays/use-enter-animation";
 import type {
   SelectChange,
   SelectOpenMode,
   SelectOption,
 } from "@/components/kit/types/select";
 
-// Same breakpoint as MultiSelectFilter and the @2xl overlays.
-const POPOVER_MIN_KIT_WIDTH = 672;
 const POPOVER_GAP = 6;
 const POPOVER_MIN_WIDTH = 200;
 // A long option widens the list up to here, then truncates.
@@ -237,10 +236,8 @@ export function useSelect({
   function open(index: number): void {
     const trigger = triggerRef.current;
     if (isDisabled || !trigger) return;
-    const bounds = getKitBounds(trigger);
-    const kitWidth = bounds.right - bounds.left;
     setActiveIndex(Math.min(Math.max(index, 0), lastIndex));
-    setOpenMode(kitWidth >= POPOVER_MIN_KIT_WIDTH ? "popover" : "sheet");
+    setOpenMode(isKitWide(trigger) ? "popover" : "sheet");
   }
 
   function close(shouldRefocus: boolean): void {

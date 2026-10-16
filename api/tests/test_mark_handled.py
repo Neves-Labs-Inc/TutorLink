@@ -56,6 +56,7 @@ from app.routers import conversations as conversations_router
 from app.routers.conversations import (
     CONVERSATION_NOT_FOUND_ERROR,
     FLAG_CHANGED_ERROR,
+    NOTHING_TO_UNDO_ERROR,
     REACTIVATION_FLAG_ERROR,
 )
 from app.security import create_access_token, hash_password
@@ -196,6 +197,185 @@ def test_mark_handled_resurfaces_a_request_pending_under_a_later_flag(
 def test_mark_handled_on_an_unknown_conversation_is_not_found(db: Session) -> None:
     with pytest.raises(ConversationNotFound):
         mark_handled(db, conversation_id=uuid.uuid4(), flagged_at=TOKEN)
+
+
+# --- Hand back and Undo ------------------------------------------------------------------------
+
+TAKEOVER = "/api/conversations/{conversation_id}/takeover"
+UNDO = "/api/conversations/{conversation_id}/handled/undo"
+HAND_BACK_REASONS = CLEARABLE_REASONS
+
+
+def _hand_back(api: TestClient, user: User, conversation_id: uuid.UUID) -> Response:
+    return api.delete(TAKEOVER.format(conversation_id=conversation_id), headers=_auth(user))
+
+
+def _undo(api: TestClient, user: User, conversation_id: uuid.UUID) -> Response:
+    return api.post(UNDO.format(conversation_id=conversation_id), headers=_auth(user))
+
+
+@pytest.mark.parametrize("reason", HAND_BACK_REASONS)
+def test_hand_back_returns_a_flagged_chat_unflagged(
+    api: TestClient, db: Session, reason: FlagReason
+) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=reason, holder=admin)
+
+    response = _hand_back(api, admin, conversation.id)
+
+    assert response.status_code == 200
+    assert response.json()["flag_reason"] is None
+    row = _row(db, conversation.id)
+    assert row.status is ConversationStatus.BOT
+    assert row.flag_reason is None
+    assert row.flagged_at is None
+
+
+def test_hand_back_keeps_a_reactivation_request_flag(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    conversation = _make_conversation(
+        db, reason=FlagReason.REACTIVATION_REQUEST, holder=admin, child=child
+    )
+
+    response = _hand_back(api, admin, conversation.id)
+
+    assert response.status_code == 200
+    row = _row(db, conversation.id)
+    assert row.status is ConversationStatus.BOT
+    assert row.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert row.flagged_at == TOKEN
+    assert row.reactivation_child_id == child.id
+
+
+def test_hand_back_resurfaces_a_request_pending_under_another_flag(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    conversation = _make_conversation(db, reason=FlagReason.STUCK, holder=admin, child=child)
+
+    response = _hand_back(api, admin, conversation.id)
+
+    assert response.status_code == 200
+    row = _row(db, conversation.id)
+    assert row.flag_reason is FlagReason.REACTIVATION_REQUEST
+    assert row.flagged_at is not None
+    assert row.flagged_at > TOKEN
+    assert row.reactivation_child_id == child.id
+
+
+def test_hand_back_on_a_bot_chat_changes_no_flag(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=FlagReason.STUCK)
+
+    response = _hand_back(api, admin, conversation.id)
+
+    assert response.status_code == 200
+    row = _row(db, conversation.id)
+    assert row.flag_reason is FlagReason.STUCK
+    assert row.flagged_at == TOKEN
+
+
+def test_mark_done_records_what_it_cleared(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=FlagReason.QUESTION)
+
+    response = _post_handled(api, admin, conversation.id, TOKEN.isoformat())
+
+    assert response.status_code == 200
+    row = _row(db, conversation.id)
+    assert row.handled_flag_reason is FlagReason.QUESTION
+    assert row.handled_flagged_at == TOKEN
+    assert row.handled_at is not None
+    assert row.handled_at > TOKEN
+
+
+def test_undo_restores_the_exact_reason_and_flagged_at(
+    api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
+) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=FlagReason.BOOKING_REQUEST)
+    _post_handled(api, admin, conversation.id, TOKEN.isoformat())
+    broadcasts.clear()
+
+    response = _undo(api, admin, conversation.id)
+
+    assert response.status_code == 200
+    assert response.json()["flag_reason"] == "booking_request"
+    assert datetime.datetime.fromisoformat(response.json()["flagged_at"]) == TOKEN
+    row = _row(db, conversation.id)
+    assert row.flag_reason is FlagReason.BOOKING_REQUEST
+    assert row.flagged_at == TOKEN
+    assert row.handled_flag_reason is None
+    assert row.handled_flagged_at is None
+    assert row.handled_at is None
+    assert [event.frame()["type"] for event in broadcasts] == ["conversation.updated"]
+
+
+def test_a_second_undo_is_409(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=FlagReason.STUCK)
+    _post_handled(api, admin, conversation.id, TOKEN.isoformat())
+    _undo(api, admin, conversation.id)
+
+    response = _undo(api, admin, conversation.id)
+
+    _assert_detail(response, 409, NOTHING_TO_UNDO_ERROR)
+
+
+def test_undo_after_the_bot_flagged_the_chat_again_is_409(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=FlagReason.STUCK)
+    _post_handled(api, admin, conversation.id, TOKEN.isoformat())
+    flag(db, conversation=_row(db, conversation.id), reason=FlagReason.PARSE_ERROR)
+    db.commit()
+
+    response = _undo(api, admin, conversation.id)
+
+    _assert_detail(response, 409, NOTHING_TO_UNDO_ERROR)
+    assert _row(db, conversation.id).flag_reason is FlagReason.PARSE_ERROR
+
+
+def test_undo_after_hand_back_is_409(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    conversation = _make_conversation(db, reason=FlagReason.STUCK, holder=admin)
+    _post_handled(api, admin, conversation.id, TOKEN.isoformat())
+    _hand_back(api, admin, conversation.id)
+
+    response = _undo(api, admin, conversation.id)
+
+    _assert_detail(response, 409, NOTHING_TO_UNDO_ERROR)
+    assert _row(db, conversation.id).flag_reason is None
+
+
+def test_undo_on_an_unknown_conversation_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = _undo(api, admin, uuid.uuid4())
+
+    _assert_detail(response, 404, CONVERSATION_NOT_FOUND_ERROR)
+
+
+def test_undo_after_mark_done_resurfaced_a_request_restores_the_reason_and_keeps_the_request(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    conversation = _make_conversation(db, reason=FlagReason.STUCK, child=child)
+    resurfaced = _post_handled(api, admin, conversation.id, TOKEN.isoformat())
+    row = _row(db, conversation.id)
+    assert row.flagged_at == row.handled_at
+
+    response = _undo(api, admin, conversation.id)
+
+    assert resurfaced.json()["flag_reason"] == "reactivation_request"
+    assert response.status_code == 200
+    row = _row(db, conversation.id)
+    assert row.flag_reason is FlagReason.STUCK
+    assert row.flagged_at == TOKEN
+    assert row.reactivation_child_id == child.id
+    assert row.handled_flag_reason is None
 
 
 # --- POST /api/conversations/{id}/handled ------------------------------------------------------

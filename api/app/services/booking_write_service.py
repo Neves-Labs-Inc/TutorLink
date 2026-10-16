@@ -12,8 +12,14 @@ itself is left out of its own neighbours (`exclude_booking_id`) — it does not 
 duplicate itself — and rule 8 is skipped, because the Evaluation being edited already exists and
 Franklin allows editing it after the Child was marked (answers.md, planner 3). **Correction
 mode**: when the row's current start is already past, the window and lead-time gates are
-skipped (`skip_window`), so the Office can fix a session that has already happened; a booking
-still in the future is held to them as hard blocks like a create.
+skipped (`skip_window`), so the Office can fix a session that has already happened, and rule 10
+is skipped with them; a booking still in the future is held to them as hard blocks like a
+create.
+
+**`restore_booking` runs it too**, on a Cancelled Booking's own values: an edit of a future
+Booking that changes nothing but the status, so the row is excluded from its own neighbours and
+the window gates apply, except that rule 8 is *not* skipped (`is_restore`) — a Cancelled
+Evaluation is not live, and bringing it back is booking it again.
 
 **The rules are `_HARD_RULES` and `_WARNING_RULES`, two ordered tables keyed by `BookingKind`,
 and that is the enumeration `docs/api-design.md` ("`POST /api/bookings`") asks for by name.**
@@ -23,7 +29,7 @@ Staff member's role (`users.role` at write time, #130):
 
 | | Evaluation | Regular, Admin | Regular, Tutor/Manager |
 |---|---|---|---|
-| hard | 2, 6, 7, 8, 9 | 2, 6, 7 | 2, 6, 7 |
+| hard | 2, 6, 7, 8, 9 | 2, 6, 7, 10 | 2, 6, 7, 10 |
 | warnings (#151) | 4 | 4 | 1, 3, 4, 5 |
 
 Rules 1, 3 and 5 read the Staff member's teaching profile, which only a Tutor or a Manager
@@ -62,7 +68,7 @@ import datetime
 import enum
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import ColumnElement, select, true
 from sqlalchemy.exc import IntegrityError
@@ -153,6 +159,9 @@ class BookingReplacement:
     end_time: datetime.time
     kind: BookingKind | None
     notes: str | None | KeepNotes = KEEP_NOTES
+    # The `updated_at` the caller last read; when given, a changed row is refused. `None` skips
+    # the check.
+    expected_updated_at: datetime.datetime | None = None
 
 
 class BookingWriteError(Exception):
@@ -224,8 +233,37 @@ class ChildAlreadyEvaluated(BookingWriteError):
     """Rule 8 (#133) — 422."""
 
 
+class ChildNotEvaluated(BookingWriteError):
+    """Rule 10 — 422."""
+
+
+class BookingChangedSinceOpened(BookingWriteError):
+    """The row's `updated_at` is not the `expected_updated_at` the edit named — 409."""
+
+
 class LiveEvaluationExists(BookingWriteError):
     """Rule 9 (#133) — 409."""
+
+
+class RestoreNotFuture(BookingWriteError):
+    """A restore of a Cancelled Booking whose start is not in the future — 409."""
+
+
+class RestoreChildArchived(BookingWriteError):
+    """A restore of a Cancelled Booking whose Child is archived — 409."""
+
+
+class RestoreStaffArchived(BookingWriteError):
+    """A restore of a Cancelled Booking whose Staff member is archived — 409."""
+
+
+class BookingNotCancelled(BookingWriteError):
+    """The row being restored is no longer Cancelled when its lock lands — a concurrent restore
+    got there first. `current` is the status it holds now."""
+
+    def __init__(self, current: BookingStatus) -> None:
+        super().__init__(f"booking is {current.value}, not cancelled")
+        self.current = current
 
 
 class UnconfirmedWarnings(BookingWriteError):
@@ -268,6 +306,11 @@ class _Context:
     # The booking being edited, left out of every read that would otherwise find it; `None`
     # on a create.
     exclude_booking_id: uuid.UUID | None
+    # Correction mode: the session being edited has already started.
+    is_correction: bool = False
+    # A Cancelled Booking brought back: excluded from its neighbours like an edit, but held to
+    # rule 8 like a create.
+    is_restore: bool = False
 
 
 type _Rule = Callable[[Session, _Context], None]
@@ -387,7 +430,7 @@ def replace_booking(
         exclude_booking_id=row.id,
         current_staff_id=row.user_id,
         skip_window=is_past,
-        before_rules=lambda: _check_live(_lock(db, row)),
+        before_rules=lambda: _lock_and_check(db, row, replacement),
     )
 
     # The same second layer as the create (see there): the EXCLUDE and the partial unique
@@ -424,6 +467,100 @@ def replace_booking(
     return row
 
 
+def restore_booking(
+    db: Session,
+    *,
+    booking_id: uuid.UUID,
+    now: datetime.datetime,
+    confirm_warnings: frozenset[WarningCode],
+    expected_updated_at: datetime.datetime | None = None,
+) -> Booking:
+    """A Cancelled Booking back to `confirmed`, or the first refusal, or the warnings left
+    unconfirmed.
+
+    Refused first, before any rule, when its start is not in the future (`now`, naive business
+    wall-clock), its Child is archived or its Staff member is archived. Then `_validate` judges
+    the row's own values as Change booking judges a future Booking, plus rules 8 and 9.
+
+    Locking is `replace_booking`'s: the row is read unlocked here and locked `FOR UPDATE` only
+    once `_validate` holds the Child and the Home, where a restore that lost a race to another
+    is `BookingNotCancelled` and a row saved since `expected_updated_at` is
+    `BookingChangedSinceOpened`.
+    """
+    row = db.get(Booking, booking_id, populate_existing=True)
+
+    if row is None:
+        raise BookingNotFound
+    _check_restorable(db, row, now=now)
+
+    _validate(
+        db,
+        request=_request_of_row(row),
+        now=now,
+        confirm_warnings=confirm_warnings,
+        exclude_booking_id=row.id,
+        skip_window=False,
+        is_restore=True,
+        before_rules=lambda: _lock_cancelled(db, row, expected_updated_at=expected_updated_at),
+    )
+
+    # The create's second layer (see there), inside a savepoint so the `Session` survives.
+    try:
+        with db.begin_nested():
+            row.status = BookingStatus.CONFIRMED
+            # A restored Booking is checked afresh: an Admin kept the cancelled one, not this.
+            row.clash_acknowledged_by_user = None
+            row.clash_acknowledged_at = None
+            db.flush()
+    except IntegrityError as exc:
+        raise _conflict_of(exc) from exc
+
+    return row
+
+
+def _check_restorable(db: Session, row: Booking, *, now: datetime.datetime) -> None:
+    """The restore's own refusals, ahead of every rule. Unlocked reads: `_resolve` share-locks
+    the Child later and refuses one archived in between with its usual 400."""
+    starts_at = datetime.datetime.combine(row.scheduled_date, row.start_time)
+
+    if starts_at <= now:
+        raise RestoreNotFuture
+    if db.get_one(Child, row.child_id).is_archived:
+        raise RestoreChildArchived
+    if db.get_one(User, row.user_id).is_archived:
+        raise RestoreStaffArchived
+
+
+def _lock_cancelled(
+    db: Session, row: Booking, *, expected_updated_at: datetime.datetime | None
+) -> None:
+    locked = _lock(db, row)
+
+    if locked.status is not BookingStatus.CANCELLED:
+        raise BookingNotCancelled(locked.status)
+    if expected_updated_at is not None and expected_updated_at != locked.updated_at:
+        raise BookingChangedSinceOpened
+
+
+def _request_of_row(row: Booking) -> BookingRequest:
+    """The row's own values, as the rules judge a restore."""
+    return BookingRequest(
+        child_id=row.child_id,
+        user_id=row.user_id,
+        kind=row.kind,
+        location=row.location,
+        subject_id=row.subject_id,
+        availability_id=row.availability_id,
+        home_id=row.home_id,
+        scheduled_date=row.scheduled_date,
+        start_time=row.start_time,
+        end_time=row.end_time,
+        # Not re-judged, for `_request_of`'s reason: the row keeps its guardian untouched.
+        booked_by_guardian_id=None,
+        notes=row.notes,
+    )
+
+
 def _moves_booking(row: Booking, request: BookingRequest) -> bool:
     """Whether the edit changes when the Booking is, or who it is with."""
     return (row.scheduled_date, row.start_time, row.end_time, row.user_id) != (
@@ -443,6 +580,7 @@ def _validate(
     exclude_booking_id: uuid.UUID | None,
     skip_window: bool,
     current_staff_id: uuid.UUID | None = None,
+    is_restore: bool = False,
     before_rules: Callable[[], None] = lambda: None,
 ) -> None:
     """The one rule pipeline, for a create and for an edit.
@@ -467,6 +605,7 @@ def _validate(
         gap_minutes=settings.session_gap_minutes,
         exclude_booking_id=exclude_booking_id,
     )
+    context = replace(context, is_correction=skip_window, is_restore=is_restore)
     before_rules()
 
     if not skip_window:
@@ -487,6 +626,17 @@ def _lock(db: Session, row: Booking) -> Booking:
         .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one()
+
+
+def _lock_and_check(db: Session, row: Booking, replacement: BookingReplacement) -> None:
+    """Lock the row, then refuse a dead one or one saved since the caller opened it. Under the
+    lock so the `updated_at` compared is the one the write would overwrite."""
+    locked = _lock(db, row)
+    _check_live(locked)
+
+    expected = replacement.expected_updated_at
+    if expected is not None and expected != locked.updated_at:
+        raise BookingChangedSinceOpened
 
 
 def _check_live(row: Booking) -> None:
@@ -678,9 +828,10 @@ def _rule_8_child_not_evaluated(db: Session, context: _Context) -> None:
 
     Not applied to an edit: the Evaluation already exists, and the Office may move it after
     the Child was marked (answers.md, planner 3). The Completed → Confirmed revert stays strict
-    and is `booking_status_service`'s, not this rule's.
+    and is `booking_status_service`'s, not this rule's. A restore is held to it: the Cancelled
+    Evaluation is being booked again.
     """
-    if context.exclude_booking_id is not None:
+    if context.exclude_booking_id is not None and not context.is_restore:
         return
 
     if context.child.evaluated_at is not None:
@@ -704,11 +855,24 @@ def _rule_9_no_live_evaluation(db: Session, context: _Context) -> None:
         raise LiveEvaluationExists
 
 
+def _rule_10_child_evaluated(db: Session, context: _Context) -> None:
+    """Rule 10 — 422. Tutoring is booked for a Child already Evaluated. Clearing the mark
+    reopens the Evaluation, and a still-future Tutoring booking is then held to this rule when
+    edited. Not applied in correction mode: a session that has already started is being fixed,
+    not booked."""
+    if context.is_correction:
+        return
+
+    if context.child.evaluated_at is None:
+        raise ChildNotEvaluated
+
+
 _HARD_RULES: dict[BookingKind, tuple[_Rule, ...]] = {
     BookingKind.REGULAR: (
         _rule_2_no_live_overlap,
         _rule_6_home_belongs_to_child,
         _rule_7_guardian_linked_to_child,
+        _rule_10_child_evaluated,
     ),
     BookingKind.EVALUATION: (
         _rule_2_no_live_overlap,

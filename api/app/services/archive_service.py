@@ -5,8 +5,18 @@ a new type adds its body shape to `schemas/archive.py` and one entry here. Every
 an `ArchiveResult`, so the router maps every type the same way.
 
 A repeat call (archiving an archived row, restoring an active one) is a no-op 200 with nothing
-cancelled. Restore clears the flag only, for every type. A Guardian's or a Subject's archive
-also sets the flag only: their Children, Homes, Bookings and Tutor teaching stay as they are.
+cancelled. Restore clears the flag only, for every type. A Subject's archive also sets the flag
+only: its Bookings and Tutor teaching stay as they are.
+
+**Archiving a family's last active Guardian archives its active Children** (the family is the
+household `household_service` groups over `child_guardians`). Each Child goes through
+`child_service.set_child_archived`, which cancels its upcoming Bookings. Their count is checked
+the Child way, summed across the family: when there are any, `expected_cancellations` must match
+or it is a 409 with nothing written, the Guardian included. While another Guardian of the family
+is active, only the flag changes. Homes are never touched, and restoring the Guardian brings back
+the Guardian only. Locks: the Guardian row `FOR NO KEY UPDATE` (so a bot booking's foreign-key
+KEY SHARE on it never waits), then the family's active Children in id order, then their Bookings.
+No conversation is locked, so the conversation → child order holds.
 
 **A Home is refused while a Booking at it is upcoming**, 409 naming every such Booking.
 "Upcoming" is `upcoming_live_bookings(now)` — the one definition (P7C-T) — with `now` the naive
@@ -35,11 +45,12 @@ Same transaction contract as the other services: nothing here commits, the route
 
 import logging
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from app.dependencies import ADMIN_REQUIRED_ERROR, ADMIN_ROLES
@@ -49,8 +60,8 @@ from app.models.enums import UserRole
 from app.models.guardian import Guardian
 from app.models.home import Home
 from app.models.subject import Subject
-from app.schemas.archive import ArchiveTarget, ChildTarget, StaffTarget
-from app.services import child_service, clock
+from app.schemas.archive import ArchiveTarget, ChildTarget, GuardianTarget, StaffTarget
+from app.services import child_service, clock, household_service
 from app.services.assigned_tutor_service import remove_all_for_user
 from app.services.auth_service import revoke_all_refresh_tokens_for_user
 from app.services.client_service import CLIENT_NOT_FOUND_ERROR
@@ -90,6 +101,7 @@ HTTP_CONFLICT = 409
 class ArchiveOutcome:
     archived: bool
     cancelled_booking_ids: list[uuid.UUID] = field(default_factory=list)
+    archived_child_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,15 +164,93 @@ def _set_child(
 def _set_guardian(
     db: Session, _actor: Actor, target: ArchiveTarget, is_archiving: bool
 ) -> ArchiveResult:
-    guardian = db.get(Guardian, target.id)
+    assert isinstance(target, GuardianTarget)
+
+    # Locked before the family is read, but FOR NO KEY UPDATE, not FOR UPDATE: a Booking or link
+    # insert takes KEY SHARE on this row through its foreign key *after* locking its Child, so a
+    # FOR UPDATE here, waiting on that Child below, would close a deadlock cycle.
+    guardian = db.get(
+        Guardian, target.id, with_for_update={"key_share": True}, populate_existing=True
+    )
 
     if guardian is None:
         return _not_found(target, CLIENT_NOT_FOUND_ERROR)
 
+    is_real_archive = is_archiving and not guardian.is_archived
+    orphans = _children_left_without_guardian(db, guardian.id) if is_real_archive else []
+    sessions = _upcoming_session_counts(db, orphans)
+    total = sum(sessions.values())
+
+    # The Child rule, summed across the family: any sessions need the admin's count to match.
+    if total and target.expected_cancellations != total:
+        logger.warning(
+            "archive of guardian %s refused: expected %s cancellation(s), found %d",
+            guardian.id,
+            target.expected_cancellations,
+            total,
+        )
+        return ArchiveResult(
+            value=None, error=UPCOMING_SESSIONS_CHANGED_ERROR, status=HTTP_CONFLICT
+        )
+
     guardian.is_archived = is_archiving
+    cancelled: list[uuid.UUID] = []
+    try:
+        for child_id in orphans:
+            cancelled += child_service.set_child_archived(
+                db, child_id=child_id, is_archived=True, expected_cancellations=sessions[child_id]
+            )
+    except child_service.UpcomingSessionsChanged:
+        # A session started between the count above and the Child's own re-count. The router
+        # commits nothing on a refusal, so what this loop already wrote rolls back.
+        logger.warning("archive of guardian %s refused: a session started mid-cascade", guardian.id)
+        return ArchiveResult(
+            value=None, error=UPCOMING_SESSIONS_CHANGED_ERROR, status=HTTP_CONFLICT
+        )
     db.flush()
 
-    return _done(is_archiving)
+    outcome = ArchiveOutcome(
+        archived=is_archiving, cancelled_booking_ids=cancelled, archived_child_ids=orphans
+    )
+
+    return ArchiveResult(value=outcome, error=None, status=HTTP_OK)
+
+
+def _children_left_without_guardian(db: Session, guardian_id: uuid.UUID) -> list[uuid.UUID]:
+    """The family's active Children, when this Guardian is its last active one; else none."""
+    family = household_service.family_member_ids(db, guardian_id=guardian_id)
+
+    # Locked in id order *before* the other Guardians are read, so two archives racing for a
+    # family's last two Guardians serialise here and the second sees the first's flag.
+    active_children = list(
+        db.scalars(
+            select(Child.id)
+            .where(Child.id.in_(family.child_ids), Child.is_archived.is_(False))
+            .order_by(Child.id)
+            .with_for_update()
+        )
+    )
+    has_other_active_guardian = db.scalar(
+        select(
+            exists().where(
+                Guardian.id.in_(family.guardian_ids - {guardian_id}),
+                Guardian.is_archived.is_(False),
+            )
+        )
+    )
+
+    return [] if has_other_active_guardian else active_children
+
+
+def _upcoming_session_counts(db: Session, child_ids: list[uuid.UUID]) -> Counter[uuid.UUID]:
+    """Locked `FOR UPDATE`, so none changes status before `set_child_archived` counts it again."""
+    statement = (
+        select(Booking.child_id)
+        .where(Booking.child_id.in_(child_ids), upcoming_live_bookings(clock.business_now()))
+        .with_for_update()
+    )
+
+    return Counter(db.scalars(statement))
 
 
 def _set_home(

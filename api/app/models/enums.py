@@ -35,6 +35,8 @@ class BookingStatus(str, enum.Enum):
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
+    # A started Booking the office marks as not having taken place; not live, like Cancelled.
+    DIDNT_HAPPEN = "didnt_happen"
 
 
 class ExceptionStatus(str, enum.Enum):
@@ -120,6 +122,9 @@ class FlagReason(str, enum.Enum):
     Subject level for the subject), which only Staff can place; a question is one the bot cannot
     answer.
 
+    `REPLY_WINDOW_CLOSED` is a taken-over chat whose 24-hour WhatsApp reply window closed while
+    Staff still held it, so someone must reach the Guardian outside the bot or hand back.
+
     No value exists for a policy refusal. A reschedule or cancellation refused inside
     `cancellation_cutoff_hours` is the bot working as intended rather than failing, and flagging
     it would bury the flags that mean the bot needs help.
@@ -131,6 +136,7 @@ class FlagReason(str, enum.Enum):
     REACTIVATION_REQUEST = "reactivation_request"
     BOOKING_REQUEST = "booking_request"
     QUESTION = "question"
+    REPLY_WINDOW_CLOSED = "reply_window_closed"
 
 
 # The enums below are stored as VARCHAR with a CHECK rather than as native PostgreSQL enums:

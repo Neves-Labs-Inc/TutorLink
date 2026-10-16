@@ -51,4 +51,5 @@ def _respond(
         id=target.id,
         archived=result.value.archived,
         cancelled_booking_ids=result.value.cancelled_booking_ids,
+        archived_child_ids=result.value.archived_child_ids,
     )

@@ -29,7 +29,7 @@ from app.models.child import Child
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome
 from app.services.child_service import ChildNotFound
-from app.services.client_service import create_client
+from app.services.client_service import ClientDetail, HomeInput, create_client, get_client
 from app.services.home_set import child_home_ids
 
 
@@ -108,6 +108,47 @@ def link_guardian(
     db.expire(child, ["guardian_links"])
 
     return child
+
+
+def create_guardian_in_family(
+    db: Session,
+    *,
+    name: str,
+    phone_number: str,
+    home: HomeInput | None,
+    child_ids: Sequence[uuid.UUID],
+    home_ids: Sequence[uuid.UUID],
+) -> ClientDetail:
+    """Create a Guardian already linked to `child_ids` and sharing `home_ids`, in one go.
+
+    No same-family check: choosing Children of two families merges them. Every check that needs
+    no write runs before `create_client`, so a refusal writes nothing.
+    """
+    wanted_children = set(child_ids)
+    found = set(db.scalars(select(Child.id).where(Child.id.in_(wanted_children))).all())
+
+    if found != wanted_children:
+        raise ChildNotFound
+
+    wanted_homes = set(home_ids)
+    bookable: set[uuid.UUID] = set()
+    for child_id in wanted_children:
+        bookable |= set(db.scalars(child_home_ids(child_id, include_archived=False)).all())
+
+    if not wanted_homes <= bookable:
+        raise HomesNotOfChild
+
+    created = create_client(db, name=name, phone_number=phone_number, home=home)
+
+    for child_id in wanted_children:
+        db.add(ChildGuardian(child_id=child_id, guardian_id=created.client.id))
+
+    for home_id in wanted_homes:
+        db.add(GuardianHome(guardian_id=created.client.id, home_id=home_id))
+
+    db.flush()
+
+    return get_client(db, client_id=created.client.id)
 
 
 def _guardian_choice(

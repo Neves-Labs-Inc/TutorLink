@@ -43,7 +43,6 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
-from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
 from app.schemas.booking import BookingDetail
 from app.schemas.booking_write import (
     BookingCreate,
@@ -55,6 +54,7 @@ from app.services import clock
 from app.services.booking_read_service import booking_detail
 from app.services.booking_write_service import (
     BlockedByException,
+    BookingChangedSinceOpened,
     BookingKindImmutable,
     BookingNotFound,
     BookingNotLive,
@@ -65,6 +65,7 @@ from app.services.booking_write_service import (
     BookingShapeInvalid,
     BookingWriteError,
     ChildAlreadyEvaluated,
+    ChildNotEvaluated,
     DateOutOfWindow,
     GapNotRespected,
     GuardianNotLinkedToChild,
@@ -82,6 +83,8 @@ from app.services.booking_write_service import (
     replace_booking,
 )
 
+# Defined here, not in `booking_status`, which imports this module's error mapping.
+BOOKING_NOT_FOUND_ERROR = "Booking not found"
 BOOKING_NOT_LIVE_ERROR = "Only a pending or confirmed booking can be edited"
 BOOKING_KIND_IMMUTABLE_ERROR = "A booking's kind cannot be changed"
 REFERENCE_NOT_FOUND_ERROR = "One of the ids in the request does not exist"
@@ -100,6 +103,8 @@ BOOKING_SHAPE_INVALID_ERROR = (
     "The subject, availability range and home must match the booking's kind and location"
 )
 CHILD_ALREADY_EVALUATED_ERROR = "That child is already Evaluated"
+CHILD_NOT_EVALUATED_ERROR = "Child must be Evaluated before Tutoring is booked"
+BOOKING_STALE_ERROR = "That booking changed since it was opened"
 LIVE_EVALUATION_EXISTS_ERROR = "That child already has an Evaluation booked"
 UNCONFIRMED_WARNINGS_ERROR = "This booking needs the listed warnings confirmed"
 
@@ -133,6 +138,8 @@ _STATUS_BY_ERROR: tuple[tuple[type[BookingWriteError], int, str], ...] = (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         CHILD_ALREADY_EVALUATED_ERROR,
     ),
+    (ChildNotEvaluated, status.HTTP_422_UNPROCESSABLE_CONTENT, CHILD_NOT_EVALUATED_ERROR),
+    (BookingChangedSinceOpened, status.HTTP_409_CONFLICT, BOOKING_STALE_ERROR),
 )
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -152,9 +159,9 @@ def create(
             confirm_warnings=frozenset(payload.confirm_warnings),
         )
     except UnconfirmedWarnings as exc:
-        return _warnings_response(exc)
+        return warnings_response(exc)
     except BookingWriteError as exc:
-        raise _http_error(exc) from exc
+        raise http_error(exc) from exc
 
     db.commit()
 
@@ -174,9 +181,9 @@ def replace(
             confirm_warnings=frozenset(payload.confirm_warnings),
         )
     except UnconfirmedWarnings as exc:
-        return _warnings_response(exc)
+        return warnings_response(exc)
     except BookingWriteError as exc:
-        raise _http_error(exc) from exc
+        raise http_error(exc) from exc
 
     db.commit()
 
@@ -184,7 +191,8 @@ def replace(
     return booking_detail(db, booking, now=clock.business_now(), shows_conversations=True)
 
 
-def _http_error(exc: BookingWriteError) -> HTTPException:
+def http_error(exc: BookingWriteError) -> HTTPException:
+    """The refusal's status and message; shared with the restore in `booking_status`."""
     for error, status_code, detail in _STATUS_BY_ERROR:
         if isinstance(exc, error):
             return HTTPException(status_code=status_code, detail=detail)
@@ -193,7 +201,8 @@ def _http_error(exc: BookingWriteError) -> HTTPException:
     raise exc
 
 
-def _warnings_response(exc: UnconfirmedWarnings) -> JSONResponse:
+def warnings_response(exc: UnconfirmedWarnings) -> JSONResponse:
+    """The #151 409 body; shared with the restore in `booking_status`."""
     warnings = [
         BookingWarning(code=code, message=WARNING_MESSAGES[code]).model_dump(mode="json")
         for code in exc.codes
@@ -234,6 +243,7 @@ def _replacement(payload: BookingReplace) -> BookingReplacement:
         end_time=payload.end_time,
         kind=payload.kind,
         notes=payload.notes if payload.notes_given else KEEP_NOTES,
+        expected_updated_at=payload.expected_updated_at,
     )
 
 

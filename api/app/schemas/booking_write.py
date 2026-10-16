@@ -24,7 +24,7 @@ import datetime
 import uuid
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from app.models.booking import NOTES_MAX_LENGTH
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
@@ -91,6 +91,8 @@ class BookingReplace(_BookingWrite):
 
     kind: BookingKind | None = None
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
+    # The `updated_at` the caller last read; when sent, a changed row is refused. Absent skips it.
+    expected_updated_at: AwareDatetime | None = None
 
     @property
     def notes_given(self) -> bool:

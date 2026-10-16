@@ -113,6 +113,20 @@ class Conversation(HasID, HasTimestamps, Base):
     reactivation_child_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("children.id"), nullable=True
     )
+    # The flag the last Mark done cleared, and when, so Undo can put it back. All NULL when
+    # there is nothing to undo.
+    handled_flag_reason: Mapped[FlagReason | None] = mapped_column(flag_reason_enum, nullable=True)
+    handled_flagged_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    handled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The `last_client_message_at` whose closed reply window was already flagged, so each closed
+    # window raises `reply_window_closed` once.
+    reply_window_flagged_for: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # The Guardian's language on this thread. NULL means not detected yet, so English is used.
     language: Mapped[Language | None] = mapped_column(

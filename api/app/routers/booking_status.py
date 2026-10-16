@@ -7,17 +7,23 @@ by design, so the three can be built concurrently.
 `TutorScope` — the unapplied-scope guard is not armed here, and does not need to be, because
 there is no tutor-visible query to narrow. Who may make which move is the service's rule
 (`Actor`): the Office gets the whole table, a Tutor only Mark completed on their own booking.
+
+**The restore** (`cancelled` → `confirmed`, Office only) is judged by `booking_write_service`,
+so its refusals are mapped by `booking_writes`' own table and its unconfirmed warnings answer
+with the same `{detail, warnings[]}` 409 PUT/POST return.
 """
 
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OFFICE_ROLES, Principal
 from app.models.booking import Booking
+from app.routers.booking_writes import BOOKING_NOT_FOUND_ERROR, http_error, warnings_response
 from app.schemas.booking_status import BookingStatusChanged, BookingStatusUpdate
 from app.services.booking_status_service import (
     Actor,
@@ -29,19 +35,30 @@ from app.services.booking_status_service import (
     NotBookingOwner,
     OfficeOnlyTransition,
     RevertOverlaps,
+    TooEarlyForDidntHappen,
     TooEarlyToComplete,
     change_status,
 )
+from app.services.booking_write_service import (
+    BookingWriteError,
+    RestoreChildArchived,
+    RestoreNotFuture,
+    RestoreStaffArchived,
+    UnconfirmedWarnings,
+)
 
-BOOKING_NOT_FOUND_ERROR = "Booking not found"
 ILLEGAL_TRANSITION_ERROR = "Cannot move booking from {current} to {target}"
 BOOKING_NOT_YOURS_ERROR = "Not permitted to change another Staff member's booking"
 OFFICE_ONLY_TRANSITION_ERROR = "Only the Office can make this change"
 TOO_EARLY_TO_COMPLETE_ERROR = "A booking can be marked completed only after it has started"
+TOO_EARLY_FOR_DIDNT_HAPPEN_ERROR = "A booking can be marked Didn't happen only after it has started"
 BOOKING_CHANGED_ERROR = "That booking changed since it was picked"
 REVERT_OVERLAPS_ERROR = "Reverting would overlap another live booking of this Staff member"
 CHILD_ALREADY_EVALUATED_ERROR = "Child is already Evaluated"
 LIVE_EVALUATION_EXISTS_ERROR = "Child already has a live Evaluation"
+RESTORE_NOT_FUTURE_ERROR = "Only a future Cancelled Booking can be restored"
+RESTORE_CHILD_ARCHIVED_ERROR = "Restore the Child first"
+RESTORE_STAFF_ARCHIVED_ERROR = "This Staff member is archived"
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -54,7 +71,7 @@ def update_booking_status(
     payload: BookingStatusUpdate,
     user: Principal,
     db: DbSession,
-) -> BookingStatusChanged:
+) -> BookingStatusChanged | JSONResponse:
     actor = Actor(user_id=user.id, is_office=user.role in OFFICE_ROLES)
 
     try:
@@ -64,6 +81,7 @@ def update_booking_status(
             target=payload.status,
             actor=actor,
             expected_updated_at=payload.expected_updated_at,
+            confirm_warnings=frozenset(payload.confirm_warnings),
         )
     except BookingNotFound as exc:
         raise HTTPException(
@@ -82,6 +100,8 @@ def update_booking_status(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
     except TooEarlyToComplete as exc:
         raise _conflict(TOO_EARLY_TO_COMPLETE_ERROR) from exc
+    except TooEarlyForDidntHappen as exc:
+        raise _conflict(TOO_EARLY_FOR_DIDNT_HAPPEN_ERROR) from exc
     except BookingChanged as exc:
         raise _conflict(BOOKING_CHANGED_ERROR) from exc
     except RevertOverlaps as exc:
@@ -90,6 +110,16 @@ def update_booking_status(
         raise _conflict(CHILD_ALREADY_EVALUATED_ERROR) from exc
     except LiveEvaluationExists as exc:
         raise _conflict(LIVE_EVALUATION_EXISTS_ERROR) from exc
+    except RestoreNotFuture as exc:
+        raise _conflict(RESTORE_NOT_FUTURE_ERROR) from exc
+    except RestoreChildArchived as exc:
+        raise _conflict(RESTORE_CHILD_ARCHIVED_ERROR) from exc
+    except RestoreStaffArchived as exc:
+        raise _conflict(RESTORE_STAFF_ARCHIVED_ERROR) from exc
+    except UnconfirmedWarnings as exc:
+        return warnings_response(exc)
+    except BookingWriteError as exc:
+        raise http_error(exc) from exc
 
     db.commit()
 

@@ -87,11 +87,13 @@ from app.services.conversation_service import (
     FlagChanged,
     FlagNeedsReactivationDecision,
     NoReactivationPending,
+    NothingToUndo,
     change_language,
     get_detail,
     list_conversations,
     mark_handled,
     mark_read,
+    undo_handled,
     resolve_reactivation,
 )
 from app.services.message_service import ThreadMessage, list_thread
@@ -106,6 +108,7 @@ from app.services.notice_service import (
 CONVERSATION_NOT_FOUND_ERROR = "Conversation not found"
 HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {name}"
 NO_REACTIVATION_PENDING_ERROR = "No reactivation request is pending"
+NOTHING_TO_UNDO_ERROR = "Nothing to undo; the chat changed since it was marked done"
 FLAG_CHANGED_ERROR = "The flag changed since you opened this conversation; review it and try again"
 REACTIVATION_FLAG_ERROR = "Approve or deny the reactivation request instead"
 NOT_HELD_ERROR = "The assistant has this conversation; take it over instead"
@@ -337,6 +340,24 @@ def mark_flag_handled(
         raise HTTPException(status.HTTP_409_CONFLICT, FLAG_CHANGED_ERROR) from exc
     except FlagNeedsReactivationDecision as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, REACTIVATION_FLAG_ERROR) from exc
+
+    db.commit()
+    conversation = _read(detail)
+    _publish_update(conversation)
+
+    return conversation
+
+
+@router.post("/{conversation_id}/handled/undo", response_model=ConversationRead)
+def undo_flag_handled(
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
+) -> ConversationRead:
+    try:
+        detail = undo_handled(db, conversation_id=conversation_id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+    except NothingToUndo as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NOTHING_TO_UNDO_ERROR) from exc
 
     db.commit()
     conversation = _read(detail)

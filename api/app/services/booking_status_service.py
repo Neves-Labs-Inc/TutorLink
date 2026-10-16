@@ -6,17 +6,20 @@ domain exceptions below and `app.routers.booking_status` maps them.
 **Transaction contract.** Nothing here commits: the caller owns the transaction boundary.
 
 `LEGAL_TRANSITIONS` is the single authority for what move is allowed — a lookup table, not a
-chain of `if` branches. `cancelled` is terminal: every move out of it, including a restatement
-of the current status, is refused. `completed` is not: the Office may revert it to `confirmed`
-(#152), which re-enters the set `excl_bookings_live_overlap` and
+chain of `if` branches. `cancelled` leaves only by the Office's restore to `confirmed`
+(`RESTORE_TRANSITION`), which is not a one-field move: it is judged by
+`booking_write_service.restore_booking` as Change booking judges a future Booking, and is
+refused to every other caller. Every other move out of `cancelled`, including a restatement of
+the current status, is refused. `completed` and `didnt_happen` are not: the Office may
+revert either to `confirmed` (#152), which re-enters the set `excl_bookings_live_overlap` and
 `uq_bookings_one_live_evaluation_per_child` cover (`LIVE_BOOKING_STATUSES` in
 `app.models.booking`). That is why the write runs inside a savepoint and translates the two
 `IntegrityError`s the way `POST /api/bookings` does: the constraints are the guarantee, and the
 pre-checks here are only the readable refusals.
 
 **Who may move what.** An internal caller (the bot, `child_service`) passes no `actor` and gets
-the whole table. The Office gets the whole table too. A Tutor gets one cell — their own
-`confirmed` booking to `completed`, once its start has passed on the business clock
+the whole table but the restore. The Office gets the whole table. A Tutor gets one cell — their
+own `confirmed` booking to `completed`, once its start has passed on the business clock
 (`clock.business_now`) — and is refused everything else as *not theirs* / *Office only* (the
 router's 403s) or *illegal* / *too early* (its 409s).
 
@@ -37,16 +40,30 @@ from sqlalchemy.orm import Session
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import Child
 from app.models.enums import BookingKind, BookingStatus
-from app.services import clock
+from app.services import booking_write_service, clock
+from app.services.booking_write_service import WarningCode
 
 logger = logging.getLogger(__name__)
 
 LEGAL_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
-    BookingStatus.PENDING: frozenset({BookingStatus.CONFIRMED, BookingStatus.CANCELLED}),
-    BookingStatus.CONFIRMED: frozenset({BookingStatus.CANCELLED, BookingStatus.COMPLETED}),
-    BookingStatus.CANCELLED: frozenset(),
+    BookingStatus.PENDING: frozenset(
+        {BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.DIDNT_HAPPEN}
+    ),
+    BookingStatus.CONFIRMED: frozenset(
+        {BookingStatus.CANCELLED, BookingStatus.COMPLETED, BookingStatus.DIDNT_HAPPEN}
+    ),
+    # The Office's restore only (`RESTORE_TRANSITION`).
+    BookingStatus.CANCELLED: frozenset({BookingStatus.CONFIRMED}),
     BookingStatus.COMPLETED: frozenset({BookingStatus.CONFIRMED}),
+    # Completed and Didn't happen switch only through Confirmed.
+    BookingStatus.DIDNT_HAPPEN: frozenset({BookingStatus.CONFIRMED}),
 }
+
+# Statuses the Office may re-open to `confirmed`; each re-enters the live set.
+REOPENABLE_STATUSES = frozenset({BookingStatus.COMPLETED, BookingStatus.DIDNT_HAPPEN})
+
+# The one move out of `cancelled`: the Office's restore, routed through `restore_booking`.
+RESTORE_TRANSITION = (BookingStatus.CANCELLED, BookingStatus.CONFIRMED)
 
 # The one move a Tutor may make on their own booking (#152).
 TUTOR_TRANSITION = (BookingStatus.CONFIRMED, BookingStatus.COMPLETED)
@@ -93,6 +110,10 @@ class TooEarlyToComplete(BookingStatusError):
     """A Tutor asked to complete a booking whose start has not passed yet."""
 
 
+class TooEarlyForDidntHappen(BookingStatusError):
+    """Didn't happen was asked for a booking whose start has not passed yet."""
+
+
 class BookingChanged(BookingStatusError):
     """The row's `updated_at` is not the one the caller picked (`expected_updated_at`)."""
 
@@ -116,8 +137,82 @@ def change_status(
     target: BookingStatus,
     actor: Actor | None = None,
     expected_updated_at: datetime.datetime | None = None,
+    confirm_warnings: frozenset[WarningCode] = frozenset(),
 ) -> Booking:
-    """Move `booking_id` to `target`, if `LEGAL_TRANSITIONS` (and `actor`'s role) allows it."""
+    """Move `booking_id` to `target`, if `LEGAL_TRANSITIONS` (and `actor`'s role) allows it.
+
+    The Office's restore raises `booking_write_service`'s refusals as well as this module's;
+    `confirm_warnings` is read by it alone (#151).
+    """
+    if expected_updated_at is not None and expected_updated_at.tzinfo is None:
+        raise ValueError("expected_updated_at must be timezone-aware")
+
+    if _is_office_restore(db, booking_id=booking_id, target=target, actor=actor):
+        row = _restore(
+            db,
+            booking_id=booking_id,
+            expected_updated_at=expected_updated_at,
+            confirm_warnings=confirm_warnings,
+        )
+    else:
+        row = _move(
+            db,
+            booking_id=booking_id,
+            target=target,
+            actor=actor,
+            expected_updated_at=expected_updated_at,
+        )
+
+    return row
+
+
+def _is_office_restore(
+    db: Session, *, booking_id: uuid.UUID, target: BookingStatus, actor: Actor | None
+) -> bool:
+    """An unlocked peek: the restore locks the Child and Home before the row, so it cannot start
+    from `_move`'s row lock. A row cancelled after this peek reaches `_move`, which refuses."""
+    if actor is None or not actor.is_office or target is not RESTORE_TRANSITION[1]:
+        return False
+
+    current = db.scalar(select(Booking.status).where(Booking.id == booking_id))
+    return current is RESTORE_TRANSITION[0]
+
+
+def _restore(
+    db: Session,
+    *,
+    booking_id: uuid.UUID,
+    expected_updated_at: datetime.datetime | None,
+    confirm_warnings: frozenset[WarningCode],
+) -> Booking:
+    """`restore_booking`, its lock-time refusals translated into this module's."""
+    try:
+        row = booking_write_service.restore_booking(
+            db,
+            booking_id=booking_id,
+            now=clock.business_now(),
+            confirm_warnings=confirm_warnings,
+            expected_updated_at=expected_updated_at,
+        )
+    except booking_write_service.BookingNotCancelled as exc:
+        logger.warning("booking_status: booking %s is no longer cancelled", booking_id)
+        raise IllegalTransition(current=exc.current, target=RESTORE_TRANSITION[1]) from exc
+    except booking_write_service.BookingChangedSinceOpened as exc:
+        logger.warning("booking_status: booking %s changed since it was picked", booking_id)
+        raise BookingChanged(f"booking {booking_id} changed since it was picked") from exc
+
+    return row
+
+
+def _move(
+    db: Session,
+    *,
+    booking_id: uuid.UUID,
+    target: BookingStatus,
+    actor: Actor | None,
+    expected_updated_at: datetime.datetime | None,
+) -> Booking:
+    """Every one-field move: everything in `LEGAL_TRANSITIONS` but the restore."""
     # Locked for the rest of the transaction: two callers changing the same booking
     # concurrently would otherwise both read the same status and both write, so whichever
     # committed second would silently overwrite the other's transition. The second waiter
@@ -140,14 +235,17 @@ def change_status(
     if actor is not None and not actor.is_office:
         _assert_tutor_may_move(row, actor=actor, target=target)
 
-    if target not in LEGAL_TRANSITIONS[row.status]:
+    # The restore is legal only through `_restore`: an internal caller, or a row cancelled
+    # after `_is_office_restore` peeked, is refused here.
+    if target not in LEGAL_TRANSITIONS[row.status] or (row.status, target) == RESTORE_TRANSITION:
         raise IllegalTransition(current=row.status, target=target)
 
     if actor is not None and not actor.is_office:
         _assert_start_has_passed(row)
 
-    if expected_updated_at is not None and expected_updated_at.tzinfo is None:
-        raise ValueError("expected_updated_at must be timezone-aware")
+    if target is BookingStatus.DIDNT_HAPPEN and not _has_started(row):
+        logger.warning("booking_status: booking %s has not started, not Didn't happen", row.id)
+        raise TooEarlyForDidntHappen(f"booking {row.id} has not started yet")
 
     if expected_updated_at is not None and expected_updated_at != row.updated_at:
         logger.warning(
@@ -160,7 +258,7 @@ def change_status(
 
     # Only the revert re-enters the live set; confirming a pending Evaluation changes nothing
     # about the Child's one-live-Evaluation guarantee and is left exactly as it was.
-    if row.status is BookingStatus.COMPLETED and row.kind is BookingKind.EVALUATION:
+    if row.status in REOPENABLE_STATUSES and row.kind is BookingKind.EVALUATION:
         _assert_evaluation_may_go_live(db, row)
 
     _write_status(db, row, target=target)
@@ -186,12 +284,14 @@ def _assert_tutor_may_move(row: Booking, *, actor: Actor, target: BookingStatus)
         raise OfficeOnlyTransition(f"only the Office may move a booking to {target.value}")
 
 
-def _assert_start_has_passed(row: Booking) -> None:
-    start = datetime.datetime.combine(row.scheduled_date, row.start_time)
+def _has_started(row: Booking) -> bool:
+    return clock.business_now() >= datetime.datetime.combine(row.scheduled_date, row.start_time)
 
-    if clock.business_now() < start:
-        logger.warning("booking_status: booking %s has not started yet (%s)", row.id, start)
-        raise TooEarlyToComplete(f"booking {row.id} starts at {start}")
+
+def _assert_start_has_passed(row: Booking) -> None:
+    if not _has_started(row):
+        logger.warning("booking_status: booking %s has not started yet", row.id)
+        raise TooEarlyToComplete(f"booking {row.id} has not started yet")
 
 
 def _assert_evaluation_may_go_live(db: Session, row: Booking) -> None:

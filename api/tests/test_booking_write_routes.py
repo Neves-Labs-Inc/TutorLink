@@ -56,6 +56,7 @@ from app.routers.booking_writes import (
     LEAD_TIME_NOT_MET_ERROR,
     BOOKING_SHAPE_INVALID_ERROR,
     CHILD_ALREADY_EVALUATED_ERROR,
+    CHILD_NOT_EVALUATED_ERROR,
     LIVE_EVALUATION_EXISTS_ERROR,
     OUTSIDE_AVAILABILITY_ERROR,
     REFERENCE_NOT_FOUND_ERROR,
@@ -899,6 +900,7 @@ def test_a_body_without_home_id_is_refused(api: TestClient, db: Session, family:
 def test_an_evaluation_with_an_admin_or_manager_lands_confirmed(
     api: TestClient, db: Session, family: Family, role: UserRole, location: str
 ) -> None:
+    _clear_evaluated(db, family.child)
     staff = _make_user(db, role=role)
     user = _make_user(db)
 
@@ -963,10 +965,33 @@ def test_an_evaluation_for_an_evaluated_child_is_422(
     assert _count(db) == 0
 
 
+def test_tutoring_for_a_child_who_is_not_evaluated_is_422(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    _clear_evaluated(db, family.child)
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    _assert_detail(response, 422, CHILD_NOT_EVALUATED_ERROR)
+    assert _count(db) == 0
+
+
+def test_tutoring_for_an_evaluated_child_lands(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+
+    response = _post(api, user, family)
+
+    assert response.status_code == 201
+
+
 def test_a_second_live_evaluation_for_the_child_is_409(
     api: TestClient, db: Session, family: Family
 ) -> None:
     """Another Staff member at another time, so only rule 9 can refuse it."""
+    _clear_evaluated(db, family.child)
     first, second = _make_user(db, role=UserRole.ADMIN), _make_user(db, role=UserRole.MANAGER)
     user = _make_user(db)
     assert _post_evaluation(api, user, family, first).status_code == 201
@@ -981,6 +1006,7 @@ def test_a_second_live_evaluation_for_the_child_is_409(
 def test_a_completed_or_cancelled_evaluation_does_not_count(
     api: TestClient, db: Session, family: Family, ended: BookingStatus
 ) -> None:
+    _clear_evaluated(db, family.child)
     staff = _make_user(db, role=UserRole.ADMIN)
     user = _make_user(db)
     earlier = _row(db, uuid.UUID(_post_evaluation(api, user, family, staff).json()["id"]))
@@ -1000,6 +1026,7 @@ def test_the_index_refuses_a_second_live_evaluation_the_pre_check_missed(
     Child read only `FOR SHARE` (#133). Told apart from the overlap EXCLUDE by SQLSTATE, so the
     second Evaluation is with another Staff member at another time, where only the index can
     fire. The follow-up proves the `Session` survived the savepoint rollback."""
+    _clear_evaluated(db, family.child)
     first, second = _make_user(db, role=UserRole.ADMIN), _make_user(db, role=UserRole.MANAGER)
     user = _make_user(db)
     assert _post_evaluation(api, user, family, first).status_code == 201
@@ -1014,6 +1041,7 @@ def test_the_index_refuses_a_second_live_evaluation_the_pre_check_missed(
     )
 
     refused = _post_evaluation(api, user, family, second, start_time=ELEVEN, end_time=TWELVE)
+    _clear_evaluated(db, family.sibling)
     follow_up = _post_evaluation(
         api,
         user,
@@ -1131,6 +1159,7 @@ def test_a_regular_booking_with_an_admin_of_the_wrong_shape_is_422(
 def test_a_regular_booking_overlapping_the_admins_evaluation_is_409(
     api: TestClient, db: Session, family: Family
 ) -> None:
+    _clear_evaluated(db, family.child)
     admin = _make_user(db, role=UserRole.ADMIN)
     user = _make_user(db)
     assert _post_evaluation(api, user, family, admin).status_code == 201
@@ -1154,6 +1183,7 @@ def test_a_regular_booking_adjacent_to_the_admins_evaluation_needs_no_gap(
     api: TestClient, db: Session, family: Family
 ) -> None:
     """No gap, no time off, no ceiling: an Admin is checked for overlap and the Location only."""
+    _clear_evaluated(db, family.child)
     admin = _make_user(db, role=UserRole.ADMIN)
     user = _make_user(db)
     assert _post_evaluation(api, user, family, admin).status_code == 201
@@ -1194,6 +1224,7 @@ def test_an_admins_approved_time_off_is_the_time_off_warning_on_a_regular_bookin
 def test_approved_time_off_is_the_time_off_warning_on_an_evaluation(
     api: TestClient, db: Session, family: Family, role: UserRole
 ) -> None:
+    _clear_evaluated(db, family.child)
     staff = _make_user(db, role=role)
     _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=staff.id)
     user = _make_user(db)
@@ -1329,6 +1360,7 @@ def test_an_in_office_booking_inside_the_gap_of_a_home_booking_is_the_gap_warnin
 def test_an_in_office_booking_inside_the_gap_of_an_admins_home_booking_is_accepted(
     api: TestClient, db: Session, family: Family
 ) -> None:
+    _clear_evaluated(db, family.child)
     admin = _make_user(db, role=UserRole.ADMIN)
     user = _make_user(db)
     assert _post_evaluation(api, user, family, admin).status_code == 201
@@ -1448,6 +1480,7 @@ def test_no_message_is_sent_on_a_dashboard_create_of_either_kind(
     admin = _make_user(db, role=UserRole.ADMIN)
     user = _make_user(db)
 
+    _clear_evaluated(db, family.sibling)
     regular = _post(api, user, family, booked_by_guardian_id=str(family.guardian.id))
     evaluation = _post_evaluation(
         api,
@@ -1505,6 +1538,13 @@ def _post_evaluation(
     return api.post("/api/bookings", json=body, headers=_auth(user))
 
 
+def _clear_evaluated(db: Session, child: Child) -> None:
+    """Back to not Evaluated: the state an Evaluation is booked from."""
+    child.evaluated_at = None
+    child.evaluated_by_user_id = None
+    db.flush()
+
+
 def _mark_evaluated(db: Session, child: Child, *, by: User) -> None:
     child.evaluated_at = datetime.datetime.now(tz=datetime.UTC)
     child.evaluated_by_user_id = by.id
@@ -1526,6 +1566,10 @@ def _make_family(db: Session) -> Family:
     db.add(assignment)
     db.flush()
     other_tutor = _make_tutor(db)
+    # Tutoring needs an Evaluated Child (rule 10); a test of an Evaluation clears the mark.
+    admin = _make_user(db, role=UserRole.ADMIN)
+    _mark_evaluated(db, child, by=admin)
+    _mark_evaluated(db, sibling, by=admin)
 
     return Family(
         tutor=tutor,

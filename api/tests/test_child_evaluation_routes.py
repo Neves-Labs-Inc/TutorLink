@@ -613,6 +613,9 @@ def test_evaluation_run_by_is_the_staff_of_the_latest_non_cancelled_evaluation(
     _book_evaluation_on(db, child, earlier, days=1, start="09:00", status=BookingStatus.COMPLETED)
     _book_evaluation_on(db, child, later, days=2, start="09:00", status=BookingStatus.CONFIRMED)
     _book_evaluation_on(db, child, cancelled, days=5, start="09:00", status=BookingStatus.CANCELLED)
+    _book_evaluation_on(
+        db, child, cancelled, days=6, start="09:00", status=BookingStatus.DIDNT_HAPPEN
+    )
 
     detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
 

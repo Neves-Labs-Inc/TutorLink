@@ -47,6 +47,7 @@ def test_each_role_renames_its_own_row(api: TestClient, db: Session) -> None:
             "name": NEW_NAME,
             "tutor_id": None if caller.profile_id is None else str(caller.profile_id),
             "office_phone": None,
+            "welcome_seen": False,
         }
         db.refresh(caller)
         db.refresh(bystander)
@@ -223,6 +224,48 @@ def test_a_cleared_office_phone_reads_as_null(api: TestClient, db: Session, valu
     response = api.get("/api/me", headers=_auth(tutor))
 
     assert response.json()["office_phone"] is None
+
+
+def test_a_new_user_has_not_seen_the_welcome_and_posting_marks_it_seen(
+    api: TestClient, db: Session
+) -> None:
+    for role in UserRole:
+        caller = _make_user(db, role=role)
+        assert api.get("/api/me", headers=_auth(caller)).json()["welcome_seen"] is False
+
+        first = api.post("/api/me/welcome-seen", headers=_auth(caller))
+        db.refresh(caller)
+        first_seen_at = caller.welcome_seen_at
+        second = api.post("/api/me/welcome-seen", headers=_auth(caller))
+        db.refresh(caller)
+
+        assert (first.status_code, second.status_code) == (204, 204), role
+        assert api.get("/api/me", headers=_auth(caller)).json()["welcome_seen"] is True
+        assert first_seen_at is not None
+        assert caller.welcome_seen_at == first_seen_at
+
+
+def test_patch_me_carries_welcome_seen(api: TestClient, db: Session) -> None:
+    caller = _make_user(db, role=UserRole.MANAGER)
+    api.post("/api/me/welcome-seen", headers=_auth(caller))
+
+    response = api.patch("/api/me", headers=_auth(caller), json={"name": NEW_NAME})
+
+    assert response.json()["welcome_seen"] is True
+
+
+def test_marking_the_welcome_seen_touches_only_the_caller(api: TestClient, db: Session) -> None:
+    caller = _make_user(db, role=UserRole.ADMIN)
+    bystander = _make_user(db, role=UserRole.ADMIN)
+
+    api.post("/api/me/welcome-seen", headers=_auth(caller))
+
+    db.refresh(bystander)
+    assert bystander.welcome_seen_at is None
+
+
+def test_welcome_seen_without_a_token_is_401(api: TestClient) -> None:
+    assert api.post("/api/me/welcome-seen").status_code == 401
 
 
 def _make_user(

@@ -43,12 +43,16 @@ def send_test_email(
 ) -> None:
     """Email the draft to user `user_id`, with their own name for every name placeholder.
 
-    `brand_color` is the draft colour, or None for the saved one. Raises `EmailTemplateInvalid`
+    `brand_color` is the draft colour, or None for the `kind` email's saved one. Raises `EmailTemplateInvalid`
     for a draft breaking a rule, the template's rules before the colour's (nothing is sent),
     and lets any `MailServiceError` propagate.
     """
     validate_template(kind, subject=subject, body=body)
-    color = read_email_brand_color(db) if brand_color is None else validate_brand_color(brand_color)
+    color = (
+        read_email_brand_color(db, kind=kind)
+        if brand_color is None
+        else validate_brand_color(brand_color)
+    )
 
     user = db.get_one(User, user_id)
     rendered = render_email(
@@ -79,7 +83,11 @@ def preview_email(
     Raises `EmailTemplateInvalid` like `send_test_email`. Sends nothing and writes nothing.
     """
     validate_template(kind, subject=subject, body=body)
-    color = read_email_brand_color(db) if brand_color is None else validate_brand_color(brand_color)
+    color = (
+        read_email_brand_color(db, kind=kind)
+        if brand_color is None
+        else validate_brand_color(brand_color)
+    )
 
     try:
         link = public_url(DUMMY_LINK_PATH)

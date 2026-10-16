@@ -208,6 +208,10 @@ class FlagChanged(ConversationServiceError):
     """Mark handled with a `flagged_at` that is no longer the stored one (SA-38)."""
 
 
+class NothingToUndo(ConversationServiceError):
+    """Undo with no Mark done to reverse, or one the chat has moved on from."""
+
+
 class FlagNeedsReactivationDecision(ConversationServiceError):
     """Mark handled on a `reactivation_request` flag, which only Approve or Deny ends (OQ-89)."""
 
@@ -529,7 +533,8 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     which is why nothing automatic is needed there.
 
     Releasing a conversation that is already `bot` is a no-op success, for the same reason a
-    re-claim by the holder is.
+    re-claim by the holder is. A real release also clears the Needs attention flag (the admin
+    dealt with the chat) and forgets the last Mark done, so Undo cannot follow a Hand back.
     """
     conversation = _locked(db, conversation_id=conversation_id)
 
@@ -539,6 +544,8 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     conversation.status = ConversationStatus.BOT
     conversation.taken_over_by_user_id = None
     conversation.taken_over_at = None
+    _clear_flag_on_hand_back(db, conversation)
+    _clear_handled(conversation)
     db.flush()
 
     return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
@@ -554,6 +561,70 @@ def is_window_open(
 def window_is_open(db: Session, *, conversation_id: uuid.UUID) -> bool:
     """The window rule for one thread, read now. Checked before every send."""
     return _is_window_open(db, conversation_id=conversation_id)
+
+
+def flag_closed_reply_windows(db: Session, *, now: datetime.datetime) -> list[uuid.UUID]:
+    """Flag `reply_window_closed` on every Taken-over thread whose reply window closed at
+    `now`, once per window; return the ids flagged.
+
+    A window counts once: `reply_window_flagged_for` records the last client message whose
+    closed window was flagged, so neither a second run nor a Mark done brings it back until the
+    Guardian writes again. A thread already flagged for another reason is left alone and is
+    picked up by the first run after that flag is cleared.
+
+    Candidates are found unlocked, then each is locked (conversation row first, the order every
+    writer here takes) and judged again on a fresh read. `SKIP LOCKED` means a thread busy in a
+    webhook turn or a takeover is left to the next run rather than waited on: the scheduler
+    holds every row it flags until its one commit, so waiting could join a cycle with a number
+    change, which locks two threads in phone order. Nothing here commits.
+    """
+    last_client_message_at = _last_client_message_at_column()
+    candidate_ids = db.scalars(
+        select(Conversation.id)
+        .where(
+            Conversation.status == ConversationStatus.HUMAN,
+            Conversation.flag_reason.is_(None),
+            last_client_message_at <= now - WHATSAPP_WINDOW,
+            Conversation.reply_window_flagged_for.is_distinct_from(last_client_message_at),
+        )
+        .order_by(Conversation.id)
+    ).all()
+
+    flagged: list[uuid.UUID] = []
+    for conversation_id in candidate_ids:
+        conversation = db.execute(
+            select(Conversation)
+            .where(Conversation.id == conversation_id)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if conversation is None:
+            continue
+
+        window_opened_at = _last_client_message_at(db, conversation_id)
+        if _is_reply_window_unflagged_and_closed(conversation, window_opened_at, now=now):
+            flag(db, conversation=conversation, reason=FlagReason.REPLY_WINDOW_CLOSED)
+            conversation.reply_window_flagged_for = window_opened_at
+            db.flush()
+            flagged.append(conversation_id)
+
+    return flagged
+
+
+def _is_reply_window_unflagged_and_closed(
+    conversation: Conversation,
+    last_client_message_at: datetime.datetime | None,
+    *,
+    now: datetime.datetime,
+) -> bool:
+    # The candidate query's predicate, re-judged under the lock on the row as it now stands.
+    return (
+        conversation.status is ConversationStatus.HUMAN
+        and conversation.flag_reason is None
+        and last_client_message_at is not None
+        and not is_window_open(last_client_message_at, now=now)
+        and conversation.reply_window_flagged_for != last_client_message_at
+    )
 
 
 def mark_read(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
@@ -752,14 +823,67 @@ def mark_handled(
                 f"conversation {conversation_id} has a reactivation request to decide"
             )
 
-        if conversation.reactivation_child_id is not None:
-            flag(db, conversation=conversation, reason=FlagReason.REACTIVATION_REQUEST)
-        else:
-            conversation.flag_reason = None
-            conversation.flagged_at = None
+        handled_at = datetime.datetime.now(tz=datetime.UTC)
+        conversation.handled_flag_reason = conversation.flag_reason
+        conversation.handled_flagged_at = conversation.flagged_at
+        conversation.handled_at = handled_at
+        _clear_or_resurface_flag(db, conversation)
+
+        # Undo recognises the resurfaced request by this equality.
+        if conversation.flag_reason is FlagReason.REACTIVATION_REQUEST:
+            conversation.flagged_at = handled_at
             db.flush()
 
     return _detail(db, conversation)
+
+
+def undo_handled(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
+    """Put back the flag the last Mark done cleared. One Undo per Mark done, with no time limit.
+
+    Allowed only while the chat still looks the way Mark done left it: unflagged, or flagged
+    `reactivation_request` with `flagged_at == handled_at`, which is the pending request Mark
+    done resurfaced (the restored flag overwrites it; the request column is untouched). Any other
+    flag means the bot flagged the chat again since, and Undo must not bury that.
+    """
+    conversation = _locked(db, conversation_id=conversation_id)
+    is_resurfaced_request = (
+        conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
+        and conversation.flagged_at == conversation.handled_at
+    )
+    can_undo = conversation.handled_flag_reason is not None and (
+        conversation.flag_reason is None or is_resurfaced_request
+    )
+    if not can_undo:
+        raise NothingToUndo(f"conversation {conversation_id} has no Mark done to undo")
+
+    conversation.flag_reason = conversation.handled_flag_reason
+    conversation.flagged_at = conversation.handled_flagged_at
+    _clear_handled(conversation)
+    db.flush()
+
+    return _detail(db, conversation)
+
+
+def _clear_or_resurface_flag(db: Session, conversation: Conversation) -> None:
+    """Drop the flag, or bring a pending reactivation request back through `flag()`."""
+    if conversation.reactivation_child_id is not None:
+        flag(db, conversation=conversation, reason=FlagReason.REACTIVATION_REQUEST)
+    else:
+        conversation.flag_reason = None
+        conversation.flagged_at = None
+        db.flush()
+
+
+def _clear_flag_on_hand_back(db: Session, conversation: Conversation) -> None:
+    # Only a request's own flag survives: Approve or Deny is what ends it.
+    if conversation.flag_reason not in (None, FlagReason.REACTIVATION_REQUEST):
+        _clear_or_resurface_flag(db, conversation)
+
+
+def _clear_handled(conversation: Conversation) -> None:
+    conversation.handled_flag_reason = None
+    conversation.handled_flagged_at = None
+    conversation.handled_at = None
 
 
 def _matching_conversations(

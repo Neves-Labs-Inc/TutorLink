@@ -922,3 +922,56 @@ def _stored_value(db: Session, row: SystemSetting) -> str:
     db.refresh(row)
 
     return row.value
+
+
+# --- office address --------------------------------------------------------------------------
+
+
+def test_an_admin_sees_the_office_address_as_a_blank_editable_string(
+    api: TestClient, db: Session
+) -> None:
+    body = api.get(SETTINGS_URL, headers=_auth(_make_user(db))).json()
+
+    assert _item(body, "office_address") == {
+        "key": "office_address",
+        "value": "",
+        "value_type": "string",
+        "is_developer_only": False,
+    }
+
+
+OFFICE_ADDRESS = "office_address"
+OFFICE_ADDRESS_TOO_LONG_ERROR = "office_address must be at most 500 characters"
+MAX_OFFICE_ADDRESS_LENGTH = 500
+
+
+def test_an_admin_saves_a_multi_line_office_address_stripped(api: TestClient, db: Session) -> None:
+    response = api.patch(
+        SETTINGS_URL,
+        headers=_auth(_make_user(db)),
+        json=_updates(OFFICE_ADDRESS, "  12 Main St\nSuite 4\nSpringfield  "),
+    )
+
+    assert response.status_code == 200
+    assert _item(response.json(), OFFICE_ADDRESS)["value"] == "12 Main St\nSuite 4\nSpringfield"
+
+
+def test_an_office_address_of_500_characters_is_saved(api: TestClient, db: Session) -> None:
+    address = "a" * MAX_OFFICE_ADDRESS_LENGTH
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(_make_user(db)), json=_updates(OFFICE_ADDRESS, address)
+    )
+
+    assert response.status_code == 200
+
+
+def test_an_office_address_of_501_characters_is_refused(api: TestClient, db: Session) -> None:
+    address = "a" * (MAX_OFFICE_ADDRESS_LENGTH + 1)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(_make_user(db)), json=_updates(OFFICE_ADDRESS, address)
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": OFFICE_ADDRESS_TOO_LONG_ERROR}

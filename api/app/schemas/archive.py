@@ -18,6 +18,8 @@ class ChildTarget(BaseModel):
 class GuardianTarget(BaseModel):
     type: Literal["guardian"]
     id: uuid.UUID
+    # The upcoming sessions, across every Child the archive would cascade to, the admin was shown.
+    expected_cancellations: int | None = Field(default=None, ge=0)
 
 
 class HomeTarget(BaseModel):
@@ -54,3 +56,5 @@ class ArchiveRead(BaseModel):
     id: uuid.UUID
     archived: bool
     cancelled_booking_ids: list[uuid.UUID]
+    # Children a Guardian's archive took with it; empty for every other type.
+    archived_child_ids: list[uuid.UUID]

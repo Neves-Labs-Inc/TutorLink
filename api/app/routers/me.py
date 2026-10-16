@@ -5,6 +5,7 @@ and only their own, because the id comes from the token and never from the reque
 uses it for "Take it over as {me}" and My profile pre-fills from it (#109).
 """
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,6 +43,15 @@ def update_me(payload: MeUpdate, user: Principal, db: DbSession) -> MeRead:
     return _me(db, account)
 
 
+@router.post("/welcome-seen", status_code=status.HTTP_204_NO_CONTENT)
+def mark_welcome_seen(user: Principal, db: DbSession) -> None:
+    account = get_user(db, user_id=user.id)
+    # A repeat keeps the first time.
+    if account.welcome_seen_at is None:
+        account.welcome_seen_at = datetime.now(UTC)
+        db.commit()
+
+
 def _me(db: Session, account: User) -> MeRead:
     return MeRead(
         id=account.id,
@@ -50,4 +60,5 @@ def _me(db: Session, account: User) -> MeRead:
         name=account.name,
         tutor_id=account.profile_id,
         office_phone=read_office_phone(db),
+        welcome_seen=account.welcome_seen_at is not None,
     )

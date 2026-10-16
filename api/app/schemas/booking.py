@@ -43,16 +43,23 @@ class BookingChild(NamedRef):
 
 
 class HomeSummaryRef(BaseModel):
-    """A list row's Home. `directions` is left out on purpose: it is read on the detail only."""
+    """A list row's Home. `directions` is here so a Tutor's week view needs no detail read."""
 
     id: uuid.UUID
     label: str | None
     address: str
+    directions: str | None
+
+
+class BookingSummaryChild(NamedRef):
+    """A list row's Child; `notes` is on the Tutor data rule. Never `date_of_birth`."""
+
+    notes: str | None
 
 
 class BookingSummary(BaseModel):
     id: uuid.UUID
-    child: NamedRef
+    child: BookingSummaryChild
     staff: StaffRef
     kind: BookingKind
     location: BookingLocation
@@ -67,6 +74,8 @@ class BookingSummary(BaseModel):
     notes: str | None
     # None when the session is In office; an archived Home is still named.
     home: HomeSummaryRef | None
+    # The Child's non-archived Guardians by name; no conversation id, for any caller.
+    guardians: list[NamedRef]
     # Why the Booking is to sort out, in `SORT_OUT_REASONS` order; [] when it isn't.
     sort_out_reasons: list[SortOutReason]
     # Who kept the Booking over Time off on purpose, and when; both None when nobody did. An
@@ -102,6 +111,16 @@ class BookingGuardian(BaseModel):
     conversation_id: uuid.UUID | None
 
 
+class ClashingTimeOff(BaseModel):
+    """Approved Time off of the Booking's Staff member that overlaps it."""
+
+    id: uuid.UUID
+    start_date: datetime.date
+    end_date: datetime.date
+    start_time: datetime.time | None
+    end_time: datetime.time | None
+
+
 class BookingDetail(BaseModel):
     id: uuid.UUID
     child: BookingChild
@@ -115,6 +134,9 @@ class BookingDetail(BaseModel):
     end_time: datetime.time
     status: BookingStatus
     notes: str | None
+    availability_id: uuid.UUID | None
+    # Overlapping approved Time off, acknowledged or not; [] when none.
+    clashing_time_off: list[ClashingTimeOff]
     # None when the session is In office (`ck_bookings_home_matches_location`).
     home: HomeRef | None
     booked_by_guardian: NamedRef | None
@@ -141,7 +163,11 @@ def subject_ref(subject: "Subject | None") -> NamedRef | None:
 
 def home_summary_ref(home: "Home | None") -> HomeSummaryRef | None:
     return (
-        None if home is None else HomeSummaryRef(id=home.id, label=home.label, address=home.address)
+        None
+        if home is None
+        else HomeSummaryRef(
+            id=home.id, label=home.label, address=home.address, directions=home.directions
+        )
     )
 
 

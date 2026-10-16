@@ -332,12 +332,17 @@ def test_an_item_is_the_booking_summary(
         "status",
         "notes",
         "home",
+        "guardians",
         "sort_out_reasons",
         "clash_acknowledged_by",
         "clash_acknowledged_at",
         "updated_at",
     }
-    assert item["child"] == {"id": str(family.child.id), "name": family.child.name}
+    assert item["child"] == {
+        "id": str(family.child.id),
+        "name": family.child.name,
+        "notes": family.child.notes,
+    }
     assert item["staff"] == {
         "id": str(family.tutor.user_id),
         "name": family.tutor.user.name,
@@ -348,7 +353,12 @@ def test_an_item_is_the_booking_summary(
     assert item["updated_at"] is not None
     assert item["subject"] == {"id": str(family.subject.id), "name": family.subject.name}
     assert item["subject_level"] == 6
-    assert item["home"] == {"id": str(family.home.id), "label": None, "address": "1 Test Street"}
+    assert item["home"] == {
+        "id": str(family.home.id),
+        "label": None,
+        "address": "1 Test Street",
+        "directions": "0000",
+    }
     assert item["id"] == str(booking.id)
     assert item["scheduled_date"] == "2026-09-07"
     assert item["start_time"] == "09:00:00"

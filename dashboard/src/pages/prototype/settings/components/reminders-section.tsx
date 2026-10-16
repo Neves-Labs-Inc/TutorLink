@@ -3,10 +3,10 @@
 import type { ReactNode } from "react";
 import { BellOff, CalendarClock, CircleAlert, MessageCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { SwitchField } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { SwitchField } from "@/components/kit/components/choices";
+import { TextLink } from "@/components/kit/components/button";
+import { Badge } from "@/components/kit/components/badges";
+import { cn } from "@/components/kit/tokens";
 import SectionCard from "@/pages/prototype/settings/components/section-card";
 import { bindField } from "@/pages/prototype/settings/lib/bind-field";
 import FieldFrame, {

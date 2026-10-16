@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
-import { CARD, cn, HEADING } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CARD, cn, HEADING } from "@/components/kit/tokens";
 
 type SectionCardProps = {
   id: string;

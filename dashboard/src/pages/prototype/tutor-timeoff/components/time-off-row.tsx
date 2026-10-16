@@ -2,9 +2,9 @@
 // badge with its word, never colour alone. No actions on the row.
 import type { ReactNode } from "react";
 import { CalendarX2, ChevronRight, Plane } from "lucide-react";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar } from "@/components/kit/components/badges";
+import { pluralize } from "@/components/kit/format";
+import { cn } from "@/components/kit/tokens";
 import { TimeOffStatusBadge } from "@/pages/prototype/tutor-timeoff/components/time-off-status";
 import {
   formatLength,

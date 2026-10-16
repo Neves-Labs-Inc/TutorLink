@@ -2,18 +2,20 @@
 // rows at all, and a Manager who reached the URL.
 import type { ReactNode } from "react";
 import { Settings } from "lucide-react";
-import { AppShell } from "@/pages/prototype/shell-kit/kit/shell/app-shell";
-import type { Role } from "@/pages/prototype/shell-kit/kit/mock-data";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { AppShell } from "@/components/kit/shell/app-shell";
+import { CURRENT_USER } from "@/pages/prototype/shared/mock-data";
+import type { Role } from "@/pages/prototype/shared/mock-data";
+import { getMockNav } from "@/pages/prototype/shared/mock-nav";
+import type { NavId } from "@/components/kit/shell/nav";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { Button } from "@/components/kit/components/button";
 import {
   EmptyState,
   ErrorState,
   PermissionState,
   Skeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+} from "@/components/kit/states/states";
+import { CARD, cn } from "@/components/kit/tokens";
 
 export type StateKind = "loading" | "error" | "empty" | "manager";
 
@@ -85,7 +87,13 @@ export default function SettingsStates({
   }
 
   return (
-    <AppShell role={role} activeId="settings" onNavigate={onNavigate}>
+    <AppShell
+      name={CURRENT_USER[role].name}
+      roleLabel={CURRENT_USER[role].role}
+      items={getMockNav(role)}
+      activeId="settings"
+      onNavigate={onNavigate}
+    >
       <PageHeader title="Settings" />
       {body}
     </AppShell>

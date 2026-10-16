@@ -5,9 +5,9 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { BadgeCheck, Plus } from "lucide-react";
-import { cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { cn, EYEBROW } from "@/components/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { LevelSheet } from "@/pages/prototype/accounts-staff/components/child-sheets";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {

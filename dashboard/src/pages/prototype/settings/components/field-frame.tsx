@@ -4,8 +4,8 @@
 import { useId } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { CircleAlert } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import Select from "@/pages/prototype/shell-kit/kit/components/select";
+import { cn } from "@/components/kit/tokens";
+import Select from "@/components/kit/components/select";
 
 export type FieldIds = { controlId: string; describedBy: string | undefined };
 

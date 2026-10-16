@@ -24,7 +24,6 @@ import { Sessions } from '@/pages/tutor/Sessions'
 import { TimeOff } from '@/pages/tutor/TimeOff'
 import { NotFound } from '@/pages/NotFound'
 import { VisualDirectionPrototype } from '@/pages/prototype/visual-direction/VisualDirectionPrototype'
-import ShellKitPrototype from '@/pages/prototype/shell-kit/shell-kit-prototype'
 import HomePrototype from '@/pages/prototype/home/home-prototype'
 import BookingsPrototype from '@/pages/prototype/bookings/bookings-prototype'
 import ChatsPrototype from '@/pages/prototype/chats/chats-prototype'
@@ -194,9 +193,6 @@ export const App = () => (
         />
         {import.meta.env.DEV && (
           <Route path="/prototype/visual-direction" element={<VisualDirectionPrototype />} />
-        )}
-        {import.meta.env.DEV && (
-          <Route path="/prototype/shell-kit" element={<ShellKitPrototype />} />
         )}
         {import.meta.env.DEV && (
           <Route path="/prototype/home" element={<HomePrototype />} />

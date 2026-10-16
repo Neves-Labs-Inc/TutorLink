@@ -4,9 +4,9 @@
 // to To do › Bookings. Managers only read.
 import type { ReactNode } from "react";
 import { CalendarX2, TriangleAlert } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button } from "@/components/kit/components/button";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import TimeOffStatusBadge from "@/pages/prototype/accounts-staff/components/time-off-status-badge";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {

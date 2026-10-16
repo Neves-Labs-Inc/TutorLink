@@ -5,10 +5,10 @@
 // a New booking there.
 import type { ReactNode } from "react";
 import { CalendarPlus, CalendarX2, Plane } from "lucide-react";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { EmptyState } from "@/pages/prototype/shell-kit/kit/states/states";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { EmptyState } from "@/components/kit/states/states";
+import { cn } from "@/components/kit/tokens";
 import TimeGrid from "@/pages/prototype/bookings/components/time-grid";
 import type { GridColumn } from "@/pages/prototype/bookings/components/time-grid";
 import { DayTable } from "@/pages/prototype/bookings/components/bookings-list";

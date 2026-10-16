@@ -4,16 +4,16 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarCheck, MapPin, Signpost } from "lucide-react";
-import { formatDay, getGreeting, pluralize } from "@/pages/prototype/shell-kit/kit/format";
-import { CARD, cn, HEADING } from "@/pages/prototype/shell-kit/kit/tokens";
-import { KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { EyebrowPill, PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
+import { formatDay, getGreeting, pluralize } from "@/components/kit/format";
+import { CARD, cn, HEADING } from "@/components/kit/tokens";
+import { KindBadge } from "@/components/kit/components/badges";
+import { SegmentedControl } from "@/components/kit/components/tabs";
+import { EyebrowPill, PageHeader } from "@/components/kit/shell/page-header";
 import {
   EmptyState,
   ErrorState,
   ListSkeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
+} from "@/components/kit/states/states";
 import SessionRow from "@/pages/prototype/tutor-timeoff/components/session-row";
 import {
   formatClock,

@@ -3,8 +3,8 @@
 // the bottom, as in Home's To do), then every other chat, newest first.
 // The whole row opens the chat.
 import type { ReactNode } from "react";
-import { cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { AttentionBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
+import { cn, EYEBROW } from "@/components/kit/tokens";
+import { AttentionBadge } from "@/components/kit/components/badges";
 import type { ConversationSummary } from "@/pages/prototype/chats/types/api";
 import { FLAG_LABEL, getChatTitle } from "@/pages/prototype/chats/lib/labels";
 import { formatListTime } from "@/pages/prototype/chats/lib/time";

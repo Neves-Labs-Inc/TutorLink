@@ -4,7 +4,7 @@
 import type {
   AvailabilitySlot,
   SlotLocation,
-} from "@/pages/prototype/shell-kit/kit/mock-data";
+} from "@/pages/prototype/shared/mock-data";
 import type {
   AvailabilityCreate,
   AvailabilityMode,

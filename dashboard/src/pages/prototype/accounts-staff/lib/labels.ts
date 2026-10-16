@@ -5,8 +5,8 @@ import type {
   SlotLocation,
   StaffRole,
   TimeOffStatus,
-} from "@/pages/prototype/shell-kit/kit/mock-data";
-import { formatClock } from "@/pages/prototype/shell-kit/kit/format";
+} from "@/pages/prototype/shared/mock-data";
+import { formatClock } from "@/components/kit/format";
 import type {
   AvailabilityMode,
   BookingSummary,

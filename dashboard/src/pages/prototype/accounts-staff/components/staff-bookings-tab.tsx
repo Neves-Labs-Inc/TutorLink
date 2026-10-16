@@ -3,14 +3,14 @@
 // person (GET /api/bookings?staff_id=...&status=confirmed,pending).
 import type { ReactNode } from "react";
 import { CalendarDays, ChevronRight } from "lucide-react";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CARD, cn } from "@/components/kit/tokens";
 import {
   BookingStatusBadge,
   KindBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import { EmptyState } from "@/pages/prototype/shell-kit/kit/states/states";
+} from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { EmptyState } from "@/components/kit/states/states";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
   formatBookingWhat,

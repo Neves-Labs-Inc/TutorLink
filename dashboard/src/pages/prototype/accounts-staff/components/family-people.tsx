@@ -4,13 +4,13 @@
 // Guardian details for now.
 import type { ReactNode } from "react";
 import { ChevronRight, House, MapPin, UserPlus, Users } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
 import {
   ArchivedBadge,
   Avatar,
   RemindersBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
+} from "@/components/kit/components/badges";
+import { Button, TextLink } from "@/components/kit/components/button";
 import OpenQuestion from "@/pages/prototype/accounts-staff/components/open-question";
 import {
   formatPhone,

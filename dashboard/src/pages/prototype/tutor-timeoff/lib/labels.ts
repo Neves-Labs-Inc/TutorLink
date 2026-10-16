@@ -1,6 +1,6 @@
 // Wire values to UI copy, in CONTEXT.md's words.
-import { formatDay, pluralize } from "@/pages/prototype/shell-kit/kit/format";
-import { TODAY } from "@/pages/prototype/shell-kit/kit/mock-data";
+import { formatDay, pluralize } from "@/components/kit/format";
+import { TODAY } from "@/pages/prototype/shared/mock-data";
 import type {
   BookingSummary,
   ExceptionRead,

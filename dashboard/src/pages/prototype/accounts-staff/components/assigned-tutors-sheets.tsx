@@ -8,12 +8,12 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { BadgeCheck } from "lucide-react";
-import { EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { SelectField } from "@/pages/prototype/shell-kit/kit/components/fields";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { EYEBROW } from "@/components/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { SelectField } from "@/components/kit/components/fields";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import AssignedTutorsPicker from "@/pages/prototype/accounts-staff/components/assigned-tutors-picker";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import { canBeAssigned } from "@/pages/prototype/accounts-staff/lib/assigned-tutors";

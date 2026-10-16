@@ -4,16 +4,16 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Archive, Eye, SearchX, UserPlus } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { MultiSelectFilter } from "@/pages/prototype/shell-kit/kit/components/multi-select-filter";
-import { SubPageTabs } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { PageToolbar } from "@/pages/prototype/shell-kit/kit/shell/page-toolbar";
+import { Button } from "@/components/kit/components/button";
+import { MultiSelectFilter } from "@/components/kit/components/multi-select-filter";
+import { SubPageTabs } from "@/components/kit/components/tabs";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { PageToolbar } from "@/components/kit/shell/page-toolbar";
 import {
   EmptyState,
   ErrorState,
   TableSkeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
+} from "@/components/kit/states/states";
 import AddStaffSheet from "@/pages/prototype/accounts-staff/components/add-staff-sheet";
 import StaffDetails from "@/pages/prototype/accounts-staff/components/staff-details";
 import StaffTable from "@/pages/prototype/accounts-staff/components/staff-table";

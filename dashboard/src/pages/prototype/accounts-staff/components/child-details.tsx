@@ -15,16 +15,16 @@ import {
   Pencil,
   School,
 } from "lucide-react";
-import { cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn, EYEBROW } from "@/components/kit/tokens";
 import {
   ArchivedBadge,
   Avatar,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button, IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow, NotesCard } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+} from "@/components/kit/components/badges";
+import { Button, IconButton } from "@/components/kit/components/button";
+import { DetailRow, NotesCard } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import ActionsSheet from "@/pages/prototype/accounts-staff/components/actions-sheet";
 import ChildEvaluation from "@/pages/prototype/accounts-staff/components/child-evaluation";
 import ChildPeople from "@/pages/prototype/accounts-staff/components/child-people";

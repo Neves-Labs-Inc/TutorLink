@@ -3,15 +3,15 @@
 // Child details open over it.
 import type { ReactNode } from "react";
 import { CalendarPlus, CalendarSearch, CircleCheckBig } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { Button } from "@/components/kit/components/button";
 import {
   EmptyState,
   ErrorState,
   Skeleton,
   TableSkeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import AccountDetails from "@/pages/prototype/shell-kit/screens/account-details";
+} from "@/components/kit/states/states";
+import { CARD, cn } from "@/components/kit/tokens";
+import AccountDetails from "@/pages/prototype/shared/account-details";
 import BookingDetailPanel from "@/pages/prototype/bookings/components/booking-detail-panel";
 import BookingForm from "@/pages/prototype/bookings/components/booking-form";
 import BookingsHeader from "@/pages/prototype/bookings/components/bookings-header";

@@ -1,5 +1,5 @@
 // Plan: the Chats area for the dashboard redesign (TutorLink#194), on the
-// shared kit (shell-kit/kit). Throwaway, DEV-only, mock data in the real
+// shared kit (components/kit). Throwaway, DEV-only, mock data in the real
 // API shapes (types/api.ts). Route /prototype/chats, driven by the
 // floating switcher:
 //   ?screen=   conversations | chat-bot | chat-mine | chat-other |
@@ -16,10 +16,12 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import { AppShell } from "@/pages/prototype/shell-kit/kit/shell/app-shell";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import { AppShell } from "@/components/kit/shell/app-shell";
+import { CURRENT_USER } from "@/pages/prototype/shared/mock-data";
+import { getMockNav } from "@/pages/prototype/shared/mock-nav";
+import type { NavId } from "@/components/kit/shell/nav";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import type { Theme } from "@/components/kit/tokens";
 import { OFFICE_USERS } from "@/pages/prototype/chats/mock/chats-mock";
 import {
   LAST_WEEK_START,
@@ -156,7 +158,13 @@ function ChatsScreen({ role, setup, dataState }: ChatsScreenProps): ReactNode {
   }
 
   return (
-    <AppShell role={role} activeId="chats" onNavigate={handleNavigate}>
+    <AppShell
+      name={CURRENT_USER[role].name}
+      roleLabel={CURRENT_USER[role].role}
+      items={getMockNav(role)}
+      activeId="chats"
+      onNavigate={handleNavigate}
+    >
       <ChatsPage
         role={role}
         chats={chats}

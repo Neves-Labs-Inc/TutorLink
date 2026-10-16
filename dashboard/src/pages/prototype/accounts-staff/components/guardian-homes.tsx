@@ -13,10 +13,10 @@ import {
   Plus,
   Users,
 } from "lucide-react";
-import { EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button, IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
-import { ConfirmDialog, Dialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { EYEBROW } from "@/components/kit/tokens";
+import { Button, IconButton } from "@/components/kit/components/button";
+import { ConfirmDialog, Dialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import HomeFormSheet from "@/pages/prototype/accounts-staff/components/home-form-sheet";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import { countUpcomingAtHome } from "@/pages/prototype/accounts-staff/lib/mock-api";

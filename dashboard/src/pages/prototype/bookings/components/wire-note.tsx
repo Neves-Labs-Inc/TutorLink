@@ -1,7 +1,7 @@
 // Prototype-only: the requests the current screen would make, so the
 // wiring can be read straight off the page. Not part of the design.
 import type { ReactNode } from "react";
-import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
+import { Badge } from "@/components/kit/components/badges";
 import type { BookingsPageState } from "@/pages/prototype/bookings/hooks/use-bookings-page";
 import { buildQueryString } from "@/pages/prototype/bookings/lib/rules";
 

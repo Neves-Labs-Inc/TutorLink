@@ -14,17 +14,17 @@ import {
   Pencil,
   Phone,
 } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
 import {
   ArchivedBadge,
   Avatar,
   RemindersBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button, IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+} from "@/components/kit/components/badges";
+import { Button, IconButton } from "@/components/kit/components/button";
+import { DetailRow } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import ActionsSheet from "@/pages/prototype/accounts-staff/components/actions-sheet";
 import GuardianHomes from "@/pages/prototype/accounts-staff/components/guardian-homes";
 import { EditGuardianSheet } from "@/pages/prototype/accounts-staff/components/guardian-sheets";

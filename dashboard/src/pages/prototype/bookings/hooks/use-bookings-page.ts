@@ -2,9 +2,9 @@
 // become the list query), what's open (detail, form, Child), the fake
 // load cycle, and the acts with their toasts.
 import { useState } from "react";
-import { useFilters } from "@/pages/prototype/shell-kit/kit/hooks/use-filters";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import type { AccountEntry } from "@/pages/prototype/shell-kit/screens/account-details";
+import { useFilters } from "@/components/kit/hooks/use-filters";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import type { AccountEntry } from "@/pages/prototype/shared/account-details";
 import { useBookingStore } from "@/pages/prototype/bookings/hooks/use-booking-store";
 import type { BookingStore } from "@/pages/prototype/bookings/hooks/use-booking-store";
 import type { FormStart } from "@/pages/prototype/bookings/hooks/use-booking-form";

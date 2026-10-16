@@ -2,7 +2,7 @@
 // with the server's rules (who lands pending, who decides, the 409 clash
 // warning) and a little latency so busy states show.
 import { useState } from "react";
-import type { AvailabilitySlot } from "@/pages/prototype/shell-kit/kit/mock-data";
+import type { AvailabilitySlot } from "@/pages/prototype/shared/mock-data";
 import {
   AVAILABILITY,
   BOOKINGS,

@@ -4,7 +4,7 @@
 import { useId, useState } from "react";
 import type { InputHTMLAttributes, ReactNode } from "react";
 import { CircleAlert, Eye, EyeOff } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 
 type PasswordFieldProps = Omit<
   InputHTMLAttributes<HTMLInputElement>,

@@ -4,14 +4,14 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Plane, Plus } from "lucide-react";
-import { CARD, cn, HEADING } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
+import { CARD, cn, HEADING } from "@/components/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { PageHeader } from "@/components/kit/shell/page-header";
 import {
   EmptyState,
   ErrorState,
   ListSkeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
+} from "@/components/kit/states/states";
 import TimeOffDetail from "@/pages/prototype/tutor-timeoff/components/time-off-detail";
 import TimeOffFormSheet from "@/pages/prototype/tutor-timeoff/components/time-off-form-sheet";
 import TimeOffRow from "@/pages/prototype/tutor-timeoff/components/time-off-row";

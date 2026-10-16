@@ -16,8 +16,8 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import { DeviceFrame } from "@/pages/prototype/shell-kit/kit/device-frame";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import { DeviceFrame } from "@/pages/prototype/shared/device-frame";
+import type { Theme } from "@/components/kit/tokens";
 import AreaApp from "@/pages/prototype/accounts-staff/components/area-app";
 import type {
   DataState,

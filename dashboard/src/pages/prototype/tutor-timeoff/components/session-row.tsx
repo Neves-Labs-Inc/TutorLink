@@ -6,9 +6,9 @@ import {
   Badge,
   BookingStatusBadge,
   KindBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { formatDay } from "@/pages/prototype/shell-kit/kit/format";
-import { ListRow, TimeBlock } from "@/pages/prototype/shell-kit/kit/components/list-row";
+} from "@/components/kit/components/badges";
+import { formatDay } from "@/components/kit/format";
+import { ListRow, TimeBlock } from "@/components/kit/components/list-row";
 import {
   formatClock,
   getPlaceLine,

@@ -1,5 +1,5 @@
 // The kit's field outline, for the custom inputs the kit has no field for.
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 
 export function getControlClasses(hasError: boolean): string {
   return cn(

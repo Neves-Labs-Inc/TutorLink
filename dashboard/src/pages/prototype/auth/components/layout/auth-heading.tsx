@@ -2,7 +2,7 @@
 // one or two lines of body. The title is the page's only h1.
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 import type { AuthPageContent } from "@/pages/prototype/auth/lib/auth-page-content";
 
 const ICON_TONES: Record<NonNullable<AuthPageContent["iconTone"]>, string> = {

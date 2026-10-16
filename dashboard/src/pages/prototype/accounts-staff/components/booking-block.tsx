@@ -3,7 +3,7 @@
 // but muted and struck through. The whole block opens the Booking.
 import type { ReactNode } from "react";
 import { Sparkles } from "lucide-react";
-import { cn, TONE_CLASSES } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn, TONE_CLASSES } from "@/components/kit/tokens";
 import { BAR_CLASSES } from "@/pages/prototype/accounts-staff/lib/child-tones";
 import type { ChildTone } from "@/pages/prototype/accounts-staff/lib/child-tones";
 import { formatWireTime } from "@/pages/prototype/accounts-staff/lib/labels";

@@ -5,10 +5,10 @@
 import type { ReactNode } from "react";
 import { Check, ChevronRight, RotateCw, TriangleAlert } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { CountBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { Skeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, CARD_TITLE, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CountBadge } from "@/components/kit/components/badges";
+import { TextLink } from "@/components/kit/components/button";
+import { Skeleton } from "@/components/kit/states/states";
+import { CARD, CARD_TITLE, cn } from "@/components/kit/tokens";
 import type { Phase } from "@/pages/prototype/home/hooks/use-home-data";
 
 const SKELETON_ROWS = 3;

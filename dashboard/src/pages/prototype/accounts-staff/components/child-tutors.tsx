@@ -6,9 +6,9 @@
 // link, so a Child can be left with none: a Needs a Tutor callout.
 import type { ReactNode } from "react";
 import { Pencil, UserRoundPlus, UserRoundX } from "lucide-react";
-import { CARD_TITLE, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { CARD_TITLE, cn, EYEBROW } from "@/components/kit/tokens";
+import { Avatar } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
   describeCoverage,

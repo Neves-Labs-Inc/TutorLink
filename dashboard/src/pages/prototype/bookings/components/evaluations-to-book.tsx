@@ -3,8 +3,8 @@
 // Book evaluation sits outside it and opens New booking prefilled.
 import type { ReactNode } from "react";
 import { Sparkles } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { CARD, cn } from "@/components/kit/tokens";
 import {
   formatGrade,
   getDaysSince,

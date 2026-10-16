@@ -5,8 +5,8 @@
 import { useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { Bot, Copy, Hand, PhoneOff, SendHorizontal, UserRound } from "lucide-react";
-import { Button, IconButton, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button, IconButton, TextLink } from "@/components/kit/components/button";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import type { ConversationRead } from "@/pages/prototype/chats/types/api";
 import PrototypeNote from "@/pages/prototype/chats/components/prototype-note";
 import {

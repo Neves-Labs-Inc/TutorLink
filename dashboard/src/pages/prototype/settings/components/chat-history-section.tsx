@@ -1,7 +1,7 @@
 // Chat history: keep forever, or delete chats older than a period; and
 // the daily clean-up time, shown in office time though stored in UTC.
 import type { ReactNode } from "react";
-import { RadioCards } from "@/pages/prototype/shell-kit/kit/components/choices";
+import { RadioCards } from "@/components/kit/components/choices";
 import SectionCard from "@/pages/prototype/settings/components/section-card";
 import { bindField } from "@/pages/prototype/settings/lib/bind-field";
 import FieldFrame, {

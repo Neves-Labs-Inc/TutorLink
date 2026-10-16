@@ -2,7 +2,7 @@
 // wide screens; a sideways-scrolling row of pills on phones. A dot marks
 // a group with unsaved changes.
 import type { ReactNode } from "react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 import type { SectionDef } from "@/pages/prototype/settings/lib/sections";
 
 type SectionIndexProps = {

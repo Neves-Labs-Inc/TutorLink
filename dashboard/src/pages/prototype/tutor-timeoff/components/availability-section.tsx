@@ -3,11 +3,11 @@
 // profile. One Save is several API calls today (see the report).
 import type { ReactNode } from "react";
 import { CalendarClock } from "lucide-react";
-import { AvailabilityEditor } from "@/pages/prototype/shell-kit/kit/components/availability-editor";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import { InlineError, Skeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import type { AvailabilitySlot } from "@/pages/prototype/shell-kit/kit/mock-data";
+import { AvailabilityEditor } from "@/components/kit/components/availability-editor";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { InlineError, Skeleton } from "@/components/kit/states/states";
+import { CARD, cn } from "@/components/kit/tokens";
+import type { AvailabilitySlot } from "@/pages/prototype/shared/mock-data";
 import { toEditorSlots } from "@/pages/prototype/tutor-timeoff/lib/availability";
 import type { Phase } from "@/pages/prototype/tutor-timeoff/hooks/use-load-phase";
 import type { Result } from "@/pages/prototype/tutor-timeoff/hooks/use-area-store";

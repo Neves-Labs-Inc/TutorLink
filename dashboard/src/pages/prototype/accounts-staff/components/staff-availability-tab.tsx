@@ -3,11 +3,11 @@
 // read-only week, since the kit editor has no read-only mode.
 import type { ReactNode } from "react";
 import { Clock } from "lucide-react";
-import type { AvailabilitySlot } from "@/pages/prototype/shell-kit/kit/mock-data";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import { SlotLocationBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { AvailabilityEditor } from "@/pages/prototype/shell-kit/kit/components/availability-editor";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import type { AvailabilitySlot } from "@/pages/prototype/shared/mock-data";
+import { CARD, cn } from "@/components/kit/tokens";
+import { SlotLocationBadge } from "@/components/kit/components/badges";
+import { AvailabilityEditor } from "@/components/kit/components/availability-editor";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
   formatWireTime,

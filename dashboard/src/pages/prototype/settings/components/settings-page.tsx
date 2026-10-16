@@ -3,12 +3,14 @@
 // (shorter chat history; leaving with unsaved changes).
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { AppShell } from "@/pages/prototype/shell-kit/kit/shell/app-shell";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
+import { AppShell } from "@/components/kit/shell/app-shell";
+import { CURRENT_USER } from "@/pages/prototype/shared/mock-data";
+import { getMockNav } from "@/pages/prototype/shared/mock-nav";
+import type { NavId } from "@/components/kit/shell/nav";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { pluralize } from "@/components/kit/format";
 import { TEMPLATE_SECTIONS } from "@/lib/settings/emailTemplates";
 import type { TemplateSectionId } from "@/lib/settings/emailTemplates";
 import { useSettings } from "@/pages/prototype/settings/hooks/use-settings";
@@ -98,7 +100,13 @@ export default function SettingsPage({
   const retention = formatDuration(Number(settings.valueOf("chat_retention_days")), RETENTION_UNITS);
 
   return (
-    <AppShell role="admin" activeId="settings" onNavigate={handleNavigate}>
+    <AppShell
+      name={CURRENT_USER.admin.name}
+      roleLabel={CURRENT_USER.admin.role}
+      items={getMockNav("admin")}
+      activeId="settings"
+      onNavigate={handleNavigate}
+    >
       <PageHeader
         title="Settings"
         description={

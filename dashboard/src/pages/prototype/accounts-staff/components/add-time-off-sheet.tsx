@@ -3,11 +3,11 @@
 // approval step.
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { SwitchField } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { TextField } from "@/pages/prototype/shell-kit/kit/components/fields";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button } from "@/components/kit/components/button";
+import { SwitchField } from "@/components/kit/components/choices";
+import { TextField } from "@/components/kit/components/fields";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import { TODAY } from "@/pages/prototype/accounts-staff/lib/mock-data";
 import type { StaffRead } from "@/pages/prototype/accounts-staff/types/api";

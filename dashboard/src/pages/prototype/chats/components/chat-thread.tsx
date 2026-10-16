@@ -5,13 +5,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Bot, ChevronRight, MessageCircle } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import Select from "@/pages/prototype/shell-kit/kit/components/select";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import { EmptyState, ErrorState, Skeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import Select from "@/components/kit/components/select";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { EmptyState, ErrorState, Skeleton } from "@/components/kit/states/states";
+import { cn } from "@/components/kit/tokens";
 import type {
   ConversationRead,
   Language,

@@ -4,10 +4,10 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
-import { DataTable } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import type { Column } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { DataTable } from "@/components/kit/components/data-table";
+import type { Column } from "@/components/kit/components/data-table";
+import { Avatar } from "@/components/kit/components/badges";
+import { cn } from "@/components/kit/tokens";
 import BookingBadges from "@/pages/prototype/bookings/components/booking-badges";
 import { REASON_ICON } from "@/pages/prototype/bookings/lib/reason-icons";
 import {

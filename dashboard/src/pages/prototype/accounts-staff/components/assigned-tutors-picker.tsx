@@ -3,7 +3,7 @@
 // Below, a note for any Subject level none of the picks covers.
 import type { ReactNode } from "react";
 import { Info } from "lucide-react";
-import { CheckboxField } from "@/pages/prototype/shell-kit/kit/components/choices";
+import { CheckboxField } from "@/components/kit/components/choices";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
   describeCoverage,

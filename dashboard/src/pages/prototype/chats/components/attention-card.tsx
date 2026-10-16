@@ -10,8 +10,8 @@ import {
   Link2,
   RotateCcw,
 } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { cn } from "@/components/kit/tokens";
 import type { ConversationRead } from "@/pages/prototype/chats/types/api";
 import { FLAG_EXPLANATION, FLAG_LABEL } from "@/pages/prototype/chats/lib/labels";
 import { formatDayAndTime } from "@/pages/prototype/chats/lib/time";

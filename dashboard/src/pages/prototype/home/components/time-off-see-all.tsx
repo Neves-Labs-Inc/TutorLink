@@ -5,10 +5,10 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Plane } from "lucide-react";
-import { SubPageTabs } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { EmptyState, ErrorState, ListSkeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { SubPageTabs } from "@/components/kit/components/tabs";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/kit/states/states";
+import { CARD, cn } from "@/components/kit/tokens";
 import DeclineDialog from "@/pages/prototype/home/components/decline-dialog";
 import PrototypeNote from "@/pages/prototype/home/components/prototype-note";
 import TimeOffDetail from "@/pages/prototype/home/components/time-off-detail";

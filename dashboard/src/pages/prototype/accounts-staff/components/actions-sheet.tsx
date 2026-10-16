@@ -3,8 +3,8 @@
 // desktop, as the kit uses for quick actions. A disabled act says why.
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
+import { cn } from "@/components/kit/tokens";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
 
 export type SheetAction = {
   id: string;

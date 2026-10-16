@@ -1,6 +1,6 @@
 // API values → UI copy (CONTEXT.md vocabulary). Raw keys, Twilio codes
 // and "Meta"/"template" never reach the screen.
-import type { AttentionReason } from "@/pages/prototype/shell-kit/kit/mock-data";
+import type { AttentionReason } from "@/pages/prototype/shared/mock-data";
 import type {
   FlagReason,
   GuardianRef,

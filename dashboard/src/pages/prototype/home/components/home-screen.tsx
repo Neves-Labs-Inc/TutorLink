@@ -8,12 +8,12 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarClock, CloudOff, MessageCircle, Plane, RotateCw } from "lucide-react";
-import { TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { EyebrowPill, PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import { Skeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { cn, HEADING } from "@/pages/prototype/shell-kit/kit/tokens";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
+import { TextLink } from "@/components/kit/components/button";
+import { EyebrowPill, PageHeader } from "@/components/kit/shell/page-header";
+import type { NavId } from "@/components/kit/shell/nav";
+import { Skeleton } from "@/components/kit/states/states";
+import { cn, HEADING } from "@/components/kit/tokens";
+import { pluralize } from "@/components/kit/format";
 import BookingPeek from "@/pages/prototype/home/components/booking-peek";
 import BookingTodoDetail from "@/pages/prototype/home/components/booking-todo-detail";
 import BookingTodoRow from "@/pages/prototype/home/components/booking-todo-row";
@@ -45,7 +45,7 @@ import type {
   ExceptionRead,
 } from "@/pages/prototype/home/types/api";
 import NeedsTutorDetail from "@/pages/prototype/home/components/needs-tutor-detail";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { useToast } from "@/components/kit/overlays/use-toast";
 
 const ITEMS_PER_GROUP = 3;
 

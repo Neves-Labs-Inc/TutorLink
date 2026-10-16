@@ -3,7 +3,7 @@
    VariantA.tsx so the spec strip can show the same values. */
 
 [data-variant="a"] {
-  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   font-feature-settings: "cv11", "ss01";
   background-color: var(--va-canvas);
   background-image:

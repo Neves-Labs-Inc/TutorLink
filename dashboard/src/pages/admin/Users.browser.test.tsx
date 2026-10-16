@@ -12,7 +12,7 @@ import { useAuthStore } from '@/stores/authStore'
 const DESKTOP_WIDTH = 1280
 const DESKTOP_HEIGHT = 800
 const TABLET_WIDTH = 768
-const BODY_FONT = '400 14px "Geist Variable"'
+const BODY_FONT = '400 14px "Inter Variable"'
 const RESET_LABEL = 'Send reset link'
 const RESET_FALLBACK_ERROR = 'Could not send the reset email. Try again.'
 

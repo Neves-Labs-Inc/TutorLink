@@ -11,5 +11,6 @@ class CountsRead(BaseModel):
     needs_attention: int
     time_off_pending: int | None
     children_awaiting_evaluation: int
+    children_needing_tutor: int
     bookings_to_sort_out: int
     unread_chats: int

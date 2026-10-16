@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking, upcoming_live_bookings
 from app.models.child import Child
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind
 from app.models.guardian import ChildGuardian, Guardian
@@ -87,6 +88,7 @@ def list_children(
     evaluable: bool = False,
     subject_ids: Collection[uuid.UUID] = (),
     is_evaluated: bool | None = None,
+    needs_tutor: bool = False,
 ) -> tuple[list[ChildRow], int]:
     """Rows for one page, plus the total matching before paging.
 
@@ -101,6 +103,9 @@ def list_children(
 
     `subject_ids` keeps Children with a level in any of those Subjects, archived or not, and
     `is_evaluated` splits on `evaluated_at`; `None` is no filter. Both AND with the rest.
+
+    `needs_tutor` narrows to active, Evaluated Children with no Assigned Tutors, whatever
+    `is_archived` says, in the list's usual order.
     """
     matching = _matching_list(
         is_archived=is_archived,
@@ -109,6 +114,7 @@ def list_children(
         evaluable=evaluable,
         subject_ids=subject_ids,
         is_evaluated=is_evaluated,
+        needs_tutor=needs_tutor,
     )
     if awaiting_evaluation or evaluable:
         order = (Child.created_at, Child.id)
@@ -147,13 +153,23 @@ def list_children(
 
 def count_evaluable_children(db: Session) -> int:
     """What `list_children(evaluable=True)` totals with no other filter, without its rows."""
+    return _count_matching(db, evaluable=True, needs_tutor=False)
+
+
+def count_children_needing_tutor(db: Session) -> int:
+    """What `list_children(needs_tutor=True)` totals with no other filter, without its rows."""
+    return _count_matching(db, evaluable=False, needs_tutor=True)
+
+
+def _count_matching(db: Session, *, evaluable: bool, needs_tutor: bool) -> int:
     matching = _matching_list(
         is_archived=False,
         q=None,
         awaiting_evaluation=False,
-        evaluable=True,
+        evaluable=evaluable,
         subject_ids=(),
         is_evaluated=None,
+        needs_tutor=needs_tutor,
     )
 
     return db.scalar(select(func.count()).select_from(matching.subquery())) or 0
@@ -208,14 +224,21 @@ def _matching_list(
     evaluable: bool,
     subject_ids: Collection[uuid.UUID],
     is_evaluated: bool | None,
+    needs_tutor: bool,
 ) -> Select[tuple[Child]]:
     """Every `list_children` filter applied; see there for what each means."""
-    if awaiting_evaluation or evaluable:
-        matching = _matching(is_archived=False, q=q).where(Child.evaluated_at.is_(None))
-        if evaluable:
-            matching = matching.where(~_has_live_evaluation().exists())
+    if awaiting_evaluation or evaluable or needs_tutor:
+        matching = _matching(is_archived=False, q=q)
     else:
         matching = _matching(is_archived=is_archived, q=q)
+
+    if awaiting_evaluation or evaluable:
+        matching = matching.where(Child.evaluated_at.is_(None))
+    if evaluable:
+        matching = matching.where(~_has_live_evaluation().exists())
+    if needs_tutor:
+        # Needs a Tutor means Evaluated, so combined with the unevaluated tabs it is empty.
+        matching = matching.where(Child.evaluated_at.is_not(None), ~_has_assigned_tutor().exists())
 
     if subject_ids:
         matching = matching.where(_has_level_in(subject_ids).exists())
@@ -257,6 +280,10 @@ def _has_level_in(subject_ids: Collection[uuid.UUID]) -> Select[tuple[int]]:
             ChildSubjectLevel.subject_id.in_(subject_ids),
         )
     )
+
+
+def _has_assigned_tutor() -> Select[tuple[int]]:
+    return select(1).select_from(ChildAssignedTutor).where(ChildAssignedTutor.child_id == Child.id)
 
 
 def _has_live_evaluation() -> Select[tuple[int]]:

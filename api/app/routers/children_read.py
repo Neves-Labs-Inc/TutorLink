@@ -10,7 +10,8 @@ tutors cannot call either route, and an unread scope would arm the guard that 50
 
 `?awaiting_evaluation=true` is the Awaiting evaluation tab: active Children not yet Evaluated,
 oldest `created_at` first. `?evaluable=true` is the same list minus Children with a live
-Evaluation: who the booking form may offer for an Evaluation.
+Evaluation: who the booking form may offer for an Evaluation. `?needs_tutor=true` lists active,
+Evaluated Children with no Assigned Tutors (To do's Bookings group).
 """
 
 import uuid
@@ -69,6 +70,7 @@ def list_all(
     evaluable: bool = False,
     subject_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     evaluated: bool | None = None,
+    needs_tutor: bool = False,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ChildSummary]:
@@ -82,6 +84,7 @@ def list_all(
         evaluable=evaluable,
         subject_ids=subject_id or (),
         is_evaluated=evaluated,
+        needs_tutor=needs_tutor,
     )
 
     owners = guardians_by_home(db, home_ids=[home.id for row in rows for home in row.homes])

@@ -45,6 +45,7 @@ EMPTY_COUNTS = {
     "needs_attention": 0,
     "time_off_pending": 0,
     "children_awaiting_evaluation": 0,
+    "children_needing_tutor": 0,
     "bookings_to_sort_out": 0,
     "unread_chats": 0,
 }
@@ -169,6 +170,7 @@ def test_each_count_equals_its_lists_total_for_an_admin_role(
         "needs_attention": 2,
         "time_off_pending": 2,
         "children_awaiting_evaluation": 1,
+        "children_needing_tutor": 1,
         "bookings_to_sort_out": 2,
         "unread_chats": 2,
     }
@@ -207,6 +209,7 @@ def _list_totals(
         "needs_attention": total_of("/api/conversations?flagged=true"),
         "time_off_pending": (total_of("/api/exceptions?status=pending") if has_time_off else None),
         "children_awaiting_evaluation": total_of("/api/children?evaluable=true"),
+        "children_needing_tutor": total_of("/api/children?needs_tutor=true"),
         "bookings_to_sort_out": total_of("/api/bookings?to_sort_out=true"),
         "unread_chats": total_of("/api/conversations?unread=true"),
     }

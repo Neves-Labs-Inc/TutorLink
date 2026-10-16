@@ -82,7 +82,7 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("GET", "/api/bookings"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
     ("PATCH", "/api/exceptions/{exception_id}"): Access.ADMIN,
-    ("GET", "/api/exceptions"): Access.ADMIN,
+    ("GET", "/api/exceptions"): Access.STAFF,
     ("GET", "/api/counts"): Access.STAFF,
     ("POST", "/api/subjects"): Access.STAFF,
     ("PATCH", "/api/subjects/{subject_id}"): Access.STAFF,

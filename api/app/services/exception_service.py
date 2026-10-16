@@ -21,7 +21,8 @@ boundary needs the target's role and only this module loads it:
 
 - the caller's own Time off, always;
 - anyone's, for Admin roles, except that a Developer's is reserved for Developers;
-- nobody else's, otherwise (a Manager reads and writes only their own).
+- anyone's to read (never to write), for a Manager, with the same Developer reservation;
+- nobody else's, otherwise.
 
 This module knows nothing about FastAPI, status codes, or request bodies; it raises the
 domain exceptions below and `app.routers.exceptions` maps them.
@@ -34,13 +35,13 @@ lock that is only released by that commit or rollback.
 import datetime
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app.dependencies import ADMIN_ROLES
+from app.dependencies import ADMIN_ROLES, OFFICE_ROLES
 from app.models.availability import TutorAvailabilityException
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import Child
@@ -114,15 +115,6 @@ class ExceptionNotCancellable(ExceptionRequestError):
     """A cancel on a row that is neither pending nor approved."""
 
 
-class UnconfirmedBookingClash(ExceptionRequestError):
-    """The write would land a row approved over live Bookings and `booking_clash` was not
-    confirmed. Nothing was written."""
-
-    def __init__(self, clash_count: int) -> None:
-        super().__init__(f"{clash_count} clashing booking(s)")
-        self.clash_count = clash_count
-
-
 @dataclass(frozen=True)
 class Clash:
     """A live Booking inside a Time off row's window."""
@@ -133,6 +125,15 @@ class Clash:
     end_time: datetime.time
     child_name: str
     status: BookingStatus
+
+
+class UnconfirmedBookingClash(ExceptionRequestError):
+    """The write would land a row approved over live Bookings and `booking_clash` was not
+    confirmed. Nothing was written. `clashes` are those Bookings, ordered as a read lists them."""
+
+    def __init__(self, clashes: list[Clash]) -> None:
+        super().__init__(f"{len(clashes)} clashing booking(s)")
+        self.clashes = clashes
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,7 @@ def create_exception(
         end_time=end_time,
         reason=reason,
         status=ExceptionStatus.PENDING,
+        creator=db.get_one(User, actor_id),
     )
     if is_admin:
         _record_decision(db, row, decision=ExceptionStatus.APPROVED, actor_id=actor_id)
@@ -312,12 +314,12 @@ def list_exceptions(
 ) -> tuple[list[TutorAvailabilityException], int]:
     """One Staff member's Time off at every status, and the count before paging.
 
-    Only the person themselves or an Admin role may read it (a Developer's only a Developer).
+    Only the person themselves or an Office role may read it (a Developer's only a Developer).
     `pending`, `rejected` and `cancelled` rows come back beside the `approved` ones even though
     none of them blocks a booking: the list is how a requester sees a request is still waiting
     and how an Admin finds the ones left to decide.
 
-    Each row comes back with `staff`, `decider` and `canceller` loaded in a fixed number of
+    Each row comes back with `staff`, `decider`, `canceller` and `creator` loaded in a fixed number of
     queries for the page, never one per row.
 
     `date_from`/`date_to`, when given, narrow the result to rows that **overlap** the window
@@ -325,7 +327,7 @@ def list_exceptions(
     containment test (`start_date >= date_from`) would drop Time off that began before the
     window and runs through it — exactly the row a weekly grid exists to show.
     """
-    _assert_may_reach(actor_id=actor_id, actor_role=actor_role, owner_id=user_id)
+    _assert_may_read(actor_id=actor_id, actor_role=actor_role, owner_id=user_id)
 
     # An unknown id has no role and so no boundary to cross; it simply lists nothing.
     staff = db.get(User, user_id)
@@ -351,6 +353,7 @@ def list_exceptions(
                 joinedload(TutorAvailabilityException.staff),
                 selectinload(TutorAvailabilityException.decider),
                 selectinload(TutorAvailabilityException.canceller),
+                selectinload(TutorAvailabilityException.creator),
             )
             .order_by(TutorAvailabilityException.start_date, TutorAvailabilityException.id)
             .limit(limit)
@@ -364,7 +367,7 @@ def list_exceptions(
 def list_all_exceptions(
     db: Session,
     *,
-    status: ExceptionReadStatus | None = None,
+    statuses: Collection[ExceptionReadStatus] = (),
     user_id: uuid.UUID | None = None,
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
@@ -375,17 +378,18 @@ def list_all_exceptions(
 ) -> tuple[list[TutorAvailabilityException], int]:
     """Every Staff member's Time off, filtered, and the count before paging.
 
-    The caller has already established an Admin role. Developers' rows are always left out,
+    The caller has already established an Office role. Developers' rows are always left out,
     even when `user_id` names one: the Developer stays hidden from this list for every caller.
 
-    `status` is the wire status: `pending` is stored pending that has not ended and `expired`
-    is stored pending that has, so the two never overlap. `date_from`/`date_to` overlap the
+    `statuses` are wire statuses, and a row at any of them matches; empty means no filter.
+    `pending` is stored pending that has not ended and `expired` is stored pending that has,
+    so the two never overlap. `date_from`/`date_to` overlap the
     window as in `list_exceptions`. `sort` is `start` (the default) or `requested`; `id` breaks
     ties in both so paging is stable. `now` is the caller's clock reading, so the status filter
     and the statuses the caller renders agree on a row ending between two reads.
     """
     matching = _matching_all_exceptions(
-        status=status, user_id=user_id, date_from=date_from, date_to=date_to, now=now
+        statuses=statuses, user_id=user_id, date_from=date_from, date_to=date_to, now=now
     )
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
@@ -404,6 +408,7 @@ def list_all_exceptions(
                 joinedload(TutorAvailabilityException.staff),
                 selectinload(TutorAvailabilityException.decider),
                 selectinload(TutorAvailabilityException.canceller),
+                selectinload(TutorAvailabilityException.creator),
             )
             .order_by(*ordering)
             .limit(limit)
@@ -419,7 +424,11 @@ def count_all_exceptions(
 ) -> int:
     """What `list_all_exceptions` totals for `status` with no other filter, without its rows."""
     matching = _matching_all_exceptions(
-        status=status, user_id=None, date_from=None, date_to=None, now=now
+        statuses=() if status is None else (status,),
+        user_id=None,
+        date_from=None,
+        date_to=None,
+        now=now,
     )
 
     return db.scalar(select(func.count()).select_from(matching.subquery())) or 0
@@ -543,7 +552,7 @@ def _assert_clashes_confirmed(
             window.user_id,
             len(clashes),
         )
-        raise UnconfirmedBookingClash(len(clashes))
+        raise UnconfirmedBookingClash(clashes)
 
 
 def _window_of(row: TutorAvailabilityException) -> _Window:
@@ -558,7 +567,7 @@ def _window_of(row: TutorAvailabilityException) -> _Window:
 
 def _matching_all_exceptions(
     *,
-    status: ExceptionReadStatus | None,
+    statuses: Collection[ExceptionReadStatus],
     user_id: uuid.UUID | None,
     date_from: datetime.date | None,
     date_to: datetime.date | None,
@@ -576,8 +585,10 @@ def _matching_all_exceptions(
         matching = matching.where(TutorAvailabilityException.end_date >= date_from)
     if date_to is not None:
         matching = matching.where(TutorAvailabilityException.start_date <= date_to)
-    if status is not None:
-        matching = matching.where(_matches_wire_status(status, now=now))
+    if statuses:
+        matching = matching.where(
+            or_(*(_matches_wire_status(status, now=now) for status in statuses))
+        )
 
     return matching
 
@@ -651,6 +662,13 @@ def _lock(
 def _assert_may_reach(*, actor_id: uuid.UUID, actor_role: UserRole, owner_id: uuid.UUID) -> None:
     """The owner, or an Admin role. Needs no lookup, so it runs before any."""
     if actor_id != owner_id and actor_role not in ADMIN_ROLES:
+        logger.warning("exception_service: actor %s refused user %s's time off", actor_id, owner_id)
+        raise NotYourTimeOff(f"user {owner_id} is not {actor_id}")
+
+
+def _assert_may_read(*, actor_id: uuid.UUID, actor_role: UserRole, owner_id: uuid.UUID) -> None:
+    """The owner, or an Office role: a Manager reads anyone's Time off but writes only their own."""
+    if actor_id != owner_id and actor_role not in OFFICE_ROLES:
         logger.warning("exception_service: actor %s refused user %s's time off", actor_id, owner_id)
         raise NotYourTimeOff(f"user {owner_id} is not {actor_id}")
 

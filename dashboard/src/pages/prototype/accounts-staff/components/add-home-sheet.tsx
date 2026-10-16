@@ -4,11 +4,11 @@
 // /api/clients/{id}/homes); sharing it with more needs an API change.
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { CheckboxField } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { TextAreaField, TextField } from "@/pages/prototype/shell-kit/kit/components/fields";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button } from "@/components/kit/components/button";
+import { CheckboxField } from "@/components/kit/components/choices";
+import { TextAreaField, TextField } from "@/components/kit/components/fields";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import type { NamedRef } from "@/pages/prototype/accounts-staff/types/api";
 

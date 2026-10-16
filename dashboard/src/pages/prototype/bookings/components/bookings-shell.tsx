@@ -1,16 +1,15 @@
 // The kit's AppShell, rebuilt from its own parts so the Bookings nav
-// badge can show this page's count (the kit's AppShell hard-codes a
-// mock count and takes no override). Nav clicks outside
+// badge can show this page's count. Nav clicks outside
 // Bookings just toast: other areas have their own prototypes.
 import type { ReactNode } from "react";
-import { CURRENT_USER } from "@/pages/prototype/shell-kit/kit/mock-data";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { BottomTabBar } from "@/pages/prototype/shell-kit/kit/shell/bottom-tab-bar";
-import { getNav } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import { Sidebar } from "@/pages/prototype/shell-kit/kit/shell/sidebar";
-import { Wordmark } from "@/pages/prototype/shell-kit/kit/shell/wordmark";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { CURRENT_USER } from "@/pages/prototype/shared/mock-data";
+import { Avatar } from "@/components/kit/components/badges";
+import { BottomTabBar } from "@/components/kit/shell/bottom-tab-bar";
+import type { NavId } from "@/components/kit/shell/nav";
+import { Sidebar } from "@/components/kit/shell/sidebar";
+import { Wordmark } from "@/components/kit/shell/wordmark";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { getMockNav } from "@/pages/prototype/shared/mock-nav";
 
 type OfficeRole = "admin" | "manager";
 
@@ -29,7 +28,7 @@ export default function BookingsShell({
 }: BookingsShellProps): ReactNode {
   const { showToast } = useToast();
   const user = CURRENT_USER[role];
-  const items = getNav(role).map((item) =>
+  const items = getMockNav(role).map((item) =>
     item.id === "bookings"
       ? {
           ...item,
@@ -48,7 +47,7 @@ export default function BookingsShell({
     }
     showToast({
       tone: "info",
-      message: "This prototype covers Bookings only. See /prototype/shell-kit for the rest.",
+      message: "This prototype covers Bookings only.",
     });
   }
 

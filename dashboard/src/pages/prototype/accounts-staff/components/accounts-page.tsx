@@ -5,16 +5,16 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Archive, Baby, BookUser, SearchX, UserPlus } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { QuickFilter } from "@/pages/prototype/shell-kit/kit/components/quick-filter";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { PageToolbar } from "@/pages/prototype/shell-kit/kit/shell/page-toolbar";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button } from "@/components/kit/components/button";
+import { QuickFilter } from "@/components/kit/components/quick-filter";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { PageToolbar } from "@/components/kit/shell/page-toolbar";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import {
   EmptyState,
   ErrorState,
   TableSkeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
+} from "@/components/kit/states/states";
 import AccountDetails from "@/pages/prototype/accounts-staff/components/account-details";
 import AddGuardianSheet from "@/pages/prototype/accounts-staff/components/add-guardian-sheet";
 import FamiliesTable from "@/pages/prototype/accounts-staff/components/families-table";

@@ -4,11 +4,11 @@
 // no actions here (TutorLink#189).
 import type { ReactNode } from "react";
 import { CalendarCheck } from "lucide-react";
-import { Avatar, KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { DataTable } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import type { Column } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import { EmptyState, ErrorState, TableSkeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar, KindBadge } from "@/components/kit/components/badges";
+import { DataTable } from "@/components/kit/components/data-table";
+import type { Column } from "@/components/kit/components/data-table";
+import { EmptyState, ErrorState, TableSkeleton } from "@/components/kit/states/states";
+import { cn } from "@/components/kit/tokens";
 import type { Phase } from "@/pages/prototype/home/hooks/use-home-data";
 import {
   formatClock,

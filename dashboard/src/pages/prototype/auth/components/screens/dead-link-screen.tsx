@@ -3,7 +3,7 @@
 // both; the other two show what knowing would buy.
 import type { ReactNode } from "react";
 import { ArrowLeft, Link2Off } from "lucide-react";
-import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
+import { Button, TextLink } from "@/components/kit/components/button";
 import AuthPage from "@/pages/prototype/auth/components/layout/auth-page";
 import PrototypeNote from "@/pages/prototype/auth/components/prototype-note";
 import WireNote from "@/pages/prototype/auth/components/wire-note";

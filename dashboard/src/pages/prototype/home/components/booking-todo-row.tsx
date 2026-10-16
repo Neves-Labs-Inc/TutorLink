@@ -3,9 +3,9 @@
 // 2026-10-15, same rule as Time off).
 import type { ReactNode } from "react";
 import { ChevronRight, Sparkles, UserRoundX } from "lucide-react";
-import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import type { Tone } from "@/pages/prototype/shell-kit/kit/tokens";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Badge } from "@/components/kit/components/badges";
+import type { Tone } from "@/components/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 import {
   formatClock,
   formatDate,

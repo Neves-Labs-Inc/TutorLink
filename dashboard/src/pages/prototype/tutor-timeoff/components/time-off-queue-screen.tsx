@@ -5,20 +5,20 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarX2, Plane, Plus } from "lucide-react";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { DataTable } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import type { Column } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import { MultiSelectFilter } from "@/pages/prototype/shell-kit/kit/components/multi-select-filter";
-import { SubPageTabs } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { useFilters } from "@/pages/prototype/shell-kit/kit/hooks/use-filters";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { PageToolbar } from "@/pages/prototype/shell-kit/kit/shell/page-toolbar";
+import { pluralize } from "@/components/kit/format";
+import { Avatar } from "@/components/kit/components/badges";
+import { DataTable } from "@/components/kit/components/data-table";
+import type { Column } from "@/components/kit/components/data-table";
+import { MultiSelectFilter } from "@/components/kit/components/multi-select-filter";
+import { SubPageTabs } from "@/components/kit/components/tabs";
+import { useFilters } from "@/components/kit/hooks/use-filters";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { PageToolbar } from "@/components/kit/shell/page-toolbar";
 import {
   EmptyState,
   ErrorState,
   TableSkeleton,
-} from "@/pages/prototype/shell-kit/kit/states/states";
+} from "@/components/kit/states/states";
 import OpenQuestion from "@/pages/prototype/tutor-timeoff/components/open-question";
 import TimeOffDetail from "@/pages/prototype/tutor-timeoff/components/time-off-detail";
 import TimeOffFormSheet from "@/pages/prototype/tutor-timeoff/components/time-off-form-sheet";

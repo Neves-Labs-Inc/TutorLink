@@ -5,9 +5,9 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronRight, Info, Pencil } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { ArchivedBadge, Avatar, Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
+import { ArchivedBadge, Avatar, Badge } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
 import AssignedChildrenSheet from "@/pages/prototype/accounts-staff/components/assigned-children-sheet";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import { describeCoverage } from "@/pages/prototype/accounts-staff/lib/assigned-tutors";

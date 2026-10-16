@@ -8,7 +8,7 @@
 //   GET /api/children?needs_tutor=true  PROPOSED   (Bookings card, both)
 //   GET /api/bookings?from=TODAY&to=TODAY&status=confirmed&status=completed
 //       (+ &user_id=<me> for a Manager's My sessions today)
-import type { Role } from "@/pages/prototype/shell-kit/kit/mock-data";
+import type { Role } from "@/pages/prototype/shared/mock-data";
 import type {
   AssignableStaff,
   BookingPage,

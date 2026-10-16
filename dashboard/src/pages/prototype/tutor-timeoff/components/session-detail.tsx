@@ -19,11 +19,11 @@ import {
   Badge,
   BookingStatusBadge,
   KindBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow, NotesCard } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+} from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { DetailRow, NotesCard } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import LinkButton from "@/pages/prototype/tutor-timeoff/components/link-button";
 import OpenQuestion from "@/pages/prototype/tutor-timeoff/components/open-question";
 import {

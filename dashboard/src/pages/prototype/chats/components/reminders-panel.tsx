@@ -13,15 +13,15 @@ import {
   Settings,
   Users,
 } from "lucide-react";
-import { Avatar, Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button, IconButton, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DataTable } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import type { Column } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import { MultiSelectFilter } from "@/pages/prototype/shell-kit/kit/components/multi-select-filter";
-import { QuickFilter } from "@/pages/prototype/shell-kit/kit/components/quick-filter";
-import type { Role } from "@/pages/prototype/shell-kit/kit/mock-data";
-import { EmptyState, ErrorState, ListSkeleton, Skeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, CARD_TITLE, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar, Badge } from "@/components/kit/components/badges";
+import { Button, IconButton, TextLink } from "@/components/kit/components/button";
+import { DataTable } from "@/components/kit/components/data-table";
+import type { Column } from "@/components/kit/components/data-table";
+import { MultiSelectFilter } from "@/components/kit/components/multi-select-filter";
+import { QuickFilter } from "@/components/kit/components/quick-filter";
+import type { Role } from "@/pages/prototype/shared/mock-data";
+import { EmptyState, ErrorState, ListSkeleton, Skeleton } from "@/components/kit/states/states";
+import { CARD, CARD_TITLE, cn, EYEBROW } from "@/components/kit/tokens";
 import type {
   ReminderPreviewItem,
   ReminderWeekRead,

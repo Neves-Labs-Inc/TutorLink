@@ -2,8 +2,8 @@
 // Admins never receive these rows; a Developer sees them here.
 import type { ReactNode } from "react";
 import { Code } from "lucide-react";
-import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Badge } from "@/components/kit/components/badges";
+import { cn } from "@/components/kit/tokens";
 import SectionCard from "@/pages/prototype/settings/components/section-card";
 import { bindField } from "@/pages/prototype/settings/lib/bind-field";
 import FieldFrame from "@/pages/prototype/settings/components/field-frame";

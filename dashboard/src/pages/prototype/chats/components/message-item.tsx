@@ -17,8 +17,8 @@ import {
   UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import { TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
+import { cn } from "@/components/kit/tokens";
+import { TextLink } from "@/components/kit/components/button";
 import type {
   MessageRead,
   MessageStatus,

@@ -1,7 +1,7 @@
 // Decline is a confirm with no note (TutorLink#189); the buttons name
 // the act, so "cancel" never means two things.
 import type { ReactNode } from "react";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
 import { formatTimeOffDates } from "@/pages/prototype/home/lib/labels";
 import type { TodoActions } from "@/pages/prototype/home/hooks/use-todo-actions";
 

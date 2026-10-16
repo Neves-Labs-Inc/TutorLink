@@ -12,13 +12,13 @@ import {
   Plus,
   UserRound,
 } from "lucide-react";
-import { Button, IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
-import { QuickFilter } from "@/pages/prototype/shell-kit/kit/components/quick-filter";
-import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { PageToolbar } from "@/pages/prototype/shell-kit/kit/shell/page-toolbar";
+import { Button, IconButton } from "@/components/kit/components/button";
+import { QuickFilter } from "@/components/kit/components/quick-filter";
+import { SegmentedControl } from "@/components/kit/components/tabs";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { PageToolbar } from "@/components/kit/shell/page-toolbar";
 import OpenQuestion from "@/pages/prototype/bookings/components/open-question";
-import FilterDropdowns from "@/pages/prototype/shell-kit/screens/filter-dropdowns";
+import FilterDropdowns from "@/pages/prototype/shared/filter-dropdowns";
 import type { BookingsPageState } from "@/pages/prototype/bookings/hooks/use-bookings-page";
 import { STAFF, WEEK_START } from "@/pages/prototype/bookings/lib/mock-data";
 import { formatWeekRange, pluralize } from "@/pages/prototype/bookings/lib/format";

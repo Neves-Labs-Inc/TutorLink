@@ -2,8 +2,8 @@
 // many; nothing is cancelled, they wait in To do › Bookings for Change
 // booking (POST /api/archive with confirm_warnings).
 import type { ReactNode } from "react";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
   getUpcomingBookings,

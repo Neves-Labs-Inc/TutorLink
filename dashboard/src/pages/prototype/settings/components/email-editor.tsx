@@ -6,14 +6,14 @@
 import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Eye, PencilLine, Send } from "lucide-react";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { Button } from "@/components/kit/components/button";
 import {
   TextAreaField,
   TextField,
-} from "@/pages/prototype/shell-kit/kit/components/fields";
-import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+} from "@/components/kit/components/fields";
+import { SegmentedControl } from "@/components/kit/components/tabs";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import {
   BRAND_COLOR_KEY,
   cleanBrandColor,

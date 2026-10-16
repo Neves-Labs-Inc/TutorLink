@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 const listPaneClasses = 'w-full lg:w-80 lg:shrink-0 xl:w-96'
 const threadPaneClasses = 'min-w-0 flex-1'
 const emptyStateClasses =
-  'flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center text-muted-foreground'
+  'flex h-[calc(100dvh-20rem)] min-h-[18rem] lg:h-[calc(100dvh-14rem)] lg:min-h-[24rem] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center text-muted-foreground'
 
 // The list pane renders unconditionally so it never unmounts when the route
 // switches between /chats and /chats/:id — that persistence is what makes

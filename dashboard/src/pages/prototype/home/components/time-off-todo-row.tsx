@@ -3,8 +3,8 @@
 // calm). A clash with live Bookings shows as a warning here too.
 import type { ReactNode } from "react";
 import { CalendarX2, ChevronRight } from "lucide-react";
-import { Avatar, Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
+import { Avatar, Badge } from "@/components/kit/components/badges";
+import { pluralize } from "@/components/kit/format";
 import {
   formatTimeOffDates,
   ROLE_LABEL,

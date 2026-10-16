@@ -4,9 +4,9 @@
 // their phone and a Mark done beside it (TutorLink#189).
 import type { ReactNode } from "react";
 import { Check, ChevronRight, Clock, Phone, UserRound } from "lucide-react";
-import { AttentionBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { AttentionBadge } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { cn } from "@/components/kit/tokens";
 import {
   FLAG_REASON_LABEL,
   formatPhone,

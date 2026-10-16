@@ -1,10 +1,10 @@
-// The phone frame from the shell-kit prototype (copied: it lives in
-// shell-kit-prototype.tsx, not in kit/). ?device=phone on a wide window
-// draws the page at 390×844 inside a frame; a narrow window needs none.
+// A local copy of the prototypes' phone frame (shared/device-frame).
+// ?device=phone on a wide window draws the page at 390×844 inside a
+// frame; a narrow window needs none.
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import KitRoot from "@/pages/prototype/shell-kit/kit/kit-root";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import KitRoot from "@/components/kit/kit-root";
+import type { Theme } from "@/components/kit/tokens";
 
 const PHONE_WIDTH = 390;
 const PHONE_HEIGHT = 844;

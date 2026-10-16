@@ -2,7 +2,7 @@
 // gives it the brand frame.
 import type { ReactNode } from "react";
 import { Compass } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { Button } from "@/components/kit/components/button";
 import AuthPage from "@/pages/prototype/auth/components/layout/auth-page";
 import PrototypeNote from "@/pages/prototype/auth/components/prototype-note";
 import type { GoTo } from "@/pages/prototype/auth/lib/scenarios";

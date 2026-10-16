@@ -6,7 +6,7 @@ import {
   Badge,
   BookingStatusBadge,
   KindBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
+} from "@/components/kit/components/badges";
 import {
   KIND_LABEL,
   REASON_LABEL,

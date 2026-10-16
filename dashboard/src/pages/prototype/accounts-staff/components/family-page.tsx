@@ -5,9 +5,9 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ArrowLeft, CalendarPlus } from "lucide-react";
-import { TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { TextLink } from "@/components/kit/components/button";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import FamilyChildren from "@/pages/prototype/accounts-staff/components/family-children";
 import FamilyPeople from "@/pages/prototype/accounts-staff/components/family-people";
 import AddGuardianSheet from "@/pages/prototype/accounts-staff/components/add-guardian-sheet";

@@ -2,9 +2,9 @@
 // My sessions (TutorLink#191). "Session" because it's their own.
 import type { ReactNode } from "react";
 import { CalendarCheck, MapPin } from "lucide-react";
-import { KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { ListRow, TimeBlock } from "@/pages/prototype/shell-kit/kit/components/list-row";
-import { EmptyState, ErrorState, ListSkeleton } from "@/pages/prototype/shell-kit/kit/states/states";
+import { KindBadge } from "@/components/kit/components/badges";
+import { ListRow, TimeBlock } from "@/components/kit/components/list-row";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/kit/states/states";
 import type { Phase } from "@/pages/prototype/home/hooks/use-home-data";
 import {
   formatClock,

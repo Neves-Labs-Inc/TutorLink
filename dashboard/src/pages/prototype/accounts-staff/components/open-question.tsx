@@ -1,7 +1,7 @@
 // Prototype-only marker for a placeholder that is still an open
 // question: a dashed "?" that shows the question on tap.
 import type { ReactNode } from "react";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { useToast } from "@/components/kit/overlays/use-toast";
 
 type OpenQuestionProps = { question: string };
 

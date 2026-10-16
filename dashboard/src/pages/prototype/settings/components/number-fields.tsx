@@ -3,8 +3,8 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Minus, Plus } from "lucide-react";
-import { IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { IconButton } from "@/components/kit/components/button";
+import { cn } from "@/components/kit/tokens";
 import FieldFrame, {
   SelectControl,
 } from "@/pages/prototype/settings/components/field-frame";

@@ -12,13 +12,13 @@ import {
   UserRoundX,
   Users,
 } from "lucide-react";
-import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { CheckboxField } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { CARD_TITLE, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Badge } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { CheckboxField } from "@/components/kit/components/choices";
+import { DetailRow } from "@/components/kit/components/detail";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { CARD_TITLE, cn } from "@/components/kit/tokens";
 import PrototypeNote from "@/pages/prototype/home/components/prototype-note";
 import { formatDate, formatLevels } from "@/pages/prototype/home/lib/labels";
 import { ASSIGNABLE } from "@/pages/prototype/home/lib/mock-api";

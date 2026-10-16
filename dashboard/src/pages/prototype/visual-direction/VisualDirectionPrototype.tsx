@@ -7,9 +7,6 @@ import { VariantA } from './VariantA'
 import { VariantB } from './VariantB'
 import type { Screen, Theme } from './mockData'
 
-const FONTS_LINK_ID = 'visual-direction-fonts'
-const FONTS_HREF =
-  'https://fonts.googleapis.com/css2?family=Lato:wght@100;300;400;700;900&family=Inter:wght@300..800&display=swap'
 const PHONE_FRAME_MIN_WIDTH = 640
 const VARIANTS = [
   { id: 'A', label: 'Faithful pastel' },
@@ -40,15 +37,6 @@ export function VisualDirectionPrototype() {
   const theme: Theme = params.get('theme') === 'dark' ? 'dark' : 'light'
   const screenParam = params.get('screen')
   const screen: Screen = screenParam === 'calendar' || screenParam === 'tutor' ? screenParam : 'list'
-
-  useEffect(() => {
-    if (document.getElementById(FONTS_LINK_ID)) return
-    const link = document.createElement('link')
-    link.id = FONTS_LINK_ID
-    link.rel = 'stylesheet'
-    link.href = FONTS_HREF
-    document.head.appendChild(link)
-  }, [])
 
   const content = variant === 'B' ? <VariantB theme={theme} screen={screen} /> : <VariantA theme={theme} screen={screen} />
 

@@ -5,7 +5,7 @@
 // (availability) and carry all-day notes (Time off) under the header.
 import type { ReactNode } from "react";
 import { Plane } from "lucide-react";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CARD, cn } from "@/components/kit/tokens";
 import {
   formatTime,
   fromMinutes,

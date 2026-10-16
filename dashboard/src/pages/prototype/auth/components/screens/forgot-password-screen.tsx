@@ -3,8 +3,8 @@
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ArrowLeft, Mail, MailCheck } from "lucide-react";
-import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { TextField } from "@/pages/prototype/shell-kit/kit/components/fields";
+import { Button, TextLink } from "@/components/kit/components/button";
+import { TextField } from "@/components/kit/components/fields";
 import AuthPage from "@/pages/prototype/auth/components/layout/auth-page";
 import FormAlert from "@/pages/prototype/auth/components/form-alert";
 import PrototypeNote from "@/pages/prototype/auth/components/prototype-note";

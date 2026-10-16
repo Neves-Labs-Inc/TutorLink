@@ -1,5 +1,5 @@
 // Plan: the Settings area for the dashboard redesign (TutorLink#196), on
-// the shared kit (shell-kit/kit). Throwaway, DEV-only, mock data in the
+// the shared kit (components/kit). Throwaway, DEV-only, mock data in the
 // real API shapes (types/api.ts). Route /prototype/settings, driven by
 // the floating switcher:
 //   ?screen=  overview | unsaved | invalid | save-failed | retention |
@@ -16,9 +16,9 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import { DeviceFrame } from "@/pages/prototype/shell-kit/kit/device-frame";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import { DeviceFrame } from "@/pages/prototype/shared/device-frame";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import type { Theme } from "@/components/kit/tokens";
 import { getSettingsPage } from "@/pages/prototype/settings/mock/settings-mock";
 import type { MockOptions } from "@/pages/prototype/settings/mock/settings-mock";
 import { useSimulatedLoad } from "@/pages/prototype/settings/hooks/use-simulated-load";

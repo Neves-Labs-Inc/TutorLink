@@ -1,8 +1,8 @@
 // Staff list state: the Archived tab, search, and one multi-select per
 // field (Role, Sign-in state), read from GET /api/staff?archived=.
 import { useState } from "react";
-import type { FilterOption } from "@/pages/prototype/shell-kit/kit/components/multi-select-filter";
-import { useFilters } from "@/pages/prototype/shell-kit/kit/hooks/use-filters";
+import type { FilterOption } from "@/components/kit/components/multi-select-filter";
+import { useFilters } from "@/components/kit/hooks/use-filters";
 import type { StaffRow } from "@/pages/prototype/accounts-staff/components/staff-table";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {

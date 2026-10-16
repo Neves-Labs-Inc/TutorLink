@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { CircleAlert, Clock, Info, WifiOff } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 
 type AlertTone = "danger" | "warning" | "info";
 

@@ -1,6 +1,6 @@
 // Wire values → the words in CONTEXT.md, and the date/time copy Home
 // shows. Business time is fixed (Doral), so plain Date maths is enough.
-import type { AttentionReason } from "@/pages/prototype/shell-kit/kit/mock-data";
+import type { AttentionReason } from "@/pages/prototype/shared/mock-data";
 import { NOW, TODAY } from "@/pages/prototype/home/lib/mock-api";
 import type {
   BookingSummary,

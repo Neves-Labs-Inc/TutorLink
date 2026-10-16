@@ -4,12 +4,12 @@
 // Taking off a Child's last Assigned Tutor is allowed after a confirm.
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { CheckboxField } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { SearchInput } from "@/pages/prototype/shell-kit/kit/components/fields";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button } from "@/components/kit/components/button";
+import { CheckboxField } from "@/components/kit/components/choices";
+import { SearchInput } from "@/components/kit/components/fields";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
   describeCoverage,

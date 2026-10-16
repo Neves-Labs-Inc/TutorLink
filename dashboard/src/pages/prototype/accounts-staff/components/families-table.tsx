@@ -1,9 +1,9 @@
 // Families in the kit's DataTable: who the Guardians are, their
 // Children, Homes and the next booking. Whole rows open the family.
 import type { ReactNode } from "react";
-import { ArchivedBadge, Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { DataTable } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import type { Column } from "@/pages/prototype/shell-kit/kit/components/data-table";
+import { ArchivedBadge, Avatar } from "@/components/kit/components/badges";
+import { DataTable } from "@/components/kit/components/data-table";
+import type { Column } from "@/components/kit/components/data-table";
 import type { FamilyRow } from "@/pages/prototype/accounts-staff/hooks/use-families-list";
 import {
   formatShortDate,

@@ -18,11 +18,11 @@ import {
   Avatar,
   BookingStatusBadge,
   KindBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow, NotesCard } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { ConfirmDialog } from "@/pages/prototype/shell-kit/kit/overlays/dialog";
+} from "@/components/kit/components/badges";
+import { Button, TextLink } from "@/components/kit/components/button";
+import { DetailRow, NotesCard } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { ConfirmDialog } from "@/components/kit/overlays/dialog";
 import { ReasonBadge } from "@/pages/prototype/bookings/components/booking-badges";
 import {
   formatDateTime,

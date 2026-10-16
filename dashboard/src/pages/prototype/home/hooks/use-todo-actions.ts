@@ -15,8 +15,8 @@
 //   prototype; here they only toast.
 // No Undo on the toasts: none of these writes can be taken back.
 import { useRef, useState } from "react";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { pluralize } from "@/components/kit/format";
 import type { HomeDataApi } from "@/pages/prototype/home/hooks/use-home-data";
 import { getDisplayName } from "@/pages/prototype/home/lib/labels";
 import { toClashBooking } from "@/pages/prototype/home/lib/mock-api";

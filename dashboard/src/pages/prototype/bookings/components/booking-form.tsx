@@ -5,18 +5,18 @@
 // Change booking locks the Child and Kind (PUT refuses both).
 import type { ReactNode } from "react";
 import { CircleAlert, Plane, TriangleAlert, UserRoundX } from "lucide-react";
-import { Badge, KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { RadioCards } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { Combobox } from "@/pages/prototype/shell-kit/kit/components/combobox";
+import { Badge, KindBadge } from "@/components/kit/components/badges";
+import { Button, TextLink } from "@/components/kit/components/button";
+import { RadioCards } from "@/components/kit/components/choices";
+import { Combobox } from "@/components/kit/components/combobox";
 import {
   SelectField,
   TextAreaField,
   TextField,
-} from "@/pages/prototype/shell-kit/kit/components/fields";
-import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+} from "@/components/kit/components/fields";
+import { SegmentedControl } from "@/components/kit/components/tabs";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { cn } from "@/components/kit/tokens";
 import {
   getAssignedIds,
   useBookingForm,

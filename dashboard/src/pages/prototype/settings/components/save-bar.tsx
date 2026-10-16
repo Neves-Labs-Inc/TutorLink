@@ -3,9 +3,9 @@
 // bar, and names how many fields changed.
 import type { ReactNode } from "react";
 import { CircleAlert } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
+import { Button } from "@/components/kit/components/button";
+import { cn } from "@/components/kit/tokens";
+import { pluralize } from "@/components/kit/format";
 import type { SaveState } from "@/pages/prototype/settings/hooks/use-settings";
 
 type SaveBarProps = {

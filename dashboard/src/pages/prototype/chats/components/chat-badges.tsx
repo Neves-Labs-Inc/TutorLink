@@ -3,8 +3,8 @@
 // the viewer's own chats say "by you", so Chats draws its own.
 import type { ReactNode } from "react";
 import { Bot, Clock, PhoneOff, UserRound, UserRoundPlus } from "lucide-react";
-import { Avatar, Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar, Badge } from "@/components/kit/components/badges";
+import { cn } from "@/components/kit/tokens";
 import type {
   ConversationStatus,
   GuardianRef,

@@ -3,7 +3,6 @@ import {
   ADMIN_ROLES,
   ROLES,
   OFFICE_ROLES,
-  chromeFor,
   decodeAccessToken,
   guardDecision,
   isOfficeRole,
@@ -85,7 +84,7 @@ describe('landingPath', () => {
     { role: 'admin', expected: '/dashboard' },
     { role: 'developer', expected: '/dashboard' },
     { role: 'manager', expected: '/dashboard' },
-    { role: 'tutor', expected: '/schedule' },
+    { role: 'tutor', expected: '/sessions' },
   ]
 
   it.each(cases)('returns $expected for $role', ({ role, expected }) => {
@@ -120,19 +119,6 @@ describe('isOfficeRole', () => {
   })
 })
 
-describe('chromeFor', () => {
-  const cases: { role: Role; expected: 'office' | 'tutor' }[] = [
-    { role: 'admin', expected: 'office' },
-    { role: 'manager', expected: 'office' },
-    { role: 'developer', expected: 'office' },
-    { role: 'tutor', expected: 'tutor' },
-  ]
-
-  it.each(cases)('gives $role the $expected chrome', ({ role, expected }) => {
-    expect(chromeFor(role)).toBe(expected)
-  })
-})
-
 describe('guardDecision', () => {
   it('waits while the session bootstrap is in flight', () => {
     expect(guardDecision('loading', null, OFFICE_ROLES)).toEqual({ kind: 'wait' })
@@ -160,10 +146,10 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'admin', ADMIN_ROLES)).toEqual({ kind: 'allow' })
   })
 
-  it('sends a tutor on a staff route to their schedule', () => {
+  it('sends a tutor on a staff route to their sessions', () => {
     expect(guardDecision('authenticated', 'tutor', OFFICE_ROLES)).toEqual({
       kind: 'redirect',
-      to: '/schedule',
+      to: '/sessions',
     })
   })
 })

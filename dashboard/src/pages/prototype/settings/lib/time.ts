@@ -1,5 +1,5 @@
 // Weekdays, hours and time zones as people read them.
-import type { SelectOption } from "@/pages/prototype/shell-kit/kit/components/fields";
+import type { SelectOption } from "@/components/kit/components/fields";
 
 // The prototype's "today" (kit NOW is 2026-10-13), as a fixed instant.
 const TODAY = new Date("2026-10-13T12:00:00Z");

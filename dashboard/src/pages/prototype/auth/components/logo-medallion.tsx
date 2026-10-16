@@ -4,7 +4,7 @@
 // Size it with classes (`size-[112px] @5xl:size-[200px]`).
 import type { ReactNode } from "react";
 import logoUrl from "@/pages/prototype/auth/assets/logo.jpg";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 
 const LOGO_PX = 768;
 

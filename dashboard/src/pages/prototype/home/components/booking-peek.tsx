@@ -3,9 +3,9 @@
 // already has, so the tap has somewhere to land.
 import type { ReactNode } from "react";
 import { BookOpen, CalendarDays, MapPin, UserRound } from "lucide-react";
-import { KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
+import { KindBadge } from "@/components/kit/components/badges";
+import { DetailRow } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
 import PrototypeNote from "@/pages/prototype/home/components/prototype-note";
 import {
   formatClock,

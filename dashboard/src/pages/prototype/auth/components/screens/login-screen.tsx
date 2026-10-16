@@ -3,8 +3,8 @@
 // and arriving after the session ended.
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
-import { TextField } from "@/pages/prototype/shell-kit/kit/components/fields";
+import { Button, TextLink } from "@/components/kit/components/button";
+import { TextField } from "@/components/kit/components/fields";
 import AuthPage from "@/pages/prototype/auth/components/layout/auth-page";
 import FormAlert from "@/pages/prototype/auth/components/form-alert";
 import PasswordField from "@/pages/prototype/auth/components/password-field";

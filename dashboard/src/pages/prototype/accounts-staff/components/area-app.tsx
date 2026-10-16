@@ -3,10 +3,11 @@
 // prototypes. Holds the in-memory store and the fake request phase.
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { CURRENT_USER } from "@/pages/prototype/shell-kit/kit/mock-data";
-import { AppShell } from "@/pages/prototype/shell-kit/kit/shell/app-shell";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { CURRENT_USER } from "@/pages/prototype/shared/mock-data";
+import { AppShell } from "@/components/kit/shell/app-shell";
+import { getNav } from "@/components/kit/shell/nav";
+import type { NavId } from "@/components/kit/shell/nav";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import AccountsPage from "@/pages/prototype/accounts-staff/components/accounts-page";
 import StaffPage from "@/pages/prototype/accounts-staff/components/staff-page";
 import {
@@ -113,10 +114,11 @@ export default function AreaApp({
   return (
     <AreaStoreContext.Provider value={store}>
       <AppShell
-        role={role}
+        name={user.name}
+        roleLabel={user.role}
+        items={getNav(role, { counts, hasOfficeTimeOff: true })}
         activeId={section}
         onNavigate={handleNavigate}
-        counts={counts}
       >
         <div key={`${section}-${visit}`} className="kit-fade">
           {section === "accounts" ? (

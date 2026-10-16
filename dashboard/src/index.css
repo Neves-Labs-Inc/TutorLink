@@ -1,7 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 /* Dark applies via an explicit `.dark` class or, when no explicit `.light`
    class is present, via the operating system preference. */
@@ -18,7 +17,7 @@
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -243,4 +242,12 @@
         min-height: 100dvh;
         -webkit-font-smoothing: antialiased;
     }
+}
+
+/* A theme flip lands in one frame: the theme module sets this attribute
+   while it swaps, so `transition-colors` surfaces don't each fade. */
+[data-theme-switching] *,
+[data-theme-switching] *::before,
+[data-theme-switching] *::after {
+    transition: none !important;
 }

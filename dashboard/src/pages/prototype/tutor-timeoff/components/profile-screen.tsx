@@ -4,11 +4,11 @@
 // from Bookings › Mine and their time off from the Time off nav item.
 import type { ReactNode } from "react";
 import { LogOut, Mail, Phone } from "lucide-react";
-import { Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
-import { CARD, cn, HEADING } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { useToast } from "@/components/kit/overlays/use-toast";
+import { CARD, cn, HEADING } from "@/components/kit/tokens";
 import AvailabilitySection from "@/pages/prototype/tutor-timeoff/components/availability-section";
 import OpenQuestion from "@/pages/prototype/tutor-timeoff/components/open-question";
 import { formatPhone, ROLE_LABEL } from "@/pages/prototype/tutor-timeoff/lib/labels";

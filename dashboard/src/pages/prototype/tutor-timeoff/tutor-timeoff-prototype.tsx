@@ -15,11 +15,12 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import { DeviceFrame } from "@/pages/prototype/shell-kit/kit/device-frame";
-import { AppShell } from "@/pages/prototype/shell-kit/kit/shell/app-shell";
-import { getNav } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import { DeviceFrame } from "@/pages/prototype/shared/device-frame";
+import { AppShell } from "@/components/kit/shell/app-shell";
+import { CURRENT_USER } from "@/pages/prototype/shared/mock-data";
+import { getNav } from "@/components/kit/shell/nav";
+import type { NavId } from "@/components/kit/shell/nav";
+import type { Theme } from "@/components/kit/tokens";
 import ElsewhereScreen from "@/pages/prototype/tutor-timeoff/components/elsewhere-screen";
 import type { Elsewhere } from "@/pages/prototype/tutor-timeoff/components/elsewhere-screen";
 import MySessionsScreen from "@/pages/prototype/tutor-timeoff/components/my-sessions-screen";
@@ -28,7 +29,7 @@ import ProfileScreen from "@/pages/prototype/tutor-timeoff/components/profile-sc
 import SessionDetail from "@/pages/prototype/tutor-timeoff/components/session-detail";
 import TimeOffQueueScreen from "@/pages/prototype/tutor-timeoff/components/time-off-queue-screen";
 import AvailabilitySection from "@/pages/prototype/tutor-timeoff/components/availability-section";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
+import { PageHeader } from "@/components/kit/shell/page-header";
 import { useAreaStore } from "@/pages/prototype/tutor-timeoff/hooks/use-area-store";
 import { useLoadPhase } from "@/pages/prototype/tutor-timeoff/hooks/use-load-phase";
 import type { DataState } from "@/pages/prototype/tutor-timeoff/hooks/use-load-phase";
@@ -173,7 +174,7 @@ function AreaApp({ role, state }: AreaAppProps): ReactNode {
       showScreen(target);
       return;
     }
-    const label = getNav(role).find((item) => item.id === id)?.label ?? id;
+    const label = getNav(role, { hasOfficeTimeOff: true }).find((item) => item.id === id)?.label ?? id;
     const body =
       id === "bookings" && role === "manager"
         ? "Bookings › Mine lists every Booking you teach. It’s designed in the Bookings prototype."
@@ -234,11 +235,16 @@ function AreaApp({ role, state }: AreaAppProps): ReactNode {
 
   return (
     <AppShell
-      role={role}
+      name={CURRENT_USER[role].name}
+      roleLabel={CURRENT_USER[role].role}
+      // A Tutor has no badges (GET /api/counts is Office only).
+      items={getNav(role, {
+        counts:
+          role !== "tutor" && load.phase === "ready" ? store.counts : null,
+        hasOfficeTimeOff: true,
+      })}
       activeId={activeId}
       onNavigate={handleNavigate}
-      // A Tutor has no badges (GET /api/counts is Office only).
-      counts={role !== "tutor" && load.phase === "ready" ? store.counts : null}
     >
       <div key={elsewhere ? elsewhere.id : screen} className="kit-fade">
         {elsewhere ? (

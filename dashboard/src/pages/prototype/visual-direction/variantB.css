@@ -29,8 +29,8 @@
   --vb-pastel-mauve: #e5d4e3;
   --vb-on-pastel: #14191f;
 
-  --vb-font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --vb-font-display: "Lato", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --vb-font-ui: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --vb-font-display: "Lato", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
 
   --vb-radius-sm: 4px;
   --vb-radius: 6px;

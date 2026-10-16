@@ -3,7 +3,7 @@
 // real links (maps app, phone dialer). Kit change requested.
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 
 const VARIANTS = {
   primary:

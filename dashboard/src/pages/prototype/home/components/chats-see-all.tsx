@@ -3,10 +3,10 @@
 // designed in its own prototype; this only proves the hand-off.
 import type { ReactNode } from "react";
 import { Filter, MessageCircleHeart } from "lucide-react";
-import { SubPageTabs } from "@/pages/prototype/shell-kit/kit/components/tabs";
-import { PageHeader } from "@/pages/prototype/shell-kit/kit/shell/page-header";
-import { EmptyState, ErrorState, ListSkeleton } from "@/pages/prototype/shell-kit/kit/states/states";
-import { CARD, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { SubPageTabs } from "@/components/kit/components/tabs";
+import { PageHeader } from "@/components/kit/shell/page-header";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/kit/states/states";
+import { CARD, cn } from "@/components/kit/tokens";
 import ChatTodoRow from "@/pages/prototype/home/components/chat-todo-row";
 import PrototypeNote from "@/pages/prototype/home/components/prototype-note";
 import type { HomeDataApi } from "@/pages/prototype/home/hooks/use-home-data";

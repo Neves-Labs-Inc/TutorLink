@@ -3,13 +3,13 @@
 // (ChildCreate linked to this Guardian).
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { Button } from "@/components/kit/components/button";
 import {
   SelectField,
   TextAreaField,
   TextField,
-} from "@/pages/prototype/shell-kit/kit/components/fields";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
+} from "@/components/kit/components/fields";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
 import type { NewChild } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import { GRADE_OPTIONS } from "@/pages/prototype/accounts-staff/lib/labels";
 import type {

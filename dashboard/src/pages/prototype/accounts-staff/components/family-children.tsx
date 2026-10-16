@@ -3,10 +3,10 @@
 // Child details.
 import type { ReactNode } from "react";
 import { CalendarDays, ChevronRight, Plus, UserRoundX, Users } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { ArchivedBadge, Avatar, Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
+import { ArchivedBadge, Avatar, Badge } from "@/components/kit/components/badges";
 import { needsTutor } from "@/pages/prototype/accounts-staff/lib/assigned-tutors";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { Button } from "@/components/kit/components/button";
 import OpenQuestion from "@/pages/prototype/accounts-staff/components/open-question";
 import { DOT_CLASSES } from "@/pages/prototype/accounts-staff/lib/child-tones";
 import type { ChildTone } from "@/pages/prototype/accounts-staff/lib/child-tones";

@@ -1,7 +1,7 @@
 // The API's read-time rules, mirrored for the mock: Expired, Time off
 // clashes, a Booking's sort-out reasons, and which list a request sits
 // in. Business time is naive wall-clock strings, so plain string order.
-import { NOW, TODAY } from "@/pages/prototype/shell-kit/kit/mock-data";
+import { NOW, TODAY } from "@/pages/prototype/shared/mock-data";
 import type {
   BookingDetail,
   BookingSummary,

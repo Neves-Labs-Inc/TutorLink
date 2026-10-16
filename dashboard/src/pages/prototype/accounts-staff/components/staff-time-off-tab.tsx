@@ -4,9 +4,9 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronRight, Plane, Plus } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { EmptyState } from "@/pages/prototype/shell-kit/kit/states/states";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { EmptyState } from "@/components/kit/states/states";
 import AddTimeOffSheet from "@/pages/prototype/accounts-staff/components/add-time-off-sheet";
 import TimeOffSheet from "@/pages/prototype/accounts-staff/components/time-off-sheet";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";

@@ -11,9 +11,9 @@ import {
   Phone,
   ShieldCheck,
 } from "lucide-react";
-import { cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
+import { cn, EYEBROW } from "@/components/kit/tokens";
+import { Button } from "@/components/kit/components/button";
+import { DetailRow } from "@/components/kit/components/detail";
 import SetupChecklist from "@/pages/prototype/accounts-staff/components/setup-checklist";
 import SubjectsSheet from "@/pages/prototype/accounts-staff/components/subjects-sheet";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";

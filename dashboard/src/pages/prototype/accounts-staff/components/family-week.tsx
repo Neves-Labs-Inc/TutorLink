@@ -4,9 +4,9 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { Button, IconButton } from "@/pages/prototype/shell-kit/kit/components/button";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
+import { Button, IconButton } from "@/components/kit/components/button";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import BookingBlock from "@/pages/prototype/accounts-staff/components/booking-block";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import { DOT_CLASSES } from "@/pages/prototype/accounts-staff/lib/child-tones";

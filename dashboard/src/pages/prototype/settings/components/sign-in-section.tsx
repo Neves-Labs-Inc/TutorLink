@@ -3,7 +3,7 @@
 // and a bad value locks Staff out.
 import type { ReactNode } from "react";
 import { TriangleAlert } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 import SectionCard from "@/pages/prototype/settings/components/section-card";
 import { bindField } from "@/pages/prototype/settings/lib/bind-field";
 import FieldFrame from "@/pages/prototype/settings/components/field-frame";

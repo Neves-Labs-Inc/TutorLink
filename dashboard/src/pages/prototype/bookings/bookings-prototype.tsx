@@ -15,8 +15,8 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import KitRoot from "@/pages/prototype/shell-kit/kit/kit-root";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import KitRoot from "@/components/kit/kit-root";
+import type { Theme } from "@/components/kit/tokens";
 import BookingsPage from "@/pages/prototype/bookings/components/bookings-page";
 import type {
   DataState,

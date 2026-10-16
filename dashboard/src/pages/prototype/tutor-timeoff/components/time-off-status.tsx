@@ -1,8 +1,8 @@
 // Time off status as a badge: word + dot, never colour alone.
 import type { ReactNode } from "react";
 import { Hourglass } from "lucide-react";
-import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import type { Tone } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Badge } from "@/components/kit/components/badges";
+import type { Tone } from "@/components/kit/tokens";
 import { TIME_OFF_STATUS_LABEL } from "@/pages/prototype/tutor-timeoff/lib/labels";
 import type { ExceptionReadStatus } from "@/pages/prototype/tutor-timeoff/types/api";
 

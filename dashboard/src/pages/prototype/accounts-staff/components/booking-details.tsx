@@ -3,11 +3,11 @@
 // Completed) belong to the Bookings prototype.
 import type { ReactNode } from "react";
 import { BookOpen, CalendarDays, ExternalLink, MapPin, User } from "lucide-react";
-import { Avatar, BookingStatusBadge, KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Avatar, BookingStatusBadge, KindBadge } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { DetailRow } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import {
   formatGrade,
   formatWeekdayDate,

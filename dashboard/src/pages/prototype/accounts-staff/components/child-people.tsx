@@ -3,13 +3,13 @@
 // Read-only here; Homes are managed on Guardian details.
 import type { ReactNode } from "react";
 import { Building2, ChevronRight, MapPin } from "lucide-react";
-import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
+import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
 import {
   ArchivedBadge,
   Avatar,
   RemindersBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
+} from "@/components/kit/components/badges";
+import { TextLink } from "@/components/kit/components/button";
 import {
   formatPhone,
   getLanguageLabel,

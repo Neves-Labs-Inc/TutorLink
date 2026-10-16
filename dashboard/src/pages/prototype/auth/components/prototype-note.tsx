@@ -2,7 +2,7 @@
 // placeholder for an open flow question ("?"); `note` explains a choice.
 import type { ReactNode } from "react";
 import { FlaskConical } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 
 type PrototypeNoteProps = {
   kind?: "note" | "question";

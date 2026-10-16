@@ -15,10 +15,10 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PrototypeSwitcher } from "@/components/shared/PrototypeSwitcher";
 import type { SwitcherOption } from "@/components/shared/PrototypeSwitcher";
-import KitRoot from "@/pages/prototype/shell-kit/kit/kit-root";
-import { getNav } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import type { NavId } from "@/pages/prototype/shell-kit/kit/shell/nav";
-import type { Theme } from "@/pages/prototype/shell-kit/kit/tokens";
+import KitRoot from "@/components/kit/kit-root";
+import { getNav } from "@/components/kit/shell/nav";
+import type { NavId } from "@/components/kit/shell/nav";
+import type { Theme } from "@/components/kit/tokens";
 import ChatsSeeAll from "@/pages/prototype/home/components/chats-see-all";
 import ElsewhereScreen from "@/pages/prototype/home/components/elsewhere-screen";
 import type { Elsewhere } from "@/pages/prototype/home/components/elsewhere-screen";
@@ -172,7 +172,7 @@ function HomeApp({ role, state }: HomeAppProps): ReactNode {
       return;
     }
     const label =
-      getNav(role).find((item) => item.id === id)?.label ?? "Your profile";
+      getNav(role, { hasOfficeTimeOff: true }).find((item) => item.id === id)?.label ?? "Your profile";
     setElsewhereId(id);
     setElsewhere({
       title: label,

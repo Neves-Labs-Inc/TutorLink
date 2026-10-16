@@ -6,12 +6,12 @@
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { CalendarX2 } from "lucide-react";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { SwitchField } from "@/pages/prototype/shell-kit/kit/components/choices";
-import { Combobox } from "@/pages/prototype/shell-kit/kit/components/combobox";
-import { TextAreaField, TextField } from "@/pages/prototype/shell-kit/kit/components/fields";
-import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
-import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
+import { Button } from "@/components/kit/components/button";
+import { SwitchField } from "@/components/kit/components/choices";
+import { Combobox } from "@/components/kit/components/combobox";
+import { TextAreaField, TextField } from "@/components/kit/components/fields";
+import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
+import { useToast } from "@/components/kit/overlays/use-toast";
 import { getFirstName, ROLE_LABEL } from "@/pages/prototype/tutor-timeoff/lib/labels";
 import { TODAY } from "@/pages/prototype/tutor-timeoff/lib/rules";
 import type { WriteResult } from "@/pages/prototype/tutor-timeoff/hooks/use-area-store";

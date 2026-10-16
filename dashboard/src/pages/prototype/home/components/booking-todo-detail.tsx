@@ -22,11 +22,11 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Badge, KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { CARD_TITLE, cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Badge, KindBadge } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { DetailRow } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { CARD_TITLE, cn } from "@/components/kit/tokens";
 import type { TodoActions } from "@/pages/prototype/home/hooks/use-todo-actions";
 import {
   formatClock,

@@ -1,7 +1,7 @@
 // One kit pastel per Child in a family, in the family's Child order, so
 // a week's Bookings tell the Children apart. Pink comes last because the
 // kit already uses it for Evaluation.
-import type { Tone } from "@/pages/prototype/shell-kit/kit/tokens";
+import type { Tone } from "@/components/kit/tokens";
 
 export type ChildTone = Extract<Tone, "primary" | "green" | "yellow" | "pink">;
 

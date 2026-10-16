@@ -4,7 +4,8 @@
 import { useId, useState } from "react";
 import type { InputHTMLAttributes, ReactNode } from "react";
 import { CircleAlert, Eye, EyeOff } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
+import { getControlClasses } from "@/components/kit/lib/control-classes";
 
 type PasswordFieldProps = Omit<
   InputHTMLAttributes<HTMLInputElement>,
@@ -44,10 +45,8 @@ export default function PasswordField({
           aria-invalid={error ? true : undefined}
           aria-describedby={message ? messageId : undefined}
           className={cn(
-            "h-11 w-full rounded-full border bg-(--tl-surface) pr-[92px] pl-4 text-[15px] text-(--tl-ink) transition-colors duration-150 placeholder:text-(--tl-muted) disabled:cursor-not-allowed disabled:border-(--tl-border) disabled:bg-(--tl-surface-sunk) disabled:text-(--tl-muted)",
-            error
-              ? "border-(--tl-danger)"
-              : "border-(--tl-field-border) hover:border-(--tl-primary)",
+            getControlClasses(Boolean(error)),
+            "h-11 rounded-full pr-[92px] pl-4",
             className,
           )}
           {...rest}

@@ -2,7 +2,7 @@
 // picker and a typed code. Lives in the email editor.
 import type { ReactNode } from "react";
 import { Check } from "lucide-react";
-import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { cn } from "@/components/kit/tokens";
 import FieldFrame from "@/pages/prototype/settings/components/field-frame";
 import { getControlClasses } from "@/pages/prototype/settings/lib/control-classes";
 import {

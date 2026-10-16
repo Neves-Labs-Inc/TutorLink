@@ -3,12 +3,12 @@
 // desktop, a page pushed in from the right on phone (kit fork A).
 import type { ReactNode } from "react";
 import { CalendarDays, CalendarX2, Check, Clock, MessageSquareText, X } from "lucide-react";
-import { Avatar, TimeOffBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
-import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
-import { DetailRow } from "@/pages/prototype/shell-kit/kit/components/detail";
-import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
-import { pluralize } from "@/pages/prototype/shell-kit/kit/format";
-import { cn, CARD_TITLE } from "@/pages/prototype/shell-kit/kit/tokens";
+import { Avatar, TimeOffBadge } from "@/components/kit/components/badges";
+import { Button } from "@/components/kit/components/button";
+import { DetailRow } from "@/components/kit/components/detail";
+import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
+import { pluralize } from "@/components/kit/format";
+import { cn, CARD_TITLE } from "@/components/kit/tokens";
 import {
   formatClock,
   formatDate,

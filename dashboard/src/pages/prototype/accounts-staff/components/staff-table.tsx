@@ -8,9 +8,9 @@ import {
   Avatar,
   Badge,
   SignInBadge,
-} from "@/pages/prototype/shell-kit/kit/components/badges";
-import { DataTable } from "@/pages/prototype/shell-kit/kit/components/data-table";
-import type { Column } from "@/pages/prototype/shell-kit/kit/components/data-table";
+} from "@/components/kit/components/badges";
+import { DataTable } from "@/components/kit/components/data-table";
+import type { Column } from "@/components/kit/components/data-table";
 import {
   getRoleLabel,
   getSignInLabel,

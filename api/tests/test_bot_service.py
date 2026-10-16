@@ -316,7 +316,7 @@ def frozen_clock(freeze_business_clock: Callable[[datetime.datetime], None]) -> 
 
 @pytest.fixture
 def cutoff(db: Session) -> Callable[[int], None]:
-    """`cancellation_cutoff_hours`, seeded at migration 0004's value and rewritable per test."""
+    """`cancellation_cutoff_hours`, seeded at migration 0047's value and rewritable per test."""
 
     def rewrite(hours: int) -> None:
         row = db.execute(
@@ -339,7 +339,7 @@ def cutoff(db: Session) -> Callable[[int], None]:
 
         db.flush()
 
-    rewrite(24)
+    rewrite(6)
 
     return rewrite
 
@@ -2114,6 +2114,8 @@ def test_cancelling_inside_the_cutoff_is_declined_and_is_not_flagged(
     is no fourth, and putting routine late cancellations in the flag queue would bury the flags
     that mean the bot actually needs help.
     """
+    # Tomorrow at nine is 21 hours away, inside a 24-hour cutoff and outside the default 6.
+    cutoff(24)
     booking = _make_booking(db, world, client, date=TOMORROW, start=NINE)
     chat.say("hi")
     chat.say("cancel please", intent=BotIntent.CANCEL)
@@ -2150,6 +2152,8 @@ def test_the_cutoff_is_read_from_settings_rather_than_hardcoded(
 def test_rescheduling_inside_the_cutoff_is_declined_and_is_not_flagged(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
 ) -> None:
+    # Tomorrow at nine is 21 hours away, inside a 24-hour cutoff and outside the default 6.
+    cutoff(24)
     booking = _make_booking(db, world, client, date=TOMORROW, start=NINE)
     chat.say("hi")
     chat.say("move it", intent=BotIntent.RESCHEDULE)

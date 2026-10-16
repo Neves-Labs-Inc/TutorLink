@@ -27,7 +27,8 @@ from app.services.sort_out_service import sort_out_staff_limit
 @dataclass(frozen=True, slots=True)
 class Counts:
     needs_attention: int
-    # None for a caller who can't read every Staff member's Time off (a Manager).
+    # None for a Manager: they can read Time off but never decide it, so To do doesn't show
+    # them requests waiting for an Admin.
     time_off_pending: int | None
     children_awaiting_evaluation: int
     children_needing_tutor: int

@@ -399,7 +399,7 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 | session_gap_minutes | 30 | yes |
 | booking_lookahead_days | 90 | no |
 | min_booking_lead_hours | 0 | no |
-| cancellation_cutoff_hours | 24 | no |
+| cancellation_cutoff_hours | 6 | no |
 | chat_retention_days | 365 | no |
 | login_rate_limit_ip_max_attempts | 20 | no |
 | login_rate_limit_ip_window_seconds | 900 | no |

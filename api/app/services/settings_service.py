@@ -61,10 +61,12 @@ it distinguishable from a purge that ran and found nothing. The maximum is the s
 argument as above, reached through `timedelta(days=...)` in the CLI instead of a request handler.
 
 **Only the keys below are bounded**: a bound is a fact about how a value is used, and every other
-row here is used somewhere this module has no business guessing about — the four
-`login_rate_limit_*` rows still accept a negative, which is #17/#18's and not this table's. The
-keys are spelled out rather than imported from the modules that own them, because
-`scheduling_service` and `retention_service` both import this one.
+row here is used somewhere this module has no business guessing about. The eight rate-limit
+rows and `cancellation_cutoff_hours` are bounded too: an attempt count refuses a negative but
+keeps `0`, the documented kill switch, and has no maximum; a window accepts a minute to 31 days;
+the cutoff accepts 0 to a year. Those maxima are the `timedelta` overflow argument above, not
+product limits. The keys are spelled out rather than imported from the modules that own
+them, because `scheduling_service` and `retention_service` both import this one.
 
 **Which rows a caller may see is decided here, from `actor_role`** (D-010), rather than by the
 caller handing in a precomputed flag. One place answers "what may this role see", and it is
@@ -168,6 +170,8 @@ class _Bounds:
         )
 
 
+_RATE_LIMIT_WINDOW_BOUNDS = _Bounds(minimum=60, maximum=31 * 24 * 60 * 60)
+
 _VALUE_BOUNDS = {
     # A slot length of zero emits no grid at all; a day is the longest slot that can fit inside
     # one `tutor_availability` range, all of which live within a single day.
@@ -197,6 +201,23 @@ _VALUE_BOUNDS = {
     # outside either range never matches the tick, so reminders would silently stop.
     "reminder_weekday": _Bounds(minimum=1, maximum=7),
     "reminder_hour": _Bounds(minimum=0, maximum=23),
+    # Zero lets a Guardian change or cancel up to the session's start. Negative would let them
+    # cancel a session that already started. The year cap is no product limit; it only keeps
+    # the bot's `timedelta(hours=...)` from overflowing on every change or cancel turn.
+    "cancellation_cutoff_hours": _Bounds(minimum=0, maximum=24 * 365),
+    # Zero is the documented kill switch for a bucket (`RateLimitPolicy.enabled`), so it stays.
+    # Negative disables the bucket just the same while reading as a mistake.
+    "login_rate_limit_ip_max_attempts": _Bounds(minimum=0, maximum=None),
+    "login_rate_limit_email_max_attempts": _Bounds(minimum=0, maximum=None),
+    "forgot_password_rate_limit_ip_max_attempts": _Bounds(minimum=0, maximum=None),
+    "forgot_password_rate_limit_email_max_attempts": _Bounds(minimum=0, maximum=None),
+    # Under a minute the sliding window forgets an attempt almost as soon as it is recorded, so
+    # the bucket throttles nothing; zero or negative prunes every row on each touch. The 31-day
+    # cap only keeps the limiter's `timedelta(seconds=...)` from overflowing on every sign-in.
+    "login_rate_limit_ip_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
+    "login_rate_limit_email_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
+    "forgot_password_rate_limit_ip_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
+    "forgot_password_rate_limit_email_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
 }
 
 

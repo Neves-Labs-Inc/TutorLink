@@ -96,7 +96,7 @@ def client(db: Session) -> ClientWorld:
 
 @pytest.fixture
 def cutoff(set_cutoff: Callable[[int], None]) -> None:
-    set_cutoff(24)
+    set_cutoff(6)
 
 
 @pytest.fixture

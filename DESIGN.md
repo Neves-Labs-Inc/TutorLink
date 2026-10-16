@@ -418,8 +418,9 @@ Every surface and every async action designs all four: loading, empty, error, su
 - Background refetches (Home every 60s and on focus) keep content and show "Updated 1:10 PM".
 
 ### 12.2 Empty
-- Page or list: `EmptyState`: 64px tinted icon disc, Lato light title (no full stop), one or two
-  sentences saying why and where things will appear, optional action. Pick the tone by area
+- Page or list: `EmptyState`: 64px tinted icon disc, Lato light title (no full stop) and at most
+  one plain sentence. No teaching copy and no action button (#246); the page's own header actions
+  stay where they are. Pick the tone by area
   (primary default, pink for Evaluation, green for availability).
 - Three copy cases: nothing yet ("No chats yet"), search/filter ("No bookings match" + "Try another
   name, or clear the filters…"), queue done ("Nothing needs attention", "All clear").
@@ -520,7 +521,9 @@ CSS and the Web Animations API only; animate `transform` and `opacity` (colour f
 - Buttons are verb + noun and name the act: "Cancel booking", "Add guardian", "Mark Evaluated", "Approve time off". Confirm pairs name both sides: "Cancel booking" / "Keep booking", "Decline time off" / "Keep it pending".
 - Toasts say what happened, then what's next: "Approved Marco's time off. 2 Bookings to change, now in To do."
 - Errors say what failed and what to do, never blame: title "Couldn’t load {thing}", body "Check your connection and try again." One pattern in every area.
-- Empty states say why it's empty and where things will show up.
+- Empty states are a plain message: what isn't there, nothing more.
+- Help is inline only: hints under tricky fields and "?" tooltips on rules; no Help page. Each role
+  sees a short welcome card on its landing page once, until dismissed. Staff copy is English only.
 - Counts in words where space allows ("See all 7", "2 Bookings in these dates"); `pluralize()` from `kit/format.ts`.
 - Dates and times: business time zone (America/New_York, fixed), US format: "Thu, Oct 15", "3:30 PM", "Today", "Tomorrow" (`kit/format.ts`). First names in tight spaces (calendar blocks, badges), full names in titles.
 - Spanish and English are Guardian languages for the bot; dashboard copy is English.

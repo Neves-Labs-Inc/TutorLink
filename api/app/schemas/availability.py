@@ -14,7 +14,7 @@ import datetime
 import uuid
 from typing import Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.enums import AvailabilityMode
 
@@ -42,6 +42,34 @@ class AvailabilityCreate(BaseModel):
             raise ValueError("end_time must be after start_time")
 
         return self
+
+
+# One slot per hour of every day: far above any real week, low enough that one request can't
+# flood the table.
+MAX_WEEK_SLOTS = 7 * 24
+
+
+class AvailabilityWeekSlot(AvailabilityCreate):
+    """`POST`'s body, held to naive whole-minute times. Sub-minute times would let near-identical
+    slots slip past the (day, start) key, and a zone-marked time neither compares with a naive
+    one nor matches a stored slot. `POST`/`PATCH` keep accepting both as they always have."""
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _naive_whole_minute(cls, value: datetime.time) -> datetime.time:
+        if value.tzinfo is not None:
+            raise ValueError("must not carry a time zone")
+
+        if value.second or value.microsecond:
+            raise ValueError("must be a whole minute")
+
+        return value
+
+
+class AvailabilityWeek(BaseModel):
+    """The whole active week `PUT` replaces."""
+
+    slots: list[AvailabilityWeekSlot] = Field(max_length=MAX_WEEK_SLOTS)
 
 
 class AvailabilityUpdate(BaseModel):

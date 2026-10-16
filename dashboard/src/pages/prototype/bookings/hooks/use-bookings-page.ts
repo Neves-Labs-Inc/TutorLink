@@ -51,7 +51,10 @@ export type Screen =
   | "new"
   | "new-eval"
   | "change"
-  | "cancel";
+  | "cancel"
+  | "new-assigned"
+  | "new-not-assigned"
+  | "new-no-tutors";
 
 type FormOpen = { start: FormStart; editingId: string | null };
 
@@ -61,6 +64,7 @@ type FilterKey = "kind" | "staff" | "status";
 const CLASH_BOOKING_ID = "bk-33";
 const UPCOMING_BOOKING_ID = "bk-43";
 const WAITING_CHILD_ID = "child-c4";
+const SOFIA_ID = "child-c1";
 
 function getNewStart(kind: BookingKind, childId: string | null): FormStart {
   return { kind, childId, date: addDays(TODAY, 1), time: null, userId: null };
@@ -70,6 +74,17 @@ function getInitialForm(screen: Screen): FormOpen | null {
   if (screen === "new") return { start: getNewStart("regular", null), editingId: null };
   if (screen === "new-eval") {
     return { start: getNewStart("evaluation", WAITING_CHILD_ID), editingId: null };
+  }
+  // Assigned Tutors (TutorLink#243): Sofia (Ana and Marco assigned),
+  // Sofia with Priya picked, and Valentina, who has none.
+  if (screen === "new-assigned") {
+    return { start: getNewStart("regular", SOFIA_ID), editingId: null };
+  }
+  if (screen === "new-not-assigned") {
+    return { start: { ...getNewStart("regular", SOFIA_ID), userId: "user-priya" }, editingId: null };
+  }
+  if (screen === "new-no-tutors") {
+    return { start: getNewStart("regular", "child-c12"), editingId: null };
   }
   if (screen === "change") {
     return { start: getNewStart("regular", null), editingId: CLASH_BOOKING_ID };

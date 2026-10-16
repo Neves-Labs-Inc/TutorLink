@@ -25,7 +25,12 @@ export const SORT_OUT_LABEL: Record<SortOutReason, string> = {
 // whose Evaluation isn't booked yet.
 export type BookingTodo =
   | { kind: "booking"; id: string; booking: BookingSummary }
+  | { kind: "needs-tutor"; id: string; child: ChildSummary }
   | { kind: "evaluation"; id: string; child: ChildSummary };
+
+// The rows the To do details slide-over handles; a Needs a Tutor row
+// opens Child details instead.
+export type DeskTodo = Exclude<BookingTodo, { kind: "needs-tutor" }>;
 
 const REASON_RANK: Record<SortOutReason, number> = {
   time_off_clash: 0,
@@ -38,11 +43,14 @@ function getBookingRank(booking: BookingSummary): number {
   return REASON_RANK[reason];
 }
 
-// Upcoming Bookings to change first (soonest first), then past ones to
-// mark (oldest first), then Evaluations to book (longest waiting first).
+// Upcoming Bookings to change first (soonest first), then Children who
+// need a Tutor (the bot can't book them; where they rank is an open
+// question), then past Bookings to mark (oldest first), then Evaluations
+// to book (longest waiting first).
 export function sortBookingsTodo(
   bookings: BookingSummary[],
   children: ChildSummary[],
+  needingTutor: ChildSummary[] = [],
 ): BookingTodo[] {
   const byRankThenDate = [...bookings].sort(
     (a, b) =>
@@ -51,9 +59,22 @@ export function sortBookingsTodo(
   );
   const oldestFirst = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
   return [
-    ...byRankThenDate.map((booking): BookingTodo => ({ kind: "booking", id: booking.id, booking })),
+    ...byRankThenDate
+      .filter((booking) => getBookingRank(booking) === 0)
+      .map((booking): BookingTodo => ({ kind: "booking", id: booking.id, booking })),
+    ...needingTutor.map((child): BookingTodo => ({ kind: "needs-tutor", id: child.id, child })),
+    ...byRankThenDate
+      .filter((booking) => getBookingRank(booking) !== 0)
+      .map((booking): BookingTodo => ({ kind: "booking", id: booking.id, booking })),
     ...oldestFirst.map((child): BookingTodo => ({ kind: "evaluation", id: child.id, child })),
   ];
+}
+
+// "Science Grade 3 · Reading Kindergarten"
+export function formatLevels(child: ChildSummary): string {
+  return child.levels
+    .map((level) => `${level.name} ${level.level === 0 ? "Kindergarten" : `Grade ${level.level}`}`)
+    .join(" · ");
 }
 
 export function formatWaiting(child: ChildSummary): string {

@@ -151,6 +151,16 @@ export type ChildSummary = {
   levels: ChildLevelRef[];
   evaluated: EvaluatedRead | null;
   created_at: string;
+  // PROPOSED (TutorLink#242, API gaps #228). Archiving a Tutor, or
+  // making them an Admin, removes them.
+  assigned_tutors: StaffRef[];
+};
+
+// PROPOSED: a Tutor or Manager who can be assigned, with the Subjects
+// they teach (GET /api/staff?assignable=true, or StaffRead plus
+// TutorSubjectRead.max_grade_level).
+export type AssignableStaff = StaffRef & {
+  subjects: { subject_id: string; name: string; max_grade_level: number }[];
 };
 
 export type BookingPage = Page<BookingSummary> & {

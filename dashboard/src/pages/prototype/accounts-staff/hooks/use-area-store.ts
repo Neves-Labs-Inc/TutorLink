@@ -62,6 +62,11 @@ export type NewTimeOff = {
   reason: string | null;
 };
 
+export type EvaluationInput = {
+  levels: { subject_id: string; level: number }[];
+  staff_ids: string[];
+};
+
 export type AreaStore = {
   db: Database;
   actor: NamedRef;
@@ -69,6 +74,15 @@ export type AreaStore = {
   setChildArchived: (id: string, isArchived: boolean) => number;
   setEvaluated: (id: string, isEvaluated: boolean) => void;
   setLevel: (childId: string, subjectId: string, level: number | null) => void;
+  // PROPOSED PUT /api/children/{id}/assigned-tutors {staff_ids}.
+  setAssignedTutors: (childId: string, staffIds: string[]) => void;
+  // PROPOSED PUT /api/staff/{id}/children {child_ids}: the same links,
+  // written from the Staff member's side.
+  setAssignedChildren: (staffId: string, childIds: string[]) => void;
+  // PROPOSED POST /api/children/{id}/evaluated {levels, staff_ids}: one
+  // write for the levels, the mark and the first Assigned Tutors.
+  // Returns the Child as it was, for Undo.
+  markEvaluated: (childId: string, input: EvaluationInput) => ChildRow | null;
   addGuardian: (input: NewGuardian) => string;
   addChild: (input: NewChild) => string;
   updateGuardian: (id: string, patch: Partial<GuardianRow>) => void;
@@ -110,6 +124,14 @@ function replaceById<T extends { id: string }>(
   patch: Partial<T>,
 ): T[] {
   return rows.map((row) => (row.id === id ? { ...row, ...patch } : row));
+}
+
+function removeAssignments(children: ChildRow[], staffId: string): ChildRow[] {
+  return children.map((child) =>
+    child.assigned_tutor_ids.includes(staffId)
+      ? { ...child, assigned_tutor_ids: child.assigned_tutor_ids.filter((id) => id !== staffId) }
+      : child,
+  );
 }
 
 export const SETUP_STAFF_ID = "u-rafael";
@@ -194,6 +216,43 @@ export function useAreaStoreState(
         return { ...child, levels };
       }),
     }));
+  }
+
+  function setAssignedChildren(staffId: string, childIds: string[]): void {
+    patch((current) => ({
+      children: current.children.map((child) => {
+        const isLinked = child.assigned_tutor_ids.includes(staffId);
+        const shouldLink = childIds.includes(child.id);
+        if (isLinked === shouldLink) return child;
+        return {
+          ...child,
+          assigned_tutor_ids: shouldLink
+            ? [...child.assigned_tutor_ids, staffId]
+            : child.assigned_tutor_ids.filter((id) => id !== staffId),
+        };
+      }),
+    }));
+  }
+
+  function markEvaluated(childId: string, input: EvaluationInput): ChildRow | null {
+    const before = db.children.find((child) => child.id === childId) ?? null;
+    if (!before) return null;
+    const levels = input.levels.flatMap((item) => {
+      const subject = SUBJECTS.find((entry) => entry.id === item.subject_id);
+      if (!subject) return [];
+      const existing = before.levels.find((entry) => entry.subject_id === subject.id);
+      // An unchanged level keeps who set it.
+      if (existing?.level === item.level) return [existing];
+      return [{ subject_id: subject.id, name: subject.name, archived: false, level: item.level, set_by: actor, updated_at: NOW_ISO }];
+    });
+    patch((current) => ({
+      children: replaceById(current.children, childId, {
+        levels,
+        evaluated: { at: NOW_ISO, by: actor },
+        assigned_tutor_ids: input.staff_ids,
+      }),
+    }));
+    return before;
   }
 
   function setHomeArchived(id: string, isArchived: boolean): boolean {
@@ -309,6 +368,7 @@ export function useAreaStoreState(
       levels: [],
       evaluated: null,
       created_at: NOW_ISO,
+      assigned_tutor_ids: [],
     };
     patch((current) => ({ children: [...current.children, child] }));
     return id;
@@ -331,6 +391,12 @@ export function useAreaStoreState(
         }),
       })),
     setLevel,
+    setAssignedTutors: (childId, staffIds) =>
+      patch((current) => ({
+        children: replaceById(current.children, childId, { assigned_tutor_ids: staffIds }),
+      })),
+    setAssignedChildren,
+    markEvaluated,
     updateGuardian: (id, changes) =>
       patch((current) => ({
         guardians: replaceById(current.guardians, id, changes),
@@ -350,11 +416,18 @@ export function useAreaStoreState(
       patch((current) => ({ homes: replaceById(current.homes, id, changes) })),
     setHomeArchived,
     addStaff,
+    // Becoming an Admin also removes their Assigned Tutor links.
     updateStaff: (id, changes) =>
-      patch((current) => ({ staff: replaceById(current.staff, id, changes) })),
+      patch((current) => ({
+        staff: replaceById(current.staff, id, changes),
+        children: changes.role === "admin" ? removeAssignments(current.children, id) : current.children,
+      })),
+    // Archiving removes their Assigned Tutor links; Restore doesn't bring
+    // them back (Franklin, 2026-10-15).
     setStaffArchived: (id, isArchived) =>
       patch((current) => ({
         staff: replaceById(current.staff, id, { archived: isArchived }),
+        children: isArchived ? removeAssignments(current.children, id) : current.children,
       })),
     sendInvite,
     setSubjects: (id, subjects) =>

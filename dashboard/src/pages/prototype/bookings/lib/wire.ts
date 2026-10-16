@@ -178,6 +178,9 @@ export type ChildSummary = {
   levels: { subject_id: string; name: string; level: number }[];
   evaluated: { at: string; by: NamedRef } | null;
   created_at: string;
+  // PROPOSED (TutorLink#242, API gaps #228): the Child's Assigned Tutors.
+  // Archiving a Tutor removes them.
+  assigned_tutors: StaffRef[];
 };
 
 // schemas/counts.py: GET /api/counts, the nav badges.

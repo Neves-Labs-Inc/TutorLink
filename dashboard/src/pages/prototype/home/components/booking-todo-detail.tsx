@@ -35,7 +35,7 @@ import {
   getSubjectLabel,
   SORT_OUT_LABEL,
 } from "@/pages/prototype/home/lib/labels";
-import type { BookingTodo } from "@/pages/prototype/home/lib/labels";
+import type { DeskTodo } from "@/pages/prototype/home/lib/labels";
 import type {
   BookingSummary,
   ChildSummary,
@@ -66,7 +66,7 @@ const REASON_COPY: Record<SortOutReason, ReasonCopy> = {
 };
 
 type BookingTodoDetailProps = {
-  item: BookingTodo | null;
+  item: DeskTodo | null;
   canKeepClash: boolean;
   actions: TodoActions;
   onClose: () => void;

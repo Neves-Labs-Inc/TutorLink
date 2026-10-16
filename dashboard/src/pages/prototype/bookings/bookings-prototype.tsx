@@ -3,6 +3,7 @@
 // wire shapes (PR #224). Route /prototype/bookings, driven by the
 // floating switcher:
 //   ?screen=list|calendar|day|needs-attention|detail|new|new-eval|change|cancel
+//          |new-assigned|new-not-assigned|new-no-tutors (TutorLink#243)
 //   ?role=admin|manager
 //   ?state=ready|loading|error|empty
 //   ?device=desktop|phone        phone frames the page at 390×844
@@ -36,6 +37,9 @@ const SCREENS: (SwitcherOption & { id: Screen })[] = [
   { id: "detail", label: "Detail (Staff is off)" },
   { id: "new", label: "New booking" },
   { id: "new-eval", label: "Book evaluation" },
+  { id: "new-assigned", label: "New booking · Assigned Tutors first" },
+  { id: "new-not-assigned", label: "New booking · not an Assigned Tutor" },
+  { id: "new-no-tutors", label: "New booking · Child has no Tutors" },
   { id: "change", label: "Change booking" },
   { id: "cancel", label: "Cancel booking" },
 ];

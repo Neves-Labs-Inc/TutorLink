@@ -45,8 +45,12 @@ A Child's first session, arranged by the office, used to assess their Subject le
 _Avoid_: Trial, first lesson, assessment
 
 **Evaluated**:
-A Child marked by an Admin or Manager, once, after their Evaluation session. Only an Evaluated Child can be booked through the bot.
+A Child marked by an Admin or Manager, once, after their Evaluation session. Marking a Child Evaluated sets their Assigned Tutors (at least one). Only an Evaluated Child can be booked through the bot.
 _Avoid_: Graded, assessed
+
+**Assigned Tutors**:
+The Tutors and Managers a Child may be booked with through the bot, set for the Child as a whole (not per Subject) by an Admin or Manager, from the Child or from the Staff member. The bot offers only Assigned Tutors who cover the Child's Subject level; if none of them do, it makes an Office handoff. Admins are never Assigned Tutors. The office may still book anyone, with a warning. A Child left with none, because the last was removed or archived, waits in To do until the office assigns one.
+_Avoid_: Preferred tutor, regular tutor, matched tutor
 
 **Guardian language**:
 English or Spanish. Detected from the Guardian's messages, stored, and used for every message to them, including Booking reminders.
@@ -85,7 +89,7 @@ The people a Booking can be with: Tutors, Admins, and Managers. Also the name of
 _Avoid_: Employee, operator, users, team
 
 **Tutor**:
-A Staff member who teaches sessions. Sees only their own Bookings. Can exist before they can sign in.
+A Staff member who teaches sessions. Sees only their own Bookings, and with each one only the Guardian's name, the Home address and its directions, and the Child notes; never other Guardian or Account details such as phone or email (they reach the Guardian through the office). Can exist before they can sign in.
 _Avoid_: Teacher, instructor
 
 **Location**:
@@ -105,7 +109,7 @@ A Staff member with full dashboard access, including Staff sign-in and Settings.
 _Avoid_: Superuser, owner
 
 **Manager**:
-A Tutor with extra privileges: the same dashboard access as an Admin except Settings and changing Staff (they can view Staff but not add, edit or archive), plus their own Time off, their own Bookings through the Mine filter, and their Availability on their profile. A promoted Tutor: teaches sessions and is offered by the bot like any Tutor, and also takes over chats and runs Evaluation sessions. Does not approve time off.
+A Tutor with extra privileges: the same dashboard access as an Admin except Settings and changing Staff (they can view Staff, including everyone's schedules, Time off and clashes, but not add, edit or archive), plus their own Time off, their own Bookings through the Mine filter, and their Availability on their profile. A promoted Tutor: teaches sessions and is offered by the bot like any Tutor, and also takes over chats and runs Evaluation sessions. Does not approve time off.
 _Avoid_: Supervisor, moderator
 
 **Office**:
@@ -145,7 +149,7 @@ The office's queue on Home, in three groups: Chats that Need attention, Bookings
 _Avoid_: Needs attention (for the whole queue), inbox, tasks, alerts
 
 **Bookings to sort out** (code and API name only):
-Booking work waiting on the office, shown as the Bookings group in To do: Children awaiting evaluation with no Evaluation session booked, and Bookings to sort out (a past pending or confirmed Booking still not marked Completed once its day has ended, one that clashes with approved Time off, even if it was booked knowingly, or an upcoming one whose Staff member is archived). Approving Time off never cancels or refuses clashing Bookings; the Admin is warned and the clashes land here. An Admin may acknowledge a clash to keep the Booking as is, which clears it until the Booking's time or Staff member changes. Each Booking is listed once, with every reason it needs sorting out. The Bookings nav item carries the count of both. The UI never says "To sort out"; its label for this on the Bookings page is still open.
+Booking work waiting on the office, shown as the Bookings group in To do: Children awaiting evaluation with no Evaluation session booked, Evaluated Children with no Assigned Tutors, and Bookings to sort out (a past pending or confirmed Booking still not marked Completed once its day has ended, one that clashes with approved Time off, even if it was booked knowingly, or an upcoming one whose Staff member is archived). Approving Time off never cancels or refuses clashing Bookings; the Admin is warned and the clashes land here. An Admin may acknowledge a clash to keep the Booking as is, which clears it until the Booking's time or Staff member changes. Each Booking is listed once, with every reason it needs sorting out. The Bookings nav item carries the count of both. The UI never says "To sort out"; its label for this on the Bookings page is still open.
 _Avoid_: To sort out (in the UI), alerts
 
 **Home**:
@@ -157,5 +161,5 @@ A Bookings filter for Managers showing only the Bookings they teach. Replaces th
 _Avoid_: Me, My stuff
 
 **Office handoff**:
-The bot passing a request to the office (Admins and Managers) to arrange, as it does for a first session or a subject with no Subject level. Distinct from a Takeover, where an Admin or Manager joins the chat.
+The bot passing a request to the office (Admins and Managers) to arrange, as it does for a first session, a subject with no Subject level, or a subject none of the Child's Assigned Tutors teach. Distinct from a Takeover, where an Admin or Manager joins the chat.
 _Avoid_: Escalation

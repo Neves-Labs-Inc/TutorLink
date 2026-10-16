@@ -170,9 +170,20 @@ function getStaffOptions(fields: Fields): StaffRead[] {
   if (fields.kind === "evaluation") {
     return active.filter((staff) => staff.role === "admin" || staff.role === "manager");
   }
-  const teaches = (staff: StaffRead): boolean =>
-    staff.subjects.some((subject) => subject.id === fields.subjectId);
-  return [...active.filter(teaches), ...active.filter((staff) => !teaches(staff))];
+  // The Child's Assigned Tutors first (TutorLink#242), then everyone
+  // who teaches the Subject, then the rest. The office may book anyone.
+  const assigned = getAssignedIds(fields.childId);
+  const rank = (staff: StaffRead): number => {
+    if (assigned.includes(staff.id)) return 0;
+    return staff.subjects.some((subject) => subject.id === fields.subjectId) ? 1 : 2;
+  };
+  return [...active].sort((a, b) => rank(a) - rank(b));
+}
+
+// The Assigned Tutors of a Child, by Staff id.
+export function getAssignedIds(childId: string | null): string[] {
+  const child = CHILDREN.find((item) => item.id === childId);
+  return (child?.assigned_tutors ?? []).map((tutor) => tutor.id);
 }
 
 function getMissing(fields: Fields): FieldName[] {

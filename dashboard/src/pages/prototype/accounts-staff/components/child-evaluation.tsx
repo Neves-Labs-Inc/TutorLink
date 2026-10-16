@@ -16,23 +16,15 @@ import {
 } from "@/pages/prototype/accounts-staff/lib/labels";
 import type { ChildDetail } from "@/pages/prototype/accounts-staff/types/api";
 
-type ChildEvaluationProps = { child: ChildDetail };
+type ChildEvaluationProps = { child: ChildDetail; onMarkEvaluated: () => void };
 
-export default function ChildEvaluation({ child }: ChildEvaluationProps): ReactNode {
-  const { setEvaluated, setLevel } = useArea();
+// Mark Evaluated opens a sheet that also sets the first Assigned Tutors
+// (TutorLink#242).
+export default function ChildEvaluation({ child, onMarkEvaluated }: ChildEvaluationProps): ReactNode {
+  const { setLevel } = useArea();
   const { showToast } = useToast();
   const [isLevelOpen, setIsLevelOpen] = useState(false);
   const isLocked = child.archived;
-
-  function handleMarkEvaluated(): void {
-    setEvaluated(child.id, true);
-    showToast({
-      tone: "success",
-      message: `${child.name} marked Evaluated. The bot can book them now.`,
-      actionLabel: "Undo",
-      onAction: () => setEvaluated(child.id, false),
-    });
-  }
 
   return (
     <>
@@ -75,7 +67,7 @@ export default function ChildEvaluation({ child }: ChildEvaluationProps): ReactN
             <>
               <p className="text-[14px] text-(--tl-muted)">The bot can’t book them until they’re Evaluated.</p>
               {!isLocked && (
-                <Button icon={BadgeCheck} onClick={handleMarkEvaluated}>
+                <Button icon={BadgeCheck} onClick={onMarkEvaluated}>
                   Mark Evaluated
                 </Button>
               )}

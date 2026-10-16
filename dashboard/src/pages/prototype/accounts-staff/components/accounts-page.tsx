@@ -36,18 +36,27 @@ const START: Partial<Record<Screen, { family: string; stack: AccountEntry[] }>> 
   family: { family: "g-laura", stack: [] },
   child: { family: "g-laura", stack: [{ kind: "child", id: "c-sofia" }] },
   guardian: { family: "g-monica", stack: [{ kind: "guardian", id: "g-monica" }] },
+  // Assigned Tutors (TutorLink#243).
+  "child-tutors-edit": { family: "g-laura", stack: [{ kind: "child", id: "c-sofia", sheet: "tutors" }] },
+  "child-no-tutor": { family: "g-julia", stack: [{ kind: "child", id: "c-emma" }] },
+  "mark-evaluated": { family: "g-monica", stack: [{ kind: "child", id: "c-tomas", sheet: "mark-evaluated" }] },
+  "mark-evaluated-admin": { family: "g-elena", stack: [{ kind: "child", id: "c-noah", sheet: "mark-evaluated" }] },
 };
 
 type AccountsPageProps = {
   phase: Phase;
   onRetry: () => void;
   startScreen: Screen;
+  // Opened from Staff details: the Child's family, Child details on top.
+  startChildId?: string | null;
 };
 
-export default function AccountsPage({ phase, onRetry, startScreen }: AccountsPageProps): ReactNode {
+export default function AccountsPage({ phase, onRetry, startScreen, startChildId }: AccountsPageProps): ReactNode {
   const { db, addChild } = useArea();
   const list = useFamiliesList();
-  const start = START[startScreen];
+  const start = startChildId
+    ? { family: startChildId, stack: [{ kind: "child" as const, id: startChildId }] }
+    : START[startScreen];
   const [familyId, setFamilyId] = useState<string | null>(start?.family ?? null);
   const [stack, setStack] = useState<AccountEntry[]>(start?.stack ?? []);
   const [adding, setAdding] = useState<"child" | "guardian" | null>(

@@ -2,13 +2,14 @@
 // every action lives; there are no buttons on the row (Franklin,
 // 2026-10-15, same rule as Time off).
 import type { ReactNode } from "react";
-import { ChevronRight, Sparkles } from "lucide-react";
+import { ChevronRight, Sparkles, UserRoundX } from "lucide-react";
 import { Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
 import type { Tone } from "@/pages/prototype/shell-kit/kit/tokens";
 import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
 import {
   formatClock,
   formatDate,
+  formatLevels,
   formatWaiting,
   SORT_OUT_LABEL,
 } from "@/pages/prototype/home/lib/labels";
@@ -25,7 +26,17 @@ type RowCopy = { title: string; badge: ReactNode; detail: string };
 
 function getCopy(item: BookingTodo): RowCopy {
   let copy: RowCopy;
-  if (item.kind === "evaluation") {
+  if (item.kind === "needs-tutor") {
+    copy = {
+      title: item.child.name,
+      badge: (
+        <Badge tone="warning" icon={UserRoundX}>
+          Needs a Tutor
+        </Badge>
+      ),
+      detail: `No Assigned Tutors · ${formatLevels(item.child)}`,
+    };
+  } else if (item.kind === "evaluation") {
     const guardian = item.child.guardians[0]?.name ?? "No Guardian";
     copy = {
       title: item.child.name,
@@ -55,6 +66,16 @@ function getCopy(item: BookingTodo): RowCopy {
 type DateChipProps = { item: BookingTodo };
 
 function DateChip({ item }: DateChipProps): ReactNode {
+  if (item.kind === "needs-tutor") {
+    return (
+      <span
+        aria-hidden
+        className="flex size-11 shrink-0 items-center justify-center rounded-[14px] bg-(--tl-warning-tint) text-(--tl-warning)"
+      >
+        <UserRoundX className="size-[18px]" />
+      </span>
+    );
+  }
   const isEvaluation = item.kind === "evaluation";
   return (
     <span

@@ -31,6 +31,7 @@ import type {
 
 const DETAIL_START: Partial<Record<Screen, string>> = {
   "staff-detail": "u-marco",
+  "staff-children": "u-marco",
   "staff-setup": SETUP_STAFF_ID,
 };
 
@@ -39,6 +40,7 @@ type StaffPageProps = {
   phase: Phase;
   onRetry: () => void;
   startScreen: Screen;
+  onOpenChild: (childId: string) => void;
 };
 
 export default function StaffPage({
@@ -46,6 +48,7 @@ export default function StaffPage({
   phase,
   onRetry,
   startScreen,
+  onOpenChild,
 }: StaffPageProps): ReactNode {
   const isAdmin = role === "admin";
   const list = useStaffList(startScreen === "staff-archived" ? "archived" : "current");
@@ -156,6 +159,8 @@ export default function StaffPage({
           key={openId}
           staffId={openId}
           role={role}
+          initialTab={startScreen === "staff-children" && openId === DETAIL_START["staff-children"] ? "children" : "overview"}
+          onOpenChild={onOpenChild}
           backLabel={isArchivedTab ? "Archived" : "Staff"}
           onClose={() => setOpenId(null)}
         />

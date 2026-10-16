@@ -43,8 +43,15 @@ export default function AccountDetails({
       <ChildDetails
         key={`child-${child.id}`}
         child={child}
+        initialSheet={top.sheet}
         {...shared}
-        onOpenGuardian={(id) => onChange([...stack, { kind: "guardian", id }])}
+        // A switcher's starting sheet opens once, not again on Back.
+        onOpenGuardian={(id) =>
+          onChange([
+            ...stack.map((entry) => ({ kind: entry.kind, id: entry.id })),
+            { kind: "guardian", id },
+          ])
+        }
       />
     );
   } else {

@@ -6,10 +6,14 @@ import type {
 } from "@/pages/prototype/accounts-staff/lib/mock-data";
 import { TODAY } from "@/pages/prototype/accounts-staff/lib/mock-data";
 import type {
+  AssignedChildRead,
+  AssignedTutorRef,
   AvailabilityRead,
   BookingSummary,
   ChildDetail,
   ChildHomeRead,
+  ChildLevelRead,
+  ChildLevelRef,
   ChildSummary,
   ClientRead,
   ClientSummary,
@@ -20,6 +24,7 @@ import type {
   NamedRef,
   NextSession,
   StaffRead,
+  StaffRef,
   TutorRead,
 } from "@/pages/prototype/accounts-staff/types/api";
 
@@ -89,6 +94,52 @@ function toNextSession(booking: BookingSummary | undefined): NextSession | null 
   };
 }
 
+// PROPOSED: a Child's Assigned Tutors.
+function getAssignedTutors(db: Database, ids: string[]): AssignedTutorRef[] {
+  return db.staff
+    .filter((row) => ids.includes(row.id))
+    .map((row) => ({ id: row.id, name: row.name, role: row.role }))
+    .sort(byName);
+}
+
+// PROPOSED: who ran the latest Evaluation session that wasn't cancelled
+// and whose day has come.
+function getEvaluationRunner(db: Database, childId: string): StaffRef | null {
+  const held = db.bookings
+    .filter(
+      (booking) =>
+        booking.child.id === childId &&
+        booking.kind === "evaluation" &&
+        booking.status !== "cancelled" &&
+        booking.scheduled_date <= TODAY,
+    )
+    .sort(sortByStart);
+  return held[held.length - 1]?.staff ?? null;
+}
+
+// PROPOSED: GET /api/staff/{id}/children. Evaluated Children only: a
+// Child whose Evaluated mark was cleared keeps its links, hidden here.
+export function listAssignedChildren(db: Database, staffId: string): AssignedChildRead[] {
+  return db.children
+    .filter((child) => child.evaluated !== null && child.assigned_tutor_ids.includes(staffId))
+    .sort((a, b) => Number(a.archived) - Number(b.archived) || byName(a, b))
+    .map((child) => ({
+      id: child.id,
+      name: child.name,
+      archived: child.archived,
+      guardians: getGuardianRefs(db, child.guardian_ids),
+      levels: getLevelRefs(child.levels),
+      assigned_tutors: getAssignedTutors(db, child.assigned_tutor_ids),
+    }));
+}
+
+function getLevelRefs(levels: ChildLevelRead[]): ChildLevelRef[] {
+  return levels
+    .filter((item) => !item.archived)
+    .map(({ subject_id, name, level }) => ({ subject_id, name, level }))
+    .sort(byName);
+}
+
 // GET /api/children?archived=
 export function listChildren(db: Database, isArchived: boolean): ChildSummary[] {
   return db.children
@@ -111,12 +162,10 @@ export function listChildren(db: Database, isArchived: boolean): ChildSummary[] 
           guardians: home.guardians,
         })),
         next_session: toNextSession(upcoming[0]),
-        levels: child.levels
-          .filter((item) => !item.archived)
-          .map(({ subject_id, name, level }) => ({ subject_id, name, level }))
-          .sort(byName),
+        levels: getLevelRefs(child.levels),
         evaluated: child.evaluated,
         created_at: child.created_at,
+        assigned_tutors: getAssignedTutors(db, child.assigned_tutor_ids),
       };
     });
 }
@@ -151,6 +200,8 @@ export function readChild(db: Database, id: string): ChildDetail | null {
     homes: getChildHomes(db, child.guardian_ids),
     levels: [...child.levels].sort(byName),
     evaluated: child.evaluated,
+    assigned_tutors: getAssignedTutors(db, child.assigned_tutor_ids),
+    evaluation_run_by: getEvaluationRunner(db, child.id),
   };
 }
 

@@ -47,6 +47,9 @@ export type ChildRow = {
   levels: ChildLevelRead[];
   evaluated: EvaluatedRead | null;
   created_at: string;
+  // PROPOSED child_assigned_tutors: Staff (user) ids, Tutors and
+  // Managers only.
+  assigned_tutor_ids: string[];
 };
 
 export type StaffRow = {
@@ -122,17 +125,19 @@ function level(subject: { id: string; name: string }, grade: number, by = MARIA)
 
 const [MATH, READING, WRITING, SCIENCE] = SUBJECTS;
 
+// Assigned Tutors: Emma had only Lena, and archiving Lena removed her, so
+// Emma needs a Tutor. Not-yet-Evaluated Children have none until Mark Evaluated.
 const CHILDREN: ChildRow[] = [
-  { id: "c-sofia", name: "Sofia Martinez", date_of_birth: "2016-04-11", grade_level: 4, school_name: "Doral Academy", notes: "Gets anxious with fractions; likes drawing. Mom prefers WhatsApp in Spanish.", archived: false, guardian_ids: ["g-laura", "g-jorge"], levels: [level(MATH, 4), level(READING, 5, DANIELA)], evaluated: { at: "2026-08-28T17:00:00-04:00", by: MARIA }, created_at: "2026-08-10T12:00:00-04:00" },
-  { id: "c-daniel", name: "Daniel Ortiz", date_of_birth: "2017-09-02", grade_level: 3, school_name: "Eugenia B. Thomas K-8", notes: "Shy at first, warms up with games.", archived: false, guardian_ids: ["g-patricia"], levels: [], evaluated: null, created_at: "2026-10-08T09:30:00-04:00" },
-  { id: "c-isabella", name: "Isabella Gomez", date_of_birth: "2015-12-19", grade_level: 5, school_name: "Doral Academy", notes: "Needs frequent short breaks.", archived: false, guardian_ids: ["g-monica", "g-luis"], levels: [level(WRITING, 5), level(MATH, 4)], evaluated: { at: "2026-06-12T16:00:00-04:00", by: DANIELA }, created_at: "2026-05-30T10:00:00-04:00" },
-  { id: "c-tomas", name: "Tomas Gomez", date_of_birth: "2019-07-30", grade_level: 1, school_name: "Doral Academy", notes: null, archived: false, guardian_ids: ["g-monica", "g-luis"], levels: [], evaluated: null, created_at: "2026-10-01T18:20:00-04:00" },
-  { id: "c-gabriel", name: "Gabriel Torres", date_of_birth: "2018-03-14", grade_level: 2, school_name: "John I. Smith K-8", notes: null, archived: false, guardian_ids: ["g-ricardo"], levels: [level(READING, 2)], evaluated: { at: "2026-07-03T11:00:00-04:00", by: MARIA }, created_at: "2026-06-20T08:00:00-04:00" },
-  { id: "c-emma", name: "Emma Castillo", date_of_birth: "2017-01-25", grade_level: null, school_name: "Doral Academy", notes: null, archived: false, guardian_ids: ["g-julia"], levels: [level(MATH, 3)], evaluated: { at: "2026-09-01T15:00:00-04:00", by: DANIELA }, created_at: "2026-08-22T08:00:00-04:00" },
-  { id: "c-leo", name: "Leo Sanchez", date_of_birth: "2017-11-05", grade_level: 3, school_name: "Ronald W. Reagan", notes: null, archived: false, guardian_ids: ["g-rosa"], levels: [], evaluated: null, created_at: "2026-10-12T19:45:00-04:00" },
-  { id: "c-noah", name: "Noah Fernandez", date_of_birth: "2014-06-08", grade_level: 6, school_name: "Doral Middle", notes: null, archived: false, guardian_ids: ["g-elena"], levels: [], evaluated: null, created_at: "2026-10-05T14:00:00-04:00" },
-  { id: "c-lucia", name: "Lucia Martinez", date_of_birth: "2020-05-03", grade_level: 0, school_name: "Doral Academy", notes: null, archived: false, guardian_ids: ["g-jorge", "g-paula"], levels: [level(READING, 0)], evaluated: { at: "2026-09-15T10:00:00-04:00", by: DANIELA }, created_at: "2026-09-01T10:00:00-04:00" },
-  { id: "c-mateo", name: "Mateo Silva", date_of_birth: "2014-02-17", grade_level: 6, school_name: "Doral Middle", notes: null, archived: true, guardian_ids: ["g-andrea"], levels: [level(SCIENCE, 6)], evaluated: { at: "2026-03-10T15:00:00-04:00", by: MARIA }, created_at: "2026-02-01T10:00:00-05:00" },
+  { id: "c-sofia", name: "Sofia Martinez", date_of_birth: "2016-04-11", grade_level: 4, school_name: "Doral Academy", notes: "Gets anxious with fractions; likes drawing. Mom prefers WhatsApp in Spanish.", archived: false, guardian_ids: ["g-laura", "g-jorge"], levels: [level(MATH, 4), level(READING, 5, DANIELA)], evaluated: { at: "2026-08-28T17:00:00-04:00", by: MARIA }, created_at: "2026-08-10T12:00:00-04:00" , assigned_tutor_ids: ["u-marco", "u-ana"] },
+  { id: "c-daniel", name: "Daniel Ortiz", date_of_birth: "2017-09-02", grade_level: 3, school_name: "Eugenia B. Thomas K-8", notes: "Shy at first, warms up with games.", archived: false, guardian_ids: ["g-patricia"], levels: [], evaluated: null, created_at: "2026-10-08T09:30:00-04:00" , assigned_tutor_ids: [] },
+  { id: "c-isabella", name: "Isabella Gomez", date_of_birth: "2015-12-19", grade_level: 5, school_name: "Doral Academy", notes: "Needs frequent short breaks.", archived: false, guardian_ids: ["g-monica", "g-luis"], levels: [level(WRITING, 5), level(MATH, 4)], evaluated: { at: "2026-06-12T16:00:00-04:00", by: DANIELA }, created_at: "2026-05-30T10:00:00-04:00" , assigned_tutor_ids: ["u-ana", "u-marco"] },
+  { id: "c-tomas", name: "Tomas Gomez", date_of_birth: "2019-07-30", grade_level: 1, school_name: "Doral Academy", notes: null, archived: false, guardian_ids: ["g-monica", "g-luis"], levels: [], evaluated: null, created_at: "2026-10-01T18:20:00-04:00" , assigned_tutor_ids: [] },
+  { id: "c-gabriel", name: "Gabriel Torres", date_of_birth: "2018-03-14", grade_level: 2, school_name: "John I. Smith K-8", notes: null, archived: false, guardian_ids: ["g-ricardo"], levels: [level(READING, 2)], evaluated: { at: "2026-07-03T11:00:00-04:00", by: MARIA }, created_at: "2026-06-20T08:00:00-04:00" , assigned_tutor_ids: ["u-daniela", "u-marco"] },
+  { id: "c-emma", name: "Emma Castillo", date_of_birth: "2017-01-25", grade_level: null, school_name: "Doral Academy", notes: null, archived: false, guardian_ids: ["g-julia"], levels: [level(MATH, 3)], evaluated: { at: "2026-09-01T15:00:00-04:00", by: DANIELA }, created_at: "2026-08-22T08:00:00-04:00" , assigned_tutor_ids: [] },
+  { id: "c-leo", name: "Leo Sanchez", date_of_birth: "2017-11-05", grade_level: 3, school_name: "Ronald W. Reagan", notes: null, archived: false, guardian_ids: ["g-rosa"], levels: [], evaluated: null, created_at: "2026-10-12T19:45:00-04:00" , assigned_tutor_ids: [] },
+  { id: "c-noah", name: "Noah Fernandez", date_of_birth: "2014-06-08", grade_level: 6, school_name: "Doral Middle", notes: null, archived: false, guardian_ids: ["g-elena"], levels: [], evaluated: null, created_at: "2026-10-05T14:00:00-04:00" , assigned_tutor_ids: [] },
+  { id: "c-lucia", name: "Lucia Martinez", date_of_birth: "2020-05-03", grade_level: 0, school_name: "Doral Academy", notes: null, archived: false, guardian_ids: ["g-jorge", "g-paula"], levels: [level(READING, 0)], evaluated: { at: "2026-09-15T10:00:00-04:00", by: DANIELA }, created_at: "2026-09-01T10:00:00-04:00" , assigned_tutor_ids: ["u-daniela", "u-ana"] },
+  { id: "c-mateo", name: "Mateo Silva", date_of_birth: "2014-02-17", grade_level: 6, school_name: "Doral Middle", notes: null, archived: true, guardian_ids: ["g-andrea"], levels: [level(SCIENCE, 6)], evaluated: { at: "2026-03-10T15:00:00-04:00", by: MARIA }, created_at: "2026-02-01T10:00:00-05:00" , assigned_tutor_ids: [] },
 ];
 
 function tutorSubject(subject: { id: string; name: string }, max: number): TutorSubjectRead {
@@ -253,6 +258,8 @@ const EMMA = { id: "c-emma", name: "Emma Castillo" };
 const DANIEL = { id: "c-daniel", name: "Daniel Ortiz" };
 const TOMAS = { id: "c-tomas", name: "Tomas Gomez" };
 const LUCIA = { id: "c-lucia", name: "Lucia Martinez" };
+const NOAH = { id: "c-noah", name: "Noah Fernandez" };
+const MARIA_REF = staffRef(MARIA, "admin");
 
 const BOOKINGS: BookingSummary[] = [
   booking({ id: "bk-m1", child: EMMA, staff: MARCO_REF, kind: "regular", subject: MATH, level: 3, date: "2026-10-13", start: "17:00", end: "18:00", status: "confirmed", home: null }),
@@ -279,6 +286,9 @@ const BOOKINGS: BookingSummary[] = [
   booking({ id: "bk-s5", child: SOFIA, staff: ANA_REF, kind: "regular", subject: READING, level: 5, date: "2026-10-23", start: "17:00", end: "18:00", status: "confirmed", home: homeRef("h-laura") }),
   booking({ id: "bk-s6", child: SOFIA, staff: MARCO_REF, kind: "regular", subject: MATH, level: 4, date: "2026-10-06", start: "15:00", end: "16:00", status: "completed", home: homeRef("h-laura") }),
   booking({ id: "bk-i3", child: ISABELLA, staff: ANA_REF, kind: "regular", subject: WRITING, level: 5, date: "2026-10-20", start: "15:30", end: "16:30", status: "confirmed", home: homeRef("h-gomez") }),
+  // Noah's Evaluation session, run by an Admin: Mark Evaluated can't
+  // prefill her as his Tutor.
+  booking({ id: "bk-n1", child: NOAH, staff: MARIA_REF, kind: "evaluation", subject: null, level: null, date: "2026-10-09", start: "14:00", end: "15:30", status: "completed", home: null }),
   booking({ id: "bk-p7", child: GABRIEL, staff: DANIELA_REF, kind: "regular", subject: READING, level: 2, date: "2026-10-07", start: "16:00", end: "17:00", status: "completed", home: homeRef("h-torres") }),
 ];
 
@@ -286,7 +296,11 @@ export function createDatabase(): Database {
   return {
     guardians: GUARDIANS.map((row) => ({ ...row })),
     homes: HOMES.map((row) => ({ ...row, guardian_ids: [...row.guardian_ids] })),
-    children: CHILDREN.map((row) => ({ ...row, guardian_ids: [...row.guardian_ids] })),
+    children: CHILDREN.map((row) => ({
+      ...row,
+      guardian_ids: [...row.guardian_ids],
+      assigned_tutor_ids: [...row.assigned_tutor_ids],
+    })),
     staff: STAFF.map((row) => ({ ...row, subjects: [...row.subjects] })),
     availability: [...AVAILABILITY],
     timeOff: [...TIME_OFF],

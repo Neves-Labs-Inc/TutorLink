@@ -4,6 +4,8 @@
 // Route /prototype/accounts-staff, driven by the floating switcher:
 //   ?screen=families|family|child|guardian|add-account
 //          |staff|staff-archived|staff-detail|add-staff|staff-setup
+//   Assigned Tutors (TutorLink#243): child-tutors-edit|child-no-tutor
+//          |mark-evaluated|mark-evaluated-admin|staff-children
 //   ?role=admin|manager
 //   ?state=populated|loading|empty|error
 //   ?device=desktop|phone        phone frames the page at 390×844
@@ -27,11 +29,16 @@ const SCREENS: (SwitcherOption & { id: Screen })[] = [
   { id: "families", label: "Families" },
   { id: "family", label: "Family overview" },
   { id: "child", label: "Family › Child details" },
+  { id: "child-tutors-edit", label: "Child › Change Assigned Tutors" },
+  { id: "child-no-tutor", label: "Child › Needs a Tutor (last archived)" },
+  { id: "mark-evaluated", label: "Mark Evaluated (Manager ran it)" },
+  { id: "mark-evaluated-admin", label: "Mark Evaluated (Admin ran it)" },
   { id: "guardian", label: "Family › Guardian + Homes" },
   { id: "add-account", label: "Add child (new family)" },
   { id: "staff", label: "Staff" },
   { id: "staff-archived", label: "Staff · Archived" },
   { id: "staff-detail", label: "Staff details" },
+  { id: "staff-children", label: "Staff details › Children" },
   { id: "add-staff", label: "Add staff" },
   { id: "staff-setup", label: "New Staff · setup checklist" },
 ];

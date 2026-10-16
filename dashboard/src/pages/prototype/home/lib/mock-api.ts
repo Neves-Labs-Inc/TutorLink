@@ -5,10 +5,12 @@
 //   GET /api/exceptions?status=pending&sort=start  (Time off card, Admin)
 //   GET /api/bookings?to_sort_out=true             (Bookings card, Admin)
 //   GET /api/children?evaluable=true               (Bookings card, both)
+//   GET /api/children?needs_tutor=true  PROPOSED   (Bookings card, both)
 //   GET /api/bookings?from=TODAY&to=TODAY&status=confirmed&status=completed
 //       (+ &user_id=<me> for a Manager's My sessions today)
 import type { Role } from "@/pages/prototype/shell-kit/kit/mock-data";
 import type {
+  AssignableStaff,
   BookingPage,
   BookingSummary,
   ChildSummary,
@@ -311,6 +313,7 @@ const EVALUABLE: ChildSummary[] = [
     next_session: null,
     levels: [],
     evaluated: null,
+    assigned_tutors: [],
     created_at: "2026-10-06T10:15:00-04:00",
   },
   {
@@ -324,6 +327,7 @@ const EVALUABLE: ChildSummary[] = [
     next_session: null,
     levels: [],
     evaluated: null,
+    assigned_tutors: [],
     created_at: "2026-10-10T16:40:00-04:00",
   },
   {
@@ -348,8 +352,64 @@ const EVALUABLE: ChildSummary[] = [
     next_session: null,
     levels: [],
     evaluated: null,
+    assigned_tutors: [],
     created_at: "2026-10-12T19:05:00-04:00",
   },
+];
+
+// PROPOSED GET /api/children?needs_tutor=true (TutorLink#242): Evaluated
+// Children with no Assigned Tutor. Mateo's only one, Luis, was archived,
+// which removed him (his Booking is in To do too); Valentina's last was
+// removed by hand. The list doesn't say which.
+const NEEDS_TUTOR: ChildSummary[] = [
+  {
+    id: "ch-mateo",
+    name: "Mateo Mendez",
+    grade_level: 3,
+    school_name: "Doral Academy",
+    archived: false,
+    guardians: [{ id: "g-mendez", name: "Teresa Mendez" }],
+    homes: [
+      {
+        id: "h-mendez",
+        label: null,
+        address: "8450 NW 53rd St, Doral, FL 33166",
+        archived: false,
+        guardians: [{ id: "g-mendez", name: "Teresa Mendez" }],
+      },
+    ],
+    next_session: null,
+    levels: [{ subject_id: "sub-science", name: "Science", level: 3 }],
+    evaluated: { at: "2026-08-20T15:00:00-04:00", by: DANIELA },
+    created_at: "2026-08-02T10:00:00-04:00",
+    assigned_tutors: [],
+  },
+  {
+    id: "ch-valentina",
+    name: "Valentina Rojas",
+    grade_level: 5,
+    school_name: "Doral Academy",
+    archived: false,
+    guardians: [{ id: "g-rojas", name: "Carlos Rojas" }],
+    homes: [],
+    next_session: null,
+    levels: [
+      { subject_id: "sub-math", name: "Math", level: 5 },
+      { subject_id: "sub-reading", name: "Reading", level: 4 },
+    ],
+    evaluated: { at: "2026-09-01T10:00:00-04:00", by: MARIA },
+    created_at: "2026-08-25T10:00:00-04:00",
+    assigned_tutors: [],
+  },
+];
+
+// PROPOSED: who can be assigned. Tutors and Managers only, never Admins.
+export const ASSIGNABLE: AssignableStaff[] = [
+  { ...ANA, subjects: [{ subject_id: "sub-math", name: "Math", max_grade_level: 6 }, { subject_id: "sub-reading", name: "Reading", max_grade_level: 5 }] },
+  { ...DANIELA, subjects: [{ subject_id: "sub-reading", name: "Reading", max_grade_level: 6 }] },
+  { id: "u-jordan", name: "Jordan Blake", role: "tutor", subjects: [{ subject_id: "sub-science", name: "Science", max_grade_level: 8 }, { subject_id: "sub-reading", name: "Reading", max_grade_level: 8 }] },
+  { ...MARCO, subjects: [{ subject_id: "sub-math", name: "Math", max_grade_level: 8 }, { subject_id: "sub-reading", name: "Reading", max_grade_level: 4 }] },
+  { ...PRIYA, subjects: [{ subject_id: "sub-math", name: "Math", max_grade_level: 8 }, { subject_id: "sub-science", name: "Science", max_grade_level: 8 }] },
 ];
 
 // Approving Time off over live Bookings puts those Bookings in To do.
@@ -392,6 +452,9 @@ export type HomeData = {
   // bookkeeping (TutorLink#189).
   sortOut: BookingPage | null;
   evaluations: Page<ChildSummary>;
+  // PROPOSED: Evaluated Children with no Assigned Tutor, both roles
+  // (Managers assign Tutors too; open question).
+  needsTutor: Page<ChildSummary>;
   today: BookingPage;
 };
 
@@ -415,6 +478,7 @@ export function getPopulated(role: OfficeRole): HomeData {
     timeOff: isAdmin ? toPage(PENDING_TIME_OFF) : null,
     sortOut: isAdmin ? toBookingPage(SORT_OUT) : null,
     evaluations: toPage(EVALUABLE),
+    needsTutor: toPage(NEEDS_TUTOR),
     today: toBookingPage(today),
   };
 }
@@ -433,6 +497,7 @@ export function getEmpty(role: OfficeRole): HomeData {
     timeOff: isAdmin ? toPage([]) : null,
     sortOut: isAdmin ? toBookingPage([]) : null,
     evaluations: toPage([]),
+    needsTutor: toPage([]),
     today: toBookingPage([]),
   };
 }

@@ -1,5 +1,5 @@
 // A Child's details (GET /api/children/{id}): profile, Child notes,
-// Evaluation and Subject levels, next booking, Guardians (each opens
+// Evaluation and Subject levels, Assigned Tutors, next booking, Guardians (each opens
 // Guardian details), and where they can be booked, read-only. Every act
 // on the Child lives here: Edit and Archive under ⋯, levels and the
 // Evaluated mark inline, booking in the footer.
@@ -28,6 +28,12 @@ import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
 import ActionsSheet from "@/pages/prototype/accounts-staff/components/actions-sheet";
 import ChildEvaluation from "@/pages/prototype/accounts-staff/components/child-evaluation";
 import ChildPeople from "@/pages/prototype/accounts-staff/components/child-people";
+import ChildTutors from "@/pages/prototype/accounts-staff/components/child-tutors";
+import {
+  AssignedTutorsSheet,
+  MarkEvaluatedSheet,
+} from "@/pages/prototype/accounts-staff/components/assigned-tutors-sheets";
+import type { ChildSheet } from "@/pages/prototype/accounts-staff/types/screens";
 import { EditChildSheet } from "@/pages/prototype/accounts-staff/components/child-sheets";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
 import {
@@ -45,6 +51,7 @@ type ChildDetailsProps = {
   onBack: () => void;
   onClose: () => void;
   onOpenGuardian: (id: string) => void;
+  initialSheet?: ChildSheet;
 };
 
 export default function ChildDetails({
@@ -53,9 +60,11 @@ export default function ChildDetails({
   onBack,
   onClose,
   onOpenGuardian,
+  initialSheet,
 }: ChildDetailsProps): ReactNode {
   const { updateChild, setChildArchived } = useArea();
   const { showToast } = useToast();
+  const [sheet, setSheet] = useState<ChildSheet | null>(initialSheet ?? null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [isConfirmingArchive, setIsConfirmingArchive] = useState(false);
@@ -146,7 +155,8 @@ export default function ChildDetails({
             </p>
           )}
         </div>
-        <ChildEvaluation child={child} />
+        <ChildEvaluation child={child} onMarkEvaluated={() => setSheet("mark-evaluated")} />
+        <ChildTutors child={child} onEdit={() => setSheet("tutors")} />
         <h3 className={cn(EYEBROW, "mt-8 mb-3")}>
           {child.guardians.length === 1 ? "Guardian" : `Guardians · ${child.guardians.length}`}
         </h3>
@@ -163,6 +173,10 @@ export default function ChildDetails({
             : { id: "archive", label: "Archive", icon: Archive, isDanger: true, description: upcoming > 0 ? `Cancels ${upcoming} upcoming ${upcoming === 1 ? "Booking" : "Bookings"}` : undefined, onSelect: () => setIsConfirmingArchive(true) },
         ]}
       />
+      {sheet === "tutors" && <AssignedTutorsSheet child={child} onClose={() => setSheet(null)} />}
+      {sheet === "mark-evaluated" && !child.evaluated && (
+        <MarkEvaluatedSheet child={child} onClose={() => setSheet(null)} />
+      )}
       {isEditing && (
         <EditChildSheet
           child={child}

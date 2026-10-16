@@ -177,8 +177,28 @@ function toChildSummary(seed: ChildSeed): ChildSummary {
       ? { at: "2026-09-01T10:00:00", by: { id: "user-maria", name: "Maria Lopez" } }
       : null,
     created_at: seed.createdAt,
+    assigned_tutors: (ASSIGNED[seed.id] ?? []).map((key) => {
+      const staff = STAFF.find((item) => item.id === `user-${key}`) ?? STAFF[0];
+      return { id: staff.id, name: staff.name, role: staff.role };
+    }),
   };
 }
+
+// Assigned Tutors per Child (PROPOSED, TutorLink#242). Valentina has none
+// left (she needs a Tutor); Emma's office bookings with Marco predate
+// Ana being her only Assigned Tutor.
+const ASSIGNED: Record<string, string[]> = {
+  "child-c1": ["ana", "marco"],
+  "child-c3": ["ana"],
+  "child-c5": ["daniela"],
+  "child-c8": ["marco", "sam"],
+  "child-c9": ["ana"],
+  "child-c10": ["jordan"],
+  "child-c11": ["daniela", "ana"],
+  "child-c12": [],
+  "child-c13": ["jordan"],
+  "child-c14": ["jordan", "ana"],
+};
 
 export const CHILDREN: ChildSummary[] = Object.values(CHILD_SEEDS).map(
   toChildSummary,

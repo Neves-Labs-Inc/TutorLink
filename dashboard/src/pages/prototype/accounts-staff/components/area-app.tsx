@@ -27,6 +27,7 @@ const STAFF_SCREENS: Screen[] = [
   "staff",
   "staff-archived",
   "staff-detail",
+  "staff-children",
   "add-staff",
   "staff-setup",
 ];
@@ -61,6 +62,7 @@ export default function AreaApp({
   const [phase, setPhase] = useState<Phase>(() => getInitialPhase(dataState));
   const [isRetrying, setIsRetrying] = useState(false);
   const [visit, setVisit] = useState(0);
+  const [jumpChildId, setJumpChildId] = useState<string | null>(null);
   const [section, setSection] = useState<Section>(
     STAFF_SCREENS.includes(screen) ? "staff" : "accounts",
   );
@@ -80,8 +82,17 @@ export default function AreaApp({
     setIsRetrying(true);
   }
 
+  // Staff details › Children: open that Child in its family.
+  function handleOpenChild(childId: string): void {
+    setJumpChildId(childId);
+    setSection("accounts");
+    setVisit((count) => count + 1);
+    document.querySelector("[data-kit-scroll]")?.scrollTo({ top: 0 });
+  }
+
   function handleNavigate(id: NavId): void {
     if (id === "accounts" || id === "staff") {
+      setJumpChildId(null);
       setSection(id);
       // Tapping the current item again goes back to its list.
       setVisit((count) => count + 1);
@@ -113,6 +124,7 @@ export default function AreaApp({
               phase={phase}
               onRetry={handleRetry}
               startScreen={isStartScreen ? screen : "families"}
+              startChildId={jumpChildId}
             />
           ) : (
             <StaffPage
@@ -120,6 +132,7 @@ export default function AreaApp({
               phase={phase}
               onRetry={handleRetry}
               startScreen={isStartScreen ? screen : "staff"}
+              onOpenChild={handleOpenChild}
             />
           )}
         </div>

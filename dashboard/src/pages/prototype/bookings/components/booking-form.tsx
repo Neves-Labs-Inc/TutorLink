@@ -4,7 +4,7 @@
 // what time (free times as one-tap chips, or any other time), where.
 // Change booking locks the Child and Kind (PUT refuses both).
 import type { ReactNode } from "react";
-import { CircleAlert, Plane, TriangleAlert } from "lucide-react";
+import { CircleAlert, Plane, TriangleAlert, UserRoundX } from "lucide-react";
 import { Badge, KindBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
 import { Button, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
 import { RadioCards } from "@/pages/prototype/shell-kit/kit/components/choices";
@@ -17,7 +17,10 @@ import {
 import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
 import { DetailOverlay } from "@/pages/prototype/shell-kit/kit/overlays/detail-overlay";
 import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
-import { useBookingForm } from "@/pages/prototype/bookings/hooks/use-booking-form";
+import {
+  getAssignedIds,
+  useBookingForm,
+} from "@/pages/prototype/bookings/hooks/use-booking-form";
 import type {
   BookingFormState,
   FieldName,
@@ -60,11 +63,26 @@ function describeStaff(
   editingId: string | null,
 ): string {
   const { fields } = form;
+  const isOff = findTimeOff({ userId: staff.id, date: fields.date, start: "00:00:00", end: "23:59:00" });
+  if (fields.kind === "evaluation") {
+    if (isOff) return `Off ${formatDay(fields.date, { weekday: "long" })} (Time off)`;
+    return staff.role === "admin" ? "Admin" : "Manager";
+  }
+  const prefix = getAssignedIds(fields.childId).includes(staff.id) ? "Assigned Tutor · " : "";
+  return `${prefix}${describeTeaching(staff, form, bookings, editingId, isOff !== null)}`;
+}
+
+function describeTeaching(
+  staff: StaffRead,
+  form: BookingFormState,
+  bookings: BookingDetail[],
+  editingId: string | null,
+  isOff: boolean,
+): string {
+  const { fields } = form;
   const subjectName =
     form.child?.levels.find((level) => level.subject_id === fields.subjectId)?.name ?? "";
-  const isOff = findTimeOff({ userId: staff.id, date: fields.date, start: "00:00:00", end: "23:59:00" });
   if (isOff) return `Off ${formatDay(fields.date, { weekday: "long" })} (Time off)`;
-  if (fields.kind === "evaluation") return staff.role === "admin" ? "Admin" : "Manager";
   if (!staff.subjects.some((subject) => subject.id === fields.subjectId)) {
     return `Not set up for ${subjectName}`;
   }
@@ -73,6 +91,42 @@ function describeStaff(
   return free.length > 0
     ? `Teaches ${subjectName} · free from ${formatTime(free[0].start_time)}`
     : `Teaches ${subjectName} · no free time that day`;
+}
+
+type AssignmentNoteProps = { form: BookingFormState };
+
+// Assigned Tutors on the office form (TutorLink#242): a warning, never a
+// block, when the Staff picked isn't one of the Child's Assigned Tutors,
+// or when the Child has none. Tutoring only: Evaluations go to the office.
+function AssignmentNote({ form }: AssignmentNoteProps): ReactNode {
+  const { fields, child } = form;
+  if (!child || fields.kind !== "regular") return null;
+  const assigned = child.assigned_tutors;
+  const childFirst = getFirstName(child.name);
+  const picked = form.staffOptions.find((staff) => staff.id === fields.userId);
+  let message: string | null = null;
+  if (assigned.length === 0) {
+    message = picked
+      ? `${childFirst} has no Assigned Tutors, so the bot hands their requests to the office. You can still book ${getFirstName(picked.name)}; assign Tutors on ${childFirst}’s details.`
+      : `${childFirst} has no Assigned Tutors, so the bot hands their requests to the office. You can still book anyone.`;
+  } else if (picked && !assigned.some((tutor) => tutor.id === picked.id)) {
+    const staffFirst = getFirstName(picked.name);
+    const names = assigned.map((tutor) => tutor.name).join(", ");
+    message =
+      picked.role === "admin"
+        ? `${staffFirst} is an Admin, so never one of ${childFirst}’s Assigned Tutors (${names}). You can still book; the bot won’t offer ${staffFirst} to ${childFirst}’s family.`
+        : `${staffFirst} isn’t one of ${childFirst}’s Assigned Tutors (${names}). You can still book; the bot won’t offer ${staffFirst} to ${childFirst}’s family.`;
+  }
+  if (!message) return null;
+  return (
+    <p
+      role="status"
+      className="-mt-2 flex items-start gap-2 rounded-[16px] bg-(--tl-warning-tint) px-4 py-3 text-[14px] leading-5 text-(--tl-warning)"
+    >
+      <UserRoundX aria-hidden className="mt-0.5 size-4 shrink-0" />
+      <span>{message}</span>
+    </p>
+  );
 }
 
 type TimeFieldsProps = { form: BookingFormState };
@@ -308,6 +362,8 @@ export default function BookingForm({
             hasAvatar: true,
           }))}
         />
+
+        <AssignmentNote form={form} />
 
         {form.swapOptions.length > 0 && (
           <div className="rounded-[18px] bg-(--tl-yellow-tint) p-4 text-(--tl-yellow-ink)">

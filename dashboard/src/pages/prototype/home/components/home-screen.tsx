@@ -36,12 +36,16 @@ import {
   sortBookingsTodo,
   sortChatsByWindow,
 } from "@/pages/prototype/home/lib/labels";
-import type { BookingTodo } from "@/pages/prototype/home/lib/labels";
+import type { BookingTodo, DeskTodo } from "@/pages/prototype/home/lib/labels";
 import type {
+  AssignableStaff,
   BookingSummary,
+  ChildSummary,
   ConversationSummary,
   ExceptionRead,
 } from "@/pages/prototype/home/types/api";
+import NeedsTutorDetail from "@/pages/prototype/home/components/needs-tutor-detail";
+import { useToast } from "@/pages/prototype/shell-kit/kit/overlays/use-toast";
 
 const ITEMS_PER_GROUP = 3;
 
@@ -59,6 +63,8 @@ function getSummary(waiting: number, todayCount: number, isManager: boolean): st
 type HomeScreenProps = {
   role: OfficeRole;
   api: HomeDataApi;
+  // Starts with the first Needs a Tutor Child's details open.
+  initialNeedsTutor?: boolean;
   onNavigate: (id: NavId) => void;
   onOpenChat: (chat: ConversationSummary) => void;
   onSeeAllBookings: () => void;
@@ -67,13 +73,18 @@ type HomeScreenProps = {
 export default function HomeScreen({
   role,
   api,
+  initialNeedsTutor = false,
   onNavigate,
   onOpenChat,
   onSeeAllBookings,
 }: HomeScreenProps): ReactNode {
   const [openBooking, setOpenBooking] = useState<BookingSummary | null>(null);
   const [openTimeOff, setOpenTimeOff] = useState<ExceptionRead | null>(null);
-  const [openBookingTodo, setOpenBookingTodo] = useState<BookingTodo | null>(null);
+  const [openBookingTodo, setOpenBookingTodo] = useState<DeskTodo | null>(null);
+  const [openNeedsTutor, setOpenNeedsTutor] = useState<ChildSummary | null>(() =>
+    initialNeedsTutor ? (api.data?.needsTutor.items[0] ?? null) : null,
+  );
+  const { showToast } = useToast();
   const actions = useTodoActions(api);
   const { phase, data } = api;
   const isManager = role === "manager";
@@ -83,7 +94,22 @@ export default function HomeScreen({
   const bookingTodos = sortBookingsTodo(
     data?.sortOut?.items ?? [],
     data?.evaluations.items ?? [],
+    data?.needsTutor.items ?? [],
   );
+
+  function handleOpenBookingTodo(item: BookingTodo): void {
+    if (item.kind === "needs-tutor") setOpenNeedsTutor(item.child);
+    else setOpenBookingTodo(item);
+  }
+
+  function handleAssigned(child: ChildSummary, staff: AssignableStaff[]): void {
+    setOpenNeedsTutor(null);
+    api.removeNeedsTutor(child.id);
+    showToast({
+      tone: "success",
+      message: `${staff.map((item) => item.name).join(" and ")} assigned. The bot can book ${child.name.split(" ")[0]} again.`,
+    });
+  }
   const todayItems = data?.today.items ?? [];
   const waitingCount = chats.length + timeOff.length + bookingTodos.length;
 
@@ -146,15 +172,15 @@ export default function HomeScreen({
       total={bookingTodos.length}
       emptyHint={
         isManager
-          ? "Every Child has an Evaluation booked."
-          : "Every Booking is marked and every Child has an Evaluation booked."
+          ? "Every Child has an Evaluation booked and an Assigned Tutor."
+          : "Every Booking is marked, and every Child has an Evaluation booked and an Assigned Tutor."
       }
       seeAllLabel="bookings to deal with"
       onSeeAll={onSeeAllBookings}
       onRetry={api.retry}
     >
       {bookingTodos.slice(0, ITEMS_PER_GROUP).map((item) => (
-        <BookingTodoRow key={item.id} item={item} onOpen={setOpenBookingTodo} />
+        <BookingTodoRow key={item.id} item={item} onOpen={handleOpenBookingTodo} />
       ))}
     </TodoCard>
   );
@@ -252,6 +278,11 @@ export default function HomeScreen({
         canKeepClash={!isManager}
         actions={actions}
         onClose={() => setOpenBookingTodo(null)}
+      />
+      <NeedsTutorDetail
+        child={openNeedsTutor}
+        onClose={() => setOpenNeedsTutor(null)}
+        onAssigned={handleAssigned}
       />
       <TimeOffDetail
         item={openTimeOff}

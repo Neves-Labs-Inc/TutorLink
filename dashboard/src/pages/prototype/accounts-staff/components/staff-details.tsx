@@ -29,6 +29,7 @@ import ArchiveStaffDialog from "@/pages/prototype/accounts-staff/components/arch
 import EditStaffSheet from "@/pages/prototype/accounts-staff/components/edit-staff-sheet";
 import StaffAvailabilityTab from "@/pages/prototype/accounts-staff/components/staff-availability-tab";
 import StaffBookingsTab from "@/pages/prototype/accounts-staff/components/staff-bookings-tab";
+import StaffChildrenTab from "@/pages/prototype/accounts-staff/components/staff-children-tab";
 import StaffOverviewTab from "@/pages/prototype/accounts-staff/components/staff-overview-tab";
 import StaffTimeOffTab from "@/pages/prototype/accounts-staff/components/staff-time-off-tab";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
@@ -40,24 +41,28 @@ import { readStaff } from "@/pages/prototype/accounts-staff/lib/mock-api";
 import { getStaffPermissions } from "@/pages/prototype/accounts-staff/lib/staff-rules";
 import type { OfficeRole } from "@/pages/prototype/accounts-staff/types/screens";
 
-type Tab = "overview" | "availability" | "time-off" | "bookings";
+export type StaffTab = "overview" | "availability" | "children" | "time-off" | "bookings";
 
 type StaffDetailsProps = {
   staffId: string;
   role: OfficeRole;
   backLabel: string;
+  initialTab?: StaffTab;
   onClose: () => void;
+  onOpenChild: (childId: string) => void;
 };
 
 export default function StaffDetails({
   staffId,
   role,
   backLabel,
+  initialTab = "overview",
   onClose,
+  onOpenChild,
 }: StaffDetailsProps): ReactNode {
   const { db, actor, sendInvite, setStaffArchived } = useArea();
   const { showToast } = useToast();
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<StaffTab>(initialTab);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
@@ -66,9 +71,12 @@ export default function StaffDetails({
 
   const can = getStaffPermissions(role, actor.id, staff);
   const isTeacher = staff.tutor_id !== null;
+  // Only Tutors and Managers can be Assigned Tutors (TutorLink#242).
+  const canHaveChildren = isTeacher && (staff.role === "tutor" || staff.role === "manager");
   const tabs = [
     { id: "overview", label: "Overview" },
     ...(isTeacher ? [{ id: "availability", label: "Availability" }] : []),
+    ...(canHaveChildren ? [{ id: "children", label: "Children" }] : []),
     { id: "time-off", label: "Time off" },
     { id: "bookings", label: "Bookings" },
   ];
@@ -95,6 +103,7 @@ export default function StaffDetails({
   if (tab === "availability") tabBody = <StaffAvailabilityTab staff={staff} canEdit={can.canEditTeaching} />;
   else if (tab === "time-off") tabBody = <StaffTimeOffTab staff={staff} can={can} />;
   else if (tab === "bookings") tabBody = <StaffBookingsTab staff={staff} />;
+  else if (tab === "children" && canHaveChildren) tabBody = <StaffChildrenTab staff={staff} onOpenChild={onOpenChild} />;
   else tabBody = <StaffOverviewTab staff={staff} can={can} onGoTo={(next) => setTab(next)} onInvite={handleInvite} />;
 
   return (
@@ -130,7 +139,11 @@ export default function StaffDetails({
         {(role === "manager" || can.lockReason) && (
           <p className="mt-4 flex items-start gap-2 rounded-[16px] bg-(--tl-surface-sunk) px-4 py-3 text-[13px] leading-5 text-(--tl-ink-soft)">
             {role === "manager" ? <Eye aria-hidden className="mt-0.5 size-4 shrink-0" /> : <Lock aria-hidden className="mt-0.5 size-4 shrink-0" />}
-            {role === "manager" ? "View only. An Admin changes Staff, their teaching and their Time off." : can.lockReason}
+            {role === "manager"
+              ? canHaveChildren
+                ? "View only, apart from their assigned Children. An Admin changes Staff, their teaching and their Time off."
+                : "View only. An Admin changes Staff, their teaching and their Time off."
+              : can.lockReason}
           </p>
         )}
         <div className="mt-5 -mx-5 px-5 @2xl:-mx-6 @2xl:px-6">
@@ -138,7 +151,7 @@ export default function StaffDetails({
             label="Staff details sections"
             activeId={tab}
             // Ids come from `tabs`.
-            onChange={(id) => setTab(id as Tab)}
+            onChange={(id) => setTab(id as StaffTab)}
             items={tabs}
           />
         </div>

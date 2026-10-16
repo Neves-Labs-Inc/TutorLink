@@ -35,6 +35,8 @@ export type HomeDataApi = {
   removeChat: (id: string) => void;
   removeSortOut: (id: string) => void;
   removeEvaluation: (id: string) => void;
+  // Assigning a Tutor takes the Child off To do (TutorLink#242).
+  removeNeedsTutor: (id: string) => void;
 };
 
 function getInitialData(role: OfficeRole, state: HomeState): HomeData | null {
@@ -169,9 +171,23 @@ export function useHomeData(role: OfficeRole, state: HomeState): HomeDataApi {
     });
   }, []);
 
+  const removeNeedsTutor = useCallback((id: string) => {
+    setData((previous) => {
+      if (!previous) return previous;
+      return {
+        ...previous,
+        needsTutor: withItems(
+          previous.needsTutor,
+          previous.needsTutor.items.filter((item) => item.id !== id),
+        ),
+      };
+    });
+  }, []);
+
   return {
     phase,
     data,
+    removeNeedsTutor,
     isStale,
     updatedAt,
     retry,

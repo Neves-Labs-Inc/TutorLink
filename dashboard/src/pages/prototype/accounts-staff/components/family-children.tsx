@@ -2,9 +2,10 @@
 // school, Subject levels and next booking. No Evaluated pill. Cards open
 // Child details.
 import type { ReactNode } from "react";
-import { CalendarDays, ChevronRight, Plus } from "lucide-react";
+import { CalendarDays, ChevronRight, Plus, UserRoundX, Users } from "lucide-react";
 import { CARD, cn, EYEBROW } from "@/pages/prototype/shell-kit/kit/tokens";
-import { ArchivedBadge, Avatar } from "@/pages/prototype/shell-kit/kit/components/badges";
+import { ArchivedBadge, Avatar, Badge } from "@/pages/prototype/shell-kit/kit/components/badges";
+import { needsTutor } from "@/pages/prototype/accounts-staff/lib/assigned-tutors";
 import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
 import OpenQuestion from "@/pages/prototype/accounts-staff/components/open-question";
 import { DOT_CLASSES } from "@/pages/prototype/accounts-staff/lib/child-tones";
@@ -32,6 +33,31 @@ function getLevels(child: ChildSummary): string {
   return child.levels.length > 0
     ? child.levels.map((item) => `${item.name} ${formatGrade(item.level)}`).join(" · ")
     : "No Subject levels yet";
+}
+
+// Assigned Tutors on the card (TutorLink#242): their names, or a Needs a
+// Tutor badge for an Evaluated Child with none. Nothing before Evaluated.
+function ChildTutorsLine({ child }: { child: ChildSummary }): ReactNode {
+  if (!child.evaluated || child.archived) return null;
+  if (needsTutor(child)) {
+    return (
+      <span className="mt-2 block">
+        <Badge tone="warning" icon={UserRoundX}>
+          Needs a Tutor
+        </Badge>
+      </span>
+    );
+  }
+  const names = child.assigned_tutors.map((tutor) => tutor.name);
+  return (
+    <span className="mt-2 flex items-start gap-2 text-[14px] text-(--tl-ink-soft)">
+      <Users aria-hidden className="mt-0.5 size-4 shrink-0 text-(--tl-muted)" />
+      <span>
+        <span className="sr-only">Assigned Tutors: </span>
+        {names.join(", ")}
+      </span>
+    </span>
+  );
 }
 
 export default function FamilyChildren({ items, tones, canAdd, onAdd, onOpen }: FamilyChildrenProps): ReactNode {
@@ -84,6 +110,7 @@ export default function FamilyChildren({ items, tones, canAdd, onAdd, onOpen }: 
                       {child.school_name && ` · ${child.school_name}`}
                     </span>
                     <span className="mt-1 block text-[13px] text-(--tl-muted)">{getLevels(child)}</span>
+                    <ChildTutorsLine child={child} />
                     <span className="mt-3 flex items-center gap-2 text-[14px] font-medium">
                       <CalendarDays aria-hidden className="size-4 shrink-0 text-(--tl-muted)" />
                       {next ? (

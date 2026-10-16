@@ -2,6 +2,8 @@
 // on the approved shell kit. Throwaway, DEV-only, mock data shaped as
 // the API's wire types. Route /prototype/home, driven by the switcher:
 //   ?screen=home|chats|time-off   Home, or where each "See all" lands
+//          |needs-tutor           Home with a Needs a Tutor Child open
+//                                 (Assigned Tutors, TutorLink#243)
 //   ?role=admin|manager
 //   ?state=populated|loading|empty|error|stale
 //   ?theme=light|dark
@@ -36,10 +38,11 @@ const FRAME_MIN_WIDTH = 640;
 // Room around the frame: a margin on top, the switcher below.
 const FRAME_CHROME_PX = 96;
 
-type Screen = "home" | "chats" | "time-off";
+type Screen = "home" | "needs-tutor" | "chats" | "time-off";
 
 const SCREENS: SwitcherOption[] = [
   { id: "home", label: "Home" },
+  { id: "needs-tutor", label: "Home › Needs a Tutor (Child)" },
   { id: "chats", label: "See all: Chats" },
   { id: "time-off", label: "See all: Time off" },
 ];
@@ -147,7 +150,7 @@ function HomeApp({ role, state }: HomeAppProps): ReactNode {
   const [elsewhereId, setElsewhereId] = useState<NavId | null>(null);
   const api = useHomeData(role, state);
   const screen = pickOption<Screen>(SCREENS, params.get("screen"));
-  const activeId: NavId = elsewhereId ?? screen;
+  const activeId: NavId = elsewhereId ?? (screen === "needs-tutor" ? "home" : screen);
 
   function showScreen(next: Screen): void {
     setElsewhere(null);
@@ -201,6 +204,16 @@ function HomeApp({ role, state }: HomeAppProps): ReactNode {
       <HomeScreen
         role={role}
         api={api}
+        onNavigate={handleNavigate}
+        onOpenChat={handleOpenChat}
+        onSeeAllBookings={handleSeeAllBookings}
+      />
+    ),
+    "needs-tutor": (
+      <HomeScreen
+        role={role}
+        api={api}
+        initialNeedsTutor
         onNavigate={handleNavigate}
         onOpenChat={handleOpenChat}
         onSeeAllBookings={handleSeeAllBookings}

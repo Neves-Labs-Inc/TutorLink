@@ -39,6 +39,27 @@ export type CountsRead = {
   unread_chats: number;
 };
 
+// PROPOSED (TutorLink#242/#243, API gaps #228): not on the wire yet.
+// A Child's Assigned Tutors, by Staff (user) id. Archiving a Tutor, or
+// making them an Admin, removes their assignments (Franklin, 2026-10-15).
+export type AssignedTutorRef = {
+  id: string;
+  name: string;
+  role: UserRole;
+};
+
+// PROPOSED: GET /api/staff/{id}/children, the Children a Tutor or
+// Manager is assigned to.
+export type AssignedChildRead = {
+  id: string;
+  name: string;
+  archived: boolean;
+  guardians: NamedRef[];
+  levels: ChildLevelRef[];
+  // Every Assigned Tutor of the Child, this Staff member included.
+  assigned_tutors: AssignedTutorRef[];
+};
+
 // schemas/child.py
 export type EvaluatedRead = { at: string; by: NamedRef };
 
@@ -84,6 +105,8 @@ export type ChildSummary = {
   levels: ChildLevelRef[];
   evaluated: EvaluatedRead | null;
   created_at: string;
+  // PROPOSED
+  assigned_tutors: AssignedTutorRef[];
 };
 
 export type ChildGuardianRead = {
@@ -110,6 +133,11 @@ export type ChildDetail = {
   homes: ChildHomeRead[];
   levels: ChildLevelRead[];
   evaluated: EvaluatedRead | null;
+  // PROPOSED
+  assigned_tutors: AssignedTutorRef[];
+  // PROPOSED: who ran the Child's latest Evaluation session (held, not
+  // cancelled), to prefill Mark Evaluated. null when there was none.
+  evaluation_run_by: StaffRef | null;
 };
 
 // schemas/client.py (a Guardian is a "client" on the wire)

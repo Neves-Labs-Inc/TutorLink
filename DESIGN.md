@@ -275,7 +275,7 @@ Reuse these before writing anything. A new primitive is a decision for Franklin.
 | Long text | `TextAreaField` | 20px radius, resizes vertically |
 | Password | `auth/components/password-field.tsx` (to promote into the kit) | Show/Hide toggle; never blocks paste or managers |
 | Short fixed list (≤ ~12 options) | `components/select.tsx` `Select` / `SelectField` | Popover from 672px, bottom sheet titled with the label below. `variant="inline"` for a choice inside a sentence or toolbar. Never a native `<select>` |
-| Long or searchable list (Staff, Children, Guardians) | `components/combobox.tsx` `Combobox` | Type to filter; options may carry an avatar and a second line; "No matches for “x”." Below 672px it opens as a `BottomSheet` titled with the label, search field on top, like `Select` |
+| Long or searchable list (Staff, Children, Guardians) | `components/combobox.tsx` `Combobox` | Type to filter; options may carry an avatar and a second line; "No matches for “x”." Below 672px it opens as a `BottomSheet` titled with the label, search field pinned on top (`sticky -top-4`, offsetting the sheet body's padding) and the list height held while matches narrow, like `Select`. Overlays must stay mounted and be driven by `isOpen` to get their exit |
 | On/off setting | `components/choices.tsx` `SwitchField` | Whole row is the hit area; takes effect when the surrounding form saves |
 | Pick many | `CheckboxField` | Whole row toggles |
 | One of 2–4 with explanations | `RadioCards` | Cards with description; `isHorizontal` goes 3-up from 672px |

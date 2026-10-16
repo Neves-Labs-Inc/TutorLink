@@ -1,7 +1,9 @@
 // Modality for the kit's overlays. KitRoot owns one stack; every open
 // overlay joins it. Only the top overlay is live: the page's scroll area
 // and every lower overlay are inert, and the scroll area is locked.
-// Toasts sit outside both, so they are never inert.
+// Toasts sit outside both, so they are never inert. A closed overlay
+// may stay mounted while its exit plays; it leaves the stack at once and
+// stays inert, so the layer below (or the page) is live during the exit.
 import { createContext, useContext } from "react";
 
 export type OverlayStack = {
@@ -40,6 +42,12 @@ function setInert(element: HTMLElement, isInert: boolean): void {
   } else {
     element.removeAttribute("aria-hidden");
   }
+}
+
+// Belt and braces with inert: an exiting layer must never catch a click
+// meant for what is under it.
+function setPassThrough(layer: HTMLElement, isPassThrough: boolean): void {
+  layer.style.pointerEvents = isPassThrough ? "none" : "";
 }
 
 function lockScroll(scrollArea: HTMLElement): void {
@@ -81,13 +89,16 @@ export function createOverlayStack(): OverlayStack {
       if (panels.includes(panel)) return;
       const wasEmpty = panels.length === 0;
       panels.push(panel);
+      // Reopened mid-exit: the same layer comes back to life.
+      setPassThrough(getLayer(panel), false);
       sync(wasEmpty);
     },
     close(panel) {
       const index = panels.indexOf(panel);
       if (index === -1) return;
       panels.splice(index, 1);
-      setInert(getLayer(panel), false);
+      setInert(getLayer(panel), true);
+      setPassThrough(getLayer(panel), true);
       sync(false);
     },
     isTop(panel) {

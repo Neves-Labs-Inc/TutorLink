@@ -11,7 +11,8 @@ import { cn } from "@/components/kit/tokens";
 import { Button } from "@/components/kit/components/button";
 import { CheckboxField } from "@/components/kit/components/choices";
 import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
-import { RISE, useEnterAnimation } from "@/components/kit/overlays/use-enter-animation";
+import { RISE } from "@/components/kit/overlays/use-enter-animation";
+import { usePresence } from "@/components/kit/overlays/use-presence";
 
 export type FilterOption = { value: string; label: string; count?: number };
 
@@ -42,7 +43,10 @@ export function MultiSelectFilter({
   const popoverId = useId();
   const count = selected.length;
   const isActive = count > 0;
-  useEnterAnimation(popoverRef, openMode === "popover", RISE);
+  const isPopoverOpen = openMode === "popover";
+  const isPopoverPresent = usePresence(isPopoverOpen, popoverRef, RISE);
+  // Playing its exit: out of reach for clicks, keys and assistive tech.
+  const isPopoverLeaving = isPopoverPresent && !isPopoverOpen;
 
   function close(): void {
     setOpenMode(null);
@@ -154,16 +158,19 @@ export function MultiSelectFilter({
         />
       </button>
 
-      {openMode === "popover" && (
+      {isPopoverPresent && (
         <div
           ref={popoverRef}
           id={popoverId}
           role="dialog"
           aria-label={`Filter by ${label}`}
+          inert={isPopoverLeaving}
+          aria-hidden={isPopoverLeaving || undefined}
           style={{ width: POPOVER_WIDTH }}
           className={cn(
             "kit-shadow-raised absolute top-[calc(100%+8px)] z-40 rounded-[20px] border border-(--tl-card-border) bg-(--tl-surface) p-2",
             isAlignedRight ? "right-0" : "left-0",
+            isPopoverLeaving && "pointer-events-none",
           )}
         >
           <div className="max-h-72 overflow-y-auto px-2">{list}</div>

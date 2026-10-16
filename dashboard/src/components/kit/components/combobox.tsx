@@ -1,11 +1,16 @@
 // A searchable single-choice picker (ARIA combobox + listbox) for long
 // lists like Staff or Children. Arrow keys move, Enter picks, Escape
 // closes. Options can carry an avatar and a second line.
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { Check, ChevronDown, CircleAlert } from "lucide-react";
 import { cn } from "@/components/kit/tokens";
 import { Avatar } from "@/components/kit/components/badges";
+import {
+  LIST_ENTER_MS,
+  RISE,
+} from "@/components/kit/overlays/use-enter-animation";
+import { usePresence } from "@/components/kit/overlays/use-presence";
 
 export type ComboboxOption = {
   value: string;
@@ -40,6 +45,12 @@ export function Combobox({
   const [query, setQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const listRef = useRef<HTMLUListElement>(null);
+  const isListPresent = usePresence(isOpen, listRef, RISE, {
+    enterMs: LIST_ENTER_MS,
+  });
+  // Playing its exit: no id, so nothing points assistive tech into it.
+  const isListLeaving = isListPresent && !isOpen;
 
   const needle = query.trim().toLowerCase();
   const matches = options.filter(
@@ -68,7 +79,9 @@ export function Combobox({
     } else if (event.key === "Enter" && isOpen && activeOption) {
       event.preventDefault();
       pick(activeOption);
-    } else if (event.key === "Escape") {
+    } else if (event.key === "Escape" && isOpen) {
+      // Marks the key handled, so the overlay around it stays open.
+      event.preventDefault();
       setIsOpen(false);
     }
   }
@@ -124,12 +137,18 @@ export function Combobox({
             isOpen && "rotate-180",
           )}
         />
-        {isOpen && (
+        {isListPresent && (
           <ul
-            id={listId}
+            ref={listRef}
+            id={isListLeaving ? undefined : listId}
             role="listbox"
             aria-label={label}
-            className="kit-rise kit-shadow-raised absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto rounded-[20px] border border-(--tl-card-border) bg-(--tl-surface) p-1.5"
+            inert={isListLeaving}
+            aria-hidden={isListLeaving || undefined}
+            className={cn(
+              "kit-shadow-raised absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-72 overflow-y-auto rounded-[20px] border border-(--tl-card-border) bg-(--tl-surface) p-1.5",
+              isListLeaving && "pointer-events-none",
+            )}
           >
             {matches.length === 0 && (
               <li className="px-3 py-3 text-[14px] text-(--tl-muted)">

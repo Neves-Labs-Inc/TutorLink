@@ -1,10 +1,16 @@
 // Short tasks and pickers (filters, account menu, quick actions). A
 // bottom sheet on phones; a centred dialog card from 672px.
+// Keep it mounted and drive it with isOpen: an overlay the parent
+// unmounts on close vanishes without its exit.
 import { useId, useRef } from "react";
 import type { ReactNode } from "react";
 import { X } from "lucide-react";
 import { IconButton } from "@/components/kit/components/button";
-import { useEnterAnimation, SHEET_OR_POP } from "@/components/kit/overlays/use-enter-animation";
+import { SHEET_OR_POP } from "@/components/kit/overlays/use-enter-animation";
+import {
+  useHeldWhileClosing,
+  usePresence,
+} from "@/components/kit/overlays/use-presence";
 import { OverlayLayer } from "@/components/kit/overlays/overlay-layer";
 import { useDialogFocus } from "@/components/kit/overlays/use-dialog-focus";
 
@@ -26,16 +32,24 @@ export function BottomSheet({
   children,
 }: BottomSheetProps): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const descriptionId = useId();
   useDialogFocus(panelRef, isOpen, onClose);
-  useEnterAnimation(panelRef, isOpen, SHEET_OR_POP);
-  if (!isOpen) return null;
+  const isPresent = usePresence(isOpen, panelRef, SHEET_OR_POP, {
+    scrimRef,
+  });
+  const shown = useHeldWhileClosing(
+    { title, description, footer, children },
+    isOpen,
+  );
+  if (!isPresent) return null;
 
   return (
     <OverlayLayer>
       <div className="fixed inset-0 z-50 flex items-end @2xl:items-center @2xl:justify-center @2xl:p-6">
         <div
+          ref={scrimRef}
           aria-hidden
           onClick={onClose}
           className="kit-fade absolute inset-0 bg-(--tl-scrim)"
@@ -45,7 +59,7 @@ export function BottomSheet({
           role="dialog"
           aria-modal="true"
           aria-labelledby={titleId}
-          aria-describedby={description ? descriptionId : undefined}
+          aria-describedby={shown.description ? descriptionId : undefined}
           tabIndex={-1}
           className="kit-shadow-raised relative flex max-h-[88%] w-full flex-col overflow-hidden rounded-t-[28px] border border-(--tl-card-border) bg-(--tl-surface) outline-none @2xl:max-w-[480px] @2xl:rounded-[28px]"
         >
@@ -58,14 +72,14 @@ export function BottomSheet({
                 id={titleId}
                 className="kit-display text-[20px] leading-7 font-bold"
               >
-                {title}
+                {shown.title}
               </h2>
-              {description && (
+              {shown.description && (
                 <p
                   id={descriptionId}
                   className="mt-0.5 text-[14px] leading-5 text-(--tl-muted)"
                 >
-                  {description}
+                  {shown.description}
                 </p>
               )}
             </div>
@@ -77,11 +91,11 @@ export function BottomSheet({
             />
           </div>
           <div className="flex-1 overflow-y-auto px-5 pt-4 pb-5 @2xl:px-6">
-            {children}
+            {shown.children}
           </div>
-          {footer && (
+          {shown.footer && (
             <div className="flex flex-col-reverse gap-2 border-t border-(--tl-border) px-5 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] @md:flex-row @md:justify-end @2xl:px-6 @2xl:pb-6">
-              {footer}
+              {shown.footer}
             </div>
           )}
         </div>

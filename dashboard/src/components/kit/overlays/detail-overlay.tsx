@@ -2,12 +2,18 @@
 // slide-over on the right with a scrim. On phones Franklin chose
 //   "page"  (A): a full-screen page pushed in from the right, Back ← top left.
 //   "sheet" (B, archived): a bottom sheet up to 92% tall.
+// Keep it mounted and drive it with isOpen: an overlay the parent
+// unmounts on close vanishes without its exit.
 import { useRef } from "react";
 import type { ReactNode } from "react";
 import { ArrowLeft, X } from "lucide-react";
 import { cn } from "@/components/kit/tokens";
 import { IconButton } from "@/components/kit/components/button";
-import { useEnterAnimation, PUSH_FROM_RIGHT, RISE_AS_SHEET } from "@/components/kit/overlays/use-enter-animation";
+import { PUSH_FROM_RIGHT, RISE_AS_SHEET } from "@/components/kit/overlays/use-enter-animation";
+import {
+  useHeldWhileClosing,
+  usePresence,
+} from "@/components/kit/overlays/use-presence";
 import { OverlayLayer } from "@/components/kit/overlays/overlay-layer";
 import { useDialogFocus } from "@/components/kit/overlays/use-dialog-focus";
 
@@ -43,15 +49,26 @@ export function DetailOverlay({
   children,
 }: DetailOverlayProps): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
   const isPage = phoneMode === "page";
   useDialogFocus(panelRef, isOpen, onClose);
-  useEnterAnimation(panelRef, isOpen, isPage ? PUSH_FROM_RIGHT : RISE_AS_SHEET);
-  if (!isOpen) return null;
+  const isPresent = usePresence(
+    isOpen,
+    panelRef,
+    isPage ? PUSH_FROM_RIGHT : RISE_AS_SHEET,
+    { scrimRef },
+  );
+  const shown = useHeldWhileClosing(
+    { title, backLabel, header, footer, children },
+    isOpen,
+  );
+  if (!isPresent) return null;
 
   return (
     <OverlayLayer>
       <div className="fixed inset-0 z-50">
         <div
+          ref={scrimRef}
           aria-hidden
           onClick={onClose}
           className={cn(
@@ -63,7 +80,7 @@ export function DetailOverlay({
           ref={panelRef}
           role="dialog"
           aria-modal="true"
-          aria-label={title}
+          aria-label={shown.title}
           tabIndex={-1}
           className={cn(
             "kit-shadow-raised absolute flex flex-col overflow-hidden outline-none",
@@ -81,7 +98,7 @@ export function DetailOverlay({
                 className="inline-flex h-11 cursor-pointer items-center gap-1 rounded-full pr-4 pl-2 text-[15px] font-medium text-(--tl-link) hover:bg-(--tl-tint)"
               >
                 <ArrowLeft aria-hidden className="size-5" />
-                {backLabel}
+                {shown.backLabel}
               </button>
             </div>
           ) : (
@@ -105,7 +122,7 @@ export function DetailOverlay({
                     : "bg-(--tl-surface)"),
               )}
             >
-              <div className="min-w-0 flex-1">{header}</div>
+              <div className="min-w-0 flex-1">{shown.header}</div>
               <span className={cn("-mt-1 -mr-2", isPage && "hidden @2xl:block")}>
                 <IconButton icon={X} label="Close" onClick={onClose} />
               </span>
@@ -113,12 +130,12 @@ export function DetailOverlay({
             <div
               className={cn("px-5 pb-6 @2xl:px-6", !isHeaderPinned && "pt-2")}
             >
-              {children}
+              {shown.children}
             </div>
           </div>
-          {footer && (
+          {shown.footer && (
             <div className="flex shrink-0 flex-col gap-2 border-t border-(--tl-border) bg-(--tl-surface) px-5 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] @md:flex-row @2xl:px-6 @2xl:pb-6">
-              {footer}
+              {shown.footer}
             </div>
           )}
         </div>

@@ -1,11 +1,17 @@
 // Centred modal dialogs. ConfirmDialog names the act on both buttons
 // ("Cancel booking" / "Keep booking"), never a bare OK/Cancel, so
 // "cancel" can't mean two things at once.
+// Keep it mounted and drive it with isOpen: an overlay the parent
+// unmounts on close vanishes without its exit.
 import { useId, useRef } from "react";
 import type { ReactNode } from "react";
 import { TriangleAlert } from "lucide-react";
 import { Button } from "@/components/kit/components/button";
-import { useEnterAnimation, POP } from "@/components/kit/overlays/use-enter-animation";
+import { POP } from "@/components/kit/overlays/use-enter-animation";
+import {
+  useHeldWhileClosing,
+  usePresence,
+} from "@/components/kit/overlays/use-presence";
 import { OverlayLayer } from "@/components/kit/overlays/overlay-layer";
 import { useDialogFocus } from "@/components/kit/overlays/use-dialog-focus";
 
@@ -29,44 +35,50 @@ export function Dialog({
   children,
 }: DialogProps): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const bodyId = useId();
   useDialogFocus(panelRef, isOpen, onClose);
-  useEnterAnimation(panelRef, isOpen, POP);
-  if (!isOpen) return null;
+  const isPresent = usePresence(isOpen, panelRef, POP, { scrimRef });
+  const shown = useHeldWhileClosing(
+    { title, icon, footer, role, children },
+    isOpen,
+  );
+  if (!isPresent) return null;
 
   return (
     <OverlayLayer>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
+          ref={scrimRef}
           aria-hidden
           onClick={onClose}
           className="kit-fade absolute inset-0 bg-(--tl-scrim)"
         />
         <div
           ref={panelRef}
-          role={role}
+          role={shown.role}
           aria-modal="true"
           aria-labelledby={titleId}
           aria-describedby={bodyId}
           tabIndex={-1}
           className="kit-shadow-raised relative w-full max-w-[440px] rounded-[28px] border border-(--tl-card-border) bg-(--tl-surface) p-6 outline-none"
         >
-          {icon}
+          {shown.icon}
           <h2
             id={titleId}
             className="kit-display text-[22px] leading-[30px] font-bold"
           >
-            {title}
+            {shown.title}
           </h2>
           <div
             id={bodyId}
             className="mt-2 text-[15px] leading-6 text-(--tl-ink-soft)"
           >
-            {children}
+            {shown.children}
           </div>
           <div className="mt-6 flex flex-col-reverse gap-2 @md:flex-row @md:justify-end">
-            {footer}
+            {shown.footer}
           </div>
         </div>
       </div>

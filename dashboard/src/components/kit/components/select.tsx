@@ -9,7 +9,8 @@ import { getControlClasses } from "@/components/kit/lib/control-classes";
 import { useSelect } from "@/components/kit/hooks/use-select";
 import { BottomSheet } from "@/components/kit/overlays/bottom-sheet";
 import { useOverlayHost } from "@/components/kit/overlays/overlay-stack";
-import { RISE, useEnterAnimation } from "@/components/kit/overlays/use-enter-animation";
+import { RISE } from "@/components/kit/overlays/use-enter-animation";
+import { usePresence } from "@/components/kit/overlays/use-presence";
 import type {
   SelectChange,
   SelectOption,
@@ -101,14 +102,14 @@ export default function Select({
     onChange,
     onValueChange,
   });
-  useEnterAnimation(listRef, openMode === "popover", RISE);
   const isOpen = openMode !== null;
   const isPopover = openMode === "popover";
+  const isPopoverPresent = usePresence(isPopover, listRef, RISE);
   const selectedOption = listed[selectedIndex] ?? null;
   const listName = label ?? ariaLabel ?? "";
   const isField = variant === "field";
 
-  const optionList = (isInPopover: boolean): ReactNode => (
+  const optionList = (isInPopover: boolean, isLeaving = false): ReactNode => (
     <OptionList
       listRef={listRef}
       listId={listId}
@@ -117,6 +118,7 @@ export default function Select({
       selectedIndex={selectedIndex}
       activeIndex={activeIndex}
       isPopover={isInPopover}
+      isLeaving={isLeaving}
       getOptionId={getOptionId}
       onPick={pick}
       onActivate={setActiveIndex}
@@ -124,7 +126,7 @@ export default function Select({
       onMouseDown={handleListMouseDown}
     />
   );
-  const popover = isPopover ? optionList(true) : null;
+  const popover = isPopoverPresent ? optionList(true, !isPopover) : null;
   const Wrapper = isField ? "div" : "span";
 
   return (
@@ -202,6 +204,8 @@ type OptionListProps = {
   selectedIndex: number;
   activeIndex: number;
   isPopover: boolean;
+  // Playing its exit: out of reach for clicks, keys and assistive tech.
+  isLeaving: boolean;
   getOptionId: (index: number) => string;
   onPick: (index: number) => void;
   onActivate: (index: number) => void;
@@ -219,6 +223,7 @@ function OptionList({
   selectedIndex,
   activeIndex,
   isPopover,
+  isLeaving,
   getOptionId,
   onPick,
   onActivate,
@@ -231,9 +236,14 @@ function OptionList({
       id={listId}
       role="listbox"
       aria-label={name}
+      inert={isLeaving}
+      aria-hidden={isLeaving || undefined}
       onKeyDown={onKeyDown}
       onMouseDown={onMouseDown}
-      className={isPopover ? POPOVER_PANEL : "flex flex-col"}
+      className={cn(
+        isPopover ? POPOVER_PANEL : "flex flex-col",
+        isLeaving && "pointer-events-none",
+      )}
     >
       {options.length === 0 && (
         <li role="presentation" className="px-3 py-3 text-[14px] text-(--tl-muted)">

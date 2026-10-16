@@ -38,6 +38,7 @@ def list_all(
     role: Annotated[list[str] | None, Query()] = None,
     sign_in_state: Annotated[list[str] | None, Query()] = None,
     subject_id: uuid.UUID | None = None,
+    q: str | None = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[StaffRead]:
@@ -56,7 +57,7 @@ def list_all(
     rows, total = list_staff(
         db,
         filters=StaffFilters(
-            is_archived=archived, roles=roles, sign_in_states=states, subject_id=subject_id
+            is_archived=archived, roles=roles, sign_in_states=states, subject_id=subject_id, q=q
         ),
         limit=page_size,
         offset=(page - 1) * page_size,

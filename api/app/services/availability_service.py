@@ -27,8 +27,11 @@ a conflict.
 """
 
 import datetime
+import itertools
 import logging
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -65,6 +68,16 @@ class InvalidTimeRange(AvailabilityServiceError):
 
 class NotYourAvailability(AvailabilityServiceError):
     """A caller without an Admin role writing someone else's Availability."""
+
+
+@dataclass(frozen=True)
+class WeekSlot:
+    """One slot of a submitted week, before it is matched against the stored rows."""
+
+    day_of_week: int
+    start_time: datetime.time
+    end_time: datetime.time
+    mode: AvailabilityMode
 
 
 def list_availability(
@@ -208,6 +221,88 @@ def deactivate_availability(
     db.flush()
 
     return row
+
+
+def replace_week(
+    db: Session, *, actor: CurrentUser, tutor_id: uuid.UUID, slots: Sequence[WeekSlot]
+) -> list[TutorAvailability]:
+    """Make `slots` the profile's whole active week, and return that week in the list's order.
+
+    Rows are matched on (day, start), the key `uq_tutor_availability_slot` holds across active
+    and inactive rows alike, so a new row may only be inserted where no row has that key. A
+    matched row keeps its id: an identical active one is left alone, any other is updated in
+    place and reactivated, as `PATCH` would. Unmatched starts get new rows; every other active
+    row is deactivated, as `DELETE` does. Refusals raise before any write, and the caller's
+    rollback undoes a race caught by the constraint, so a refused week changes nothing.
+    """
+    _assert_may_reach(actor, tutor_id=tutor_id)
+
+    tutor = db.get(Tutor, tutor_id)
+    if tutor is None:
+        raise TutorNotFound(f"no tutor {tutor_id}")
+
+    _assert_within_account_boundary(actor, tutor=tutor)
+
+    if any(slot.end_time <= slot.start_time for slot in slots):
+        raise InvalidTimeRange("end_time must be after start_time")
+
+    if _week_overlaps(slots):
+        logger.warning("availability_service: tutor %s's submitted week overlaps", tutor_id)
+        raise AvailabilitySlotTaken
+
+    submitted = {(slot.day_of_week, slot.start_time): slot for slot in slots}
+    stored = {
+        (row.day_of_week, row.start_time): row
+        for row in db.scalars(
+            select(TutorAvailability).where(TutorAvailability.tutor_id == tutor_id)
+        )
+    }
+
+    try:
+        with db.begin_nested():
+            for key, row in stored.items():
+                slot = submitted.get(key)
+                if slot is None:
+                    row.is_active = False
+                elif (row.end_time, row.mode, row.is_active) != (slot.end_time, slot.mode, True):
+                    row.end_time = slot.end_time
+                    row.mode = slot.mode
+                    row.is_active = True
+
+            db.add_all(
+                TutorAvailability(
+                    tutor_id=tutor_id,
+                    day_of_week=slot.day_of_week,
+                    start_time=slot.start_time,
+                    end_time=slot.end_time,
+                    mode=slot.mode,
+                )
+                for key, slot in submitted.items()
+                if key not in stored
+            )
+            db.flush()
+    except IntegrityError as exc:
+        raise AvailabilitySlotTaken from exc
+
+    return list(
+        db.scalars(
+            select(TutorAvailability)
+            .where(TutorAvailability.tutor_id == tutor_id, TutorAvailability.is_active)
+            .order_by(
+                TutorAvailability.day_of_week, TutorAvailability.start_time, TutorAvailability.id
+            )
+        )
+    )
+
+
+def _week_overlaps(slots: Sequence[WeekSlot]) -> bool:
+    # Sorted by (day, start), a week overlaps exactly when some slot starts before the one
+    # ahead of it ends; touching ranges (09-10, 10-11) do not.
+    ordered = sorted(slots, key=lambda slot: (slot.day_of_week, slot.start_time))
+    return any(
+        earlier.day_of_week == later.day_of_week and later.start_time < earlier.end_time
+        for earlier, later in itertools.pairwise(ordered)
+    )
 
 
 def _slot_taken(

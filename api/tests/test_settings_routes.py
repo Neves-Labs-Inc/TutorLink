@@ -57,10 +57,20 @@ from app.routers.settings import (
     SETTING_VALUE_INVALID_ERROR,
 )
 from app.security import create_access_token, hash_password
-from app.services.rate_limit_service import IP_MAX_ATTEMPTS_SETTING
+from app.services.rate_limit_service import (
+    EMAIL_MAX_ATTEMPTS_SETTING,
+    EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_EMAIL_MAX_ATTEMPTS_SETTING,
+    FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_IP_MAX_ATTEMPTS_SETTING,
+    FORGOT_IP_WINDOW_SECONDS_SETTING,
+    IP_MAX_ATTEMPTS_SETTING,
+    IP_WINDOW_SECONDS_SETTING,
+)
 
 BOOKING_DATE = datetime.date(2026, 9, 7)
 BUSINESS_TIMEZONE = "business_timezone"
+CANCELLATION_CUTOFF = "cancellation_cutoff_hours"
 OFFICE_PHONE = "office_phone"
 OFFICE_PHONE_NUMBER = "+15551234567"
 OFFICE_PHONE_INVALID_ERROR = "office_phone must be a phone number in E.164 form, like +15551234567"
@@ -68,6 +78,18 @@ PASSWORD = "correct horse battery staple"
 REMINDERS_ENABLED = "reminders_enabled"
 REMINDERS_ENABLED_INVALID_ERROR = "reminders_enabled must be true or false"
 SETTINGS_URL = "/api/settings"
+RATE_LIMIT_MAX_ATTEMPTS_KEYS = [
+    IP_MAX_ATTEMPTS_SETTING,
+    EMAIL_MAX_ATTEMPTS_SETTING,
+    FORGOT_IP_MAX_ATTEMPTS_SETTING,
+    FORGOT_EMAIL_MAX_ATTEMPTS_SETTING,
+]
+RATE_LIMIT_WINDOW_KEYS = [
+    IP_WINDOW_SECONDS_SETTING,
+    EMAIL_WINDOW_SECONDS_SETTING,
+    FORGOT_IP_WINDOW_SECONDS_SETTING,
+    FORGOT_EMAIL_WINDOW_SECONDS_SETTING,
+]
 
 # Seeded developer-only by 0021, so a developer always sees these beyond what an admin sees.
 TEMPLATE_SID_KEYS = {
@@ -380,6 +402,118 @@ def test_a_reminder_schedule_value_at_either_end_of_its_range_is_accepted(
 
     assert response.status_code == 200
     assert _item(response.json(), key)["value"] == value
+
+
+# --- cancellation cutoff and rate-limit window bounds ----------------------------------------
+
+
+def test_a_cancellation_cutoff_of_zero_is_accepted(api: TestClient, db: Session) -> None:
+    # The harness seeds no 0004 rows, so the row this test edits is its own.
+    _make_setting(db, key=CANCELLATION_CUTOFF, value="6")
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(CANCELLATION_CUTOFF, "0")
+    )
+
+    assert response.status_code == 200
+    assert _item(response.json(), CANCELLATION_CUTOFF)["value"] == "0"
+
+
+def test_a_negative_cancellation_cutoff_is_refused(api: TestClient, db: Session) -> None:
+    row = _make_setting(db, key=CANCELLATION_CUTOFF, value="6")
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(CANCELLATION_CUTOFF, "-1")
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": SETTING_VALUE_INVALID_ERROR}
+    assert _stored_value(db, row) == "6"
+
+
+@pytest.mark.parametrize("key", RATE_LIMIT_MAX_ATTEMPTS_KEYS)
+def test_a_negative_rate_limit_attempt_count_is_refused(
+    api: TestClient, db: Session, key: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, "-1"))
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": SETTING_VALUE_INVALID_ERROR}
+
+
+@pytest.mark.parametrize("key", RATE_LIMIT_WINDOW_KEYS)
+def test_a_rate_limit_window_of_one_minute_is_accepted(
+    api: TestClient, db: Session, key: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, "60"))
+
+    assert response.status_code == 200
+    assert _item(response.json(), key)["value"] == "60"
+
+
+@pytest.mark.parametrize("key", RATE_LIMIT_WINDOW_KEYS)
+def test_a_rate_limit_window_under_one_minute_is_refused(
+    api: TestClient, db: Session, key: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, "59"))
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": SETTING_VALUE_INVALID_ERROR}
+
+
+def test_a_cancellation_cutoff_of_one_year_is_accepted(api: TestClient, db: Session) -> None:
+    _make_setting(db, key=CANCELLATION_CUTOFF, value="6")
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(CANCELLATION_CUTOFF, "8760")
+    )
+
+    assert response.status_code == 200
+    assert _item(response.json(), CANCELLATION_CUTOFF)["value"] == "8760"
+
+
+def test_a_cancellation_cutoff_past_one_year_is_refused(api: TestClient, db: Session) -> None:
+    row = _make_setting(db, key=CANCELLATION_CUTOFF, value="6")
+    admin = _make_user(db)
+
+    response = api.patch(
+        SETTINGS_URL, headers=_auth(admin), json=_updates(CANCELLATION_CUTOFF, "8761")
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": SETTING_VALUE_INVALID_ERROR}
+    assert _stored_value(db, row) == "6"
+
+
+@pytest.mark.parametrize("key", RATE_LIMIT_WINDOW_KEYS)
+def test_a_rate_limit_window_of_31_days_is_accepted(api: TestClient, db: Session, key: str) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, "2678400"))
+
+    assert response.status_code == 200
+    assert _item(response.json(), key)["value"] == "2678400"
+
+
+@pytest.mark.parametrize("key", RATE_LIMIT_WINDOW_KEYS)
+def test_a_rate_limit_window_past_31_days_is_refused(
+    api: TestClient, db: Session, key: str
+) -> None:
+    admin = _make_user(db)
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_updates(key, "2678401"))
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": SETTING_VALUE_INVALID_ERROR}
 
 
 # --- business timezone -----------------------------------------------------------------------

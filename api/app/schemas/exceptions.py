@@ -77,11 +77,6 @@ class ExceptionDecision(BaseModel):
     confirm_warnings: list[TimeOffWarningCode] = []
 
 
-class TimeOffWarning(BaseModel):
-    code: TimeOffWarningCode
-    message: str
-
-
 class ClashingBooking(BaseModel):
     """A live Booking of the same person inside the Time off's window. Computed, never stored."""
 
@@ -91,6 +86,13 @@ class ClashingBooking(BaseModel):
     end_time: datetime.time
     child_name: str
     status: BookingStatus
+
+
+class TimeOffWarning(BaseModel):
+    code: TimeOffWarningCode
+    message: str
+    # The rows `ExceptionRead.clashing_bookings` would list once the write lands.
+    clashing_bookings: list[ClashingBooking]
 
 
 class ExceptionRead(BaseModel):
@@ -108,6 +110,8 @@ class ExceptionRead(BaseModel):
     decided_at: datetime.datetime | None
     cancelled_by: NamedRef | None
     cancelled_at: datetime.datetime | None
+    # Who entered the row; null on rows from before it was recorded.
+    entered_by: NamedRef | None
     # Empty unless the wire status is `pending` (not Expired) or `approved`.
     clashing_bookings: list[ClashingBooking]
     clashing_bookings_count: int

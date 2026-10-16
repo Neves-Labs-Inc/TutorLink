@@ -18,15 +18,19 @@ import datetime
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
+from app.models.availability import TutorAvailabilityException
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
+from app.models.enums import ExceptionStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.schemas.booking import (
     BookingChild,
+    BookingSummaryChild,
+    ClashingTimeOff,
     BookingDetail,
     BookingGuardian,
     BookingSummary,
@@ -49,11 +53,12 @@ def booking_summaries(
     """Needs `child`, `staff`, `subject`, `home` and `clash_acknowledged_by_user` loaded."""
     levels = _subject_levels(db, rows)
     reasons = sort_out_reasons(db, [row.id for row in rows], now)
+    guardians = _guardian_refs(db, {row.child_id for row in rows})
 
     return [
         BookingSummary(
             id=row.id,
-            child=NamedRef(id=row.child.id, name=row.child.name),
+            child=BookingSummaryChild(id=row.child.id, name=row.child.name, notes=row.child.notes),
             staff=staff_ref(row.staff),
             kind=row.kind,
             location=row.location,
@@ -65,6 +70,7 @@ def booking_summaries(
             status=row.status,
             notes=row.notes,
             home=home_summary_ref(row.home),
+            guardians=guardians.get(row.child_id, []),
             sort_out_reasons=reasons[row.id],
             clash_acknowledged_by=user_ref(row.clash_acknowledged_by_user),
             clash_acknowledged_at=row.clash_acknowledged_at,
@@ -98,6 +104,8 @@ def booking_detail(
         end_time=row.end_time,
         status=row.status,
         notes=row.notes,
+        availability_id=row.availability_id,
+        clashing_time_off=_clashing_time_off(db, row),
         home=home_ref(row.home),
         booked_by_guardian=(
             None
@@ -128,6 +136,57 @@ def _subject_levels(db: Session, rows: Sequence[Booking]) -> dict[_LevelKey, int
     ).all()
 
     return {(child_id, subject_id): level for child_id, subject_id, level in found}
+
+
+def _guardian_refs(db: Session, child_ids: set[uuid.UUID]) -> dict[uuid.UUID, list[NamedRef]]:
+    """Each Child's non-archived Guardians by name, for all the Children in one query."""
+    if not child_ids:
+        return {}
+
+    found = db.execute(
+        select(ChildGuardian.child_id, Guardian.id, Guardian.name)
+        .join(Guardian, Guardian.id == ChildGuardian.guardian_id)
+        .where(ChildGuardian.child_id.in_(child_ids), Guardian.is_archived.is_(False))
+        .order_by(Guardian.name, Guardian.id)
+    ).all()
+
+    refs: dict[uuid.UUID, list[NamedRef]] = {}
+    for child_id, guardian_id, name in found:
+        refs.setdefault(child_id, []).append(NamedRef(id=guardian_id, name=name))
+    return refs
+
+
+def _clashing_time_off(db: Session, row: Booking) -> list[ClashingTimeOff]:
+    """The Staff member's approved Time off overlapping the Booking, acknowledged or not.
+
+    The overlap of `sort_out_service.time_off_clash_predicate` (keep the two in step).
+    """
+    time_off = TutorAvailabilityException
+    found = db.scalars(
+        select(time_off)
+        .where(
+            time_off.status == ExceptionStatus.APPROVED,
+            time_off.user_id == row.user_id,
+            time_off.start_date <= row.scheduled_date,
+            time_off.end_date >= row.scheduled_date,
+            or_(
+                time_off.start_time.is_(None),
+                and_(time_off.start_time < row.end_time, time_off.end_time > row.start_time),
+            ),
+        )
+        .order_by(time_off.start_date, time_off.id)
+    ).all()
+
+    return [
+        ClashingTimeOff(
+            id=item.id,
+            start_date=item.start_date,
+            end_date=item.end_date,
+            start_time=item.start_time,
+            end_time=item.end_time,
+        )
+        for item in found
+    ]
 
 
 def _guardians(

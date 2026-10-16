@@ -144,13 +144,17 @@ def test_an_admin_sees_the_same_child_notes_on_the_detail_and_id_name_on_every_l
     assert detail.json()["child"]["notes"] == CHILD_NOTES
 
     assert listed.status_code == 200
-    assert [set(row["child"]) for row in listed.json()["items"]] == [{"id", "name"}]
+    assert [set(row["child"]) for row in listed.json()["items"]] == [{"id", "name", "notes"}]
 
     assert client_bookings.status_code == 200
-    assert [set(row["child"]) for row in client_bookings.json()["items"]] == [{"id", "name"}]
+    assert [set(row["child"]) for row in client_bookings.json()["items"]] == [
+        {"id", "name", "notes"}
+    ]
 
     assert stats.status_code == 200
-    assert [set(row["child"]) for row in stats.json()["recent_bookings"]] == [{"id", "name"}]
+    assert [set(row["child"]) for row in stats.json()["recent_bookings"]] == [
+        {"id", "name", "notes"}
+    ]
 
 
 def test_the_detail_is_401_with_no_token_and_403_for_a_tutor_with_no_tutor_id(

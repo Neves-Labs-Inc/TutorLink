@@ -80,6 +80,10 @@ class ConversationSummary(BaseModel):
     last_message_preview: str | None
     unread: bool
     flag_reason: FlagReason | None
+    # "Takeover closes in…" and Mark done on the list row (same meaning as on the detail).
+    last_client_message_at: datetime.datetime | None
+    is_window_open: bool
+    flagged_at: datetime.datetime | None
 
 
 class ConversationRead(BaseModel):

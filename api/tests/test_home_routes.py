@@ -9,6 +9,7 @@ Every negative case asserts the exact `{"detail": "..."}` body, not merely the s
 
 import datetime
 import uuid
+from collections.abc import Callable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,7 +21,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
@@ -36,7 +37,15 @@ CLIENT_NOT_FOUND_ERROR = "Client not found"
 HOME_NOT_FOUND_ERROR = "Home not found"
 BLANK_HOME_DETAILS_ERROR = "address must not be blank"
 
-HOME_READ_KEYS = {"id", "label", "address", "directions", "archived", "guardians"}
+HOME_READ_KEYS = {
+    "id",
+    "label",
+    "address",
+    "directions",
+    "archived",
+    "guardians",
+    "upcoming_booking_count",
+}
 
 NINE = datetime.time(9, 0)
 TWELVE = datetime.time(12, 0)
@@ -205,6 +214,7 @@ def test_patch_directions_changes_only_that_field(api: TestClient, db: Session) 
         "directions": "Side door",
         "archived": False,
         "guardians": [{"id": str(owner.id), "name": owner.name}],
+        "upcoming_booking_count": 0,
     }
 
 
@@ -372,6 +382,79 @@ def test_an_archived_home_is_refused_by_post_bookings_and_bookable_once_restored
     accepted = api.post("/api/bookings", json=payload, headers=_auth(admin))
     assert accepted.status_code == 201
     assert _booking_count(db, home) == 1
+
+
+# --- upcoming_booking_count -----------------------------------------------------------------
+
+NOW = datetime.datetime(2031, 3, 4, 12, 0)
+TODAY = NOW.date()
+TOMORROW = TODAY + datetime.timedelta(days=1)
+YESTERDAY = TODAY - datetime.timedelta(days=1)
+
+
+def test_a_home_with_no_bookings_counts_zero(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    response = _add(api, admin, client.id)
+
+    assert response.json()["upcoming_booking_count"] == 0
+
+
+def test_the_count_is_the_upcoming_live_bookings_the_archive_refusal_names(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    freeze_business_clock(NOW)
+    admin = _make_user(db)
+    client = _make_client(db)
+    home = _make_home(db, client=client)
+    other_home = _make_home(db, client=client)
+    _book(db, client=client, home=home, on=TOMORROW, status=BookingStatus.PENDING)
+    _book(db, client=client, home=home, on=TOMORROW, status=BookingStatus.CONFIRMED)
+    _book(db, client=client, home=home, on=YESTERDAY, status=BookingStatus.CONFIRMED)
+    _book(db, client=client, home=home, on=TOMORROW, status=BookingStatus.CANCELLED)
+    _book(db, client=client, home=other_home, on=TOMORROW, status=BookingStatus.CONFIRMED)
+
+    patched = _patch(api, admin, home.id, {"label": "Renamed"})
+    detail = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+    refusal = api.post(
+        "/api/archive", json={"type": "home", "id": str(home.id)}, headers=_auth(admin)
+    )
+
+    counts = {entry["id"]: entry["upcoming_booking_count"] for entry in detail["homes"]}
+    assert patched.json()["upcoming_booking_count"] == 2
+    assert counts == {str(home.id): 2, str(other_home.id): 1}
+    assert refusal.status_code == 409
+    assert len(refusal.json()["booking_ids"]) == 2
+
+
+def _book(
+    db: Session,
+    *,
+    client: Guardian,
+    home: Home,
+    on: datetime.date,
+    status: BookingStatus,
+) -> Booking:
+    tutor = _make_tutor(db)
+    availability = _make_availability(db, tutor=tutor, weekday=on.weekday())
+    booking = Booking(
+        child_id=_make_child(db, guardians=[client]).id,
+        user_id=tutor.user_id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.HOME,
+        subject_id=_make_subject(db).id,
+        availability_id=availability.id,
+        home_id=home.id,
+        scheduled_date=on,
+        start_time=TWELVE,
+        end_time=datetime.time(13, 0),
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+
+    return booking
 
 
 # --- RBAC, error shape, shared literals -----------------------------------------------------

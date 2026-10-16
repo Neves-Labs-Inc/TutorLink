@@ -105,9 +105,13 @@ def create(payload: UserCreate, user: AdminPrincipal, db: DbSession) -> StaffRea
     except TutorUniqueViolation as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, TUTOR_UNIQUE_VIOLATION_ERROR) from exc
 
+    now = datetime.now(UTC)
+    if payload.send_invite:
+        created = _invite_or_raise(db, actor=user, user_id=created.id, now=now)
+
     db.commit()
 
-    return _staff_row(db, created)
+    return _staff_row(db, created, now=now)
 
 
 @router.patch("/{user_id}", response_model=StaffRead)
@@ -150,30 +154,8 @@ def update(
 def invite(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> StaffRead:
     """Email the user a single-use link to choose a password; they show as Invited until it is
     used, replaced, revoked or expired. Nothing is committed unless the email went out."""
-    actor = get_user(db, user_id=user.id)
     now = datetime.now(UTC)
-
-    try:
-        invited = invite_user(
-            db,
-            actor_role=user.role,
-            actor_id=user.id,
-            actor_name=actor.name,
-            user_id=user_id,
-            now=now,
-        )
-    except UserNotFound as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
-    except RoleNotPermitted as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
-    except UserHasPassword as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, USER_HAS_PASSWORD_ERROR) from exc
-    except UserInactive as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, USER_INACTIVE_ERROR) from exc
-    except MailServiceError as exc:
-        # The service unwound the link row; the user is not Invited. No address in the log.
-        logger.error("invite email for user %s not sent: %s", user_id, exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, INVITE_SEND_FAILED_ERROR) from exc
+    invited = _invite_or_raise(db, actor=user, user_id=user_id, now=now)
 
     db.commit()
 
@@ -204,6 +186,35 @@ def password_reset(user_id: uuid.UUID, user: AdminPrincipal, db: DbSession) -> N
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, RESET_SEND_FAILED_ERROR) from exc
 
     db.commit()
+
+
+def _invite_or_raise(db: Session, *, actor: User, user_id: uuid.UUID, now: datetime) -> User:
+    """Send the Invite, mapping each refusal to its HTTP status; the caller commits."""
+    actor_name = get_user(db, user_id=actor.id).name
+
+    try:
+        invited = invite_user(
+            db,
+            actor_role=actor.role,
+            actor_id=actor.id,
+            actor_name=actor_name,
+            user_id=user_id,
+            now=now,
+        )
+    except UserNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND_ERROR) from exc
+    except RoleNotPermitted as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, DEVELOPER_FORBIDDEN_ERROR) from exc
+    except UserHasPassword as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, USER_HAS_PASSWORD_ERROR) from exc
+    except UserInactive as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, USER_INACTIVE_ERROR) from exc
+    except MailServiceError as exc:
+        # The service unwound the link row; the user is not Invited. No address in the log.
+        logger.error("invite email for user %s not sent: %s", user_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, INVITE_SEND_FAILED_ERROR) from exc
+
+    return invited
 
 
 def _staff_row(db: Session, user: User, *, now: datetime | None = None) -> StaffRead:

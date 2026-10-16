@@ -15,9 +15,10 @@ from httpx import Response
 from sqlalchemy.orm import Session
 
 from app.dependencies import CREDENTIALS_ERROR, OFFICE_REQUIRED_ERROR
+from app.models.availability import TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, ExceptionStatus, UserRole
 from app.models.password_link import PasswordLinkPurpose
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -38,6 +39,10 @@ ITEM_FIELDS = {
     "archived",
     "subjects",
     "sessions_this_week",
+    "assigned_children",
+    "phone_number",
+    "bio",
+    "has_pending_time_off",
 }
 STAFF_NOT_FOUND_ERROR = "Staff member not found"
 # A Wednesday: the week runs Monday 12 October to Sunday 18 October 2026.
@@ -253,10 +258,14 @@ def test_a_tutors_row_carries_every_field(
         "sign_in_state": "invited",
         "archived": False,
         "subjects": [
-            {"id": str(algebra.id), "name": "Algebra Staff01"},
-            {"id": str(retired_chemistry.id), "name": "Chemistry Staff01"},
+            {"id": str(algebra.id), "name": "Algebra Staff01", "max_grade_level": 8},
+            {"id": str(retired_chemistry.id), "name": "Chemistry Staff01", "max_grade_level": 8},
         ],
         "sessions_this_week": 1,
+        "assigned_children": [],
+        "phone_number": tutor.phone_number,
+        "bio": None,
+        "has_pending_time_off": False,
     }
     assert isinstance(invite_expires_at, str)
     assert datetime.datetime.fromisoformat(invite_expires_at) == expires_at
@@ -281,8 +290,12 @@ def test_a_managers_row_carries_their_subjects_and_sign_in_state(
         "sign_in_state": "not_invited",
         "invite_expires_at": None,
         "archived": False,
-        "subjects": [{"id": str(physics.id), "name": "Physics Staff01"}],
+        "subjects": [{"id": str(physics.id), "name": "Physics Staff01", "max_grade_level": 8}],
         "sessions_this_week": 0,
+        "assigned_children": [],
+        "phone_number": manager.phone_number,
+        "bio": None,
+        "has_pending_time_off": False,
     }
 
 
@@ -303,6 +316,10 @@ def test_an_admins_row_is_active_with_no_subjects(api: TestClient, db: Session) 
         "archived": False,
         "subjects": [],
         "sessions_this_week": 0,
+        "assigned_children": [],
+        "phone_number": None,
+        "bio": None,
+        "has_pending_time_off": False,
     }
 
 
@@ -532,3 +549,118 @@ def test_total_counts_beyond_the_page(api: TestClient, db: Session) -> None:
     assert body["total"] > DEFAULT_PAGE_SIZE
     assert body["page"] == 1
     assert body["page_size"] == DEFAULT_PAGE_SIZE
+
+
+# --- q, contact fields, pending Time off, subject grade ---------------------------------------
+
+
+def _time_off(
+    db: Session, user: User, *, status: ExceptionStatus, start: datetime.date, days: int = 1
+) -> None:
+    db.add(
+        TutorAvailabilityException(
+            user_id=user.id,
+            start_date=start,
+            end_date=start + datetime.timedelta(days=days - 1),
+            reason="dentist",
+            status=status,
+        )
+    )
+    db.flush()
+
+
+def test_q_matches_a_name_case_insensitively(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    match = _make_tutor(db, name="Zebulon Quillfeather")
+    other = _make_tutor(db, name="Someone Else")
+
+    body = api.get("/api/staff?q=quILLfeath", headers=_auth(admin)).json()
+
+    assert _ids(body) == [str(match.user_id)]
+    assert str(other.user_id) not in _ids(body)
+
+
+def test_q_matches_an_email(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    match = _make_tutor(db)
+    match.user.email = "findable-Marker@example.com"
+    db.flush()
+
+    body = api.get("/api/staff?q=FINDABLE-marker", headers=_auth(admin)).json()
+
+    assert _ids(body) == [str(match.user_id)]
+
+
+def test_q_combines_with_the_other_filters(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    active = _make_tutor(db, name="Quokka Active")
+    _make_tutor(db, name="Quokka Gone", is_archived=True)
+
+    body = api.get("/api/staff?q=quokka&archived=false", headers=_auth(admin)).json()
+
+    assert _ids(body) == [str(active.user_id)]
+
+
+def test_a_blank_q_is_ignored(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+
+    body = api.get("/api/staff?q=%20%20&page_size=100", headers=_auth(admin)).json()
+
+    assert str(tutor.user_id) in _ids(body)
+
+
+def test_phone_and_bio_come_from_the_profile_and_are_null_without_one(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    tutor.bio = "Loves fractions"
+    db.flush()
+
+    body = api.get("/api/staff?page_size=100", headers=_auth(admin)).json()
+
+    with_profile = _row(body, tutor.user_id)
+    assert with_profile["phone_number"] == tutor.phone_number
+    assert with_profile["bio"] == "Loves fractions"
+    without_profile = _row(body, admin.id)
+    assert without_profile["phone_number"] is None
+    assert without_profile["bio"] is None
+
+
+def test_has_pending_time_off_is_true_only_for_a_live_pending_request(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    pending = _make_tutor(db)
+    expired = _make_tutor(db)
+    approved = _make_tutor(db)
+    none = _make_tutor(db)
+    future = datetime.date(2099, 1, 5)
+    _time_off(db, pending.user, status=ExceptionStatus.PENDING, start=future)
+    _time_off(db, expired.user, status=ExceptionStatus.PENDING, start=datetime.date(2020, 1, 6))
+    _time_off(db, approved.user, status=ExceptionStatus.APPROVED, start=future)
+
+    body = api.get("/api/staff?page_size=100", headers=_auth(admin)).json()
+
+    flags = {
+        name: _row(body, tutor.user_id)["has_pending_time_off"]
+        for name, tutor in (
+            ("pending", pending),
+            ("expired", expired),
+            ("approved", approved),
+            ("none", none),
+        )
+    }
+    assert flags == {"pending": True, "expired": False, "approved": False, "none": False}
+
+
+def test_each_subject_carries_the_persons_highest_grade(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    tutor = _make_tutor(db)
+    subject = _make_subject(db)
+    _assign(db, tutor, subject)
+
+    row = api.get(f"/api/staff/{tutor.user_id}", headers=_auth(admin)).json()
+
+    assert row["subjects"] == [{"id": str(subject.id), "name": subject.name, "max_grade_level": 8}]

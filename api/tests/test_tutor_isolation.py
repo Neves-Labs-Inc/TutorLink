@@ -294,12 +294,11 @@ def test_a_tutor_sees_a_booked_childs_notes_on_the_detail_and_never_the_date_of_
 
     assert listed.status_code == 200
     assert detail.status_code == 200
-    assert [set(row["child"]) for row in listed.json()["items"]] == [{"id", "name"}]
+    assert [set(row["child"]) for row in listed.json()["items"]] == [{"id", "name", "notes"}]
     assert set(detail.json()["child"]) == {"id", "name", "notes"}
     assert detail.json()["child"]["notes"] == CHILD_NOTES
     assert CHILD_DATE_OF_BIRTH.isoformat() not in listed.text
     assert CHILD_DATE_OF_BIRTH.isoformat() not in detail.text
-    assert CHILD_NOTES not in listed.text
 
 
 def test_a_tutor_creating_their_own_time_off_lands_pending(

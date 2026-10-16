@@ -83,6 +83,7 @@ class TutorAvailabilityException(HasID, Base):
     lands as `PENDING` and is inert until an admin decides it, so a consumer that subtracts
     Time off from availability must filter on `status` — the row existing is not enough.
     `decided_*` and `cancelled_*` are recorded by the lifecycle, and are null until then.
+    `created_by` is set on every create.
     """
 
     __tablename__ = "tutor_availability_exceptions"
@@ -136,8 +137,14 @@ class TutorAvailabilityException(HasID, Base):
     cancelled_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Who entered the row: the person themselves, or an Admin role on their behalf. Null on
+    # rows written before migration 0046 recorded it.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
 
-    # Three foreign keys reach `users`, so each join is named.
+    # Four foreign keys reach `users`, so each join is named.
     staff: Mapped["User"] = relationship(foreign_keys=[user_id])
     decider: Mapped["User | None"] = relationship(foreign_keys=[decided_by])
     canceller: Mapped["User | None"] = relationship(foreign_keys=[cancelled_by])
+    creator: Mapped["User | None"] = relationship(foreign_keys=[created_by])

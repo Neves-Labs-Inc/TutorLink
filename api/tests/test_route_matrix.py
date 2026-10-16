@@ -77,12 +77,13 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("GET", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
     # Self or an Admin role, checked against the slot's profile (#208).
     ("POST", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
+    ("PUT", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
     ("PATCH", "/api/availability/{availability_id}"): Access.TUTOR_SCOPED,
     ("DELETE", "/api/availability/{availability_id}"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings"): Access.TUTOR_SCOPED,
     ("GET", "/api/bookings/{booking_id}"): Access.TUTOR_SCOPED,
     ("PATCH", "/api/exceptions/{exception_id}"): Access.ADMIN,
-    ("GET", "/api/exceptions"): Access.ADMIN,
+    ("GET", "/api/exceptions"): Access.STAFF,
     ("GET", "/api/counts"): Access.STAFF,
     ("POST", "/api/subjects"): Access.STAFF,
     ("PATCH", "/api/subjects/{subject_id}"): Access.STAFF,
@@ -106,6 +107,8 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("DELETE", "/api/children/{child_id}/levels/{subject_id}"): Access.STAFF,
     ("POST", "/api/children/{child_id}/evaluated"): Access.STAFF,
     ("DELETE", "/api/children/{child_id}/evaluated"): Access.STAFF,
+    ("POST", "/api/children/{child_id}/assigned-tutors"): Access.STAFF,
+    ("DELETE", "/api/children/{child_id}/assigned-tutors/{user_id}"): Access.STAFF,
     ("GET", "/api/households"): Access.STAFF,
     ("PATCH", "/api/homes/{home_id}"): Access.STAFF,
     # Staff writes are Admin-only (#208); reading the Tutors page is not.

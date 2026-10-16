@@ -31,6 +31,8 @@ NON_ERD_TABLES = {
     "booking_reminder_runs",
     # Spec 04: the hashed Invite and password-reset links, as `refresh_tokens`.
     "password_links",
+    # #242: a Child's Assigned Tutors.
+    "child_assigned_tutors",
 }
 
 

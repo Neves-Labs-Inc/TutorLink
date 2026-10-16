@@ -29,7 +29,7 @@ from app.models.password_link import PasswordLink
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
-from app.routers.users import INVALID_SHAPE_ERROR
+from app.routers.users import INVALID_SHAPE_ERROR, INVITE_SEND_FAILED_ERROR
 from app.security import create_access_token, hash_password, verify_password
 from tests.fake_mail import FakeMail, token_from
 
@@ -423,6 +423,10 @@ STAFF_ROW_KEYS = {
     "archived",
     "subjects",
     "sessions_this_week",
+    "assigned_children",
+    "phone_number",
+    "bio",
+    "has_pending_time_off",
 }
 
 
@@ -471,6 +475,50 @@ def test_invite_answers_with_a_staff_row_showing_the_new_expiry(
     assert set(body) == STAFF_ROW_KEYS
     assert body["sign_in_state"] == "invited"
     assert datetime.fromisoformat(body["invite_expires_at"]) == link.expires_at
+
+
+def test_create_with_send_invite_emails_the_link_and_answers_invited(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    payload = _create_payload(role="admin", send_invite=True)
+
+    response = api.post("/api/users", headers=_auth(admin), json=payload)
+
+    body = response.json()
+    assert response.status_code == 201
+    assert body["sign_in_state"] == "invited"
+    assert body["invite_expires_at"] is not None
+    (sent,) = fake_mail.sent
+    assert sent.to == payload["email"]
+    assert token_from(sent)
+
+
+def test_create_without_send_invite_sends_nothing(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+
+    response = api.post("/api/users", headers=_auth(admin), json=_create_payload(role="admin"))
+
+    assert response.status_code == 201
+    assert response.json()["sign_in_state"] == "not_invited"
+    assert fake_mail.sent == []
+
+
+def test_create_with_send_invite_is_502_when_the_email_fails(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    admin = _make_user(db)
+    fake_mail.fail_next()
+
+    response = api.post(
+        "/api/users", headers=_auth(admin), json=_create_payload(role="admin", send_invite=True)
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": INVITE_SEND_FAILED_ERROR}
+    assert fake_mail.sent == []
 
 
 def test_a_developer_creating_a_developer_gets_the_full_row(api: TestClient, db: Session) -> None:

@@ -79,6 +79,7 @@ SUMMARY_FIELDS = {
     "status",
     "notes",
     "home",
+    "guardians",
     "sort_out_reasons",
     "clash_acknowledged_by",
     "clash_acknowledged_at",
@@ -484,13 +485,14 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
     listed = api.get(f"/api/bookings?from={WEDNESDAY}&to={WEDNESDAY}", headers=_auth(admin)).json()
 
     assert set(item) == SUMMARY_FIELDS
-    assert set(item["child"]) == set(item["subject"]) == {"id", "name"}
+    assert set(item["child"]) == {"id", "name", "notes"}
+    assert set(item["subject"]) == {"id", "name"}
     assert set(item["staff"]) == {"id", "name", "role"}
     assert item == listed["items"][0]
     assert datetime.datetime.fromisoformat(item.pop("updated_at")) == booking.updated_at
     assert item == {
         "id": str(booking.id),
-        "child": {"id": str(stage.child.id), "name": stage.child.name},
+        "child": {"id": str(stage.child.id), "name": stage.child.name, "notes": None},
         "staff": {
             "id": str(stage.cast.tutor.user_id),
             "name": stage.cast.tutor.user.name,
@@ -505,7 +507,13 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         "end_time": "11:00:00",
         "status": "confirmed",
         "notes": None,
-        "home": {"id": str(stage.home.id), "label": None, "address": "1 Test Street"},
+        "home": {
+            "id": str(stage.home.id),
+            "label": None,
+            "address": "1 Test Street",
+            "directions": "0000",
+        },
+        "guardians": [],
         # The day after its date, still confirmed.
         "sort_out_reasons": ["not_completed"],
         "clash_acknowledged_by": {"id": str(admin.id), "name": admin.name},

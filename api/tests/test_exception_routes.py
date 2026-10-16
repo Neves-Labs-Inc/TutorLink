@@ -23,7 +23,7 @@ from httpx import Response
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR
+from app.dependencies import ADMIN_REQUIRED_ERROR, CREDENTIALS_ERROR, OFFICE_REQUIRED_ERROR
 from app.models.availability import REASON_MAX_LENGTH, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
@@ -107,6 +107,7 @@ def test_a_tutor_or_managers_own_request_lands_pending(
     assert body["decided_at"] is None
     assert body["cancelled_by"] is None
     assert body["cancelled_at"] is None
+    assert body["entered_by"] == {"id": str(user.id), "name": user.name}
     assert _row(db, uuid.UUID(body["id"])).status is ExceptionStatus.PENDING
 
 
@@ -160,6 +161,7 @@ def test_an_admins_entry_lands_approved_and_decided_by_them(
     assert body["staff"]["id"] == str(target.id)
     assert body["decided_by"] == {"id": str(user.id), "name": user.name}
     assert body["decided_at"] is not None
+    assert body["entered_by"] == {"id": str(user.id), "name": user.name}
     assert _row(db, uuid.UUID(body["id"])).decided_by == user.id
 
 
@@ -683,14 +685,11 @@ def test_tutor_lists_their_own_exceptions(api: TestClient, db: Session) -> None:
     assert body["items"][0]["status"] == "pending"
 
 
-@pytest.mark.parametrize("role", REQUESTER_ROLE_CASES)
-def test_a_requester_listing_someone_elses_time_off_is_403(
-    api: TestClient, db: Session, role: UserRole
-) -> None:
-    """Not 404, and emphatically not an empty 200. A Manager reads only their own."""
+def test_a_tutor_listing_someone_elses_time_off_is_403(api: TestClient, db: Session) -> None:
+    """Not 404, and emphatically not an empty 200. A Tutor reads only their own."""
     other = _make_staff(db, role=UserRole.TUTOR)
     _make_exception(db, user_id=other.id, status=ExceptionStatus.PENDING)
-    user = _make_staff(db, role=role)
+    user = _make_staff(db, role=UserRole.TUTOR)
 
     response = api.get(f"/api/users/{other.id}/exceptions", headers=_bearer(user))
 
@@ -747,6 +746,35 @@ def test_a_developer_lists_another_developers_time_off(api: TestClient, db: Sess
     assert response.json()["total"] == 1
 
 
+@pytest.mark.parametrize("target_role", [UserRole.TUTOR, UserRole.MANAGER, UserRole.ADMIN])
+def test_a_manager_reads_anyones_time_off_as_an_admin_does(
+    api: TestClient, db: Session, target_role: UserRole
+) -> None:
+    target = _make_staff(db, role=target_role)
+    _make_exception(db, user_id=target.id, status=ExceptionStatus.PENDING)
+    _make_exception(db, user_id=target.id, status=ExceptionStatus.REJECTED)
+    manager = _make_staff(db, role=UserRole.MANAGER)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    url = f"/api/users/{target.id}/exceptions"
+
+    as_manager = api.get(url, headers=_bearer(manager))
+    as_admin = api.get(url, headers=_bearer(admin))
+
+    assert as_manager.status_code == 200
+    assert as_manager.json()["total"] == 2
+    assert as_manager.json() == as_admin.json()
+
+
+def test_a_manager_listing_a_developers_time_off_is_403(api: TestClient, db: Session) -> None:
+    developer = _make_staff(db, role=UserRole.DEVELOPER)
+    _make_exception(db, user_id=developer.id, status=ExceptionStatus.APPROVED)
+    user = _make_staff(db, role=UserRole.MANAGER)
+
+    response = api.get(f"/api/users/{developer.id}/exceptions", headers=_bearer(user))
+
+    _assert_detail(response, 403, DEVELOPER_TIME_OFF_ERROR)
+
+
 def test_an_ended_pending_row_reads_expired_and_nothing_else_does(
     api: TestClient, db: Session
 ) -> None:
@@ -770,6 +798,34 @@ def test_an_ended_pending_row_reads_expired_and_nothing_else_does(
         str(ended_approved.id): "approved",
     }
     assert _row(db, expired.id).status is ExceptionStatus.PENDING
+
+
+def test_the_list_names_who_entered_each_row_and_null_when_nobody_recorded_it(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    requested = api.post(
+        f"/api/users/{owner.id}/exceptions", json=_payload(), headers=_bearer(owner)
+    ).json()
+    entered = api.post(
+        f"/api/users/{owner.id}/exceptions",
+        json=_payload(start_date="2099-10-01", end_date="2099-10-01"),
+        headers=_bearer(admin),
+    ).json()
+    unrecorded = _make_exception(
+        db, user_id=owner.id, status=ExceptionStatus.APPROVED, start_date=FUTURE.replace(year=2098)
+    )
+
+    for url in (f"/api/users/{owner.id}/exceptions", f"/api/exceptions?user_id={owner.id}"):
+        body = api.get(url, headers=_bearer(admin)).json()
+        entered_by = {item["id"]: item["entered_by"] for item in body["items"]}
+
+        assert entered_by == {
+            str(unrecorded.id): None,
+            requested["id"]: {"id": str(owner.id), "name": owner.name},
+            entered["id"]: {"id": str(admin.id), "name": admin.name},
+        }
 
 
 def test_the_list_names_who_decided_and_who_cancelled(api: TestClient, db: Session) -> None:
@@ -1385,15 +1441,12 @@ def test_a_row_written_without_a_status_defaults_to_approved(db: Session) -> Non
 # --- the Admin cross-Staff list ------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", REQUESTER_ROLE_CASES)
-def test_a_tutor_or_manager_listing_all_time_off_is_403(
-    api: TestClient, db: Session, role: UserRole
-) -> None:
-    user = _make_staff(db, role=role)
+def test_a_tutor_listing_all_time_off_is_403(api: TestClient, db: Session) -> None:
+    user = _make_staff(db, role=UserRole.TUTOR)
 
     response = api.get("/api/exceptions", headers=_bearer(user))
 
-    _assert_detail(response, 403, ADMIN_REQUIRED_ERROR)
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 @pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
@@ -1415,6 +1468,73 @@ def test_an_admin_role_lists_all_staffs_time_off(
     assert body["total"] >= 2
     item = next(item for item in body["items"] if item["id"] == str(mine.id))
     assert item["staff"] == {"id": str(tutor.id), "name": tutor.name, "role": "tutor"}
+
+
+def test_a_manager_lists_all_staffs_time_off_as_an_admin_does(api: TestClient, db: Session) -> None:
+    tutor = _make_staff(db, role=UserRole.TUTOR)
+    admin_owner = _make_staff(db, role=UserRole.ADMIN)
+    developer = _make_staff(db, role=UserRole.DEVELOPER)
+    shown = [
+        _make_exception(db, user_id=tutor.id, status=ExceptionStatus.PENDING),
+        _make_exception(db, user_id=admin_owner.id, status=ExceptionStatus.APPROVED),
+    ]
+    hidden = _make_exception(db, user_id=developer.id, status=ExceptionStatus.APPROVED)
+    manager = _make_staff(db, role=UserRole.MANAGER)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    url = "/api/exceptions?page_size=100"
+
+    as_manager = api.get(url, headers=_bearer(manager))
+    as_admin = api.get(url, headers=_bearer(admin))
+    ids = {item["id"] for item in as_manager.json()["items"]}
+
+    assert as_manager.status_code == 200
+    assert {str(row.id) for row in shown} <= ids
+    assert str(hidden.id) not in ids
+    assert as_manager.json() == as_admin.json()
+
+
+def test_status_repeated_returns_rows_at_any_of_them_and_totals_them(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    pending = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+    expired = _make_exception(
+        db, user_id=owner.id, status=ExceptionStatus.PENDING, start_date=_long_ago()
+    )
+    approved = _make_exception(
+        db,
+        user_id=owner.id,
+        status=ExceptionStatus.APPROVED,
+        start_date=FUTURE + datetime.timedelta(days=5),
+    )
+    _make_exception(db, user_id=owner.id, status=ExceptionStatus.REJECTED)
+    _make_exception(db, user_id=owner.id, status=ExceptionStatus.CANCELLED)
+    base = f"/api/exceptions?user_id={owner.id}&status=pending&status=expired&status=approved"
+
+    first = api.get(f"{base}&page_size=2", headers=_bearer(admin)).json()
+    second = api.get(f"{base}&page_size=2&page=2", headers=_bearer(admin)).json()
+
+    assert first["total"] == 3
+    assert second["total"] == 3
+    assert [item["id"] for item in first["items"] + second["items"]] == [
+        str(expired.id),
+        str(pending.id),
+        str(approved.id),
+    ]
+    assert [item["status"] for item in first["items"] + second["items"]] == [
+        "expired",
+        "pending",
+        "approved",
+    ]
+
+
+def test_an_unknown_status_among_several_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+
+    response = api.get("/api/exceptions?status=pending&status=nope", headers=_bearer(admin))
+
+    _assert_detail_shape(response, 400)
 
 
 def test_unauthenticated_list_all_is_401(api: TestClient) -> None:
@@ -1658,7 +1778,11 @@ def test_approving_a_clashing_row_warns_and_lands_once_confirmed(
     assert refused.json() == {
         "detail": UNCONFIRMED_WARNINGS_ERROR,
         "warnings": [
-            {"code": "booking_clash", "message": "This time off clashes with 1 booking(s)"}
+            {
+                "code": "booking_clash",
+                "message": "This time off clashes with 1 booking(s)",
+                "clashing_bookings": [_clash_json(clash)],
+            }
         ],
     }
     assert _row(db, row.id).status is ExceptionStatus.PENDING
@@ -1730,8 +1854,8 @@ def test_the_warning_counts_every_clash(api: TestClient, db: Session) -> None:
     owner = _make_staff(db, role=UserRole.TUTOR)
     admin = _make_staff(db, role=UserRole.ADMIN)
     row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
-    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
-    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(12, 0))
+    later = _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(12, 0))
+    earlier = _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
 
     response = api.patch(
         f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(admin)
@@ -1739,6 +1863,38 @@ def test_the_warning_counts_every_clash(api: TestClient, db: Session) -> None:
 
     assert response.status_code == 409
     assert response.json()["warnings"][0]["message"] == "This time off clashes with 2 booking(s)"
+    assert response.json()["warnings"][0]["clashing_bookings"] == [
+        _clash_json(earlier),
+        _clash_json(later),
+    ]
+
+
+def test_the_warning_lists_the_same_clashes_the_approved_row_then_reads(
+    api: TestClient, db: Session
+) -> None:
+    owner = _make_staff(db, role=UserRole.TUTOR)
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    row = _make_exception(db, user_id=owner.id, status=ExceptionStatus.PENDING)
+    _make_booking(db, user_id=owner.id, on=FUTURE, start=datetime.time(10, 0))
+    _make_booking(
+        db,
+        user_id=owner.id,
+        on=FUTURE + datetime.timedelta(days=1),
+        start=datetime.time(9, 0),
+        status=BookingStatus.PENDING,
+    )
+
+    refused = api.patch(
+        f"/api/exceptions/{row.id}", json={"status": "approved"}, headers=_bearer(admin)
+    ).json()
+    approved = api.patch(
+        f"/api/exceptions/{row.id}",
+        json={"status": "approved", "confirm_warnings": ["booking_clash"]},
+        headers=_bearer(admin),
+    ).json()
+
+    assert refused["warnings"][0]["clashing_bookings"] == approved["clashing_bookings"]
+    assert len(approved["clashing_bookings"]) == 2
 
 
 def test_approving_a_row_with_no_clashes_lands_straight_away(api: TestClient, db: Session) -> None:
@@ -1806,7 +1962,11 @@ def test_an_admin_creating_over_a_booking_warns_and_lands_once_confirmed(
 
     assert refused.status_code == 409
     assert refused.json()["warnings"] == [
-        {"code": "booking_clash", "message": "This time off clashes with 1 booking(s)"}
+        {
+            "code": "booking_clash",
+            "message": "This time off clashes with 1 booking(s)",
+            "clashing_bookings": [_clash_json(clash)],
+        }
     ]
     assert _count_for(db, owner.id) == 0
 
@@ -2025,6 +2185,18 @@ def _make_booking(
     db.add(booking)
     db.flush()
     return booking
+
+
+def _clash_json(booking: Booking) -> dict[str, object]:
+    """A `ClashingBooking` as the wire shows it."""
+    return {
+        "booking_id": str(booking.id),
+        "date": booking.scheduled_date.isoformat(),
+        "start_time": booking.start_time.isoformat(),
+        "end_time": booking.end_time.isoformat(),
+        "child_name": booking.child.name,
+        "status": booking.status.value,
+    }
 
 
 def _row(db: Session, exception_id: uuid.UUID) -> TutorAvailabilityException:

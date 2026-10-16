@@ -9,13 +9,13 @@ suggests:
 
 - `GET` takes `TutorScope`, whose `tutor_id` binds from the path segment — the two-shape rule's
   "list" side, same as `routers/exceptions.py`'s `list_tutor_exceptions`.
-- `POST`, `PATCH` and `DELETE` take `Principal` (any signed-in role, Tutors included) and
+- `POST`, `PUT`, `PATCH` and `DELETE` take `Principal` (any signed-in role, Tutors included) and
   **not** `TutorScope`: the rule is self or Admin (#208), not "a tutor sees only their own",
   and `availability_service` checks it against the caller it is handed. A Tutor or Manager
   writes their own slots; an Admin role writes anyone's within the account boundary (not a
   Developer's unless a Developer, not a peer Admin's). `POST` refuses a non-Admin naming
-  someone else's profile before any lookup, an unknown id included; `PATCH`/`DELETE` load the
-  slot first, so an unknown slot is 404 for every role.
+  someone else's profile before any lookup, an unknown id included, and so does `PUT`;
+  `PATCH`/`DELETE` load the slot first, so an unknown slot is 404 for every role.
 """
 
 import uuid
@@ -27,7 +27,12 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import Principal, TutorScope
 from app.models.availability import TutorAvailability
-from app.schemas.availability import AvailabilityCreate, AvailabilityRead, AvailabilityUpdate
+from app.schemas.availability import (
+    AvailabilityCreate,
+    AvailabilityRead,
+    AvailabilityUpdate,
+    AvailabilityWeek,
+)
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.availability_service import (
     AvailabilityNotFound,
@@ -35,9 +40,11 @@ from app.services.availability_service import (
     InvalidTimeRange,
     NotYourAvailability,
     TutorNotFound,
+    WeekSlot,
     create_availability,
     deactivate_availability,
     list_availability,
+    replace_week,
     update_availability,
 )
 from app.services.tutor_service import (
@@ -129,6 +136,48 @@ def create_tutor_availability(
     db.commit()
 
     return _read(row)
+
+
+@router.put("/tutors/{tutor_id}/availability", response_model=Page[AvailabilityRead])
+def replace_tutor_availability_week(
+    tutor_id: uuid.UUID,
+    payload: AvailabilityWeek,
+    user: Principal,
+    db: DbSession,
+) -> Page[AvailabilityRead]:
+    slots = [
+        WeekSlot(
+            day_of_week=slot.day_of_week,
+            start_time=slot.start_time,
+            end_time=slot.end_time,
+            mode=slot.mode,
+        )
+        for slot in payload.slots
+    ]
+
+    try:
+        rows = replace_week(db, actor=user, tutor_id=tutor_id, slots=slots)
+    except TutorNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=TUTOR_NOT_FOUND_ERROR
+        ) from exc
+    except (NotYourAvailability, TutorAccountForbidden) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_DETAILS[type(exc)]
+        ) from exc
+    except InvalidTimeRange as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_TIME_RANGE_ERROR
+        ) from exc
+    except AvailabilitySlotTaken as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=SLOT_TAKEN_ERROR) from exc
+
+    db.commit()
+
+    # The whole active week, unpaged: one page that holds every row.
+    return Page[AvailabilityRead](
+        items=[_read(row) for row in rows], total=len(rows), page=DEFAULT_PAGE, page_size=len(rows)
+    )
 
 
 @router.patch("/availability/{availability_id}", response_model=AvailabilityRead)

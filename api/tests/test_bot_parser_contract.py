@@ -28,6 +28,7 @@ from tests.test_bot_service import (
     INBOUND_NUMBER,
     NOW,
     CHILD_LEVEL,
+    _assign,
     _evaluate,
     _make_client,
     _make_world,
@@ -202,6 +203,7 @@ def test_a_subject_picked_by_its_number_moves_on_to_the_tutor(chat: WireChat, db
     client = _make_client(db)
     world = _make_world(db)
     _evaluate(db, client.child_id, levels={world.subject_id: CHILD_LEVEL})
+    _assign(db, client.child_id, world.first_tutor_id, world.second_tutor_id)
     chat.say("hi")
     chat.say("I'd like to book", _wire(None, intent="book"))
 
@@ -330,6 +332,7 @@ def test_a_booking_day_and_a_slot_number_lead_to_the_confirmation(
     client = _make_client(db)
     world = _make_world(db)
     _evaluate(db, client.child_id, levels={world.subject_id: CHILD_LEVEL})
+    _assign(db, client.child_id, world.first_tutor_id, world.second_tutor_id)
     chat.say("hi")
     chat.say("I'd like to book", _wire(None, intent="book"))
     chat.say("maths", _wire("1"))

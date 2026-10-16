@@ -33,8 +33,8 @@ to this `Session`. Three things make that safe here, in order of strength:
 1. **This module performs no tutor-scoped read.** Every read runs from the guardian's side —
    phone number → guardian → `child_guardians` → children → that child's homes and bookings.
    It never lists "a tutor's" anything, so the guard has no surface here to protect. The one
-   place a tutor id is *selected* is `_qualified_tutors`, which filters by subject and level
-   and has no `tutor_id` predicate at all.
+   place a tutor id is *selected* is `_qualified_tutors`, which filters by subject, level and
+   the Child's Assigned Tutors and has no `tutor_id` predicate at all.
 2. **Every booking write goes through `booking_write_service` unconditionally.** `_resolve`
    refuses a missing or retired tutor with its 400, and rule 1 validates the booking against
    the `tutor_availability` row named by `availability_id` — so a tutor id that does not own
@@ -84,7 +84,6 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH, Child
-from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import (
     BookingKind,
     BookingLocation,
@@ -1539,10 +1538,10 @@ def _reschedule_pick(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
 
     # The bot moves only a session it could have booked; the rest go to the office, and the
     # old session stays until Staff move it. Nothing on that path writes or cancels. A Staff
-    # member the bot cannot offer — an Admin, or a Tutor since promoted — has no slots to move
-    # the session to (#130).
+    # member the bot cannot offer — an Admin, a Tutor since promoted (#130), or one no longer
+    # among the Child's qualifying Assigned Tutors (#242) — has no slots to move the session to.
     profile_id = _offerable_profile_id(turn.db, user_id=booking.user_id)
-    if profile_id is None or _needs_office(
+    if profile_id not in _qualified_tutors(
         turn.db, child=booking.child, subject_id=booking.subject_id
     ):
         return _Next(reply=_say(turn, "ASK_NEW_DATE"), step=STEP_FIRST_SESSION_DATE)
@@ -1651,14 +1650,11 @@ def _book_subject(turn: _Turn, parsed: ParsedIntent) -> _Outcome:
     subject_id = uuid.UUID(option["id"])
     turn.data["book_subject_id"] = option["id"]
 
+    tutors = _qualified_tutors(turn.db, child=child, subject_id=subject_id)
+
     # Also catches a flow saved at this step before the Child's evaluation was cleared.
-    if _needs_office(turn.db, child=child, subject_id=subject_id):
-        return _Next(reply=_say(turn, "ASK_DATE"), step=STEP_FIRST_SESSION_DATE)
-
-    tutors = _qualified_tutors(turn.db, subject_id=subject_id, child_id=child.id)
-
     if not tutors:
-        return _ask_subject(turn, child=child)
+        return _Next(reply=_say(turn, "ASK_DATE"), step=STEP_FIRST_SESSION_DATE)
 
     options = [{"id": str(tutor_id), "label": name} for tutor_id, name in tutors.items()]
     options.append({"id": "", "label": _say(turn, "ANY_TUTOR_LABEL")})
@@ -1840,9 +1836,14 @@ def _ask_location(turn: _Turn) -> _Next:
             date=date,
             tutor_id=uuid.UUID(requested) if requested else None,
             now=turn.now,
+            assigned_only=True,
         )
     except scheduling_service.DateOutOfWindow:
         return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
+
+    # Otherwise every day the Guardian tries would have "no slots".
+    if not _still_qualified(turn, tutor_id=requested):
+        return _office_handoff(turn, date)
 
     if not allowed:
         return _no_slots(turn, date)
@@ -1850,7 +1851,7 @@ def _ask_location(turn: _Turn) -> _Next:
     options = _location_options(turn, allowed)
 
     if not options:
-        return _needs_office_for_location(turn, date)
+        return _office_handoff(turn, date)
 
     kept = [option for option in options if _is_preset_option(turn.data, option)]
 
@@ -1931,11 +1932,11 @@ def _location_of(data: dict[str, Any]) -> BookingLocation:
     return BookingLocation(data.get("book_location", BookingLocation.HOME.value))
 
 
-def _needs_office_for_location(turn: _Turn, date: datetime.date) -> _Next:
-    """Ranges exist that day but the Child has no active home and none allows In office: the
-    same Office handoff as a subject the bot cannot book. On a reschedule the new day is
-    already known, so the handoff names the session being moved straight away (answers.md
-    03.8); nothing is written or cancelled."""
+def _office_handoff(turn: _Turn, date: datetime.date) -> _Next:
+    """The Office handoff once the day is known: ranges exist that day but no Location fits
+    them, or the flow's Tutor stopped qualifying since the pick (#242). The same handoff as a
+    subject the bot cannot book. On a reschedule the handoff names the session being moved
+    (answers.md 03.8); nothing is written or cancelled."""
     child = turn.db.get(Child, uuid.UUID(turn.data["book_child_id"]))
     subject = turn.db.get(Subject, uuid.UUID(turn.data["book_subject_id"]))
 
@@ -1955,6 +1956,21 @@ def _needs_office_for_location(turn: _Turn, date: datetime.date) -> _Next:
         )
 
     return _Next(reply=reply, step=None, flag_reason=FlagReason.BOOKING_REQUEST)
+
+
+def _still_qualified(turn: _Turn, *, tutor_id: str) -> bool:
+    """Whether the flow's Tutor is still one the bot may offer, or, for "any tutor" (empty),
+    whether anyone still is: the office may have unassigned them since the pick (#242)."""
+    child = turn.db.get(Child, uuid.UUID(turn.data["book_child_id"]))
+    qualified = (
+        {}
+        if child is None
+        else _qualified_tutors(
+            turn.db, child=child, subject_id=uuid.UUID(turn.data["book_subject_id"])
+        )
+    )
+
+    return uuid.UUID(tutor_id) in qualified if tutor_id else bool(qualified)
 
 
 def _no_slots(turn: _Turn, date: datetime.date) -> _Next:
@@ -2007,6 +2023,7 @@ def _offer_slots(turn: _Turn, *, preamble: str | None = None) -> _Next:
             tutor_id=uuid.UUID(requested) if requested else None,
             now=turn.now,
             location=_location_of(turn.data),
+            assigned_only=True,
         )
     except scheduling_service.DateOutOfWindow:
         return _Next(reply=_date_not_bookable(turn), step=STEP_BOOK_DATE)
@@ -2120,6 +2137,10 @@ def _write_booking(turn: _Turn) -> _Next:
     chosen = turn.data["chosen"]
     location = _location_of(turn.data)
     home_id = turn.data.get("book_home_id")
+
+    # `booking_write_service` knows nothing of Assigned Tutors, so the offer's rule is re-read.
+    if not _still_qualified(turn, tutor_id=chosen["tutor_id"]):
+        return _office_handoff(turn, datetime.date.fromisoformat(turn.data["book_date"]))
 
     if location is BookingLocation.HOME and home_id is None:
         return _stuck(turn)
@@ -2493,22 +2514,11 @@ def _upcoming_bookings(
     )
 
 
-def _needs_office(db: Session, *, child: Child, subject_id: uuid.UUID) -> bool:
-    """Whether a booking for this Child and subject is an Office handoff rather than the bot's:
-    the Child is not Evaluated, or has no Subject level to match tutors against."""
-    level = db.scalar(
-        select(ChildSubjectLevel.id).where(
-            ChildSubjectLevel.child_id == child.id, ChildSubjectLevel.subject_id == subject_id
-        )
-    )
-
-    return child.evaluated_at is None or level is None
-
-
-def _qualified_tutors(
-    db: Session, *, subject_id: uuid.UUID, child_id: uuid.UUID
-) -> dict[uuid.UUID, str]:
-    """Active tutors who teach this subject at or above the Child's Subject level in it.
+def _qualified_tutors(db: Session, *, child: Child, subject_id: uuid.UUID) -> dict[uuid.UUID, str]:
+    """The Tutors the bot may offer for this Child and subject: the Child's Assigned Tutors who
+    are active Tutors or Managers and teach the subject at or above the Child's Subject level
+    in it (#242). Empty means an Office handoff: the Child is not Evaluated, has no Subject
+    level for the subject, or no Assigned Tutor qualifies.
 
     Consumed from `slot_service` rather than re-derived (§12, the stats rule). The tutor menu
     and the offer surface have to agree about who qualifies: a tutor offered here that
@@ -2523,8 +2533,11 @@ def _qualified_tutors(
     `tutor_id=None` searches every qualified tutor, so **no `tutor_id` predicate is issued** —
     this is not the tutor-scoped read P7-T is about.
     """
+    if child.evaluated_at is None:
+        return {}
+
     return slot_service._qualified_tutor_names(
-        db, subject_id=subject_id, child_id=child_id, tutor_id=None
+        db, subject_id=subject_id, child_id=child.id, tutor_id=None, assigned_only=True
     )
 
 

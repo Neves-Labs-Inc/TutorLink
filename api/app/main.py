@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.routers import (
     archive,
+    assigned_tutors,
     auth,
     availability,
     booking_clash,
@@ -141,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(children_read.router)
     app.include_router(child_guardians.router)
     app.include_router(child_evaluation.router)
+    app.include_router(assigned_tutors.router)
     app.include_router(households.router)
     app.include_router(homes.router)
     app.include_router(tutors.router)

@@ -119,6 +119,9 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
         "last_message_preview",
         "unread",
         "flag_reason",
+        "last_client_message_at",
+        "is_window_open",
+        "flagged_at",
     }
     assert item["guardian"] == {"id": str(guardian.id), "name": guardian.name}
     assert item["taken_over_by"] == {"id": str(admin.id), "name": admin.name}
@@ -277,6 +280,72 @@ def test_flagged_chats_list_oldest_flag_first_with_id_breaking_ties(
         str(newest_activity.id),
         *sorted(str(c.id) for c in tied),
     ]
+
+
+def test_a_list_row_reports_its_takeover_window_and_flag_time(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    now = datetime.datetime.now(tz=datetime.UTC)
+    open_chat = _make_conversation(db, marker=marker, flag_reason=FlagReason.STUCK)
+    closed_chat = _make_conversation(db, marker=marker)
+    silent_chat = _make_conversation(db, marker=marker)
+    _make_message(db, open_chat, body="hi", at=now - _minutes(30))
+    _make_message(db, closed_chat, body="hi", at=now - datetime.timedelta(hours=25))
+    _make_message(db, silent_chat, body="bot only", at=now, author_kind=MessageAuthor.BOT)
+
+    rows = {row["id"]: row for row in _list_rows(api, admin, marker)["items"]}
+
+    assert rows[str(open_chat.id)]["is_window_open"] is True
+    assert rows[str(open_chat.id)]["last_client_message_at"] is not None
+    assert rows[str(closed_chat.id)]["is_window_open"] is False
+    assert rows[str(closed_chat.id)]["last_client_message_at"] is not None
+    assert rows[str(silent_chat.id)]["is_window_open"] is False
+    assert rows[str(silent_chat.id)]["last_client_message_at"] is None
+
+
+def test_a_list_rows_flagged_at_matches_the_details(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker, flag_reason=FlagReason.STUCK)
+
+    row = _list_rows(api, admin, marker)["items"][0]
+    detail = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert row["flagged_at"] is not None
+    assert row["flagged_at"] == detail["flagged_at"]
+
+
+def test_needs_attention_lists_open_windows_closing_soonest_then_closed_by_flag_age(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    now = datetime.datetime.now(tz=datetime.UTC)
+
+    def flagged_chat(*, message_age: datetime.timedelta | None, flag_age: datetime.timedelta):
+        chat = _make_conversation(db, marker=marker, flag_reason=FlagReason.STUCK)
+        chat.flagged_at = now - flag_age
+        if message_age is not None:
+            _make_message(db, chat, body="hi", at=now - message_age)
+        return chat
+
+    hour = datetime.timedelta(hours=1)
+    # Created so that neither flag age nor creation order alone yields the expected order.
+    closed_newer_flag = flagged_chat(message_age=25 * hour, flag_age=1 * hour)
+    open_newest_message = flagged_chat(message_age=1 * hour, flag_age=30 * hour)
+    no_window_older_flag = flagged_chat(message_age=None, flag_age=3 * hour)
+    open_oldest_message = flagged_chat(message_age=20 * hour, flag_age=2 * hour)
+    expected = [
+        open_oldest_message,
+        open_newest_message,
+        no_window_older_flag,
+        closed_newer_flag,
+    ]
+
+    first = _list_rows(api, admin, marker, flagged="true", page_size="2")
+    second = _list_rows(api, admin, marker, flagged="true", page_size="2", page="2")
+
+    assert [row["id"] for row in first["items"] + second["items"]] == [str(c.id) for c in expected]
 
 
 def test_a_flag_and_a_status_are_independent_axes(api: TestClient, db: Session) -> None:

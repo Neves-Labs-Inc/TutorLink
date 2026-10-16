@@ -29,6 +29,7 @@ def read_counts_route(user: OfficePrincipal, db: DbSession) -> CountsRead:
         needs_attention=counts.needs_attention,
         time_off_pending=counts.time_off_pending,
         children_awaiting_evaluation=counts.children_awaiting_evaluation,
+        children_needing_tutor=counts.children_needing_tutor,
         bookings_to_sort_out=counts.bookings_to_sort_out,
         unread_chats=counts.unread_chats,
     )

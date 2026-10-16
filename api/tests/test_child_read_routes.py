@@ -218,6 +218,7 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
         "next_session",
         "levels",
         "evaluated",
+        "assigned_tutors",
         "created_at",
     }
 
@@ -629,6 +630,8 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
         "homes",
         "levels",
         "evaluated",
+        "assigned_tutors",
+        "evaluation_run_by",
     }
 
 

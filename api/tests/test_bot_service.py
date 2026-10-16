@@ -46,6 +46,7 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import Booking
 from app.models.bot_flow_state import BotFlowState
 from app.models.child import NOTES_MAX_LENGTH, Child
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
@@ -315,7 +316,7 @@ def frozen_clock(freeze_business_clock: Callable[[datetime.datetime], None]) -> 
 
 @pytest.fixture
 def cutoff(db: Session) -> Callable[[int], None]:
-    """`cancellation_cutoff_hours`, seeded at migration 0004's value and rewritable per test."""
+    """`cancellation_cutoff_hours`, seeded at migration 0047's value and rewritable per test."""
 
     def rewrite(hours: int) -> None:
         row = db.execute(
@@ -338,7 +339,7 @@ def cutoff(db: Session) -> Callable[[int], None]:
 
         db.flush()
 
-    rewrite(24)
+    rewrite(6)
 
     return rewrite
 
@@ -355,9 +356,11 @@ def world(db: Session) -> BotWorld:
 
 @pytest.fixture
 def client(db: Session, world: BotWorld) -> ClientWorld:
-    """A returning family whose Child is Evaluated, with a level in `world`'s subject."""
+    """A returning family whose Child is Evaluated, with a level in `world`'s subject and both
+    of `world`'s tutors as Assigned Tutors."""
     client = _make_client(db)
     _evaluate(db, client.child_id, levels={world.subject_id: CHILD_LEVEL})
+    _assign(db, client.child_id, world.first_tutor_id, world.second_tutor_id)
 
     return client
 
@@ -790,6 +793,7 @@ def test_a_managers_session_is_moved_like_a_tutors(
     cutoff(1)
     manager = _make_tutor_for(db, world, name="Manager")
     manager.user.role = UserRole.MANAGER
+    _assign(db, client.child_id, manager.id)
     booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
     booking.user_id = manager.user_id
     db.flush()
@@ -1049,7 +1053,8 @@ def test_an_ambiguous_choice_is_re_prompted_rather_than_guessed(
 ) -> None:
     """Two tutors whose names share a substring: picking the first hit would book a different
     person from the one the guardian named, with nothing downstream able to tell."""
-    _make_tutor_for(db, world, name=f"{world.first_tutor_name} the second")
+    namesake = _make_tutor_for(db, world, name=f"{world.first_tutor_name} the second")
+    _assign(db, client.child_id, namesake.id)
     chat.say("hi")
     chat.say("I'd like to book", intent=BotIntent.BOOK)
     chat.say(value=world.subject_name)
@@ -1288,6 +1293,7 @@ def test_a_second_booking_after_an_in_office_one_starts_from_a_clean_location(
     _make_availability(
         db, office_tutor.id, date=DATE, start=NINE, end=TWELVE, mode=AvailabilityMode.ONLY_OFFICE
     )
+    _assign(db, client.child_id, office_tutor.id)
     _book(chat, world, tutor=office_tutor.user.name)
     first = db.execute(select(Booking)).scalar_one()
 
@@ -1576,6 +1582,7 @@ def test_only_tutors_whose_ceiling_reaches_the_childs_level_are_offered(
         db, name="Math", ceilings=(5, 8, 4)
     )
     _set_level(db, client.child_id, math.id, level=5)
+    _assign(db, client.child_id, at_five.id, at_eight.id, at_four.id)
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
 
@@ -1595,6 +1602,7 @@ def test_a_kindergarten_level_matches_a_tutor_whose_ceiling_is_kindergarten(
 ) -> None:
     phonics, (kindergarten_tutor,) = _make_subject_taught_at(db, name="Phonics", ceilings=(0,))
     _set_level(db, client.child_id, phonics.id, level=0)
+    _assign(db, client.child_id, kindergarten_tutor.id)
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
 
@@ -1610,12 +1618,197 @@ def test_the_overall_grade_plays_no_part_in_matching(
     """The Overall grade (7 here) is a Staff estimate; only the Subject level is matched."""
     math, (at_three,) = _make_subject_taught_at(db, name="Math", ceilings=(3,))
     _set_level(db, client.child_id, math.id, level=2)
+    _assign(db, client.child_id, at_three.id)
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
 
     tutor_question = chat.say(value=math.name)
 
     assert at_three.user.name in tutor_question.reply
+
+
+# --- only Assigned Tutors are offered (#242) ----------------------------------------------------
+
+
+def test_a_qualified_tutor_not_assigned_to_the_child_is_never_offered(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    stranger = _make_tutor_for(db, world, name="Unassigned")
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    tutor_question = chat.say(value=world.subject_name)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
+    offer = chat.say(value=DATE.isoformat())
+
+    assert world.first_tutor_name in tutor_question.reply
+    assert stranger.user.name not in tutor_question.reply
+    assert offer.reply.startswith(render("ASK_SLOT", "en", date=US_DATE))
+    assert stranger.user.name not in offer.reply
+
+
+def test_an_assigned_tutor_below_the_childs_level_is_never_offered(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    math, (at_four, at_eight) = _make_subject_taught_at(db, name="Math", ceilings=(4, 8))
+    _set_level(db, client.child_id, math.id, level=5)
+    _assign(db, client.child_id, at_four.id, at_eight.id)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    tutor_question = chat.say(value=math.name)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
+    offer = chat.say(value=DATE.isoformat())
+
+    assert at_eight.user.name in tutor_question.reply
+    assert at_four.user.name not in tutor_question.reply
+    assert at_eight.user.name in offer.reply
+    assert at_four.user.name not in offer.reply
+
+
+def test_an_unassigned_tutors_office_range_does_not_add_the_office_to_the_location_question(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """The world's Assigned Tutors visit homes only, so the one home is picked without asking."""
+    stranger = _make_tutor(db, name="Office Only")
+    db.add(TutorSubject(tutor_id=stranger.id, subject_id=world.subject_id, max_grade_level=12))
+    _make_availability(
+        db, stranger.id, date=DATE, start=NINE, end=TWELVE, mode=AvailabilityMode.ONLY_OFFICE
+    )
+
+    offered = _book(chat, world, stop_after_date=True)
+
+    assert render("ASK_WHERE", "en") not in offered.reply
+    assert offered.reply.startswith(render("ASK_SLOT", "en", date=US_DATE))
+    assert stranger.user.name not in offered.reply
+
+
+@pytest.mark.parametrize("assigned", ["none", "unqualified"])
+def test_an_evaluated_child_with_no_qualifying_assigned_tutor_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, assigned: str
+) -> None:
+    """The same handoff as a subject with no Subject level: the day is asked, then the office
+    is flagged and nothing is booked."""
+    _unassign(db, client.child_id, world.first_tutor_id, world.second_tutor_id)
+    if assigned == "unqualified":
+        _, (below,) = _make_subject_taught_at(db, name="Other", ceilings=(12,))
+        db.add(
+            TutorSubject(
+                tutor_id=below.id, subject_id=world.subject_id, max_grade_level=CHILD_LEVEL - 1
+            )
+        )
+        _assign(db, client.child_id, below.id)
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+
+    day_question = chat.say(value=world.subject_name)
+    turn = chat.say(value=DATE.isoformat())
+
+    assert day_question.reply == render("ASK_DATE", "en")
+    assert turn.reply == render(
+        "SUBJECT_NEEDS_OFFICE", "en", name="Sam Guardian", subject=world.subject_name
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert chat.state is None
+    assert _count(db, Booking) == 0
+
+
+def test_rescheduling_a_session_whose_tutor_is_no_longer_assigned_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    """The bot moves a session only to its own Tutor, so one no longer assigned (the other
+    still is) leaves the office to move it."""
+    cutoff(1)
+    booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _unassign(db, client.child_id, world.first_tutor_id)
+
+    _assert_reschedule_handed_to_the_office(chat, db, world, booking)
+
+
+def test_rescheduling_with_no_assigned_tutor_left_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    cutoff(1)
+    booking = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _unassign(db, client.child_id, world.first_tutor_id, world.second_tutor_id)
+
+    _assert_reschedule_handed_to_the_office(chat, db, world, booking)
+
+
+def _assert_new_booking_handed_to_the_office(turn: BotTurn, db: Session, world: BotWorld) -> None:
+    assert turn.reply == render(
+        "SUBJECT_NEEDS_OFFICE", "en", name="Sam Guardian", subject=world.subject_name
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert _count(db, Booking) == 0
+
+
+def test_a_picked_tutor_unassigned_before_the_day_is_given_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    """Rather than "no slots" on every day the Guardian tries."""
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value=world.subject_name)
+    chat.say(value=world.first_tutor_name)
+    _unassign(db, client.child_id, world.first_tutor_id)
+
+    turn = chat.say(value=DATE.isoformat())
+
+    _assert_new_booking_handed_to_the_office(turn, db, world)
+    assert chat.state is None
+
+
+def test_any_tutor_with_every_assigned_tutor_removed_since_is_handed_to_the_office(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    chat.say("hi")
+    chat.say("book", intent=BotIntent.BOOK)
+    chat.say(value=world.subject_name)
+    chat.say(value=render("ANY_TUTOR_LABEL", "en"))
+    _unassign(db, client.child_id, world.first_tutor_id, world.second_tutor_id)
+
+    turn = chat.say(value=DATE.isoformat())
+
+    _assert_new_booking_handed_to_the_office(turn, db, world)
+
+
+def test_a_slot_whose_tutor_was_unassigned_before_the_yes_is_not_booked(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld
+) -> None:
+    _book(chat, world, tutor=world.first_tutor_name, stop_after_offer=True)
+    chat.say(value="1")
+    _unassign(db, client.child_id, world.first_tutor_id)
+
+    turn = chat.say(value="yes")
+
+    _assert_new_booking_handed_to_the_office(turn, db, world)
+    assert chat.state is None
+
+
+def test_a_move_whose_tutor_was_unassigned_before_the_yes_changes_nothing(
+    chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
+) -> None:
+    cutoff(1)
+    original = _make_booking(db, world, client, date=DATE, start=datetime.time(14, 0))
+    _start_reschedule(chat)
+    chat.say(value="1")
+    _unassign(db, client.child_id, world.first_tutor_id)
+
+    turn = chat.say(value="yes")
+
+    assert turn.reply == render(
+        "RESCHEDULE_NEEDS_OFFICE",
+        "en",
+        child="Sam Guardian",
+        subject=world.subject_name,
+        old_date=US_DATE,
+        old_time="2:00-3:00 PM",
+        date=US_DATE,
+    )
+    assert turn.flag_reason is FlagReason.BOOKING_REQUEST
+    assert db.get_one(Booking, original.id).status is BookingStatus.CONFIRMED
+    assert _count(db, Booking) == 1
 
 
 def test_rescheduling_a_session_for_a_child_not_evaluated_is_handed_to_the_office(
@@ -1921,6 +2114,8 @@ def test_cancelling_inside_the_cutoff_is_declined_and_is_not_flagged(
     is no fourth, and putting routine late cancellations in the flag queue would bury the flags
     that mean the bot actually needs help.
     """
+    # Tomorrow at nine is 21 hours away, inside a 24-hour cutoff and outside the default 6.
+    cutoff(24)
     booking = _make_booking(db, world, client, date=TOMORROW, start=NINE)
     chat.say("hi")
     chat.say("cancel please", intent=BotIntent.CANCEL)
@@ -1957,6 +2152,8 @@ def test_the_cutoff_is_read_from_settings_rather_than_hardcoded(
 def test_rescheduling_inside_the_cutoff_is_declined_and_is_not_flagged(
     chat: Chat, db: Session, world: BotWorld, client: ClientWorld, cutoff: Callable[[int], None]
 ) -> None:
+    # Tomorrow at nine is 21 hours away, inside a 24-hour cutoff and outside the default 6.
+    cutoff(24)
     booking = _make_booking(db, world, client, date=TOMORROW, start=NINE)
     chat.say("hi")
     chat.say("move it", intent=BotIntent.RESCHEDULE)
@@ -4106,6 +4303,25 @@ def _evaluate(db: Session, child_id: uuid.UUID, *, levels: dict[uuid.UUID, int])
             child_id=child_id, subject_id=subject_id, level=level, set_by_user_id=staff.id
         )
         for subject_id, level in levels.items()
+    )
+    db.flush()
+
+
+def _assign(db: Session, child_id: uuid.UUID, *tutor_ids: uuid.UUID) -> None:
+    """Make the people behind these teaching profiles the Child's Assigned Tutors."""
+    db.add_all(
+        ChildAssignedTutor(child_id=child_id, user_id=user_id_of(db, tutor_id))
+        for tutor_id in tutor_ids
+    )
+    db.flush()
+
+
+def _unassign(db: Session, child_id: uuid.UUID, *tutor_ids: uuid.UUID) -> None:
+    user_ids = [user_id_of(db, tutor_id) for tutor_id in tutor_ids]
+    db.execute(
+        delete(ChildAssignedTutor).where(
+            ChildAssignedTutor.child_id == child_id, ChildAssignedTutor.user_id.in_(user_ids)
+        )
     )
     db.flush()
 

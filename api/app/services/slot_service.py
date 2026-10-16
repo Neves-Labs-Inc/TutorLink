@@ -19,6 +19,9 @@ what makes the lead-time and lookahead behaviour testable without freezing the c
 router passes the business wall-clock (`clock.business_now`, per `BUSINESS_TIMEZONE`), the zone
 every scheduling column is stored in.
 
+**Assigned Tutors bound the bot only** (#242). `assigned_only=True` is the bot's call and keeps
+the Child's Assigned Tutors; the router never passes it, so the office may book anyone.
+
 `DateOutOfWindow` is `scheduling_service`'s and is deliberately re-exported by propagation
 rather than wrapped in a local class: the router maps the same exception from this endpoint and
 from `POST /api/bookings`, and two names for one refusal would let the two drift.
@@ -34,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import AvailabilityMode, BookingLocation, ExceptionStatus
 from app.models.subject import Subject
@@ -99,6 +103,7 @@ def find_available_slots(
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
     location: BookingLocation | None = None,
+    assigned_only: bool = False,
 ) -> SlotSearchResult:
     """The cap is applied last, after every subtraction and after the sort, so `total` is the
     number that matched and `items` is the earliest few of them.
@@ -107,12 +112,19 @@ def find_available_slots(
     and the neighbour test against an In office booking relaxes to bare overlap for an In
     office candidate (`travel_gap_minutes`). `None` is the dashboard's call: every range, and
     the full gap against every booking, as before the parameter existed.
+
+    `assigned_only` keeps only the Child's Assigned Tutors (`_qualified_tutor_names`).
     """
     settings = load_scheduling_settings(db)
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
 
     names = _qualified_tutor_names(
-        db, subject_id=subject_id, child_id=child_id, grade_level=grade_level, tutor_id=tutor_id
+        db,
+        subject_id=subject_id,
+        child_id=child_id,
+        grade_level=grade_level,
+        tutor_id=tutor_id,
+        assigned_only=assigned_only,
     )
     tutor_ids = list(names)
     # `date.weekday()` is 0 = Monday … 6 = Sunday, which is the encoding `tutor_availability`
@@ -175,6 +187,7 @@ def allowed_locations(
     date: datetime.date,
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
+    assigned_only: bool = False,
 ) -> frozenset[BookingLocation]:
     """The Locations the bot may ask about on `date`: the union over the active ranges, on that
     weekday, of the qualified Tutors (`tutor_id=None` is every one of them).
@@ -187,7 +200,13 @@ def allowed_locations(
     settings = load_scheduling_settings(db)
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
 
-    names = _qualified_tutor_names(db, subject_id=subject_id, child_id=child_id, tutor_id=tutor_id)
+    names = _qualified_tutor_names(
+        db,
+        subject_id=subject_id,
+        child_id=child_id,
+        tutor_id=tutor_id,
+        assigned_only=assigned_only,
+    )
     ranges = _active_ranges(db, tutor_ids=list(names), day_of_week=date.weekday(), location=None)
 
     return frozenset().union(*(MODE_LOCATIONS[row.mode] for row in ranges))
@@ -200,6 +219,7 @@ def _qualified_tutor_names(
     child_id: uuid.UUID | None = None,
     grade_level: int | None = None,
     tutor_id: uuid.UUID | None,
+    assigned_only: bool = False,
 ) -> dict[uuid.UUID, str]:
     """Active Tutors and Managers who teach `subject_id`, at a ceiling that reaches the Child
     or the grade.
@@ -216,6 +236,9 @@ def _qualified_tutor_names(
     - `grade_level`: the dashboard's plain `?grade_level=` filter.
     - neither: no ceiling filter, every tutor who teaches the subject qualifies.
 
+    `assigned_only` further keeps the Child's Assigned Tutors (#242), matched by person since an
+    assignment names the user, not the profile. Only the bot asks for it, and it needs `child_id`.
+
     `max_grade_level` is a ceiling, so the comparison is `>=` and never a membership test
     (#36). The join to `TutorSubject` is inner on purpose: a tutor with no `tutor_subjects`
     row for the subject has no ceiling to compare against and does not teach it, so dropping
@@ -229,6 +252,9 @@ def _qualified_tutor_names(
     an unassigned one, rather than a new refusal shape this endpoint has never used for an
     unsatisfiable filter.
     """
+    if assigned_only and child_id is None:
+        raise ValueError("assigned_only needs a child_id")
+
     statement = (
         select(Tutor.id, User.name)
         .join(User, User.id == Tutor.user_id)
@@ -246,6 +272,12 @@ def _qualified_tutor_names(
             ChildSubjectLevel,
             (ChildSubjectLevel.subject_id == Subject.id) & (ChildSubjectLevel.child_id == child_id),
         ).where(TutorSubject.max_grade_level >= ChildSubjectLevel.level)
+    if assigned_only:
+        statement = statement.join(
+            ChildAssignedTutor,
+            (ChildAssignedTutor.user_id == Tutor.user_id)
+            & (ChildAssignedTutor.child_id == child_id),
+        )
     if grade_level is not None:
         statement = statement.where(TutorSubject.max_grade_level >= grade_level)
     if tutor_id is not None:

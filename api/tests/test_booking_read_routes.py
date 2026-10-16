@@ -514,9 +514,7 @@ def test_each_row_shows_its_own_childs_level(api: TestClient, db: Session, famil
     }
 
 
-def test_a_home_row_names_its_home_without_directions(
-    api: TestClient, db: Session, family: Family
-) -> None:
+def test_a_home_row_names_its_home(api: TestClient, db: Session, family: Family) -> None:
     admin = _make_user(db)
     family.other_home.label = "Grandma's"
     db.flush()
@@ -528,6 +526,7 @@ def test_a_home_row_names_its_home_without_directions(
         "id": str(family.other_home.id),
         "label": "Grandma's",
         "address": "2 Test Avenue",
+        "directions": "1111",
     }
 
 
@@ -550,7 +549,12 @@ def test_a_row_at_an_archived_home_still_names_it(
 
     item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
 
-    assert item["home"] == {"id": str(family.home.id), "label": None, "address": "1 Test Street"}
+    assert item["home"] == {
+        "id": str(family.home.id),
+        "label": None,
+        "address": "1 Test Street",
+        "directions": "0000",
+    }
 
 
 def test_the_detail_lists_the_childs_guardians_by_name(
@@ -1853,3 +1857,181 @@ def _assert_detail(response: Response, expected_status: int, expected_detail: st
     body = response.json()
     assert body == {"detail": expected_detail}
     assert isinstance(body["detail"], str)
+
+
+# --- detail context and list fields (#228) ------------------------------------------------------
+
+
+def test_the_detail_carries_its_availability_slot_id(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    booking = _book(db, family)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["availability_id"] == str(family.availability_id)
+
+
+def test_a_booking_with_no_slot_has_a_null_availability_id(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    booking = _book(db, family)
+    booking.availability_id = None
+    db.flush()
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["availability_id"] is None
+
+
+def test_the_detail_lists_the_approved_time_off_over_it(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    booking = _book(db, family)
+    whole_day = _time_off(db, family.tutor.user_id, start=DATE - ONE_DAY, end=LATER)
+    partial = _time_off(db, family.tutor.user_id, window=(NINE, TEN.replace(minute=30)))
+    _time_off(db, family.tutor.user_id, window=(NINE, TEN))
+    _time_off(db, family.tutor.user_id, status=ExceptionStatus.PENDING)
+    _time_off(db, family.other_tutor.user_id)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert {row["id"]: row for row in body["clashing_time_off"]} == {
+        str(whole_day.id): {
+            "id": str(whole_day.id),
+            "start_date": "2026-09-06",
+            "end_date": "2026-09-08",
+            "start_time": None,
+            "end_time": None,
+        },
+        str(partial.id): {
+            "id": str(partial.id),
+            "start_date": "2026-09-07",
+            "end_date": "2026-09-07",
+            "start_time": "09:00:00",
+            "end_time": "10:30:00",
+        },
+    }
+
+
+def test_a_booking_with_no_time_off_over_it_has_an_empty_clashing_list(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    booking = _book(db, family)
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["clashing_time_off"] == []
+
+
+def test_an_acknowledged_clash_still_lists_its_time_off(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    admin = _make_user(db)
+    freeze_business_clock(BEFORE_DATE)
+    booking = _book(db, family)
+    time_off = _time_off(db, family.tutor.user_id)
+    api.post(_acknowledgement_url(booking), headers=_auth(admin))
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert body["sort_out_reasons"] == []
+    assert [row["id"] for row in body["clashing_time_off"]] == [str(time_off.id)]
+
+
+def test_a_list_row_carries_directions_child_notes_and_guardian_names_for_the_office(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.home.directions = "Side door"
+    family.child.notes = "Likes diagrams"
+    family.guardian.name = "Zoe Parent"
+    family.co_guardian.name = "Amy Parent"
+    db.flush()
+    _converse(db, family.guardian, last_message_at=datetime.datetime(2026, 9, 1, tzinfo=UTC))
+    _book(db, family)
+
+    response = api.get("/api/bookings", headers=_auth(admin))
+
+    item = response.json()["items"][0]
+    assert item["home"]["directions"] == "Side door"
+    assert item["child"]["notes"] == "Likes diagrams"
+    assert item["guardians"] == [
+        {"id": str(family.co_guardian.id), "name": "Amy Parent"},
+        {"id": str(family.guardian.id), "name": "Zoe Parent"},
+    ]
+    assert "conversation_id" not in response.text
+
+
+def test_a_tutors_list_row_carries_the_same_fields_and_no_conversation_id(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=family.tutor.id)
+    family.home.directions = "Side door"
+    family.child.notes = "Likes diagrams"
+    family.co_guardian.is_archived = True
+    db.flush()
+    _converse(db, family.guardian, last_message_at=datetime.datetime(2026, 9, 1, tzinfo=UTC))
+    _book(db, family, tutor=family.tutor)
+
+    response = api.get("/api/bookings", headers=_auth(tutor_user))
+
+    item = response.json()["items"][0]
+    assert item["home"]["directions"] == "Side door"
+    assert item["child"]["notes"] == "Likes diagrams"
+    assert item["guardians"] == [{"id": str(family.guardian.id), "name": family.guardian.name}]
+    assert "conversation_id" not in response.text
+
+
+def test_a_list_row_without_notes_or_directions_has_nulls(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    family.home.directions = None
+    db.flush()
+    _book(db, family)
+
+    item = api.get("/api/bookings", headers=_auth(admin)).json()["items"][0]
+
+    assert item["home"]["directions"] is None
+    assert item["child"]["notes"] is None
+
+
+def test_repeated_child_id_returns_each_childs_bookings_within_the_date_range(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    sibling = _make_child(db, guardians=[family.guardian])
+    stranger = _make_child(db, guardians=[family.guardian])
+    wanted = _book(db, family)
+    wanted_sibling = _book(db, family, child=sibling, on=LATER)
+    _book(db, family, child=sibling, on=LATEST)
+    _book(db, family, child=stranger, start=TWELVE, end=TWELVE.replace(hour=13))
+
+    response = api.get(
+        f"/api/bookings?child_id={family.child.id}&child_id={sibling.id}&from={DATE}&to={LATER}",
+        headers=_auth(admin),
+    )
+
+    assert response.status_code == 200
+    assert _ids(response) == {str(wanted.id), str(wanted_sibling.id)}
+
+
+def test_a_single_child_id_still_narrows_to_that_child(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db)
+    sibling = _make_child(db, guardians=[family.guardian])
+    wanted = _book(db, family)
+    _book(db, family, child=sibling, start=TWELVE, end=TWELVE.replace(hour=13))
+
+    response = api.get(f"/api/bookings?child_id={family.child.id}", headers=_auth(admin))
+
+    assert _ids(response) == {str(wanted.id)}

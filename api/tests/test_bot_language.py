@@ -56,6 +56,7 @@ from tests.test_bot_service import (
     ClientWorld,
     ScriptedParser,
     _answer_up_to_the_notes,
+    _assign,
     _evaluate,
     _make_client,
     _open_intake,
@@ -95,7 +96,7 @@ def client(db: Session) -> ClientWorld:
 
 @pytest.fixture
 def cutoff(set_cutoff: Callable[[int], None]) -> None:
-    set_cutoff(24)
+    set_cutoff(6)
 
 
 @pytest.fixture
@@ -495,6 +496,7 @@ def spanish(db: Session) -> SpanishWorld:
     client = _make_client(db)
     world = _make_world(db, name_es=SPANISH_SUBJECT)
     _evaluate(db, client.child_id, levels={world.subject.id: CHILD_LEVEL})
+    _assign(db, client.child_id, world.tutor.id)
     db.add(
         Conversation(
             phone_number=CANONICAL_NUMBER,

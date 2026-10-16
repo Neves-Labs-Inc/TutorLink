@@ -43,9 +43,11 @@ class HomeRead(BaseModel):
     archived: ArchivedFlag
     # Every Guardian linked to the Home, archived ones included, by name then id.
     guardians: list[NamedRef]
+    # The upcoming live Bookings that block archiving the Home.
+    upcoming_booking_count: int
 
 
-def home_read(home: Home, guardians: list[Guardian]) -> HomeRead:
+def home_read(home: Home, guardians: list[Guardian], upcoming_booking_count: int) -> HomeRead:
     return HomeRead(
         id=home.id,
         label=home.label,
@@ -53,6 +55,7 @@ def home_read(home: Home, guardians: list[Guardian]) -> HomeRead:
         directions=home.directions,
         archived=home.is_archived,
         guardians=[NamedRef(id=guardian.id, name=guardian.name) for guardian in guardians],
+        upcoming_booking_count=upcoming_booking_count,
     )
 
 
@@ -127,6 +130,8 @@ class ClientRead(BaseModel):
     # with no conversation the id is `null` and English is used.
     language: Language | None
     language_conversation_id: uuid.UUID | None
+    reminders: Literal["opt_in", "opt_out", "never"]
+    reminders_blocked_by_whatsapp: bool
 
 
 class HomeCreate(BaseModel):

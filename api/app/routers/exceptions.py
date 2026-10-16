@@ -5,10 +5,13 @@ profile included — can hold it. The table has no `tutor_id`, so `TutorScope` h
 filter on. Who may reach whose Time off is decided in `exception_service` (it needs the
 target's role for the Developer boundary); this module maps its refusals to status codes:
 
-- `GET /api/users/{user_id}/exceptions` and `POST` on the same path: the person themselves, or
-  an Admin role. A Manager reads and writes only their own. A requester's entry lands
-  `pending`, an Admin role's `approved`; the status is never read from the body.
-- `GET /api/exceptions` takes `AdminPrincipal`: every Staff member's Time off, filtered.
+- `GET /api/users/{user_id}/exceptions`: the person themselves, or an Office role (a Manager
+  reads anyone's, as an Admin does).
+- `POST /api/users/{user_id}/exceptions`: the person themselves, or an Admin role. A Manager
+  enters only their own. A requester's entry lands `pending`, an Admin role's `approved`; the
+  status is never read from the body. The caller is recorded as `entered_by`.
+- `GET /api/exceptions` takes `OfficePrincipal`: every Staff member's Time off, filtered.
+  `status` may repeat; a row at any of them matches.
 - `PATCH /api/exceptions/{exception_id}` takes `AdminPrincipal`, which is what stops anyone
   approving their own request — the one authorisation rule this feature exists to enforce.
 - `POST /api/exceptions/{exception_id}/cancel` takes `Principal`: the owner or an Admin role,
@@ -16,7 +19,8 @@ target's role for the Developer boundary); this module maps its refusals to stat
 
 Every response carries the wire status, which adds `expired` for a pending row that has ended,
 and the row's clashing Bookings. An Admin write that would land a row approved over clashes is
-the #151 409 `{"detail", "warnings": [booking_clash]}` until the caller confirms it.
+the #151 409 `{"detail", "warnings": [booking_clash]}` until the caller confirms it; the
+warning lists those Bookings as the row's read would.
 """
 
 import datetime
@@ -28,7 +32,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies import AdminPrincipal, Principal
+from app.dependencies import AdminPrincipal, OfficePrincipal, Principal
 from app.models.availability import TutorAvailabilityException
 from app.models.user import User
 from app.schemas.booking import NamedRef, StaffRef
@@ -130,9 +134,9 @@ def list_user_exceptions(
 
 @router.get("/exceptions", response_model=Page[ExceptionRead])
 def list_all_staff_exceptions(
-    _user: AdminPrincipal,
+    _user: OfficePrincipal,
     db: DbSession,
-    status_filter: Annotated[ExceptionReadStatus | None, Query(alias="status")] = None,
+    status_filter: Annotated[list[ExceptionReadStatus] | None, Query(alias="status")] = None,
     user_id: uuid.UUID | None = None,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
@@ -144,7 +148,7 @@ def list_all_staff_exceptions(
     now = clock.business_now()
     rows, total = list_all_exceptions(
         db,
-        status=status_filter,
+        statuses=status_filter or (),
         user_id=user_id,
         date_from=date_from,
         date_to=date_to,
@@ -246,7 +250,8 @@ def _http_error(exc: ExceptionRequestError) -> HTTPException:
 def _warnings_response(exc: UnconfirmedBookingClash) -> JSONResponse:
     warning = TimeOffWarning(
         code=BOOKING_CLASH_WARNING,
-        message=f"This time off clashes with {exc.clash_count} booking(s)",
+        message=f"This time off clashes with {len(exc.clashes)} booking(s)",
+        clashing_bookings=[_clashing(clash) for clash in exc.clashes],
     )
 
     return JSONResponse(
@@ -287,6 +292,7 @@ def _read(
         decided_at=row.decided_at,
         cancelled_by=_named(row.canceller),
         cancelled_at=row.cancelled_at,
+        entered_by=_named(row.creator),
         clashing_bookings=[_clashing(clash) for clash in clashes],
         clashing_bookings_count=len(clashes),
     )

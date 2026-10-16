@@ -58,6 +58,8 @@ class UserCreate(BaseModel):
     role: UserRole
     tutor_id: uuid.UUID | None = None
     tutor: TutorProfileCreate | None = None
+    # Sends the Invite in this same request, by the same path as `POST /{id}/invite`.
+    send_invite: bool = False
 
 
 class UserUpdate(BaseModel):

@@ -40,6 +40,7 @@ from app.routers.availability import (
     SLOT_TAKEN_ERROR,
     TUTOR_NOT_FOUND_ERROR,
 )
+from app.schemas.availability import MAX_WEEK_SLOTS
 from app.security import create_access_token, hash_password
 from app.services import availability_service
 from tests.support import user_id_of
@@ -715,6 +716,334 @@ def test_an_unknown_slot_is_404_for_every_role(
     _assert_detail(response, 404, AVAILABILITY_NOT_FOUND_ERROR)
 
 
+# --- replace the whole week: PUT ------------------------------------------------------------
+
+
+def test_put_keeps_the_id_of_a_slot_submitted_unchanged(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    kept = _make_slot(db, tutor_id=tutor.id, day_of_week=0, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api, user=user, tutor_id=tutor.id, slots=[_week_slot(0, "09:00", "18:00", "traveler")]
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert set(body) == {"items", "total", "page", "page_size"}
+    assert body["total"] == 1
+    assert [item["id"] for item in body["items"]] == [str(kept.id)]
+
+
+def test_put_deactivates_an_active_slot_left_out_of_the_week(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    kept = _make_slot(db, tutor_id=tutor.id, day_of_week=0, start_time=datetime.time(9, 0))
+    dropped = _make_slot(db, tutor_id=tutor.id, day_of_week=2, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api, user=user, tutor_id=tutor.id, slots=[_week_slot(0, "09:00", "18:00", "traveler")]
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [str(kept.id)]
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(kept.id): ("09:00:00", "18:00:00", True),
+        str(dropped.id): ("09:00:00", "18:00:00", False),
+    }
+
+
+def test_put_creates_new_slots_and_answers_in_the_lists_order(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    kept = _make_slot(db, tutor_id=tutor.id, day_of_week=1, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api,
+        user=user,
+        tutor_id=tutor.id,
+        slots=[
+            _week_slot(4, "14:00", "16:00", "only_office"),
+            _week_slot(1, "09:00", "18:00", "traveler"),
+            _week_slot(0, "10:00", "11:00"),
+        ],
+    )
+    items = response.json()["items"]
+
+    assert response.status_code == 200
+    assert [(item["day_of_week"], item["start_time"], item["mode"]) for item in items] == [
+        (0, "10:00:00", "anywhere"),
+        (1, "09:00:00", "traveler"),
+        (4, "14:00:00", "only_office"),
+    ]
+    assert items[1]["id"] == str(kept.id)
+    assert str(kept.id) not in {items[0]["id"], items[2]["id"]}
+    assert all(item["is_active"] for item in items)
+
+
+def test_put_changes_a_slots_end_and_mode_in_place(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(db, tutor_id=tutor.id, day_of_week=0, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api, user=user, tutor_id=tutor.id, slots=[_week_slot(0, "09:00", "12:00", "only_office")]
+    )
+    items = response.json()["items"]
+
+    assert response.status_code == 200
+    assert [(item["id"], item["end_time"], item["mode"]) for item in items] == [
+        (str(row.id), "12:00:00", "only_office")
+    ]
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "12:00:00", True)
+    }
+
+
+def test_put_restores_a_deactivated_slot_with_the_same_start(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(
+        db, tutor_id=tutor.id, day_of_week=3, start_time=datetime.time(9, 0), is_active=False
+    )
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(api, user=user, tutor_id=tutor.id, slots=[_week_slot(3, "09:00", "10:00")])
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [str(row.id)]
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "10:00:00", True)
+    }
+
+
+def test_put_with_no_slots_deactivates_the_whole_week(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    first = _make_slot(db, tutor_id=tutor.id, day_of_week=0, start_time=datetime.time(9, 0))
+    second = _make_slot(db, tutor_id=tutor.id, day_of_week=5, start_time=datetime.time(8, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(api, user=user, tutor_id=tutor.id, slots=[])
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 0
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(first.id): ("09:00:00", "18:00:00", False),
+        str(second.id): ("08:00:00", "18:00:00", False),
+    }
+
+
+def test_put_allows_slots_that_only_touch(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api,
+        user=user,
+        tutor_id=tutor.id,
+        slots=[_week_slot(0, "09:00", "10:00"), _week_slot(0, "10:00", "11:00")],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        [(0, "09:00", "11:00"), (0, "10:30", "12:00")],
+        [(2, "09:00", "10:00"), (2, "09:00", "11:00")],
+        [(2, "08:00", "12:00"), (2, "09:00", "10:00")],
+    ],
+    ids=["intersecting", "same-start", "contained"],
+)
+def test_put_refuses_an_overlapping_week_and_changes_nothing(
+    api: TestClient, db: Session, ranges: list[tuple[int, str, str]]
+) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(db, tutor_id=tutor.id, day_of_week=4, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    slots = [_week_slot(day, start, end) for day, start, end in ranges]
+
+    response = _put_week(api, user=user, tutor_id=tutor.id, slots=slots)
+
+    _assert_detail(response, 409, SLOT_TAKEN_ERROR)
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "18:00:00", True)
+    }
+
+
+@pytest.mark.parametrize(
+    ("start", "end"), [("12:00", "12:00"), ("12:00", "09:00")], ids=["equal", "inverted"]
+)
+def test_put_refuses_a_non_positive_range_and_changes_nothing(
+    api: TestClient, db: Session, start: str, end: str
+) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(db, tutor_id=tutor.id, day_of_week=4, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api,
+        user=user,
+        tutor_id=tutor.id,
+        slots=[_week_slot(1, "09:00", "10:00"), _week_slot(2, start, end)],
+    )
+
+    # The request-validation handler answers 400, not FastAPI's default 422, exactly as for POST.
+    _assert_detail(response, 400, "slots.1: Value error, end_time must be after start_time")
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "18:00:00", True)
+    }
+
+
+def test_put_refuses_more_slots_than_a_week_can_hold_and_changes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(db, tutor_id=tutor.id, day_of_week=4, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+    # One slot per minute from midnight Monday: none overlap, so only the cap refuses them.
+    slots = [
+        _week_slot(0, _clock(minute), _clock(minute + 1)) for minute in range(MAX_WEEK_SLOTS + 1)
+    ]
+
+    response = _put_week(api, user=user, tutor_id=tutor.id, slots=slots)
+
+    _assert_detail_shape(response, 400)
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "18:00:00", True)
+    }
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [("09:00:30", "10:00:00"), ("09:00:00", "10:00:00.000001")],
+    ids=["seconds", "microseconds"],
+)
+def test_put_refuses_a_time_finer_than_a_minute_and_changes_nothing(
+    api: TestClient, db: Session, start: str, end: str
+) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(db, tutor_id=tutor.id, day_of_week=4, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(api, user=user, tutor_id=tutor.id, slots=[_week_slot(1, start, end)])
+
+    _assert_detail_shape(response, 400)
+    assert "whole minute" in response.json()["detail"]
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "18:00:00", True)
+    }
+
+
+@pytest.mark.parametrize(
+    "slots",
+    [
+        [("09:00Z", "10:00Z")],
+        [("09:00", "10:00"), ("10:00+02:00", "11:00+02:00")],
+    ],
+    ids=["utc-marked", "mixed-with-naive"],
+)
+def test_put_refuses_a_timezone_marked_time_and_changes_nothing(
+    api: TestClient, db: Session, slots: list[tuple[str, str]]
+) -> None:
+    tutor = _make_tutor(db)
+    row = _make_slot(db, tutor_id=tutor.id, day_of_week=4, start_time=datetime.time(9, 0))
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=tutor.id)
+
+    response = _put_week(
+        api, user=user, tutor_id=tutor.id, slots=[_week_slot(1, start, end) for start, end in slots]
+    )
+
+    _assert_detail_shape(response, 400)
+    assert "time zone" in response.json()["detail"]
+    assert _listed_week(api, user=user, tutor_id=tutor.id) == {
+        str(row.id): ("09:00:00", "18:00:00", True)
+    }
+
+
+@pytest.mark.parametrize("role", [UserRole.MANAGER, *ADMIN_ROLE_CASES])
+def test_put_is_open_to_the_profiles_owner_of_any_role(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    tutor = _make_tutor(db)
+    user = _make_user(db, role=role, tutor_id=tutor.id)
+
+    response = _put_week(api, user=user, tutor_id=tutor.id, slots=[_week_slot(0, "09:00", "10:00")])
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
+def test_an_admin_role_puts_a_tutors_week(api: TestClient, db: Session, role: UserRole) -> None:
+    tutor = _make_tutor(db)
+    admin = _make_user(db, role=role)
+
+    response = _put_week(
+        api, user=admin, tutor_id=tutor.id, slots=[_week_slot(0, "09:00", "10:00")]
+    )
+
+    assert response.status_code == 200
+    assert [item["tutor_id"] for item in response.json()["items"]] == [str(tutor.id)]
+
+
+@pytest.mark.parametrize("role", [UserRole.TUTOR, UserRole.MANAGER])
+def test_a_tutor_or_manager_putting_another_tutors_week_is_403(
+    api: TestClient, db: Session, role: UserRole
+) -> None:
+    own = _make_tutor(db)
+    user = _make_user(db, role=role, tutor_id=own.id)
+    other = _make_tutor(db)
+    row = _make_slot(db, tutor_id=other.id, day_of_week=0, start_time=datetime.time(9, 0))
+    admin = _make_user(db, role=UserRole.ADMIN)
+
+    response = _put_week(api, user=user, tutor_id=other.id, slots=[])
+
+    _assert_detail(response, 403, NOT_YOUR_AVAILABILITY_ERROR)
+    assert _listed_week(api, user=admin, tutor_id=other.id) == {
+        str(row.id): ("09:00:00", "18:00:00", True)
+    }
+
+
+def test_a_tutor_putting_an_unknown_profiles_week_is_403_not_404(
+    api: TestClient, db: Session
+) -> None:
+    own = _make_tutor(db)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=own.id)
+
+    response = _put_week(api, user=user, tutor_id=uuid.uuid4(), slots=[])
+
+    _assert_detail(response, 403, NOT_YOUR_AVAILABILITY_ERROR)
+
+
+def test_an_admin_putting_an_unknown_profiles_week_is_404(api: TestClient, db: Session) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+
+    response = _put_week(api, user=admin, tutor_id=uuid.uuid4(), slots=[])
+
+    _assert_detail(response, 404, TUTOR_NOT_FOUND_ERROR)
+
+
+def test_an_admin_putting_a_peer_admins_week_is_403(api: TestClient, db: Session) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    target = _make_tutor(db)
+    _make_user(db, role=UserRole.ADMIN, tutor_id=target.id)
+
+    response = _put_week(api, user=admin, tutor_id=target.id, slots=[])
+
+    _assert_detail(response, 403, PEER_ADMIN_FORBIDDEN_ERROR)
+
+
+def test_unauthenticated_put_is_401(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor(db)
+
+    response = api.put(f"/api/tutors/{tutor.id}/availability", json={"slots": []})
+
+    _assert_detail(response, 401, CREDENTIALS_ERROR)
+
+
 def _write(
     api: TestClient, write: str, *, user: User, tutor_id: uuid.UUID, slot_id: uuid.UUID
 ) -> Response:
@@ -733,6 +1062,34 @@ def _write(
     else:
         response = api.delete(f"/api/availability/{slot_id}", headers=headers)
     return response
+
+
+def _put_week(
+    api: TestClient, *, user: User, tutor_id: uuid.UUID, slots: list[dict[str, object]]
+) -> Response:
+    return api.put(
+        f"/api/tutors/{tutor_id}/availability", json={"slots": slots}, headers=_bearer(user)
+    )
+
+
+def _week_slot(day_of_week: int, start: str, end: str, mode: str = "anywhere") -> dict[str, object]:
+    return {"day_of_week": day_of_week, "start_time": start, "end_time": end, "mode": mode}
+
+
+def _clock(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _listed_week(
+    api: TestClient, *, user: User, tutor_id: uuid.UUID
+) -> dict[str, tuple[str, str, bool]]:
+    """Every stored slot as GET answers it: id to (start, end, is_active)."""
+    response = api.get(f"/api/tutors/{tutor_id}/availability", headers=_bearer(user))
+    assert response.status_code == 200
+    return {
+        item["id"]: (item["start_time"], item["end_time"], item["is_active"])
+        for item in response.json()["items"]
+    }
 
 
 def _assert_untouched(db: Session, *, tutor_id: uuid.UUID, slot_id: uuid.UUID) -> None:

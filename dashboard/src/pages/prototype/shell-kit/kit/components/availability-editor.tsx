@@ -6,7 +6,6 @@
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  ChevronDown,
   Clock,
   Copy,
   Pencil,
@@ -23,6 +22,7 @@ import type {
 import { SlotLocationBadge } from "@/pages/prototype/shell-kit/kit/components/badges";
 import { Button, IconButton, TextLink } from "@/pages/prototype/shell-kit/kit/components/button";
 import { CheckboxField } from "@/pages/prototype/shell-kit/kit/components/choices";
+import Select from "@/pages/prototype/shell-kit/kit/components/select";
 import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
 
 const WEEK = [
@@ -35,6 +35,10 @@ const WEEK = [
   "Sunday",
 ];
 const LOCATIONS: SlotLocation[] = ["Home visits", "Home or office", "Office only"];
+const LOCATION_OPTIONS = LOCATIONS.map((location) => ({
+  value: location,
+  label: location,
+}));
 const NEW_SLOT = { from: "15:00", to: "18:00", location: "Home or office" as const };
 const MINUTES_PER_HOUR = 60;
 
@@ -275,22 +279,13 @@ function EditRow({ slot, label, onChange, onRemove }: EditRowProps): ReactNode {
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="relative min-w-0 flex-1">
-            <select
+            <Select
               aria-label={`${label} location`}
+              label="Location"
+              options={LOCATION_OPTIONS}
               value={slot.location}
               // Options come from LOCATIONS, so the value is a SlotLocation.
-              onChange={(event) => onChange({ location: event.target.value as SlotLocation })}
-              className={cn(CONTROL, "w-full cursor-pointer pr-10 pl-4")}
-            >
-              {LOCATIONS.map((location) => (
-                <option key={location} value={location}>
-                  {location}
-                </option>
-              ))}
-            </select>
-            <ChevronDown
-              aria-hidden
-              className="pointer-events-none absolute top-1/2 right-3.5 size-4 -translate-y-1/2 text-(--tl-muted)"
+              onValueChange={(location) => onChange({ location: location as SlotLocation })}
             />
           </div>
           <IconButton icon={Trash2} label={`Remove ${label}`} onClick={onRemove} />

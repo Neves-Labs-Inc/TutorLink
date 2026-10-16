@@ -5,24 +5,19 @@ import { useId } from "react";
 import type {
   InputHTMLAttributes,
   ReactNode,
-  SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
-import { ChevronDown, CircleAlert, Search, X } from "lucide-react";
+import { CircleAlert, Search, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/pages/prototype/shell-kit/kit/tokens";
+import { getControlClasses } from "@/pages/prototype/shell-kit/kit/lib/control-classes";
+import Select from "@/pages/prototype/shell-kit/kit/components/select";
+import type {
+  SelectChange,
+  SelectOption,
+} from "@/pages/prototype/shell-kit/kit/types/select";
 
-const CONTROL =
-  "w-full border bg-(--tl-surface) text-[15px] text-(--tl-ink) transition-colors duration-150 placeholder:text-(--tl-muted) disabled:cursor-not-allowed disabled:border-(--tl-border) disabled:bg-(--tl-surface-sunk) disabled:text-(--tl-muted)";
-
-function getControlClasses(hasError: boolean): string {
-  return cn(
-    CONTROL,
-    hasError
-      ? "border-(--tl-danger) hover:border-(--tl-danger)"
-      : "border-(--tl-field-border) hover:border-(--tl-primary)",
-  );
-}
+export type { SelectOption };
 
 type FieldIds = { controlId: string; describedBy: string | undefined };
 
@@ -176,19 +171,27 @@ export function TextAreaField({
   );
 }
 
-export type SelectOption = { value: string; label: string };
+type SelectFieldProps = SharedFieldProps & {
+  options: SelectOption[];
+  value?: string;
+  defaultValue?: string;
+  onChange?: (event: SelectChange) => void;
+  onValueChange?: (value: string) => void;
+  placeholder?: string;
+  name?: string;
+  required?: boolean;
+  disabled?: boolean;
+  className?: string;
+};
 
-type SelectFieldProps = SharedFieldProps &
-  SelectHTMLAttributes<HTMLSelectElement> & { options: SelectOption[] };
-
+// The kit Select in the field frame; the label also titles the phone
+// sheet.
 export function SelectField({
   label,
   help,
   error,
   isLabelHidden,
-  options,
   required,
-  className,
   ...rest
 }: SelectFieldProps): ReactNode {
   return (
@@ -200,30 +203,14 @@ export function SelectField({
       isLabelHidden={isLabelHidden}
     >
       {({ controlId, describedBy }) => (
-        <div className="relative">
-          <select
-            id={controlId}
-            aria-describedby={describedBy}
-            aria-invalid={error ? true : undefined}
-            required={required}
-            className={cn(
-              getControlClasses(Boolean(error)),
-              "h-11 cursor-pointer rounded-full pr-11 pl-4",
-              className,
-            )}
-            {...rest}
-          >
-            {options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <ChevronDown
-            aria-hidden
-            className="pointer-events-none absolute top-1/2 right-4 size-[18px] -translate-y-1/2 text-(--tl-muted)"
-          />
-        </div>
+        <Select
+          id={controlId}
+          label={label}
+          aria-describedby={describedBy}
+          aria-invalid={Boolean(error)}
+          aria-required={required || undefined}
+          {...rest}
+        />
       )}
     </FieldShell>
   );

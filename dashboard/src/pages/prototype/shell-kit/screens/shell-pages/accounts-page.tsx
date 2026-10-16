@@ -1,4 +1,4 @@
-// Accounts (CONTEXT.md: a Guardian's saved details, their Homes and
+// Families (CONTEXT.md: a Guardian's saved details, their Homes and
 // their Children). Sub-page tabs Children | Guardians, each with its own
 // search and filters. Details stack: Child ⇄ Guardian.
 import { useState } from "react";
@@ -76,11 +76,11 @@ export default function AccountsPage(): ReactNode {
   return (
     <>
       <PageHeader
-        title="Accounts"
+        title="Families"
         description={`${CHILDREN.length} Children, ${awaiting} awaiting evaluation. ${GUARDIANS.length} Guardians.`}
         tabs={
           <SubPageTabs
-            label="Accounts sections"
+            label="Families sections"
             activeId={tab}
             onChange={(id) => {
               // Ids come from the two items below.

@@ -1,4 +1,4 @@
-// Filter fields and state for the sample Bookings, Staff and Accounts
+// Filter fields and state for the sample Bookings, Staff and Families
 // lists, shared by those pages and the lists and header
 // screens.
 import {

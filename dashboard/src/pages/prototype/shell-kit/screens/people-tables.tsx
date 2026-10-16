@@ -1,5 +1,5 @@
 // Office data in the kit's DataTable (lists fork A). Shared by the
-// Accounts (Children, Guardians), Staff and Bookings pages and the lists
+// Families (Children, Guardians), Staff and Bookings pages and the lists
 // screen.
 import type { ReactNode } from "react";
 import {

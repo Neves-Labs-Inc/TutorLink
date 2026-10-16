@@ -18,6 +18,13 @@
   outline-offset: 2px;
 }
 
+/* Select rows in a sheet: the ring sits inside the row, so the sheet's
+   scroll area doesn't clip it. Here, not a utility: this file is
+   unlayered and would win over one. */
+[data-kit] [role="option"]:focus-visible {
+  outline-offset: -2px;
+}
+
 [data-kit] .kit-display {
   font-family: "Lato", ui-sans-serif, system-ui, sans-serif;
 }
@@ -36,10 +43,6 @@
 
 [data-kit] .kit-no-scrollbar::-webkit-scrollbar {
   display: none;
-}
-
-[data-kit] select {
-  appearance: none;
 }
 
 /* Native date/time pickers: keep the picker icon in the token colour. */

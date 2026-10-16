@@ -1,5 +1,5 @@
 // Navigation per role (TutorLink#186, revised by Franklin 2026-10-13:
-// People split into Accounts (Children | Guardians) and Staff, Time off
+// People split into Families (Children | Guardians) and Staff, Time off
 // top-level for the office, Manager's Me folded into their profile). The sidebar and the
 // phone tab bar hold the same items; the tab bar shows 4 and puts the
 // rest under More. "profile" is reached from the user card / avatar.
@@ -63,7 +63,7 @@ function getOfficeNav(role: Role): NavItem[] {
       icon: MessageCircle,
       badge: { count: CHATS_UNREAD, label: "unread", tone: "primary" },
     },
-    { id: "accounts", label: "Accounts", icon: BookUser },
+    { id: "accounts", label: "Families", icon: BookUser },
     { id: "staff", label: "Staff", icon: Users },
     {
       id: "time-off",

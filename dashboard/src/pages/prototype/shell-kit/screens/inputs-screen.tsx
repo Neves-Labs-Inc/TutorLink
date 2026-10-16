@@ -14,17 +14,30 @@ import {
   RadioCards,
   SwitchField,
 } from "@/pages/prototype/shell-kit/kit/components/choices";
+import Select from "@/pages/prototype/shell-kit/kit/components/select";
+import { Button } from "@/pages/prototype/shell-kit/kit/components/button";
+import { BottomSheet } from "@/pages/prototype/shell-kit/kit/overlays/bottom-sheet";
 import { MultiSelectFilter } from "@/pages/prototype/shell-kit/kit/components/multi-select-filter";
 import { Combobox } from "@/pages/prototype/shell-kit/kit/components/combobox";
 import { SegmentedControl } from "@/pages/prototype/shell-kit/kit/components/tabs";
 import { Gallery, Specimen } from "@/pages/prototype/shell-kit/screens/gallery";
 
 const SUBJECT_OPTIONS = [
-  { value: "", label: "Pick a subject" },
   { value: "math", label: "Math" },
   { value: "reading", label: "Reading" },
   { value: "writing", label: "Writing" },
   { value: "science", label: "Science" },
+];
+
+const BUSINESS_TYPE_OPTIONS = [
+  { value: "tutoring", label: "Tutoring center" },
+  { value: "solo", label: "Solo tutor" },
+];
+
+const LANGUAGE_OPTIONS = [
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "pt", label: "Portuguese" },
 ];
 
 const STAFF_OPTIONS = STAFF.filter((staff) => !staff.isArchived).map(
@@ -51,6 +64,8 @@ export default function InputsScreen(): ReactNode {
   const [location, setLocation] = useState("either");
   const [kind, setKind] = useState("tutoring");
   const [statuses, setStatuses] = useState<string[]>(["Pending"]);
+  const [language, setLanguage] = useState("en");
+  const [isSheetOpen, setIsSheetOpen] = useState(false);
   const isEmailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
 
   return (
@@ -85,9 +100,40 @@ export default function InputsScreen(): ReactNode {
           help="Tutors see these with every Session."
         />
       </Specimen>
-      <Specimen title="Select, combobox and search" note="Native select for short fixed lists; the combobox for long lists you search (Staff, Children).">
+      <Specimen title="Select, combobox and search" note="Kit select for short fixed lists; the combobox for long lists you search (Staff, Children).">
         <div className="grid gap-6 @3xl:grid-cols-2">
-          <SelectField label="Subject" options={SUBJECT_OPTIONS} defaultValue="" required error="Pick a subject." />
+          <SelectField label="Subject" options={SUBJECT_OPTIONS} placeholder="Pick a subject" required />
+          <SelectField label="Subject" options={SUBJECT_OPTIONS} defaultValue="reading" />
+          <SelectField label="Subject" options={SUBJECT_OPTIONS} placeholder="Pick a subject" required error="Pick a subject." />
+          <SelectField
+            label="Business type"
+            options={BUSINESS_TYPE_OPTIONS}
+            defaultValue="tutoring"
+            disabled
+            help="Only Admins can change this."
+          />
+          <SelectField
+            label="Room"
+            options={[]}
+            placeholder="Pick a room"
+            help="No rooms set up yet."
+          />
+          <p className="flex items-center text-[15px] text-(--tl-ink-soft)">
+            Guardian language ·&nbsp;
+            <Select
+              variant="inline"
+              aria-label="Guardian language"
+              label="Guardian language"
+              options={LANGUAGE_OPTIONS}
+              value={language}
+              onValueChange={setLanguage}
+            />
+          </p>
+          <div className="flex items-end">
+            <Button variant="soft" onClick={() => setIsSheetOpen(true)}>
+              Open in a sheet
+            </Button>
+          </div>
           <Combobox
             label="Staff"
             options={STAFF_OPTIONS}
@@ -106,6 +152,13 @@ export default function InputsScreen(): ReactNode {
             />
           </div>
         </div>
+        <BottomSheet
+          isOpen={isSheetOpen}
+          onClose={() => setIsSheetOpen(false)}
+          title="Edit Booking"
+        >
+          <SelectField label="Subject" options={SUBJECT_OPTIONS} defaultValue="math" />
+        </BottomSheet>
       </Specimen>
       <Specimen title="Date and time" note="Native pickers; they follow light and dark through color-scheme.">
         <div className="grid gap-6 @md:grid-cols-3">

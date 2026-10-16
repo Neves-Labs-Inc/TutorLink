@@ -13,8 +13,12 @@ A student a Guardian books sessions for.
 _Avoid_: Student, kid
 
 **Account**:
-A Guardian's saved details (their own, their Homes, their Children), created when a new number answers the Intake questions. Also the office's dashboard section for them, Accounts, with Children and Guardians tabs. A Guardian's details page is where the office manages their Homes.
-_Avoid_: Profile, registration, People, Families
+A Guardian's saved details (their own, their Homes, their Children), created when a new number answers the Intake questions. Whether this term is renamed too is open.
+_Avoid_: Profile, registration, People
+
+**Family**:
+Guardians joined through the Children they share, with all those Children and their Homes. Nothing stores a family; it follows from who is linked to whom. Also the office's dashboard section, Families: a list of families, each opening into one overview (Children, the family's Bookings by week, Guardians and Homes). Adding a Child or a Guardian starts a new family; Guardians and Homes can be added from the family's overview.
+_Avoid_: Accounts (for the section), household (in the UI)
 
 **Intake**:
 The questions the bot asks a new Guardian to set up their Account.
@@ -137,12 +141,12 @@ A chat where the Guardian has written since anyone in the office last opened it.
 _Avoid_: New messages, unseen
 
 **To do**:
-The office's queue on Home: chats that Need attention and time-off requests waiting for an Admin. Admins see both; Managers see only chats. Booking work lives in To sort out instead. Each item is cleared by acting on it.
+The office's queue on Home, in three groups: Chats that Need attention, Bookings waiting on the office (see Bookings to sort out), and Time off requests waiting for an Admin. Admins see all three; Managers see Chats and the Children awaiting evaluation (who sees a Manager's own Bookings is open). Rows only open the item's details, where it is acted on; each item is cleared by acting on it.
 _Avoid_: Needs attention (for the whole queue), inbox, tasks, alerts
 
-**To sort out**:
-The banner above Bookings listing Booking work waiting on the office: Children awaiting evaluation with no Evaluation session booked, and Bookings to sort out (a past pending or confirmed Booking still not marked Completed once its day has ended, one that clashes with approved Time off, even if it was booked knowingly, or an upcoming one whose Staff member is archived). Approving Time off never cancels or refuses clashing Bookings; the Admin is warned and the clashes land here. An Admin may acknowledge a clash to keep the Booking as is, which clears it until the Booking's time or Staff member changes. Each Booking is listed once, with every reason it needs sorting out. Managers see Children awaiting evaluation and only their own Bookings to sort out. The Bookings nav item carries its count.
-_Avoid_: Needs attention (that is the chat word), alerts
+**Bookings to sort out** (code and API name only):
+Booking work waiting on the office, shown as the Bookings group in To do: Children awaiting evaluation with no Evaluation session booked, and Bookings to sort out (a past pending or confirmed Booking still not marked Completed once its day has ended, one that clashes with approved Time off, even if it was booked knowingly, or an upcoming one whose Staff member is archived). Approving Time off never cancels or refuses clashing Bookings; the Admin is warned and the clashes land here. An Admin may acknowledge a clash to keep the Booking as is, which clears it until the Booking's time or Staff member changes. Each Booking is listed once, with every reason it needs sorting out. The Bookings nav item carries the count of both. The UI never says "To sort out"; its label for this on the Bookings page is still open.
+_Avoid_: To sort out (in the UI), alerts
 
 **Home**:
 Where the office lands after sign-in: To do, then today's Bookings for Admins, or My sessions today for Managers.

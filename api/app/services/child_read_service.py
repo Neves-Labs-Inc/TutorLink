@@ -5,7 +5,8 @@ split (P7C-D): the two change for different reasons and are owned by different t
 transaction contract as every other service: nothing commits, the caller owns the boundary.
 
 **The list runs a constant number of statements, whatever the page size**: the count, the page,
-then one batched load each for the page's guardians, bookable homes and next sessions (§5.3). A
+then one batched load each for the page's guardians, bookable homes, next sessions, levels and
+Assigned Tutors (§5.3). A
 per-row lazy load would turn a page of 100 into 300 round trips, and nothing on a list row is
 read through an ORM relationship for that reason.
 
@@ -31,6 +32,7 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
 from app.services import clock
+from app.services.assigned_tutor_service import AssignedTutor, assigned_tutors_by_child
 from app.services.guardian_state import GuardianState, guardian_states
 from app.services.home_set import homes_by_child
 
@@ -46,6 +48,7 @@ class ChildRow:
     next_session: Booking | None
     # Levels in non-archived Subjects, by Subject name then id.
     levels: list[ChildSubjectLevel]
+    assigned_tutors: list[AssignedTutor]
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +60,7 @@ class ChildDetailRow:
     next_session: Booking | None
     levels: list[ChildSubjectLevel]
     guardian_states: dict[uuid.UUID, GuardianState]
+    assigned_tutors: list[AssignedTutor]
 
 
 class ChildReadServiceError(Exception):
@@ -120,6 +124,7 @@ def list_children(
     homes = homes_by_child(db, child_ids=child_ids, include_archived=False)
     next_sessions = _next_sessions_by_child(db, child_ids=child_ids)
     levels = _active_levels_by_child(db, child_ids=child_ids)
+    assigned_tutors = assigned_tutors_by_child(db, child_ids=child_ids)
     rows = [
         ChildRow(
             child=child,
@@ -127,6 +132,7 @@ def list_children(
             homes=homes[child.id],
             next_session=next_sessions.get(child.id),
             levels=levels[child.id],
+            assigned_tutors=assigned_tutors[child.id],
         )
         for child in children
     ]
@@ -184,6 +190,7 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         next_session=_next_sessions_by_child(db, child_ids=[child.id]).get(child.id),
         levels=levels,
         guardian_states=guardian_states(db, [guardian.id for guardian in guardians]),
+        assigned_tutors=assigned_tutors_by_child(db, child_ids=[child.id])[child.id],
     )
 
 

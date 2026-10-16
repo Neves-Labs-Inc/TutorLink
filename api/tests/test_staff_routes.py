@@ -38,6 +38,7 @@ ITEM_FIELDS = {
     "archived",
     "subjects",
     "sessions_this_week",
+    "assigned_children",
 }
 STAFF_NOT_FOUND_ERROR = "Staff member not found"
 # A Wednesday: the week runs Monday 12 October to Sunday 18 October 2026.
@@ -257,6 +258,7 @@ def test_a_tutors_row_carries_every_field(
             {"id": str(retired_chemistry.id), "name": "Chemistry Staff01"},
         ],
         "sessions_this_week": 1,
+        "assigned_children": [],
     }
     assert isinstance(invite_expires_at, str)
     assert datetime.datetime.fromisoformat(invite_expires_at) == expires_at
@@ -283,6 +285,7 @@ def test_a_managers_row_carries_their_subjects_and_sign_in_state(
         "archived": False,
         "subjects": [{"id": str(physics.id), "name": "Physics Staff01"}],
         "sessions_this_week": 0,
+        "assigned_children": [],
     }
 
 
@@ -303,6 +306,7 @@ def test_an_admins_row_is_active_with_no_subjects(api: TestClient, db: Session) 
         "archived": False,
         "subjects": [],
         "sessions_this_week": 0,
+        "assigned_children": [],
     }
 
 

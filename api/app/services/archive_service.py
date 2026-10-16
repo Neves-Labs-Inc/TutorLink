@@ -51,6 +51,7 @@ from app.models.home import Home
 from app.models.subject import Subject
 from app.schemas.archive import ArchiveTarget, ChildTarget, StaffTarget
 from app.services import child_service, clock
+from app.services.assigned_tutor_service import remove_all_for_user
 from app.services.auth_service import revoke_all_refresh_tokens_for_user
 from app.services.client_service import CLIENT_NOT_FOUND_ERROR
 from app.services.home_service import HOME_NOT_FOUND_ERROR
@@ -245,10 +246,11 @@ def _set_staff(
 
     user.is_archived = is_archiving
 
-    # Restore clears the flag only: what an archive revoked stays revoked.
+    # Restore clears the flag only: what an archive revoked or removed stays that way.
     if is_archiving:
         revoke_all_refresh_tokens_for_user(db, user_id=user.id)
         revoke_links_for_user(db, user_id=user.id, now=datetime.now(UTC))
+        remove_all_for_user(db, user_id=user.id)
 
     db.flush()
 

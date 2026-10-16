@@ -21,6 +21,11 @@ class StaffSubjectRead(BaseModel):
     name: str
 
 
+class AssignedChildRead(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
 class StaffRead(BaseModel):
     id: uuid.UUID
     name: str
@@ -32,3 +37,5 @@ class StaffRead(BaseModel):
     archived: bool
     subjects: list[StaffSubjectRead]
     sessions_this_week: int
+    # The Children this person is an Assigned Tutor of, by name then id (#242).
+    assigned_children: list[AssignedChildRead]

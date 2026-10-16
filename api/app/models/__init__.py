@@ -5,6 +5,7 @@ from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
 from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
@@ -75,6 +76,7 @@ __all__ = [
     "BookingStatus",
     "BotFlowState",
     "Child",
+    "ChildAssignedTutor",
     "ChildGuardian",
     "Conversation",
     "ConversationStatus",

@@ -24,6 +24,9 @@ carries no flag": a child can be deactivated without being deleted. `ChildSummar
 `GuardianLinkCreate` exactly-one-of `guardian_id`/`guardian` rule belongs to the service, not a
 validator, because resolving it may mean creating a guardian row (07B P7B-A).
 
+`assigned_tutors` is the Child's Assigned Tutors (#242), edited through
+`/api/children/{id}/assigned-tutors`.
+
 `levels` and `evaluated` carry the Subject levels and the Evaluated mark, each with the Staff
 member behind it as a `StaffRef` (Display name). `created_at` on `ChildSummary` is the
 "Since" of the Awaiting evaluation tab.
@@ -36,8 +39,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH
-from app.models.enums import Language
+from app.models.enums import Language, UserRole
 from app.schemas.booking import NamedRef
+from app.services.assigned_tutor_service import AssignedTutor
 
 
 class ChildRead(BaseModel):
@@ -120,6 +124,22 @@ class NextSession(BaseModel):
     subject: NamedRef | None
 
 
+class AssignedTutorRead(BaseModel):
+    """An Assigned Tutor: always an active Tutor or Manager, so there is no `archived` here."""
+
+    id: uuid.UUID
+    name: str
+    role: UserRole
+
+
+class AssignedTutorCreate(BaseModel):
+    user_id: uuid.UUID
+
+
+def assigned_tutor_reads(tutors: list[AssignedTutor]) -> list[AssignedTutorRead]:
+    return [AssignedTutorRead(id=tutor.id, name=tutor.name, role=tutor.role) for tutor in tutors]
+
+
 class ChildLevelRef(BaseModel):
     subject_id: uuid.UUID
     name: str
@@ -138,6 +158,8 @@ class ChildSummary(BaseModel):
     # Levels in non-archived Subjects only, by Subject name; `ChildDetail.levels` has them all.
     levels: list[ChildLevelRef]
     evaluated: EvaluatedRead | None
+    # By name then id, as on `ChildDetail`.
+    assigned_tutors: list[AssignedTutorRead]
     created_at: datetime.datetime
 
 
@@ -166,6 +188,8 @@ class ChildDetail(BaseModel):
     homes: list[ChildHomeRead]
     levels: list[ChildLevelRead]
     evaluated: EvaluatedRead | None
+    # By name then id.
+    assigned_tutors: list[AssignedTutorRead]
 
 
 class NewGuardian(BaseModel):

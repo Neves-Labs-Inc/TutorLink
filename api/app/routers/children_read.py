@@ -38,6 +38,7 @@ from app.schemas.child import (
     EvaluatedRead,
     NextSession,
     StaffRef,
+    assigned_tutor_reads,
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.child_read_service import (
@@ -129,6 +130,7 @@ def _summary(row: ChildRow, owners: Owners) -> ChildSummary:
             for level in row.levels
         ],
         evaluated=_evaluated(row.child),
+        assigned_tutors=assigned_tutor_reads(row.assigned_tutors),
         created_at=row.child.created_at,
     )
 
@@ -190,6 +192,7 @@ def _detail(row: ChildDetailRow, owners: Owners) -> ChildDetail:
         ],
         levels=[_level(level) for level in row.levels],
         evaluated=_evaluated(row.child),
+        assigned_tutors=assigned_tutor_reads(row.assigned_tutors),
     )
 
 

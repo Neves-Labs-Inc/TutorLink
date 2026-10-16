@@ -106,6 +106,8 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("DELETE", "/api/children/{child_id}/levels/{subject_id}"): Access.STAFF,
     ("POST", "/api/children/{child_id}/evaluated"): Access.STAFF,
     ("DELETE", "/api/children/{child_id}/evaluated"): Access.STAFF,
+    ("POST", "/api/children/{child_id}/assigned-tutors"): Access.STAFF,
+    ("DELETE", "/api/children/{child_id}/assigned-tutors/{user_id}"): Access.STAFF,
     ("GET", "/api/households"): Access.STAFF,
     ("PATCH", "/api/homes/{home_id}"): Access.STAFF,
     # Staff writes are Admin-only (#208); reading the Tutors page is not.

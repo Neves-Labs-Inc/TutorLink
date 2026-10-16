@@ -23,8 +23,9 @@ from app.models.enums import UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
-from app.schemas.staff import StaffRead, StaffSubjectRead
+from app.schemas.staff import AssignedChildRead, StaffRead, StaffSubjectRead
 from app.services import clock
+from app.services.assigned_tutor_service import assigned_children_by_user
 from app.services.password_link_service import live_invite_expiries
 from app.services.sign_in_state import SignInState, sign_in_state_expression, sign_in_states
 
@@ -75,7 +76,7 @@ def build_staff_rows(
     db: Session, users: Sequence[User], *, now: datetime.datetime | None = None
 ) -> list[StaffRead]:
     """One row per user, in the order given: one query each for profiles, sign-in states,
-    Invite expiries, subjects and session counts, never one per row. `now` is the moment
+    Invite expiries, subjects, session counts and assigned Children, never one per row. `now` is the moment
     Invite expiries are judged at; a caller that just issued an Invite passes the `now` it
     issued with."""
     ids = [user.id for user in users]
@@ -87,6 +88,7 @@ def build_staff_rows(
     teacher_ids = [user.id for user in users if user.role in TEACHING_ROLES]
     subjects = _subjects(db, teacher_ids)
     sessions = _sessions_this_week(db, ids)
+    assigned_children = assigned_children_by_user(db, user_ids=ids)
 
     return [
         StaffRead(
@@ -100,6 +102,10 @@ def build_staff_rows(
             archived=user.is_archived,
             subjects=subjects.get(user.id, []),
             sessions_this_week=sessions.get(user.id, 0),
+            assigned_children=[
+                AssignedChildRead(id=child.id, name=child.name)
+                for child in assigned_children[user.id]
+            ],
         )
         for user in users
     ]

@@ -45,7 +45,8 @@ that user rather than creating a second one for it.
 
 **A role change keeps the profile.** Promoting a Tutor to Admin leaves their bookings,
 availability and subjects where they are, so demotion restores them; they are simply no longer
-offered. Changing to Tutor or Manager requires a profile to exist.
+offered. Changing to Tutor or Manager requires a profile to exist. The one thing a promotion out
+of teaching does end is the person's Assigned Tutor rows (#242); demotion doesn't bring them back.
 
 The ordering inside `create_user` is the no-orphan guarantee, and a caller cannot restore it
 from outside. Every check that can fail runs before the first INSERT, and the profile and the
@@ -77,6 +78,7 @@ from app.services.mail_templates import (
 from app.services.name_rules import normalize_name
 from app.services.password_link_service import issue_link, revoke_links_for_user
 from app.services.settings_service import read_email_template
+from app.services.assigned_tutor_service import remove_all_for_user
 from app.services.tutor_service import PROFILE_ROLES, create_profile
 
 SET_PASSWORD_PATH = "/set-password"
@@ -262,6 +264,10 @@ def update_user(
     if role is not None:
         _assert_role_fits_profile(role=role, has_profile=user.profile is not None)
         user.role = role
+
+        # Only Tutors and Managers are Assigned Tutors; a promotion out of teaching ends them.
+        if role not in PROFILE_ROLES:
+            remove_all_for_user(db, user_id=user.id)
 
     db.flush()
 

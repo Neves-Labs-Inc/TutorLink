@@ -423,6 +423,7 @@ STAFF_ROW_KEYS = {
     "archived",
     "subjects",
     "sessions_this_week",
+    "assigned_children",
 }
 
 

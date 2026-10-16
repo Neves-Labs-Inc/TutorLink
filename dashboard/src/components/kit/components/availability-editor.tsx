@@ -197,7 +197,7 @@ export function AvailabilityEditor({
       </ul>
 
       {isEditing && (
-        <div className="kit-shadow-raised sticky bottom-[92px] z-10 flex flex-wrap items-center gap-3 rounded-[24px] border border-(--tl-card-border) bg-(--tl-surface) p-3 @5xl:bottom-4">
+        <div className="kit-shadow-raised sticky bottom-[92px] z-10 flex flex-wrap items-center gap-3 rounded-[28px] border border-(--tl-card-border) bg-(--tl-surface) p-3 @5xl:bottom-4">
           {invalidCount > 0 ? (
             <p className="flex flex-1 items-center gap-2 pl-1 text-[13px] font-medium text-(--tl-danger)">
               <TriangleAlert aria-hidden className="size-4 shrink-0" />

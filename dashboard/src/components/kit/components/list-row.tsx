@@ -37,7 +37,7 @@ export function ListRow({
         onClick={onOpen}
         className={cn(
           CARD,
-          "group grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-4 py-4 text-left transition-colors duration-150 hover:border-(--tl-hero) @2xl:min-h-[76px] @2xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,0.9fr)_auto_auto] @2xl:gap-x-5 @2xl:px-5 @2xl:py-3",
+          "group grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 px-4 py-4 text-left transition-colors duration-150 hover:border-(--tl-hero) active:bg-(--tl-tint) @2xl:min-h-[76px] @2xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,0.9fr)_auto_auto] @2xl:gap-x-5 @2xl:px-5 @2xl:py-3",
           isMuted && "text-(--tl-muted)",
         )}
       >

@@ -147,7 +147,7 @@ function Tab({
       aria-haspopup={hasPopup ? "dialog" : undefined}
       onClick={onClick}
       className={cn(
-        "flex min-h-14 w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-[22px] px-1 text-[12px] font-medium",
+        "flex min-h-14 w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-[20px] px-1 text-[12px] font-medium",
         isActive ? "text-(--tl-primary-ink)" : "text-(--tl-muted)",
       )}
     >

@@ -6,6 +6,9 @@ import {
   Bot,
   Building2,
   CircleAlert,
+  CircleSlash,
+  Clock,
+  Hourglass,
   Archive,
   Home,
   Sparkles,
@@ -54,21 +57,32 @@ export function Badge({
   );
 }
 
-const BOOKING_STATUS_TONE: Record<BookingStatus, Tone> = {
-  Pending: "warning",
-  Confirmed: "info",
-  Completed: "success",
-  Cancelled: "danger",
+type StatusStyle = { tone: Tone; label?: string; icon?: LucideIcon };
+
+// Statuses with an icon drop the dot; `label` is the curly-apostrophe copy
+// where it differs from the ASCII prop literal.
+const BOOKING_STATUS_STYLE: Record<BookingStatus, StatusStyle> = {
+  Pending: { tone: "warning" },
+  Confirmed: { tone: "info" },
+  Completed: { tone: "success" },
+  Cancelled: { tone: "danger" },
+  "Didn't happen": {
+    tone: "neutral",
+    label: "Didn’t happen",
+    icon: CircleSlash,
+  },
 };
 
 // The API sends lowercase values; the badge shows the capitalised label.
-export type BookingStatusWire = "pending" | "confirmed" | "completed" | "cancelled";
+export type BookingStatusWire =
+  "pending" | "confirmed" | "completed" | "cancelled" | "didnt_happen";
 
 const BOOKING_STATUS_LABEL: Record<BookingStatusWire, BookingStatus> = {
   pending: "Pending",
   confirmed: "Confirmed",
   completed: "Completed",
   cancelled: "Cancelled",
+  didnt_happen: "Didn't happen",
 };
 
 function isBookingStatusWire(
@@ -85,9 +99,10 @@ export function BookingStatusBadge({
   const label = isBookingStatusWire(status)
     ? BOOKING_STATUS_LABEL[status]
     : status;
+  const style = BOOKING_STATUS_STYLE[label];
   return (
-    <Badge tone={BOOKING_STATUS_TONE[label]} hasDot>
-      {label}
+    <Badge tone={style.tone} icon={style.icon} hasDot={!style.icon}>
+      {style.label ?? label}
     </Badge>
   );
 }
@@ -124,16 +139,18 @@ export function KindBadge({
   );
 }
 
-const TIME_OFF_TONE: Record<TimeOffStatus, Tone> = {
-  Pending: "warning",
-  Approved: "success",
-  Declined: "danger",
-  Cancelled: "neutral",
+const TIME_OFF_STYLE: Record<TimeOffStatus, StatusStyle> = {
+  Pending: { tone: "warning" },
+  Approved: { tone: "success" },
+  Declined: { tone: "danger" },
+  Cancelled: { tone: "neutral" },
+  Expired: { tone: "neutral", icon: Hourglass },
 };
 
 export function TimeOffBadge({ status }: { status: TimeOffStatus }): ReactNode {
+  const style = TIME_OFF_STYLE[status];
   return (
-    <Badge tone={TIME_OFF_TONE[status]} hasDot>
+    <Badge tone={style.tone} icon={style.icon} hasDot={!style.icon}>
       {status}
     </Badge>
   );
@@ -159,14 +176,25 @@ export function ChatHandlerBadge({
   );
 }
 
-const BOT_PROBLEMS: AttentionReason[] = ["Bot got stuck", "Bot didn't understand"];
+const BOT_PROBLEMS: AttentionReason[] = [
+  "Bot got stuck",
+  "Bot didn't understand",
+];
 
-// Office handoffs are routine (yellow); bot problems are faults (danger).
+// Office handoffs are routine (yellow); bot problems are faults (danger);
+// a closed reply window is a warning with a clock.
 export function AttentionBadge({
   reason,
 }: {
   reason: AttentionReason;
 }): ReactNode {
+  if (reason === "Reply window closed") {
+    return (
+      <Badge tone="warning" icon={Clock}>
+        {reason}
+      </Badge>
+    );
+  }
   const isProblem = BOT_PROBLEMS.includes(reason);
   return (
     <Badge tone={isProblem ? "danger" : "yellow"} icon={CircleAlert}>
@@ -219,7 +247,11 @@ const REMINDERS_TONE: Record<RemindersState, Tone> = {
   "Never asked": "warning",
 };
 
-export function RemindersBadge({ state }: { state: RemindersState }): ReactNode {
+export function RemindersBadge({
+  state,
+}: {
+  state: RemindersState;
+}): ReactNode {
   return (
     <Badge tone={REMINDERS_TONE[state]} hasDot>
       {state}

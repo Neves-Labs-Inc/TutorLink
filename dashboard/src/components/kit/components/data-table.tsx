@@ -76,7 +76,7 @@ export function DataTable<T>({
               <tr
                 key={getRowId(row)}
                 className={cn(
-                  "group relative border-b border-(--tl-border) transition-colors duration-150 last:border-b-0 hover:bg-(--tl-tint)",
+                  "group relative border-b border-(--tl-border) transition-colors duration-150 last:border-b-0 hover:bg-(--tl-tint) active:bg-(--tl-tint-strong)",
                   isRowMuted(row) && "text-(--tl-muted)",
                 )}
               >
@@ -126,7 +126,7 @@ export function DataTable<T>({
                 type="button"
                 onClick={() => onOpenRow(row)}
                 className={cn(
-                  "flex min-h-[72px] w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-(--tl-tint) focus-visible:-outline-offset-2",
+                  "flex min-h-[72px] w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-(--tl-tint) active:bg-(--tl-tint-strong) focus-visible:-outline-offset-2",
                   isRowMuted(row) && "text-(--tl-muted)",
                 )}
               >

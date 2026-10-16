@@ -3,8 +3,10 @@
 export type Role = "admin" | "manager" | "tutor";
 
 export type BookingKind = "Tutoring" | "Evaluation";
-export type BookingStatus = "Pending" | "Confirmed" | "Completed" | "Cancelled";
-export type TimeOffStatus = "Pending" | "Approved" | "Declined" | "Cancelled";
+export type BookingStatus =
+  "Pending" | "Confirmed" | "Completed" | "Cancelled" | "Didn't happen";
+export type TimeOffStatus =
+  "Pending" | "Approved" | "Declined" | "Cancelled" | "Expired";
 export type SignInState = "Not invited" | "Invited" | "Active";
 export type AttentionReason =
   | "Wants to book"
@@ -12,7 +14,8 @@ export type AttentionReason =
   | "Link request"
   | "Reactivation request"
   | "Bot got stuck"
-  | "Bot didn't understand";
+  | "Bot didn't understand"
+  | "Reply window closed";
 export type RemindersState = "Reminders on" | "Reminders off" | "Never asked";
 export type SlotLocation = "Home visits" | "Home or office" | "Office only";
 

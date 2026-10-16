@@ -18,15 +18,15 @@ const BASE =
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   primary:
-    "kit-shadow-soft bg-(--tl-primary) text-(--tl-on-primary) hover:enabled:bg-(--tl-primary-hover)",
-  soft: "bg-(--tl-tint) text-(--tl-primary-ink) hover:enabled:bg-(--tl-tint-strong)",
+    "kit-shadow-soft bg-(--tl-primary) text-(--tl-on-primary) hover:enabled:bg-(--tl-primary-hover) enabled:active:bg-(--tl-primary-hover)",
+  soft: "bg-(--tl-tint) text-(--tl-primary-ink) hover:enabled:bg-(--tl-tint-strong) enabled:active:bg-(--tl-tint-strong)",
   outline:
-    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-ink) hover:enabled:bg-(--tl-tint)",
-  ghost: "text-(--tl-link) hover:enabled:bg-(--tl-tint)",
+    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-ink) hover:enabled:bg-(--tl-tint) enabled:active:bg-(--tl-tint-strong)",
+  ghost: "text-(--tl-link) hover:enabled:bg-(--tl-tint) enabled:active:bg-(--tl-tint-strong)",
   danger:
-    "bg-(--tl-danger) text-(--tl-on-danger) hover:enabled:bg-(--tl-danger-hover)",
+    "bg-(--tl-danger) text-(--tl-on-danger) hover:enabled:bg-(--tl-danger-hover) enabled:active:bg-(--tl-danger-hover)",
   "danger-outline":
-    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-danger) hover:enabled:bg-(--tl-danger-tint)",
+    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-danger) hover:enabled:bg-(--tl-danger-tint) enabled:active:bg-(--tl-danger-tint) enabled:active:border-(--tl-danger)",
 };
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -82,11 +82,12 @@ const ICON_VARIANT_CLASSES: Record<
   NonNullable<IconButtonProps["variant"]>,
   string
 > = {
-  plain: "text-(--tl-ink-soft) hover:bg-(--tl-tint)",
+  plain:
+    "text-(--tl-ink-soft) hover:bg-(--tl-tint) enabled:active:bg-(--tl-tint-strong)",
   outline:
-    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-ink-soft) hover:bg-(--tl-tint)",
+    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-ink-soft) hover:bg-(--tl-tint) enabled:active:bg-(--tl-tint-strong)",
   primary:
-    "kit-shadow-soft bg-(--tl-primary) text-(--tl-on-primary) hover:bg-(--tl-primary-hover)",
+    "kit-shadow-soft bg-(--tl-primary) text-(--tl-on-primary) hover:bg-(--tl-primary-hover) enabled:active:bg-(--tl-primary-hover)",
 };
 
 export function IconButton({

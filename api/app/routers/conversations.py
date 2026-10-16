@@ -397,6 +397,9 @@ def _summary(row: ConversationListItem) -> ConversationSummary:
         last_message_preview=row.last_message_preview,
         unread=row.unread,
         flag_reason=row.conversation.flag_reason,
+        last_client_message_at=row.last_client_message_at,
+        is_window_open=row.is_window_open,
+        flagged_at=row.conversation.flagged_at,
     )
 
 

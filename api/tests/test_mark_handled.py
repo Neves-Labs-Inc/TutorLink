@@ -424,7 +424,7 @@ def test_nothing_is_written_to_the_thread_or_sent_to_the_guardian(
 # --- flagged_at on the read shapes -----------------------------------------------------------
 
 
-def test_the_detail_carries_flagged_at_and_the_list_does_not(api: TestClient, db: Session) -> None:
+def test_the_detail_and_the_list_both_carry_flagged_at(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     marker = _marker()
     flagged = _make_conversation(db, marker=marker, reason=FlagReason.STUCK)
@@ -440,7 +440,9 @@ def test_the_detail_carries_flagged_at_and_the_list_does_not(api: TestClient, db
     assert "flagged_at" in unflagged_body
     assert unflagged_body["flagged_at"] is None
     assert len(items) == 2
-    assert all("flagged_at" not in item for item in items)
+    by_id = {item["id"]: item for item in items}
+    assert datetime.datetime.fromisoformat(by_id[str(flagged.id)]["flagged_at"]) == TOKEN
+    assert by_id[str(unflagged.id)]["flagged_at"] is None
 
 
 # --- RBAC ----------------------------------------------------------------------------------

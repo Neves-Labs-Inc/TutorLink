@@ -65,9 +65,9 @@ import datetime
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, ScalarSelect, Select, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, ScalarSelect, Select, case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models.child import Child
 from app.models.conversation import Conversation
@@ -111,6 +111,8 @@ class ConversationListItem:
     holder: User | None
     last_message_preview: str | None
     unread: bool
+    last_client_message_at: datetime.datetime | None
+    is_window_open: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,7 +398,9 @@ def list_conversations(
     `id` is the tiebreaker so that two conversations sharing a timestamp cannot be ordered
     differently by two executions and make page two repeat or skip a row page one already
     showed. `flagged=True` is the Needs attention queue and flips to `flagged_at ASC`, oldest
-    flag first, because the longest-waiting chat is the one to open next.
+    flag first, because the longest-waiting chat is the one to open next. Within it, chats whose
+    Takeover window is open come first, closing soonest first (oldest Guardian message), since
+    those are about to lose Takeover; the rest follow by flag age.
 
     `q` is a case-insensitive substring of the stored phone number **or** the linked guardian's
     name (`api-design.md:1437`), and is deliberately **not** phone-normalised (**P5-C**): a
@@ -409,14 +413,19 @@ def list_conversations(
     same predicate decides the filter and the flag on each row, so the two can never disagree.
     """
     matching = _matching_conversations(status=status, unread=unread, flagged=flagged, q=q)
+    # One clock reading, so the SQL order and each row's flag agree on which windows are open.
+    now = datetime.datetime.now(tz=datetime.UTC)
+    last_client_message_at = _last_client_message_at_column()
     order = (
-        (Conversation.flagged_at.asc(), Conversation.id.asc())
+        _needs_attention_order(last_client_message_at, now=now)
         if flagged
         else LATEST_CONVERSATION_FIRST
     )
     total = _count(db, matching)
     rows = db.execute(
-        matching.add_columns(Guardian, User, _last_message_preview(), _unread())
+        matching.add_columns(
+            Guardian, User, _last_message_preview(), _unread(), last_client_message_at
+        )
         .outerjoin(User, User.id == Conversation.taken_over_by_user_id)
         .order_by(*order)
         .limit(limit)
@@ -429,8 +438,10 @@ def list_conversations(
             holder=holder,
             last_message_preview=preview,
             unread=unread_row,
+            last_client_message_at=last_client,
+            is_window_open=is_window_open(last_client, now=now),
         )
-        for conversation, guardian, holder, preview, unread_row in rows
+        for conversation, guardian, holder, preview, unread_row, last_client in rows
     ]
 
     return items, total
@@ -808,6 +819,43 @@ def _unread() -> ColumnElement[bool]:
             ),
         )
         .exists()
+    )
+
+
+def _last_client_message_at_column() -> ScalarSelect[datetime.datetime]:
+    """`_last_client_message_at` as a correlated column, for the list; same number-change cut."""
+    # Aliased so the inner subquery's `Message` is not auto-correlated to the outer one.
+    note = aliased(Message)
+    number_changed_at = (
+        select(func.max(note.created_at))
+        .where(
+            note.conversation_id == Conversation.id,
+            note.system_kind == SystemMessageKind.NUMBER_CHANGE_NOTE,
+        )
+        .scalar_subquery()
+    )
+
+    return (
+        select(func.max(Message.created_at))
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.author_kind == MessageAuthor.CLIENT,
+            or_(number_changed_at.is_(None), Message.created_at > number_changed_at),
+        )
+        .scalar_subquery()
+    )
+
+
+def _needs_attention_order(
+    last_client_message_at: ScalarSelect[datetime.datetime], *, now: datetime.datetime
+) -> tuple[ColumnElement, ...]:
+    # The same strict `<` as `is_window_open`, written as a cutoff the column compares against.
+    is_open = last_client_message_at > now - WHATSAPP_WINDOW
+
+    return (
+        case((is_open, 0), else_=1).asc(),
+        case((is_open, last_client_message_at), else_=Conversation.flagged_at).asc(),
+        Conversation.id.asc(),
     )
 
 

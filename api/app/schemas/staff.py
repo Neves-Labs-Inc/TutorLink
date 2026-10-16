@@ -4,7 +4,7 @@
 profile's id that `GET /api/tutors/{id}/availability` takes, `null` for a person with none (an
 Admin, or a Manager migrated without a profile). The rest is what the Office's Staff screen
 shows: account state, the subjects they teach and the sessions still ahead of them this week.
-Phone and bio stay on `/api/tutors`.
+Phone and bio come from the teaching profile (null without one).
 """
 
 import uuid
@@ -19,6 +19,7 @@ from app.services.sign_in_state import SignInState
 class StaffSubjectRead(BaseModel):
     id: uuid.UUID
     name: str
+    max_grade_level: int
 
 
 class AssignedChildRead(BaseModel):
@@ -39,3 +40,6 @@ class StaffRead(BaseModel):
     sessions_this_week: int
     # The Children this person is an Assigned Tutor of, by name then id (#242).
     assigned_children: list[AssignedChildRead]
+    phone_number: str | None
+    bio: str | None
+    has_pending_time_off: bool

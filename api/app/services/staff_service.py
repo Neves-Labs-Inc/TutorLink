@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, Select, exists, func, select
+from sqlalchemy import ColumnElement, Select, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking, upcoming_live_bookings
@@ -26,6 +26,7 @@ from app.models.user import User
 from app.schemas.staff import AssignedChildRead, StaffRead, StaffSubjectRead
 from app.services import clock
 from app.services.assigned_tutor_service import assigned_children_by_user
+from app.services.exception_service import user_ids_with_pending_time_off
 from app.services.password_link_service import live_invite_expiries
 from app.services.sign_in_state import SignInState, sign_in_state_expression, sign_in_states
 
@@ -48,6 +49,8 @@ class StaffFilters:
     roles: Collection[UserRole] = ()
     sign_in_states: Collection[SignInState] = ()
     subject_id: uuid.UUID | None = None
+    # Blank or whitespace-only is ignored.
+    q: str | None = None
 
 
 def list_staff(
@@ -89,6 +92,8 @@ def build_staff_rows(
     subjects = _subjects(db, teacher_ids)
     sessions = _sessions_this_week(db, ids)
     assigned_children = assigned_children_by_user(db, user_ids=ids)
+    contacts = _contacts(db, ids)
+    pending_time_off = user_ids_with_pending_time_off(db, ids, now=clock.business_now())
 
     return [
         StaffRead(
@@ -106,6 +111,9 @@ def build_staff_rows(
                 AssignedChildRead(id=child.id, name=child.name)
                 for child in assigned_children[user.id]
             ],
+            phone_number=contacts.get(user.id, (None, None))[0],
+            bio=contacts.get(user.id, (None, None))[1],
+            has_pending_time_off=user.id in pending_time_off,
         )
         for user in users
     ]
@@ -125,6 +133,14 @@ def _conditions(filters: StaffFilters) -> list[ColumnElement[bool]]:
     if filters.sign_in_states:
         wanted = [state.value for state in filters.sign_in_states]
         conditions.append(sign_in_state_expression().in_(wanted))
+    needle = (filters.q or "").strip()
+    if needle:
+        conditions.append(
+            or_(
+                User.name.icontains(needle, autoescape=True),
+                User.email.icontains(needle, autoescape=True),
+            )
+        )
     if filters.subject_id is not None:
         teaches = exists().where(
             Tutor.user_id == User.id,
@@ -147,21 +163,36 @@ def _profile_ids(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, uuid
     return {user_id: tutor_id for user_id, tutor_id in rows}
 
 
-def _subjects(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[StaffSubjectRead]]:
-    """Archived subjects included, ordered by name; the grade ceiling is not on the row."""
+def _contacts(
+    db: Session, user_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str | None, str | None]]:
     if not user_ids:
         return {}
 
     rows = db.execute(
-        select(Tutor.user_id, Subject.id, Subject.name)
+        select(Tutor.user_id, Tutor.phone_number, Tutor.bio).where(Tutor.user_id.in_(user_ids))
+    ).all()
+
+    return {user_id: (phone, bio) for user_id, phone, bio in rows}
+
+
+def _subjects(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[StaffSubjectRead]]:
+    """Archived subjects included, ordered by name, each with the person's highest grade."""
+    if not user_ids:
+        return {}
+
+    rows = db.execute(
+        select(Tutor.user_id, Subject.id, Subject.name, TutorSubject.max_grade_level)
         .join(TutorSubject, TutorSubject.tutor_id == Tutor.id)
         .join(Subject, Subject.id == TutorSubject.subject_id)
         .where(Tutor.user_id.in_(user_ids))
         .order_by(Subject.name, Subject.id)
     ).all()
     by_user: defaultdict[uuid.UUID, list[StaffSubjectRead]] = defaultdict(list)
-    for user_id, subject_id, name in rows:
-        by_user[user_id].append(StaffSubjectRead(id=subject_id, name=name))
+    for user_id, subject_id, name, max_grade_level in rows:
+        by_user[user_id].append(
+            StaffSubjectRead(id=subject_id, name=name, max_grade_level=max_grade_level)
+        )
 
     return by_user
 

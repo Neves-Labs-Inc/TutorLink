@@ -582,6 +582,25 @@ def _matching_all_exceptions(
     return matching
 
 
+def user_ids_with_pending_time_off(
+    db: Session, user_ids: Sequence[uuid.UUID], *, now: datetime.datetime
+) -> set[uuid.UUID]:
+    """Which of `user_ids` have Time off whose wire status is `pending` (Expired excluded)."""
+    if not user_ids:
+        return set()
+
+    return set(
+        db.scalars(
+            select(TutorAvailabilityException.user_id)
+            .where(
+                TutorAvailabilityException.user_id.in_(user_ids),
+                _matches_wire_status(PENDING_STATUS, now=now),
+            )
+            .distinct()
+        )
+    )
+
+
 def _matches_wire_status(
     status: ExceptionReadStatus, *, now: datetime.datetime
 ) -> ColumnElement[bool]:

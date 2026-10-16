@@ -35,6 +35,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import (
     AvailabilityMode,
@@ -427,6 +428,24 @@ def test_child_id_with_no_level_for_the_subject_offers_no_tutor(
 
     assert response.status_code == 200
     assert _windows(response) == []
+
+
+def test_child_id_offers_tutors_the_child_is_not_assigned_to(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """Assigned Tutors bound only the bot; the office may book anyone (#242)."""
+    world = _make_world(db, date=DATE, max_grade_level=12)
+    _set_level(db, admin, world, level=5)
+    other = _make_tutor(db)
+    db.add(ChildAssignedTutor(child_id=world.child_id, user_id=other.user_id))
+    db.flush()
+
+    response = api.get(
+        _url(world, grade_level=None, child_id=world.child_id), headers=_bearer(admin)
+    )
+
+    assert response.status_code == 200
+    assert _tutors(response) == [world.tutor_id, world.tutor_id]
 
 
 def test_omitting_grade_level_offers_a_tutor_whatever_their_ceiling(

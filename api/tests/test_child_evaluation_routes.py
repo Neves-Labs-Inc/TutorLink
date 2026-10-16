@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingStatus, UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.subject import Subject
@@ -52,7 +52,7 @@ def test_a_manager_sets_a_level_and_marks_evaluated_under_their_name(
     math = _make_subject(db)
 
     level = api.put(_level_url(child, math), headers=_auth(manager), json={"level": 3})
-    evaluated = api.post(f"/api/children/{child.id}/evaluated", headers=_auth(manager))
+    evaluated = api.post(_evaluated_url(child), headers=_auth(manager), json=_tutors(db))
     detail = api.get(f"/api/children/{child.id}", headers=_auth(manager)).json()
 
     assert (level.status_code, evaluated.status_code) == (200, 200)
@@ -164,7 +164,7 @@ def test_marking_evaluated_without_a_level_is_409(api: TestClient, db: Session) 
     admin = _make_user(db)
     child = _make_child(db)
 
-    response = api.post(_evaluated_url(child), headers=_auth(admin))
+    response = api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
     detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
 
     assert response.status_code == 409
@@ -178,7 +178,7 @@ def test_marking_evaluated_records_who_and_when(api: TestClient, db: Session) ->
     api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
     before = datetime.datetime.now(tz=datetime.UTC)
 
-    response = api.post(_evaluated_url(child), headers=_auth(admin))
+    response = api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
     evaluated = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()["evaluated"]
 
     assert response.status_code == 200
@@ -194,9 +194,9 @@ def test_marking_twice_keeps_the_first_who_and_when(api: TestClient, db: Session
     second = _make_user(db, name="Luis")
     child = _make_child(db)
     api.put(_level_url(child, _make_subject(db)), headers=_auth(first), json={"level": 5})
-    original = api.post(_evaluated_url(child), headers=_auth(first)).json()
+    original = api.post(_evaluated_url(child), headers=_auth(first), json=_tutors(db)).json()
 
-    again = api.post(_evaluated_url(child), headers=_auth(second))
+    again = api.post(_evaluated_url(child), headers=_auth(second), json=_tutors(db))
 
     assert again.status_code == 200
     assert again.json() == original
@@ -207,7 +207,7 @@ def test_clearing_evaluated_keeps_the_levels(api: TestClient, db: Session) -> No
     admin = _make_user(db)
     child = _make_child(db)
     api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
-    api.post(_evaluated_url(child), headers=_auth(admin))
+    api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
 
     response = api.delete(_evaluated_url(child), headers=_auth(admin))
     detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
@@ -249,7 +249,7 @@ def test_evaluated_true_and_false_split_the_children(api: TestClient, db: Sessio
     done = _make_child(db, name=f"Done {token}")
     waiting = _make_child(db, name=f"Waiting {token}")
     api.put(_level_url(done, _make_subject(db)), headers=_auth(admin), json={"level": 5})
-    api.post(_evaluated_url(done), headers=_auth(admin))
+    api.post(_evaluated_url(done), headers=_auth(admin), json=_tutors(db))
 
     def ids(query: str) -> list[str]:
         body = api.get(f"/api/children?q={token}{query}", headers=_auth(admin)).json()
@@ -271,7 +271,7 @@ def test_marking_evaluated_leaves_a_live_evaluation_untouched(api: TestClient, d
     evaluation = _book_evaluation(api, admin, child)
     api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
 
-    response = api.post(_evaluated_url(child), headers=_auth(admin))
+    response = api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
 
     assert response.status_code == 200
     assert db.get_one(Booking, evaluation).status is BookingStatus.CONFIRMED
@@ -281,7 +281,7 @@ def test_clearing_evaluated_makes_a_new_evaluation_creatable(api: TestClient, db
     admin = _make_user(db)
     child = _make_child(db)
     api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
-    api.post(_evaluated_url(child), headers=_auth(admin))
+    api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
     refused = api.post("/api/bookings", json=_evaluation_body(admin, child), headers=_auth(admin))
 
     cleared = api.delete(_evaluated_url(child), headers=_auth(admin))
@@ -313,7 +313,7 @@ def test_evaluated_on_an_unknown_child_is_404(api: TestClient, db: Session) -> N
     admin = _make_user(db)
     url = f"/api/children/{uuid.uuid4()}/evaluated"
 
-    assert api.post(url, headers=_auth(admin)).status_code == 404
+    assert api.post(url, headers=_auth(admin), json=_tutors(db)).status_code == 404
     assert api.delete(url, headers=_auth(admin)).status_code == 404
 
 
@@ -322,7 +322,7 @@ def test_removing_the_last_level_of_an_evaluated_child_is_409(api: TestClient, d
     child = _make_child(db)
     math = _make_subject(db)
     api.put(_level_url(child, math), headers=_auth(admin), json={"level": 5})
-    api.post(_evaluated_url(child), headers=_auth(admin))
+    api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
 
     response = api.delete(_level_url(child, math), headers=_auth(admin))
 
@@ -339,7 +339,7 @@ def test_removing_a_non_last_level_of_an_evaluated_child_is_fine(
     math, science = _make_subject(db), _make_subject(db)
     api.put(_level_url(child, math), headers=_auth(admin), json={"level": 5})
     api.put(_level_url(child, science), headers=_auth(admin), json={"level": 6})
-    api.post(_evaluated_url(child), headers=_auth(admin))
+    api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
 
     response = api.delete(_level_url(child, math), headers=_auth(admin))
 
@@ -369,7 +369,7 @@ def test_the_list_row_carries_the_evaluated_summary(api: TestClient, db: Session
     evaluated = _make_child(db, name=f"Ana {token}")
     _make_child(db, name=f"Luis {token}")
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
-    marked = api.post(_evaluated_url(evaluated), headers=_auth(admin)).json()
+    marked = api.post(_evaluated_url(evaluated), headers=_auth(admin), json=_tutors(db)).json()
 
     body = api.get(f"/api/children?q={token}", headers=_auth(admin)).json()
 
@@ -387,7 +387,7 @@ def test_awaiting_evaluation_lists_active_children_not_evaluated_oldest_first(
     evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
     _make_child(db, name=f"Mia {token}", created_days_ago=30, is_archived=True)
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
-    api.post(_evaluated_url(evaluated), headers=_auth(admin))
+    api.post(_evaluated_url(evaluated), headers=_auth(admin), json=_tutors(db))
 
     body = api.get(f"/api/children?q={token}&awaiting_evaluation=true", headers=_auth(admin)).json()
 
@@ -409,7 +409,7 @@ def test_evaluable_lists_active_children_with_no_evaluation_booked_or_done_oldes
     evaluated = _make_child(db, name=f"Luis {token}", created_days_ago=20)
     _make_child(db, name=f"Mia {token}", created_days_ago=30, is_archived=True)
     api.put(_level_url(evaluated, _make_subject(db)), headers=_auth(admin), json={"level": 5})
-    api.post(_evaluated_url(evaluated), headers=_auth(admin))
+    api.post(_evaluated_url(evaluated), headers=_auth(admin), json=_tutors(db))
 
     body = api.get(f"/api/children?q={token}&evaluable=true", headers=_auth(admin)).json()
 
@@ -467,6 +467,202 @@ def test_a_tutor_is_refused_the_evaluable_list(api: TestClient, db: Session) -> 
     assert response.status_code == 403
 
 
+# --- Mark Evaluated sets the Assigned Tutors ---------------------------------------------------
+
+
+def _levelled_child(api: TestClient, db: Session, admin: User) -> Child:
+    child = _make_child(db)
+    api.put(_level_url(child, _make_subject(db)), headers=_auth(admin), json={"level": 5})
+    return child
+
+
+@pytest.mark.parametrize("body", [None, {}, {"tutor_ids": []}])
+def test_marking_evaluated_without_tutors_is_422(
+    api: TestClient, db: Session, body: dict[str, object] | None
+) -> None:
+    admin = _make_user(db)
+    child = _levelled_child(api, db, admin)
+
+    response = api.post(_evaluated_url(child), headers=_auth(admin), json=body)
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert response.status_code == 422
+    assert detail["evaluated"] is None
+
+
+@pytest.mark.parametrize("kind", ["unknown", "archived", "admin"])
+def test_marking_evaluated_with_a_non_assignable_id_is_422_and_changes_nothing(
+    api: TestClient, db: Session, kind: str
+) -> None:
+    admin = _make_user(db)
+    child = _levelled_child(api, db, admin)
+    good = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    if kind == "unknown":
+        bad = str(uuid.uuid4())
+    elif kind == "archived":
+        archived = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+        archived.is_archived = True
+        db.flush()
+        bad = str(archived.id)
+    else:
+        bad = str(_make_user(db).id)
+
+    response = api.post(
+        _evaluated_url(child), headers=_auth(admin), json={"tutor_ids": [str(good.id), bad]}
+    )
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert response.status_code == 422
+    assert detail["evaluated"] is None
+    assert detail["assigned_tutors"] == []
+
+
+def test_marking_evaluated_sets_the_assigned_tutors_and_collapses_duplicates(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _levelled_child(api, db, admin)
+    tutor = _make_user(db, name="Ana", role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    manager = _make_user(db, name="Zed", role=UserRole.MANAGER)
+
+    response = api.post(
+        _evaluated_url(child),
+        headers=_auth(admin),
+        json=_tutors(db, manager, tutor, tutor),
+    )
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"at", "by"}
+    assert [row["id"] for row in detail["assigned_tutors"]] == [str(tutor.id), str(manager.id)]
+
+
+def test_marking_evaluated_without_a_level_changes_no_assignments(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+
+    response = api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db))
+
+    assert response.status_code == 409
+    assert _assigned_ids(api, admin, child) == []
+
+
+def test_marking_an_evaluated_child_again_leaves_the_assignments_alone(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _levelled_child(api, db, admin)
+    first = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    other = _make_user(db, role=UserRole.MANAGER)
+    original = api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db, first))
+
+    again = api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db, other))
+
+    assert again.json() == original.json()
+    assert _assigned_ids(api, admin, child) == [str(first.id)]
+
+
+def test_clearing_evaluated_keeps_the_assignments_and_marking_again_replaces_them(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _levelled_child(api, db, admin)
+    first = _make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    second = _make_user(db, role=UserRole.MANAGER)
+    api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db, first))
+
+    api.delete(_evaluated_url(child), headers=_auth(admin))
+    kept = _assigned_ids(api, admin, child)
+    api.post(_evaluated_url(child), headers=_auth(admin), json=_tutors(db, second))
+
+    assert kept == [str(first.id)]
+    assert _assigned_ids(api, admin, child) == [str(second.id)]
+
+
+# --- evaluation_run_by ------------------------------------------------------------------------
+
+
+def _book_evaluation_on(
+    db: Session, child: Child, staff: User, *, days: int, start: str, status: BookingStatus
+) -> None:
+    db.add(
+        Booking(
+            child_id=child.id,
+            user_id=staff.id,
+            kind=BookingKind.EVALUATION,
+            location=BookingLocation.IN_OFFICE,
+            status=status,
+            scheduled_date=clock.business_today() + datetime.timedelta(days=days),
+            start_time=datetime.time.fromisoformat(start),
+            end_time=datetime.time.fromisoformat(start).replace(hour=23),
+        )
+    )
+    db.flush()
+
+
+def test_evaluation_run_by_is_the_staff_of_the_latest_non_cancelled_evaluation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    earlier = _make_user(db, name="Early", role=UserRole.TUTOR, tutor_id=_make_tutor(db).id)
+    later = _make_user(db, name="Late", role=UserRole.MANAGER)
+    cancelled = _make_user(db, name="Gone", role=UserRole.MANAGER)
+    _book_evaluation_on(db, child, earlier, days=1, start="09:00", status=BookingStatus.COMPLETED)
+    _book_evaluation_on(db, child, later, days=2, start="09:00", status=BookingStatus.CONFIRMED)
+    _book_evaluation_on(db, child, cancelled, days=5, start="09:00", status=BookingStatus.CANCELLED)
+
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert detail["evaluation_run_by"] == {
+        "id": str(later.id),
+        "name": "Late",
+        "role": "manager",
+    }
+
+
+def test_evaluation_run_by_breaks_a_date_tie_by_start_time(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    morning = _make_user(db, role=UserRole.MANAGER)
+    afternoon = _make_user(db, name="Pm", role=UserRole.MANAGER)
+    _book_evaluation_on(db, child, afternoon, days=2, start="14:00", status=BookingStatus.COMPLETED)
+    _book_evaluation_on(db, child, morning, days=2, start="09:00", status=BookingStatus.CONFIRMED)
+
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert detail["evaluation_run_by"]["id"] == str(afternoon.id)
+
+
+def test_evaluation_run_by_is_null_without_an_evaluation(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    manager = _make_user(db, role=UserRole.MANAGER)
+    _book_evaluation_on(db, child, manager, days=1, start="09:00", status=BookingStatus.CANCELLED)
+
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert detail["evaluation_run_by"] is None
+
+
+@pytest.mark.parametrize("kind", ["admin", "archived"])
+def test_evaluation_run_by_is_null_when_that_staff_cannot_be_assigned(
+    api: TestClient, db: Session, kind: str
+) -> None:
+    admin = _make_user(db)
+    child = _make_child(db)
+    staff = admin if kind == "admin" else _make_user(db, role=UserRole.MANAGER)
+    staff.is_archived = kind == "archived"
+    db.flush()
+    _book_evaluation_on(db, child, staff, days=1, start="09:00", status=BookingStatus.CONFIRMED)
+
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(admin)).json()
+
+    assert detail["evaluation_run_by"] is None
+
+
 # --- the RBAC gate ----------------------------------------------------------------------------
 
 
@@ -497,6 +693,17 @@ def _suffix() -> str:
 
 def _level_url(child: Child, subject: Subject) -> str:
     return f"/api/children/{child.id}/levels/{subject.id}"
+
+
+def _tutors(db: Session, *tutors: User) -> dict[str, list[str]]:
+    """A Mark Evaluated body; with no `tutors`, one fresh Tutor."""
+    chosen = tutors or (_make_user(db, role=UserRole.TUTOR, tutor_id=_make_tutor(db).id),)
+    return {"tutor_ids": [str(tutor.id) for tutor in chosen]}
+
+
+def _assigned_ids(api: TestClient, user: User, child: Child) -> list[str]:
+    detail = api.get(f"/api/children/{child.id}", headers=_auth(user)).json()
+    return [row["id"] for row in detail["assigned_tutors"]]
 
 
 def _evaluated_url(child: Child) -> str:

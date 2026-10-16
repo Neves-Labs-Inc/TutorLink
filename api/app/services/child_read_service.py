@@ -32,7 +32,11 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
 from app.models.subject import Subject
 from app.services import clock
-from app.services.assigned_tutor_service import AssignedTutor, assigned_tutors_by_child
+from app.services.assigned_tutor_service import (
+    AssignedTutor,
+    assigned_tutors_by_child,
+    evaluation_run_by,
+)
 from app.services.guardian_state import GuardianState, guardian_states
 from app.services.home_set import homes_by_child
 
@@ -61,6 +65,7 @@ class ChildDetailRow:
     levels: list[ChildSubjectLevel]
     guardian_states: dict[uuid.UUID, GuardianState]
     assigned_tutors: list[AssignedTutor]
+    evaluation_run_by: AssignedTutor | None
 
 
 class ChildReadServiceError(Exception):
@@ -191,6 +196,7 @@ def get_child(db: Session, *, child_id: uuid.UUID) -> ChildDetailRow:
         levels=levels,
         guardian_states=guardian_states(db, [guardian.id for guardian in guardians]),
         assigned_tutors=assigned_tutors_by_child(db, child_ids=[child.id])[child.id],
+        evaluation_run_by=evaluation_run_by(db, child_id=child.id),
     )
 
 

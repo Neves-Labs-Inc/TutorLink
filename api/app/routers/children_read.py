@@ -193,6 +193,11 @@ def _detail(row: ChildDetailRow, owners: Owners) -> ChildDetail:
         levels=[_level(level) for level in row.levels],
         evaluated=_evaluated(row.child),
         assigned_tutors=assigned_tutor_reads(row.assigned_tutors),
+        evaluation_run_by=(
+            None
+            if row.evaluation_run_by is None
+            else assigned_tutor_reads([row.evaluation_run_by])[0]
+        ),
     )
 
 

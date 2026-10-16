@@ -136,6 +136,11 @@ class AssignedTutorCreate(BaseModel):
     user_id: uuid.UUID
 
 
+class EvaluatedCreate(BaseModel):
+    # Defaults empty so a missing field is the same 422 as an empty list.
+    tutor_ids: list[uuid.UUID] = []
+
+
 def assigned_tutor_reads(tutors: list[AssignedTutor]) -> list[AssignedTutorRead]:
     return [AssignedTutorRead(id=tutor.id, name=tutor.name, role=tutor.role) for tutor in tutors]
 
@@ -190,6 +195,8 @@ class ChildDetail(BaseModel):
     evaluated: EvaluatedRead | None
     # By name then id.
     assigned_tutors: list[AssignedTutorRead]
+    # Prefills Mark Evaluated; null when no live Evaluation or its Staff can't be assigned.
+    evaluation_run_by: AssignedTutorRead | None
 
 
 class NewGuardian(BaseModel):

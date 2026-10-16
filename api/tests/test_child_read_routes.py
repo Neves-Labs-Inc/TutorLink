@@ -631,6 +631,7 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
         "levels",
         "evaluated",
         "assigned_tutors",
+        "evaluation_run_by",
     }
 
 

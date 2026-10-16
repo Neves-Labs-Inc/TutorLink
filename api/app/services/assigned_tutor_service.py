@@ -29,7 +29,8 @@ from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.child_assigned_tutor import ChildAssignedTutor
-from app.models.enums import UserRole
+from app.models.booking import Booking
+from app.models.enums import BookingKind, BookingStatus, UserRole
 from app.models.user import User
 from app.services.tutor_service import PROFILE_ROLES
 
@@ -86,6 +87,35 @@ def assign(
     return assigned_tutors_by_child(db, child_ids=[child_id])[child_id]
 
 
+def replace_all(
+    db: Session, *, child_id: uuid.UUID, user_ids: Collection[uuid.UUID], by_user_id: uuid.UUID
+) -> None:
+    """Make `user_ids` the Child's whole assignment set; the caller holds the child locked.
+
+    Every id is validated before anything is written, so a bad one leaves the set as it was.
+    """
+    wanted = sorted(set(user_ids))
+    users = db.scalars(
+        select(User)
+        .where(User.id.in_(wanted))
+        .order_by(User.id)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    ).all()
+
+    if len(users) != len(wanted) or any(
+        user.is_archived or user.role not in PROFILE_ROLES for user in users
+    ):
+        raise NotAssignable
+
+    db.execute(delete(ChildAssignedTutor).where(ChildAssignedTutor.child_id == child_id))
+    db.add_all(
+        ChildAssignedTutor(child_id=child_id, user_id=user_id, created_by_user_id=by_user_id)
+        for user_id in wanted
+    )
+    db.flush()
+
+
 def unassign(db: Session, *, child_id: uuid.UUID, user_id: uuid.UUID) -> None:
     _locked_evaluated_child(db, child_id)
     removed = db.execute(
@@ -119,6 +149,27 @@ def assigned_tutors_by_child(
         grouped[child_id].append(AssignedTutor(id=tutor_id, name=name, role=role))
 
     return grouped
+
+
+def evaluation_run_by(db: Session, *, child_id: uuid.UUID) -> AssignedTutor | None:
+    """Staff of the Child's latest non-cancelled Evaluation, if they're an active Tutor or
+    Manager; an older Evaluation never stands in for a newer one run by someone else."""
+    staff = db.scalars(
+        select(User)
+        .join(Booking, Booking.user_id == User.id)
+        .where(
+            Booking.child_id == child_id,
+            Booking.kind == BookingKind.EVALUATION,
+            Booking.status != BookingStatus.CANCELLED,
+        )
+        .order_by(Booking.scheduled_date.desc(), Booking.start_time.desc(), Booking.id)
+        .limit(1)
+    ).first()
+
+    if staff is None or staff.is_archived or staff.role not in PROFILE_ROLES:
+        return None
+
+    return AssignedTutor(id=staff.id, name=staff.name, role=staff.role)
 
 
 def assigned_children_by_user(

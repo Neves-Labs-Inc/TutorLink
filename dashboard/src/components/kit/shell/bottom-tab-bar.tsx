@@ -20,7 +20,7 @@ const TABS_BEFORE_MORE = MAX_TABS - 1;
 
 type BottomTabBarProps = {
   items: NavItem[];
-  activeId: NavId;
+  activeId: NavId | null;
   onNavigate: (id: NavId) => void;
 };
 
@@ -91,13 +91,14 @@ export function BottomTabBar({
               <li key={item.id}>
                 <button
                   type="button"
+                  data-more-row
                   aria-current={isActive ? "page" : undefined}
                   onClick={() => handlePick(item.id)}
                   className={cn(
-                    "flex min-h-14 w-full cursor-pointer items-center gap-3 rounded-[18px] px-3 text-left text-[15px] transition-colors duration-150 hover:bg-(--tl-tint)",
+                    "group flex min-h-14 w-full cursor-pointer items-center gap-3 rounded-[18px] px-3 text-left text-[15px] transition-colors duration-150",
                     isActive
                       ? "bg-(--tl-tint-strong) font-semibold text-(--tl-primary-ink)"
-                      : "font-medium",
+                      : "font-medium hover:bg-(--tl-tint) active:bg-(--tl-tint-strong)",
                   )}
                 >
                   <span className="inline-flex size-10 items-center justify-center rounded-[14px] bg-(--tl-tint) text-(--tl-primary-ink)">
@@ -111,7 +112,10 @@ export function BottomTabBar({
                       label={item.badge.label}
                     />
                   )}
-                  <ChevronRight aria-hidden className="size-5 text-(--tl-muted)" />
+                  <ChevronRight
+                    aria-hidden
+                    className="size-5 text-(--tl-muted) transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transform-none"
+                  />
                 </button>
               </li>
             );
@@ -147,14 +151,16 @@ function Tab({
       aria-haspopup={hasPopup ? "dialog" : undefined}
       onClick={onClick}
       className={cn(
-        "flex min-h-14 w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-[20px] px-1 text-[12px] font-medium",
+        "group flex min-h-14 w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-[20px] px-1 text-[12px] font-medium transition-colors duration-150",
         isActive ? "text-(--tl-primary-ink)" : "text-(--tl-muted)",
       )}
     >
       <span
         className={cn(
           "relative inline-flex h-7 w-12 items-center justify-center rounded-full transition-colors duration-150",
-          isActive && "bg-(--tl-tint-strong)",
+          isActive
+            ? "bg-(--tl-tint-strong)"
+            : "group-hover:bg-(--tl-tint) group-active:bg-(--tl-tint-strong)",
         )}
       >
         <Icon aria-hidden className="size-5" />

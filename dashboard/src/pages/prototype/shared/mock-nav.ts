@@ -29,5 +29,5 @@ function getMockBadge(role: Role, id: NavId): NavBadge | undefined {
 }
 
 export function getMockNav(role: Role): NavItem[] {
-  return getNav(role).map((item) => ({ ...item, badge: getMockBadge(role, item.id) }));
+  return getNav(role, { hasOfficeTimeOff: true }).map((item) => ({ ...item, badge: getMockBadge(role, item.id) }));
 }

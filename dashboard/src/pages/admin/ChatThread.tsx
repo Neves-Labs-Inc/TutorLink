@@ -76,7 +76,7 @@ const backLinkClasses =
 const ChatPanelSkeleton = () => (
   <div
     aria-busy="true"
-    className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card"
+    className="flex h-[calc(100dvh-20rem)] min-h-[18rem] lg:h-[calc(100dvh-14rem)] lg:min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card"
   >
     <span className="sr-only">Loading conversation…</span>
     <div className="flex flex-1 flex-col gap-3 p-4">
@@ -383,7 +383,7 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
 
         <div
           ref={panelRef}
-          className="flex h-[calc(100dvh-14rem)] min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card"
+          className="flex h-[calc(100dvh-20rem)] min-h-[18rem] lg:h-[calc(100dvh-14rem)] lg:min-h-[24rem] flex-col overflow-hidden rounded-lg border border-border bg-card"
         >
           {detail.status === 'human' && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm">

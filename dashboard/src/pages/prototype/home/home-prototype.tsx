@@ -172,7 +172,7 @@ function HomeApp({ role, state }: HomeAppProps): ReactNode {
       return;
     }
     const label =
-      getNav(role).find((item) => item.id === id)?.label ?? "Your profile";
+      getNav(role, { hasOfficeTimeOff: true }).find((item) => item.id === id)?.label ?? "Your profile";
     setElsewhereId(id);
     setElsewhere({
       title: label,

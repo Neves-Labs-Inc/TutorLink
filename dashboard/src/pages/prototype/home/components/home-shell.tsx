@@ -32,7 +32,7 @@ function getBadge(id: NavId, counts: CountsRead): NavBadge | undefined {
 
 function getItems(role: OfficeRole, counts: CountsRead | null): NavItem[] {
   // While counts load, no badges rather than stale or zero ones.
-  return getNav(role).map((item) => ({
+  return getNav(role, { hasOfficeTimeOff: true }).map((item) => ({
     ...item,
     badge: counts ? getBadge(item.id, counts) : undefined,
   }));

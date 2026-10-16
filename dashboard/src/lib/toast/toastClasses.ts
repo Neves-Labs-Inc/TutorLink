@@ -4,12 +4,13 @@ import { cn } from "@/lib/utils";
 // files to export components only (same arrangement as lib/dialog/dialogClasses.ts).
 
 // Empty, it has no size beyond its gap and blocks no taps; each toast re-enables pointer events.
-// Below md the tutor chrome's tab bar (~69px) needs the taller offset; md+ has no tab bar.
+// Below lg (the kit shell's 1024px split) the floating tab bar needs the taller offset; lg+ has
+// the sidebar instead.
 export const toastViewportClasses = cn(
   "pointer-events-none fixed inset-x-4 z-[60] flex flex-col gap-2 outline-none",
   "bottom-[calc(1rem+env(safe-area-inset-bottom))]",
-  "max-md:data-[above-tab-bar=true]:bottom-[calc(5rem+env(safe-area-inset-bottom))]",
-  "md:inset-x-auto md:right-4 md:bottom-4 md:w-96 md:max-w-[calc(100vw-2rem)]",
+  "max-lg:data-[above-tab-bar=true]:bottom-[calc(104px+env(safe-area-inset-bottom))]",
+  "lg:inset-x-auto lg:right-4 lg:bottom-4 lg:w-96 lg:max-w-[calc(100vw-2rem)]",
 );
 
 export const toastRootClasses = cn(

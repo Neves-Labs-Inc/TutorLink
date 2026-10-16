@@ -116,7 +116,7 @@ export default function AreaApp({
       <AppShell
         name={user.name}
         roleLabel={user.role}
-        items={getNav(role, counts)}
+        items={getNav(role, { counts, hasOfficeTimeOff: true })}
         activeId={section}
         onNavigate={handleNavigate}
       >

@@ -21,7 +21,8 @@
 /* Select rows in a sheet: the ring sits inside the row, so the sheet's
    scroll area doesn't clip it. Here, not a utility: this file is
    unlayered and would win over one. */
-[data-kit] [role="option"]:focus-visible {
+[data-kit] [role="option"]:focus-visible,
+[data-kit] [data-more-row]:focus-visible {
   outline-offset: -2px;
 }
 

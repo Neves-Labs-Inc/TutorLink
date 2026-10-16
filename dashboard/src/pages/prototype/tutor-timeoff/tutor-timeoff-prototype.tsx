@@ -174,7 +174,7 @@ function AreaApp({ role, state }: AreaAppProps): ReactNode {
       showScreen(target);
       return;
     }
-    const label = getNav(role).find((item) => item.id === id)?.label ?? id;
+    const label = getNav(role, { hasOfficeTimeOff: true }).find((item) => item.id === id)?.label ?? id;
     const body =
       id === "bookings" && role === "manager"
         ? "Bookings › Mine lists every Booking you teach. It’s designed in the Bookings prototype."
@@ -238,10 +238,11 @@ function AreaApp({ role, state }: AreaAppProps): ReactNode {
       name={CURRENT_USER[role].name}
       roleLabel={CURRENT_USER[role].role}
       // A Tutor has no badges (GET /api/counts is Office only).
-      items={getNav(
-        role,
-        role !== "tutor" && load.phase === "ready" ? store.counts : null,
-      )}
+      items={getNav(role, {
+        counts:
+          role !== "tutor" && load.phase === "ready" ? store.counts : null,
+        hasOfficeTimeOff: true,
+      })}
       activeId={activeId}
       onNavigate={handleNavigate}
     >

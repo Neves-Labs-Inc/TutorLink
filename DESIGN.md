@@ -168,6 +168,7 @@ Tailwind's 4px scale. Values in use, by job:
 | Radius | Use |
 |---|---|
 | `rounded-full` | Buttons, icon buttons, inputs, Select triggers, filter pills, badges, nav items, avatars, skeleton bars, count badges |
+| 6px | Checkbox box (20px square) |
 | 12px | Calendar Booking blocks |
 | 14px | Icon chips (40px squares), option rows in listboxes and the More sheet tiles, calendar day columns |
 | 16px | Radio cards, `TimeBlock`, inline wells ("All clear", empty week), card-level errors |
@@ -175,7 +176,7 @@ Tailwind's 4px scale. Values in use, by job:
 | 20px | Cards (`CARD`), popovers, toasts, textareas, `InlineError`, `OfflineBanner`, `FormAlert` |
 | 28px | Sheets, dialogs, `DetailOverlay` slide-over, sidebar, bottom tab bar, auth brand panel |
 
-No other radii (prototype strays at 10, 22 and 24px move to 14, 20 and 28px, §17 #10).
+No radii besides those listed (prototype strays at 10, 22 and 24px move to 14, 20 and 28px, §17 #10).
 
 ## 6. Elevation
 

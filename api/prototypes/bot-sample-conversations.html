@@ -1,0 +1,408 @@
+<title>Reworked Bot Conversations</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: scenario rail on the left, one phone-width chat in the middle, "react to" notes on the right; stacks on phones. */
+:root {
+  --bg: #eef1ef;
+  --panel: #ffffff;
+  --ink: #1d2623;
+  --muted: #5d6b66;
+  --line: #d3dbd7;
+  --chat: #e4e9e3;
+  --bubble-bot: #ffffff;
+  --bubble-g: #d4ecd9;
+  --bubble-staff: #fbecc9;
+  --accent: #1f6f5c;
+  --accent-soft: #d6ebe4;
+  --fixed: #7a4a12;
+  --fixed-soft: #f6e6cf;
+  --tool: #3c4a74;
+  --tool-soft: #e3e7f4;
+  --flag: #9b2c2c;
+  --flag-soft: #f7dede;
+  --f-display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --f-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121715; --panel: #1a211e; --ink: #e3ebe7; --muted: #95a59f; --line: #2d3833;
+  --chat: #0f1412; --bubble-bot: #1f2925; --bubble-g: #1d3a2b; --bubble-staff: #3b3018;
+  --accent: #6cc5aa; --accent-soft: #1d3530; --fixed: #f0c27d; --fixed-soft: #3a2c17;
+  --tool: #a9b6e6; --tool-soft: #232a40; --flag: #f2a3a3; --flag-soft: #3d2222; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121715; --panel: #1a211e; --ink: #e3ebe7; --muted: #95a59f; --line: #2d3833;
+  --chat: #0f1412; --bubble-bot: #1f2925; --bubble-g: #1d3a2b; --bubble-staff: #3b3018;
+  --accent: #6cc5aa; --accent-soft: #1d3530; --fixed: #f0c27d; --fixed-soft: #3a2c17;
+  --tool: #a9b6e6; --tool-soft: #232a40; --flag: #f2a3a3; --flag-soft: #3d2222; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 24px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; margin-bottom: 20px; }
+h1 { font-family: var(--f-display); font-size: 1.9rem; line-height: 1.1; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); margin: 6px 0 0; max-width: 62ch; }
+.proto { display: inline-block; font: 500 0.7rem/1 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--flag); background: var(--flag-soft); padding: 5px 8px; border-radius: 4px; margin-bottom: 8px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.seg button { font: 500 0.85rem var(--f-body); color: var(--muted); background: none; border: 0; padding: 7px 14px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--panel); }
+.toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 0.85rem; color: var(--muted); cursor: pointer; }
+.toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.grid { display: grid; grid-template-columns: 250px minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
+@media (max-width: 1020px) { .grid { grid-template-columns: 220px minmax(0, 1fr); } .react { grid-column: 1 / -1; } }
+@media (max-width: 700px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+.rail { display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 700px) { .rail { flex-direction: row; overflow-x: auto; padding-bottom: 4px; } .rail button { min-width: 180px; } }
+.rail button { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; color: var(--ink); font: inherit; }
+.rail button[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.rail .n { font: 500 0.72rem var(--f-mono); color: var(--muted); }
+.rail .t { display: block; font-weight: 600; font-size: 0.92rem; line-height: 1.3; }
+
+.phone { background: var(--chat); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; min-width: 0; }
+.phone-top { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 16px; display: flex; gap: 12px; align-items: center; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--panel); display: grid; place-items: center; font: 700 0.8rem var(--f-display); flex: none; }
+.phone-top b { display: block; font-size: 0.95rem; }
+.phone-top span { font-size: 0.78rem; color: var(--muted); }
+.story { padding: 12px 16px 0; font-size: 0.88rem; color: var(--muted); }
+.thread { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px 22px; }
+.day { align-self: center; font: 500 0.72rem var(--f-mono); color: var(--muted); background: var(--panel); padding: 3px 10px; border-radius: 6px; }
+
+.msg { max-width: min(82%, 460px); padding: 8px 11px 6px; border-radius: 12px; white-space: pre-line; overflow-wrap: anywhere; position: relative; box-shadow: 0 1px 0 rgba(0,0,0,0.06); }
+.msg.bot { align-self: flex-start; background: var(--bubble-bot); border-top-left-radius: 4px; }
+.msg.g { align-self: flex-end; background: var(--bubble-g); border-top-right-radius: 4px; }
+.msg.staff { align-self: flex-start; background: var(--bubble-staff); border-top-left-radius: 4px; }
+.msg .who { display: block; font-size: 0.72rem; font-weight: 600; color: var(--fixed); margin-bottom: 2px; }
+.msg .meta { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 3px; font: 0.68rem var(--f-mono); color: var(--muted); }
+.badge { font: 500 0.62rem/1 var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 5px; border-radius: 3px; }
+.badge.fixed { color: var(--fixed); background: var(--fixed-soft); }
+.badge.agent { color: var(--accent); background: var(--accent-soft); }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.buttons span { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font-size: 0.82rem; color: var(--accent); font-weight: 600; }
+
+.tool, .note { align-self: stretch; font-size: 0.78rem; border-radius: 8px; padding: 6px 10px; overflow-wrap: anywhere; }
+.tool { font-family: var(--f-mono); color: var(--tool); background: var(--tool-soft); border: 1px dashed var(--tool); }
+.tool .arrow { color: var(--muted); }
+.note { color: var(--ink); background: var(--panel); border-left: 3px solid var(--muted); }
+.note.flag { border-left-color: var(--flag); background: var(--flag-soft); }
+.hide-trace .tool, .hide-trace .note { display: none; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); font-size: 0.78rem; color: var(--muted); align-items: center; }
+
+.react { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; min-width: 0; }
+.react h2 { font-family: var(--f-display); font-size: 1.05rem; margin: 0 0 10px; }
+.react ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.react li { font-size: 0.9rem; }
+.react li::marker { color: var(--accent); font-weight: 600; }
+.react .rules { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 0.8rem; color: var(--muted); }
+.react .rules b { color: var(--ink); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <span class="proto">Prototype · sample text, not live · reviewed 2026-10-19, changes applied</span>
+      <h1>Reworked Bot Conversations</h1>
+      <p class="sub">How the WhatsApp booking assistant would read once an agent replaces today's step-by-step questions. Fixed text is sent by code word for word; everything else the agent writes in the moment, so its wording will vary.</p>
+    </div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Language">
+        <button id="lang-en" type="button" aria-pressed="true" data-lang="en">English</button>
+        <button id="lang-es" type="button" aria-pressed="false" data-lang="es">Español</button>
+      </div>
+      <label class="toggle"><input id="trace" type="checkbox" checked> Show what the bot does</label>
+    </div>
+  </header>
+
+  <div class="grid">
+    <nav class="rail" id="rail" aria-label="Scenarios"></nav>
+    <section class="phone" id="phone" aria-live="polite">
+      <div class="phone-top"><div class="avatar">MH</div><div><b>M's Helping Hands</b><span>WhatsApp · booking assistant</span></div></div>
+      <p class="story" id="story"></p>
+      <div class="thread" id="thread"></div>
+      <div class="legend">
+        <span class="badge fixed">Fixed</span> sent by code, word for word
+        <span class="badge agent">Agent</span> written by the agent each time
+      </div>
+    </section>
+    <aside class="react" id="react"></aside>
+  </div>
+</div>
+
+<script>
+// Each step: who = g (Guardian) | bot | staff | tool | note | flag | day.
+// Text steps carry en/es; tool steps are the same in both languages.
+const S = [
+{
+  id: "intake", title: "New Guardian, Intake in one go",
+  story: {
+    en: "Maria has never used the bot. She sends nearly everything in two quick messages.",
+    es: "María nunca ha usado el bot. Envía casi todo en dos mensajes seguidos."
+  },
+  steps: [
+    { who: "day", en: "Monday, October 19", es: "lunes 19 de octubre" },
+    { who: "g", t: "10:02", en: "Hi, I'm Maria Lopez. My son Diego is in 5th grade at Lincoln Elementary and needs help with math", es: "Hola, soy María López. Mi hijo Diego está en 5.º grado en Lincoln Elementary y necesita ayuda con matemáticas" },
+    { who: "g", t: "10:02", en: "we live at 412 Oak St apt 3B", es: "vivimos en 412 Oak St apto 3B" },
+    { who: "note", en: "Both messages arrived within 4 seconds, so they get one reply.", es: "Los dos mensajes llegaron en menos de 4 segundos, así que reciben una sola respuesta." },
+    { who: "tool", tool: 'create_guardian(name: "Maria Lopez")' },
+    { who: "tool", tool: 'create_home(address: "412 Oak St apt 3B")  → label defaults to "Maria\'s"' },
+    { who: "bot", t: "10:02", en: "Hello Maria, thank you for contacting M's Helping Hands. I have almost everything. One question first: are any of your children already with us through another parent?", es: "Hola, María. Gracias por escribir a M's Helping Hands. Ya tengo casi todo. Antes, una pregunta: ¿alguno de sus hijos ya está con nosotros por medio de otro padre o madre?" },
+    { who: "g", t: "10:03", en: "no", es: "no" },
+    { who: "tool", tool: 'create_child(name: "Diego", school: "Lincoln Elementary", grade: 5)' },
+    { who: "bot", t: "10:03", en: "Thank you, we have Diego's details now. Is there anything the tutor should know, such as a door code, parking, allergies or learning needs?", es: "Gracias, ya tenemos los datos de Diego. ¿Hay algo que el tutor deba saber, como un código de entrada, dónde estacionar, alergias o necesidades de aprendizaje?" },
+    { who: "g", t: "10:05", en: "buzzer is 3B, street parking is fine. he has ADHD so short breaks help", es: "el timbre es el 3B, se puede estacionar en la calle. tiene TDAH y le ayudan los descansos cortos" },
+    { who: "tool", tool: 'update_home(directions: "Buzzer 3B, street parking")' },
+    { who: "tool", tool: 'update_child(notes: "ADHD, short breaks help")' },
+    { who: "bot", t: "10:05", en: "Noted for the tutor. Would you like to add another child?", es: "Anotado para el tutor. ¿Desea agregar a otro hijo o hija?" },
+    { who: "g", t: "10:06", en: "no just him", es: "no, solo él" },
+    { who: "tool", tool: 'hand_off_to_office(first session, "Diego, 5th grade, needs a first (evaluation) session in Math")' },
+    { who: "flag", en: "Dashboard: chat marked Needs attention for the first session.", es: "Panel: el chat queda en Needs attention por la primera sesión." },
+    { who: "bot", t: "10:06", en: "Diego's first session will be an evaluation, so our tutors can see where he is in math. Our office will arrange it with you and be in touch shortly." , es: "La primera sesión de Diego será una sesión de evaluación, para que nuestros tutores conozcan su nivel en matemáticas. Nuestra oficina la coordinará con usted y se pondrá en contacto pronto." },
+    { who: "bot", t: "10:06", en: "I can also send you a weekly WhatsApp reminder to book sessions. Would you like that? You can reply STOP at any time to end them.", es: "También puedo enviarle un recordatorio semanal por WhatsApp para reservar sesiones. ¿Le gustaría? Puede responder STOP en cualquier momento para dejar de recibirlos." },
+    { who: "g", t: "10:07", en: "sure", es: "sí, claro" },
+    { who: "tool", tool: "set_reminder_preference(on)" },
+    { who: "bot", t: "10:07", en: "Done, you'll get a reminder each week.", es: "Listo, recibirá un recordatorio cada semana." },
+    { who: "note", en: "What the agent remembers: from now on, Maria's address message and her buzzer/ADHD message appear in its history only as \"[Home address saved]\" and \"[directions and notes saved]\".", es: "Lo que el agente recuerda: desde ahora, el mensaje con la dirección y el del timbre/TDAH aparecen en su historial solo como \"[dirección guardada]\" y \"[indicaciones y notas guardadas]\"." }
+  ],
+  react: {
+    en: [
+      "Maria gave name, Child, school, grade and address unasked. The bot asks only what's missing: the \"already with us?\" check and the closing ask. Too few questions, or right?",
+      "The reminder offer rides in the same message as the first-session news. One message, or split in two?",
+      "The bot doesn't ask Diego's date of birth or a name for the address. OK to never ask?"
+    ],
+    es: [
+      "María dio nombre, hijo, escuela, grado y dirección sin que se lo pidieran. El bot solo pregunta lo que falta. ¿Muy pocas preguntas, o está bien?",
+      "La oferta de recordatorios va en el mismo mensaje que la noticia de la primera sesión. ¿Un mensaje o dos?",
+      "La dirección se guarda con la etiqueta \"María's\", en inglés. En las confirmaciones en español se leería \"en María's\"."
+    ]
+  }
+},
+{
+  id: "change", title: "Booking, then a change of mind",
+  story: {
+    en: "Carmen has two Children, Ana (math with Jane Carter) and Leo (reading with Tom Reyes), and one Home. She asks for Thursday, then switches to Friday.",
+    es: "Carmen tiene dos hijos, Ana (matemáticas con Jane Carter) y Leo (lectura con Tom Reyes), y una casa. Pide jueves y luego cambia a viernes."
+  },
+  steps: [
+    { who: "day", en: "Monday, October 19", es: "lunes 19 de octubre" },
+    { who: "g", t: "18:40", en: "Hi, can I book Ana for math on thursday after school?", es: "Hola, ¿puedo reservar matemáticas para Ana el jueves después de la escuela?" },
+    { who: "tool", tool: "list_slots(Ana, Math, Thu Oct 22, after 3 PM)  → 3:30-4:30 PM, 5:00-6:00 PM · Jane Carter · at home" },
+    { who: "bot", t: "18:40", en: "Jane Carter has two times for Ana's math on Thursday, October 22, both at home:\n3:30-4:30 PM\n5:00-6:00 PM\nWhich would you like?", es: "Jane Carter tiene dos horarios para matemáticas de Ana el jueves 22 de octubre, ambos en casa:\n3:30-4:30 p. m.\n5:00-6:00 p. m.\n¿Cuál prefiere?" },
+    { who: "g", t: "18:41", en: "3:30 please", es: "el de las 3:30, por favor" },
+    { who: "tool", tool: "propose([book Ana · Math · Thu Oct 22 3:30-4:30 PM · Jane Carter · Carmen's])" },
+    { who: "bot", t: "18:41", en: "To confirm: Ana, math, Thursday, October 22, 3:30-4:30 PM with Jane Carter at home. Should I book it?", es: "Para confirmar: Ana, matemáticas, jueves 22 de octubre, 3:30-4:30 p. m. con Jane Carter en casa. ¿Desea que la reserve?" },
+    { who: "g", t: "18:43", en: "oh wait she has soccer thursday. can we do friday same time instead?", es: "ay, espere, el jueves tiene fútbol. ¿mejor el viernes a la misma hora?" },
+    { who: "tool", tool: "list_slots(Ana, Math, Fri Oct 23, around 3:30 PM)  → 4:00-5:00 PM only" },
+    { who: "tool", tool: "propose([book Ana · Math · Fri Oct 23 4:00-5:00 PM · Jane Carter · Carmen's])  → replaces the Thursday proposal" },
+    { who: "note", en: "The Thursday proposal is gone, so no later yes can book it.", es: "La propuesta del jueves ya no existe, así que ningún sí posterior puede reservarla." },
+    { who: "bot", t: "18:43", en: "No problem. On Friday, October 23, Jane Carter isn't free at 3:30, but she is from 4:00 to 5:00 PM, at home. Should I book that for Ana?", es: "No se preocupe. El viernes 23 de octubre Jane Carter no está disponible a las 3:30, pero sí de 4:00 a 5:00 p. m., en casa. ¿Desea que la reserve para Ana?" },
+    { who: "g", t: "18:44", en: "ok 4 is fine", es: "ok, las 4 está bien" },
+    { who: "tool", tool: "commit_proposal()  → 1 Booking saved" },
+    { who: "bot", fixed: true, t: "18:44", en: "Your session is booked: Friday, October 23, 4:00-5:00 PM: Math for Ana with Jane Carter at home", es: "Su sesión está reservada: viernes 23 de octubre, 4:00-5:00 p. m.: Matemáticas para Ana con Jane Carter en casa" },
+    { who: "bot", t: "18:44", en: "Anything else I can help with?", es: "¿Le ayudo con algo más?" },
+    { who: "g", t: "18:45", en: "no thanks!", es: "no, ¡gracias!" },
+    { who: "bot", t: "18:45", en: "You're welcome, Carmen. Have a good evening.", es: "Con gusto, Carmen. Que tenga buena noche." }
+  ],
+  react: {
+    en: [
+      "When only one time fits, the bot offers it and asks \"should I book it?\" in the same message, so \"ok 4 is fine\" books it. No separate \"To confirm\" round. Right call?",
+      "The fixed confirmation now names the Child and Subject (\"Math for Ana\"). Today's says only the time, tutor and place.",
+      "The agent says \"at home\"; the fixed confirmation says \"at Carmen's\" (the default label). To Carmen herself, \"at Carmen's\" reads oddly. Use \"at home\" when a family has one Home?"
+    ],
+    es: [
+      "Si solo un horario sirve, el bot lo ofrece y pregunta \"¿desea que la reserve?\" en el mismo mensaje, así que \"ok, las 4 está bien\" la reserva. ¿Correcto?",
+      "La confirmación fija ahora nombra al hijo y la materia (\"Matemáticas para Ana\").",
+      "La confirmación fija dice \"en Carmen's\": la etiqueta por defecto está en inglés y suena rara para la propia Carmen. ¿Decir \"en casa\" cuando la familia tiene una sola casa?"
+    ]
+  }
+},
+{
+  id: "offscript", title: "Off-script question, handed to the office",
+  story: {
+    en: "Carmen asks about payment and price, then wants to cancel a session that starts tomorrow. Staff take over, then hand back.",
+    es: "Carmen pregunta por pagos y precios, y luego quiere cancelar una sesión de mañana. El personal toma el chat y luego lo devuelve."
+  },
+  steps: [
+    { who: "day", en: "Monday, October 19", es: "lunes 19 de octubre" },
+    { who: "g", t: "12:10", en: "Hello, do you take Zelle? And how much is an hour of chemistry for high school?", es: "Hola, ¿aceptan Zelle? ¿Y cuánto cuesta una hora de química de preparatoria?" },
+    { who: "tool", tool: 'hand_off_to_office(Has a question, "Asks if Zelle is accepted and the hourly price for high-school chemistry")' },
+    { who: "flag", en: "Dashboard: Needs attention · Has a question.", es: "Panel: Needs attention · Has a question." },
+    { who: "bot", t: "12:10", en: "Good questions. I've passed them to our office, and someone will answer you here soon. In the meantime, I can book, cancel or move a session for you.", es: "Buenas preguntas. Se las pasé a nuestra oficina y alguien le responderá aquí pronto. Mientras tanto, puedo reservar, cancelar o cambiar una sesión por usted." },
+    { who: "g", t: "12:14", en: "ok. then pls cancel leo's reading tomorrow, he's sick", es: "ok. entonces cancele la lectura de leo de mañana por favor, está enfermo" },
+    { who: "tool", tool: "propose([cancel Leo · Reading · Tue Oct 20 4:00-5:00 PM])  → refused: inside the 24-hour cancellation cutoff" },
+    { who: "tool", tool: 'hand_off_to_office("Wants to cancel Leo\'s Reading, Tue Oct 20 4:00-5:00 PM, he is sick. Inside the cutoff.")' },
+    { who: "bot", t: "12:14", en: "I'm sorry Leo is sick. His reading session is tomorrow, Tuesday, October 20, at 4:00 PM. That's less than 24 hours away, so I can't cancel it here. I've asked the office to help, and they'll be in touch shortly.", es: "Lamento que Leo esté enfermo. Su sesión de lectura es mañana, martes 20 de octubre, a las 4:00 p. m. Faltan menos de 24 horas, así que no puedo cancelarla por aquí. Le pedí ayuda a la oficina y se comunicarán con usted pronto." },
+    { who: "note", en: "Laura opens the chat on the dashboard and takes over. The bot goes silent.", es: "Laura abre el chat en el panel y lo toma. El bot deja de responder." },
+    { who: "bot", fixed: true, t: "12:31", en: "Laura from M's Helping Hands has joined this chat and will reply to you here.", es: "Laura, de M's Helping Hands, se ha unido a este chat y le responderá aquí." },
+    { who: "staff", name: "Laura · office", t: "12:32", en: "Hi Carmen, I've canceled Leo's session tomorrow, hope he feels better. Yes, we take Zelle, and I'll send you our price list now.", es: "Hola, Carmen. Ya cancelé la sesión de Leo de mañana, que se mejore. Sí, aceptamos Zelle, y ahora le envío nuestra lista de precios." },
+    { who: "g", t: "12:33", en: "thank you so much", es: "muchas gracias" },
+    { who: "bot", fixed: true, t: "12:40", en: "You're back with the M's Helping Hands booking assistant. I can book, cancel or move a session for you.", es: "Ahora está de nuevo con el asistente de reservas de M's Helping Hands. Puedo reservar, cancelar o cambiar una sesión por usted." },
+    { who: "note", en: "On Hand-back the agent reads Laura's messages as part of the history. Any pending proposal would have been dropped here.", es: "Al devolver el chat, el agente lee los mensajes de Laura como parte del historial. Cualquier propuesta pendiente se habría descartado aquí." }
+  ],
+  react: {
+    en: [
+      "After a handoff the bot offers to keep helping (\"In the meantime, I can...\"). Helpful, or does it sound like it's brushing her off?",
+      "The cutoff refusal is agent-written and doesn't state the number of hours. Should it say \"less than 24 hours away\"?",
+      "Price and payment always go to the office (no FAQ). Is a few minutes' wait for staff acceptable to the client?"
+    ],
+    es: [
+      "Tras pasar la pregunta a la oficina, el bot ofrece seguir ayudando (\"Mientras tanto, puedo...\"). ¿Útil, o suena a que la despacha?",
+      "El rechazo por estar fuera de plazo no dice cuántas horas. ¿Debería decir \"faltan menos de 24 horas\"?",
+      "Precios y pagos siempre van a la oficina (sin preguntas frecuentes). ¿Le parece bien a la cliente la espera?"
+    ]
+  }
+},
+{
+  id: "typos", title: "Reminder reply full of typos",
+  story: {
+    en: "The weekly reminder goes out. Carmen replies quickly from her phone, with typos.",
+    es: "Sale el recordatorio semanal. Carmen responde rápido desde el teléfono, con errores."
+  },
+  steps: [
+    { who: "day", en: "Monday, October 19", es: "lunes 19 de octubre" },
+    { who: "bot", fixed: true, t: "09:00", buttons: true, en: "Hello, this is your weekly reminder from M's Helping Hands, as you asked. There is no tutoring session booked yet for Ana and Leo in the week of October 26. Tap Book a session to choose a time, or reply STOP to end these reminders.", es: "Hola, este es su recordatorio semanal de M's Helping Hands, como lo solicitó. Aún no hay ninguna sesión de tutoría reservada para Ana y Leo en la semana del 26 de octubre. Toque Reservar una sesión para elegir un horario, o responda STOP para dejar de recibir estos recordatorios." },
+    { who: "g", t: "09:12", en: "jus ana this tim, wendsday aftr 3?", es: "solo ana esta ves, el miercles despues d las 3?" },
+    { who: "tool", tool: "list_slots(Ana, Math, Wed Oct 28, after 3 PM)  → 3:30-4:30 PM · Jane Carter · at home" },
+    { who: "tool", tool: "propose([book Ana · Math · Wed Oct 28 3:30-4:30 PM · Jane Carter · Carmen's])" },
+    { who: "bot", t: "09:12", en: "Jane Carter is free for Ana's math on Wednesday, October 28, 3:30-4:30 PM, at home. Should I book it?", es: "Jane Carter tiene disponible matemáticas para Ana el miércoles 28 de octubre, de 3:30 a 4:30 p. m., en casa. ¿Desea que la reserve?" },
+    { who: "g", t: "09:13", en: "yse", es: "sii" },
+    { who: "tool", tool: "commit_proposal()  → 1 Booking saved" },
+    { who: "bot", fixed: true, t: "09:13", en: "Your session is booked: Wednesday, October 28, 3:30-4:30 PM: Math for Ana with Jane Carter at home", es: "Su sesión está reservada: miércoles 28 de octubre, 3:30-4:30 p. m.: Matemáticas para Ana con Jane Carter en casa" },
+    { who: "bot", t: "09:13", en: "Would you like a time for Leo that week too?", es: "¿Desea también un horario para Leo esa semana?" },
+    { who: "g", t: "09:14", en: "no hes w his dad that week", es: "no, esa semana está con su papá" },
+    { who: "bot", t: "09:14", en: "Understood. Have a good week, Carmen.", es: "Entendido. Que tenga buena semana, Carmen." }
+  ],
+  react: {
+    en: [
+      "\"wendsday aftr 3\" and \"yse\" are read as Wednesday after 3 PM and yes. Today's bot would have asked again.",
+      "The bot picks math because it's Ana's only Subject. If she had two, it would ask which.",
+      "After booking Ana, the bot asks about Leo, because the reminder named both. Helpful, or pushy?"
+    ],
+    es: [
+      "\"miercles despues d las 3\" y \"sii\" se entienden como miércoles después de las 3 y sí. El bot actual habría vuelto a preguntar.",
+      "El bot elige matemáticas porque es la única materia de Ana. Si tuviera dos, preguntaría cuál.",
+      "Después de reservar a Ana, el bot pregunta por Leo porque el recordatorio nombraba a los dos. ¿Útil o insistente?"
+    ]
+  }
+},
+{
+  id: "notutor", title: "No tutor for it, or none free",
+  story: {
+    en: "Carmen asks for a new Subject for Leo that none of his tutors teach, then for a Monday that Ana's tutor can't do.",
+    es: "Carmen pide una materia nueva para Leo que ninguno de sus tutores enseña, y luego un lunes que la tutora de Ana no puede."
+  },
+  steps: [
+    { who: "day", en: "Tuesday, October 20", es: "martes 20 de octubre" },
+    { who: "g", t: "17:05", en: "Leo is struggling with science too. Can he get a science tutor?", es: "A Leo también le cuesta ciencias. ¿Le pueden poner un tutor de ciencias?" },
+    { who: "tool", tool: "list_subjects()  → Science is offered; none of Leo's tutors teach it" },
+    { who: "tool", tool: 'hand_off_to_office("Wants a Science tutor for Leo; none of his tutors teach it")' },
+    { who: "bot", t: "17:05", en: "Yes, we tutor science. I've asked our office to find a tutor for Leo, and they'll get back to you here.", es: "Sí, ofrecemos tutorías de ciencias. Le pedí a nuestra oficina que busque un tutor para Leo y le responderán aquí." },
+    { who: "g", t: "17:07", en: "great. and can ana do math next monday at 4?", es: "perfecto. ¿y Ana puede tener matemáticas el próximo lunes a las 4?" },
+    { who: "tool", tool: "list_slots(Ana, Math, Mon Oct 26)  → nothing free" },
+    { who: "tool", tool: "list_slots(Ana, Math, Tue Oct 27 – Wed Oct 28)  → Tue 4:00-5:00 PM, Wed 3:30-4:30 PM" },
+    { who: "bot", t: "17:07", en: "Jane Carter has no math times free on Monday, October 26. She can do Tuesday, October 27, 4:00-5:00 PM, or Wednesday, October 28, 3:30-4:30 PM, both at home. Would either work?", es: "Jane Carter no tiene horarios de matemáticas el lunes 26 de octubre. Puede el martes 27 de octubre, de 4:00 a 5:00 p. m., o el miércoles 28 de octubre, de 3:30 a 4:30 p. m., ambos en casa. ¿Le sirve alguno?" },
+    { who: "g", t: "17:09", en: "no, monday is the only day she can", es: "no, el lunes es el único día que puede" },
+    { who: "tool", tool: 'hand_off_to_office("Wants Math for Ana on Mon Oct 26 around 4 PM; Jane Carter has nothing free Monday")' },
+    { who: "bot", t: "17:09", en: "Understood. I've asked our office to look for a Monday time for Ana, and they'll be in touch here.", es: "Entendido. Le pedí a nuestra oficina que busque un horario el lunes para Ana y se comunicarán con usted aquí." }
+  ],
+  react: {
+    en: [
+      "The bot never says \"Assigned Tutor\" and never offers a different tutor itself. It only says the office will find one.",
+      "For the Monday ask, it offers other days first and hands off only after a no. Right order?",
+      "Should the science reply mention that Leo's first science session will be an evaluation?"
+    ],
+    es: [
+      "El bot nunca dice \"Assigned Tutor\" ni ofrece otro tutor por su cuenta. Solo dice que la oficina buscará uno.",
+      "Para el lunes, primero ofrece otros días y pasa a la oficina solo después de un no. ¿Orden correcto?",
+      "¿La respuesta de ciencias debería decir que la primera sesión de ciencias de Leo será de evaluación?"
+    ]
+  }
+},
+{
+  id: "multi", title: "Two Children, one yes",
+  story: {
+    en: "Carmen books both Children in one message. One yes books both, or neither if either fails.",
+    es: "Carmen reserva a sus dos hijos en un mensaje. Un sí reserva ambas, o ninguna si una falla."
+  },
+  steps: [
+    { who: "day", en: "Wednesday, October 21", es: "miércoles 21 de octubre" },
+    { who: "g", t: "20:15", en: "can you book both kids next tuesday at 4? ana math, leo reading", es: "¿puede reservar a los dos el próximo martes a las 4? ana matemáticas, leo lectura" },
+    { who: "tool", tool: "list_slots(Ana, Math, Tue Oct 27 4 PM)  → free · Jane Carter" },
+    { who: "tool", tool: "list_slots(Leo, Reading, Tue Oct 27 4 PM)  → free · Tom Reyes" },
+    { who: "tool", tool: "propose([book Ana · Math · 4:00-5:00 PM · Jane Carter], [book Leo · Reading · 4:00-5:00 PM · Tom Reyes])" },
+    { who: "bot", t: "20:15", en: "Both are free on Tuesday, October 27, at home:\nAna, math, 4:00-5:00 PM with Jane Carter\nLeo, reading, 4:00-5:00 PM with Tom Reyes\nShould I book both?", es: "Ambas están disponibles el martes 27 de octubre, en casa:\nAna, matemáticas, 4:00-5:00 p. m. con Jane Carter\nLeo, lectura, 4:00-5:00 p. m. con Tom Reyes\n¿Desea que reserve las dos?" },
+    { who: "g", t: "20:16", en: "yes", es: "sí" },
+    { who: "tool", tool: "commit_proposal()  → 2 Bookings saved together" },
+    { who: "bot", fixed: true, t: "20:16", en: "Both sessions are booked:\nTuesday, October 27, 4:00-5:00 PM: Math for Ana with Jane Carter at home\nTuesday, October 27, 4:00-5:00 PM: Reading for Leo with Tom Reyes at home", es: "Las dos sesiones están reservadas:\nmartes 27 de octubre, 4:00-5:00 p. m.: Matemáticas para Ana con Jane Carter en casa\nmartes 27 de octubre, 4:00-5:00 p. m.: Lectura para Leo con Tom Reyes en casa" },
+    { who: "bot", t: "20:16", en: "Anything else?", es: "¿Algo más?" },
+    { who: "note", en: "If Leo's slot had been taken between the offer and the yes, neither Booking would land and the agent would explain and offer another time for Leo.", es: "Si el horario de Leo se hubiera ocupado entre la oferta y el sí, ninguna reserva se guardaría y el agente lo explicaría y ofrecería otro horario para Leo." }
+  ],
+  react: {
+    en: [
+      "This is the new multi-action confirmation you sign off on. One line per Booking, in the same shape as the single one.",
+      "If one of the two fails, neither books. Would Carmen rather have Ana booked and Leo retried?",
+      "Should \"Booked:\" say \"Both sessions are booked:\" for warmth, or stay terse?"
+    ],
+    es: [
+      "Esta es la nueva confirmación de varias acciones que usted aprueba. Una línea por reserva, con la misma forma que la individual.",
+      "Si una de las dos falla, no se reserva ninguna. ¿Preferiría Carmen tener a Ana reservada y reintentar la de Leo?",
+      "¿\"Reservadas:\" debería decir \"Las dos sesiones están reservadas:\", o quedarse breve?"
+    ]
+  }
+}
+];
+
+const RULES = {
+  en: "<b>Decided already:</b> only book, cancel and move need a yes; Intake saves as it goes; price, payment and anything else off-script go to the office; formal usted in Spanish; no emoji.",
+  es: "<b>Ya decidido:</b> solo reservar, cancelar y cambiar necesitan un sí; la inscripción se guarda sobre la marcha; precios, pagos y todo lo demás va a la oficina; usted formal; sin emoji."
+};
+
+let lang = "en", current = 0;
+try { const saved = JSON.parse(localStorage.getItem("bot-samples") || "{}"); if (saved.lang) lang = saved.lang; if (Number.isInteger(saved.current)) current = saved.current; } catch (e) {}
+const fromHash = S.findIndex(s => s.id === location.hash.slice(1));
+if (fromHash >= 0) current = fromHash;
+
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+function render() {
+  const s = S[current];
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
+  const rail = document.getElementById("rail"); rail.innerHTML = "";
+  S.forEach((sc, i) => {
+    const b = el("button"); b.type = "button"; b.id = "sc-" + sc.id;
+    b.setAttribute("aria-current", String(i === current));
+    b.append(el("span", "n", String(i + 1).padStart(2, "0")), el("span", "t", sc.title));
+    b.onclick = () => { current = i; history.replaceState(null, "", "#" + sc.id); save(); render(); };
+    rail.append(b);
+  });
+  document.getElementById("story").textContent = s.story[lang];
+  const thread = document.getElementById("thread"); thread.innerHTML = "";
+  s.steps.forEach(st => {
+    if (st.who === "day") { thread.append(el("div", "day", st[lang])); return; }
+    if (st.who === "tool") { const n = el("div", "tool"); n.append(el("span", "arrow", "tool  "), document.createTextNode(st.tool)); thread.append(n); return; }
+    if (st.who === "note" || st.who === "flag") { thread.append(el("div", st.who === "flag" ? "note flag" : "note", st[lang])); return; }
+    const m = el("div", "msg " + st.who);
+    if (st.who === "staff") m.append(el("span", "who", st.name));
+    m.append(document.createTextNode(st[lang]));
+    if (st.buttons) { const bs = el("div", "buttons"); bs.append(el("span", null, lang === "en" ? "Book a session" : "Reservar una sesión"), el("span", null, lang === "en" ? "Stop reminders" : "No más recordatorios")); m.append(bs); }
+    const meta = el("div", "meta");
+    if (st.who === "bot") meta.append(el("span", "badge " + (st.fixed ? "fixed" : "agent"), st.fixed ? "Fixed" : "Agent"));
+    meta.append(el("span", null, st.t));
+    m.append(meta); thread.append(m);
+  });
+  const react = document.getElementById("react"); react.innerHTML = "";
+  react.append(el("h2", null, lang === "en" ? "Questions it raised" : "Preguntas que surgieron"));
+  const ol = el("ol"); s.react[lang].forEach(r => ol.append(el("li", null, r))); react.append(ol);
+  const rules = el("p", "rules"); rules.innerHTML = RULES[lang]; react.append(rules);
+}
+function save() { try { localStorage.setItem("bot-samples", JSON.stringify({ lang, current })); } catch (e) {} }
+document.querySelectorAll(".seg button").forEach(b => b.onclick = () => { lang = b.dataset.lang; save(); render(); });
+document.getElementById("trace").onchange = e => document.getElementById("phone").classList.toggle("hide-trace", !e.target.checked);
+render();
+</script>

@@ -17,7 +17,7 @@ Guardians joined through the Children they share, with all those Children and th
 _Avoid_: Account, Accounts (for the section), household (in the UI), people, registration
 
 **Intake**:
-The questions the bot asks a new Guardian to set up the Guardian and their Children. The office adds Guardians and Children directly, without Intake.
+The questions the bot asks a new Guardian to set up the Guardian, a Home and their Children. Intake is finished once the Guardian's name, one Home's address and one Child's name, school and Overall grade are in; directions, Child notes and date of birth are optional. A Guardian can add another Child or Home through the bot later, through the same questions; changing a saved one goes through the office. The office adds Guardians and Children directly, without Intake. Answers are saved as they are given: the Guardian exists once named, and a Home or Child once its required answers are in. Until Intake is finished, the Guardian and their chat show as **Intake in progress**; so does a chat from a new number whose Guardian isn't named yet.
 _Avoid_: Onboarding, signup
 
 **Child notes**:
@@ -93,7 +93,7 @@ A Staff member who teaches sessions. Sees only their own Bookings, and with each
 _Avoid_: Teacher, instructor
 
 **Location**:
-Where a Booking happens: one of the Child's Homes, or In office. In office needs no address. A Home is an address saved on one or more Guardians (a couple living together share one Home; a new Home belongs to the Guardians the office picks, all of the family's by default), with optional directions for Staff (door code, parking, which entrance). A Child's Homes are simply every Home of every one of its Guardians, an archived Guardian's included; there is no separate choice of which Children go where. A Guardian can't be unlinked from a Child while the Child has upcoming Bookings at a Home that would no longer be theirs.
+Where a Booking happens: one of the Child's Homes, or In office. In office needs no address. A Home is an address saved on one or more Guardians (a couple living together share one Home; a new Home belongs to the Guardians the office picks, all of the family's by default), with optional directions for Staff (door code, parking, which entrance) and an optional label, the short name the family knows it by ("Dad's"). A Guardian's first Home from Intake is labelled with the Guardian's name. A Child's Homes are simply every Home of every one of its Guardians, an archived Guardian's included; there is no separate choice of which Children go where. A Guardian can't be unlinked from a Child while the Child has upcoming Bookings at a Home that would no longer be theirs.
 _Avoid_: Venue, place, home (for the general case), access code (say directions)
 
 **Time off**:
@@ -137,7 +137,7 @@ An Admin or Manager returning a chat to the bot after a Takeover. The Guardian i
 _Avoid_: Release, resume
 
 **Needs attention**:
-Work the office must act on. For a chat: one the bot has marked for the office, with a reason: an Office handoff (Wants to book, Has a question, Link request, Reactivation request) a bot problem (Bot got stuck, Bot didn't understand), or Reply window closed on a taken-over chat. An Office member marks it done once dealt with (with an Undo), and Hand-back marks it done too. A Reactivation request is settled with Restore or Decline instead; Decline sends the Guardian nothing, so the office tells them itself. On the Bookings page, Needs attention is also the quick filter for Booking work (see Bookings to sort out), where To do's See all lands.
+Work the office must act on. For a chat: one the bot has marked for the office, with a reason: an Office handoff (Wants to book, Has a question, Link request, Reactivation request) a bot problem (Bot didn't understand: the bot kept failing to make sense of the Guardian; Bot got stuck: the bot itself failed, and the Guardian was told the office will get back to them), or Reply window closed on a taken-over chat. A chat shows one reason, the latest, though a Reactivation request is kept until settled. The bot keeps helping the Guardian with anything else while the chat Needs attention. An Office member marks it done once dealt with (with an Undo), and Hand-back marks it done too. A Reactivation request is settled with Restore or Decline instead; Decline sends the Guardian nothing, so the office tells them itself. On the Bookings page, Needs attention is also the quick filter for Booking work (see Bookings to sort out), where To do's See all lands.
 _Avoid_: Flag, flagged, handled, parse error
 
 **Unread**:

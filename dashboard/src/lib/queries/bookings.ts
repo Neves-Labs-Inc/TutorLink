@@ -1,4 +1,4 @@
-import { keepPreviousData, queryOptions } from '@tanstack/react-query'
+import { keepPreviousData, queryOptions, type QueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { remainingPages } from '@/lib/booking-calendar/booking-calendar'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
@@ -14,6 +14,15 @@ export type BookingKind = 'regular' | 'evaluation'
 
 export type BookingLocation = 'home' | 'in_office'
 
+// Every Booking query shares this prefix, so one invalidation of it refreshes them all.
+export const BOOKING_QUERY_KEY = ['bookings'] as const
+
+export type BookingStatus = 'pending' | 'confirmed' | 'cancelled' | 'completed' | 'didnt_happen'
+
+// Why a Booking needs the Office (`api/app/services/sort_out_service.py`). The UI says "to change"
+// or "not marked"; the wire still says "sort out".
+export type SortOutReason = 'not_completed' | 'time_off_clash' | 'archived_staff'
+
 export type Booking = {
   id: string
   child: NamedRef
@@ -25,29 +34,83 @@ export type Booking = {
   scheduled_date: string
   start_time: string
   end_time: string
-  status: 'pending' | 'confirmed' | 'cancelled' | 'completed'
+  status: BookingStatus
   notes: string | null
   updated_at: string
+}
+
+export type GuardianRef = NamedRef
+
+// A list row (`BookingSummary` in `api/app/schemas/booking.py`).
+export type BookingSummary = Omit<Booking, 'status'> & {
+  status: BookingStatus
+  child: BookingChild
+  // The office address setting when the session is In office and it is set.
+  office_address: string | null
+  subject_level: number | null
+  home: {
+    id: string
+    label: string | null
+    address: string
+    directions: string | null
+  } | null
+  guardians: GuardianRef[]
+  // Why the Booking is to sort out; [] when it isn't.
+  sort_out_reasons: SortOutReason[]
+  // Who kept the Booking over Time off on purpose, and when; both null when nobody did.
+  clash_acknowledged_by: NamedRef | null
+  clash_acknowledged_at: string | null
+}
+
+export type BookingGuardian = NamedRef & { conversation_id: string | null }
+
+// Approved Time off of the Booking's Staff member that overlaps it.
+export type ClashingTimeOff = {
+  id: string
+  start_date: string
+  end_date: string
+  start_time: string | null
+  end_time: string | null
 }
 
 export type BookingChild = NamedRef & { notes: string | null }
 
 export type BookingDetail = Omit<Booking, 'child'> & {
   child: BookingChild
+  office_address: string | null
+  subject_level: number | null
   // Null when the session is In office.
-  home: { id: string; label: string | null; address: string; access_code: string } | null
+  home: {
+    id: string
+    label: string | null
+    address: string
+    directions: string | null
+    access_code: string
+  } | null
   booked_by_guardian: NamedRef | null
+  guardians: BookingGuardian[]
+  // Null on an Evaluation and for an Admin, who has no availability.
+  availability_id: string | null
+  // Overlapping approved Time off, acknowledged or not; [] when none.
+  clashing_time_off: ClashingTimeOff[]
+  sort_out_reasons: SortOutReason[]
+  clash_acknowledged_by: NamedRef | null
+  clash_acknowledged_at: string | null
 }
 
 export type BookingListParams = {
-  status?: Booking['status'][]
-  kind?: BookingKind
+  status?: BookingStatus[]
+  // One value or several; several are sent as repeated keys.
+  kind?: BookingKind | BookingKind[]
   location?: BookingLocation
   // The Staff member's user id. `tutor_id` is the older tutor-profile filter.
-  user_id?: string
+  user_id?: string | string[]
   tutor_id?: string
   subject_id?: string
-  child_id?: string
+  child_id?: string | string[]
+  q?: string
+  // True: only Bookings to sort out; false: only the rest.
+  to_sort_out?: boolean
   from?: string
   to?: string
   page?: number
@@ -59,10 +122,16 @@ export type BookingWeekParams = Omit<BookingListParams, 'page' | 'page_size'>
 export type BookingCounts = { regular: number; evaluation: number }
 
 // `counts_by_kind` is optional until the API sends it (ticket 03).
-export type BookingPage = Page<Booking> & { counts_by_kind?: BookingCounts }
+export type BookingPage = Page<BookingSummary> & {
+  counts_by_kind?: BookingCounts
+}
 
 // `counts_by_kind` is the shown week's, from its first page, so the kind tabs can count it.
-export type BookingWeek = { items: Booking[]; total: number; counts_by_kind?: BookingCounts }
+export type BookingWeek = {
+  items: BookingSummary[]
+  total: number
+  counts_by_kind?: BookingCounts
+}
 
 // The confirmable checks of `POST /api/bookings` (`api/app/services/booking_write_service.py`).
 export type WarningCode = 'outside_slot' | 'gap' | 'time_off' | 'grade_ceiling'
@@ -95,11 +164,21 @@ export type BookingCreate = {
 // every editable field, in full. The Child and `booked_by_guardian_id` are refused there
 // (`extra="forbid"`), so the type leaves them out; `kind` must equal the row's. `notes` is always
 // sent: `null` clears them (omitting the key would keep the row's).
-export type BookingReplace = Omit<BookingCreate, 'child_id' | 'notes'> & { notes: string | null }
+export type BookingReplace = Omit<BookingCreate, 'child_id' | 'notes'> & {
+  notes: string | null
+}
+
+// The body of `PATCH /api/bookings/{id}` beyond the new status.
+export type BookingStatusOptions = {
+  // The `updated_at` the caller last read; a changed row is refused with a stale 409.
+  expected_updated_at?: string
+  // Read only by a restore (`cancelled` to `confirmed`).
+  confirm_warnings?: WarningCode[]
+}
 
 export type BookingWriteResult = {
   id: string
-  status: Booking['status']
+  status: BookingStatus
   scheduled_date: string
   start_time: string
   end_time: string
@@ -117,7 +196,7 @@ const fetchBookingPage = async (params: BookingListParams): Promise<BookingPage>
 export const bookingQueries = {
   list: (params: BookingListParams = {}) =>
     queryOptions({
-      queryKey: ['bookings', 'list', params],
+      queryKey: [...BOOKING_QUERY_KEY, 'list', params],
       queryFn: () => fetchBookingPage(params),
       placeholderData: keepPreviousData,
     }),
@@ -127,9 +206,13 @@ export const bookingQueries = {
   // data: a new week shows its skeleton rather than the previous week's entries under its heading.
   week: (params: BookingWeekParams) =>
     queryOptions({
-      queryKey: ['bookings', 'list', 'week', params],
+      queryKey: [...BOOKING_QUERY_KEY, 'list', 'week', params],
       queryFn: async (): Promise<BookingWeek> => {
-        const first = await fetchBookingPage({ ...params, page: 1, page_size: MAX_PAGE_SIZE })
+        const first = await fetchBookingPage({
+          ...params,
+          page: 1,
+          page_size: MAX_PAGE_SIZE,
+        })
         const rest = await Promise.all(
           remainingPages(first.total, MAX_PAGE_SIZE).map((page) =>
             fetchBookingPage({ ...params, page, page_size: MAX_PAGE_SIZE }),
@@ -146,7 +229,7 @@ export const bookingQueries = {
 
   detail: (bookingId: string) =>
     queryOptions({
-      queryKey: ['bookings', 'detail', bookingId],
+      queryKey: [...BOOKING_QUERY_KEY, 'detail', bookingId],
       queryFn: async () => {
         const response = await api.get<BookingDetail>(`/api/bookings/${bookingId}`)
 
@@ -172,32 +255,65 @@ export const updateBooking = async (
 
 export const updateBookingStatus = async (
   bookingId: string,
-  status: Booking['status'],
+  status: BookingStatus,
+  options: BookingStatusOptions = {},
 ): Promise<BookingWriteResult> => {
-  const response = await api.patch<BookingWriteResult>(`/api/bookings/${bookingId}`, { status })
+  const response = await api.patch<BookingWriteResult>(`/api/bookings/${bookingId}`, {
+    status,
+    ...options,
+  })
 
   return response.data
 }
+
+// Keeps a Booking over its Time off clash on purpose; refused with 409 when it has none.
+export const acknowledgeClash = async (bookingId: string): Promise<BookingDetail> => {
+  const response = await api.post<BookingDetail>(`/api/bookings/${bookingId}/clash-acknowledgement`)
+
+  return response.data
+}
+
+export const clearClashAcknowledgement = async (bookingId: string): Promise<BookingDetail> => {
+  const response = await api.delete<BookingDetail>(
+    `/api/bookings/${bookingId}/clash-acknowledgement`,
+  )
+
+  return response.data
+}
+
+// Every write that can change a Booking, a count or a Child's To do row refreshes through this.
+export const invalidateBookingData = (queryClient: QueryClient): Promise<unknown[]> =>
+  Promise.all(
+    [BOOKING_QUERY_KEY, ['counts'], ['children']].map((queryKey) =>
+      queryClient.invalidateQueries({ queryKey }),
+    ),
+  )
 
 // Axios's default array serialiser turns `status: ['pending', 'confirmed']` into
 // `status[]=pending&status[]=confirmed`, which FastAPI silently ignores rather than rejects —
 // the request succeeds and the filter does nothing. `docs/api-design.md:1077` requires the
 // repeated form, `?status=pending&status=confirmed`, so the query string is built by hand here
 // and shared by every caller that lists bookings, rather than left to axios's `params` option.
+const toArray = <T>(value: T | T[] | undefined): T[] => {
+  if (value === undefined) return []
+
+  return Array.isArray(value) ? value : [value]
+}
+
 export const bookingSearchParams = (params: BookingListParams): string => {
   const search = new URLSearchParams()
 
   for (const status of params.status ?? []) {
     search.append('status', status)
   }
-  if (params.kind !== undefined) {
-    search.append('kind', params.kind)
+  for (const kind of toArray(params.kind)) {
+    search.append('kind', kind)
   }
   if (params.location !== undefined) {
     search.append('location', params.location)
   }
-  if (params.user_id !== undefined) {
-    search.append('user_id', params.user_id)
+  for (const userId of toArray(params.user_id)) {
+    search.append('user_id', userId)
   }
   if (params.tutor_id !== undefined) {
     search.append('tutor_id', params.tutor_id)
@@ -205,8 +321,14 @@ export const bookingSearchParams = (params: BookingListParams): string => {
   if (params.subject_id !== undefined) {
     search.append('subject_id', params.subject_id)
   }
-  if (params.child_id !== undefined) {
-    search.append('child_id', params.child_id)
+  for (const childId of toArray(params.child_id)) {
+    search.append('child_id', childId)
+  }
+  if (params.q !== undefined) {
+    search.append('q', params.q)
+  }
+  if (params.to_sort_out !== undefined) {
+    search.append('to_sort_out', String(params.to_sort_out))
   }
   if (params.from !== undefined) {
     search.append('from', params.from)

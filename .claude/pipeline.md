@@ -60,3 +60,6 @@ Collected during the WhatsApp bot agent wave 1 (2026-10-19).
 - **`test_bot_worker.py` lock count is cluster-wide** (`pg_locks` with no database filter); it can flake if another agent runs it at the same time. Rerun alone.
 - **conftest imports run before the test env is set.** A fixture module that imports `app.db` at top level breaks test collection; import it lazily inside the fixture.
 - **`bot_worker.hold_turns` inside a bot turn waits forever** on that turn's own chat lock. Never call it from agent-tool code paths; pytest runs that hit it hang (kill by PID, drop the `_test` DB with FORCE).
+- **Design reviewers share one Playwright browser.** Parallel reviewers can land on each other's pages. Open a fresh page with `page.context().newPage()` and re-register `page.route` stubs in every `browser_run_code` call (globalThis doesn't persist). Kill the Vite child process when done.
+- **Never kill a dev server by port.** `lsof -ti:<port> | xargs kill` once hit Docker Desktop (it publishes 5433) and took down the shared test Postgres mid-suite. Kill by PID or exact command line only.
+- **Landing parallel dashboard tickets can break each other's test fixtures** (a new required wire field, e.g. `CountsRead.children_needing_tutor`). Run tsc + tests on the combined tree before committing.

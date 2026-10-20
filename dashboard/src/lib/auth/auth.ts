@@ -21,7 +21,7 @@ const OFFICE_ROLE_SET: ReadonlySet<Role> = new Set(OFFICE_ROLES)
 
 export const isOfficeRole = (role: Role): boolean => OFFICE_ROLE_SET.has(role)
 
-const OFFICE_LANDING_PATH = '/dashboard'
+const OFFICE_LANDING_PATH = '/home'
 const TUTOR_LANDING_PATH = '/sessions'
 const LOGIN_PATH = '/login'
 

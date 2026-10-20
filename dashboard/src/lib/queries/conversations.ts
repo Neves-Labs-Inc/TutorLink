@@ -11,6 +11,7 @@ export type FlagReason =
   | 'reactivation_request'
   | 'booking_request'
   | 'question'
+  | 'reply_window_closed'
 export type MessageAuthorKind = 'client' | 'bot' | 'admin' | 'system'
 export type MessageStatus = 'received' | 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
 export type SystemMessageKind =
@@ -27,7 +28,7 @@ export type ConversationGuardianRef = { id: string; name: string }
 export type ConversationAdminRef = { id: string; name: string }
 
 export type ReactivationRequest = {
-  child: { id: string; name: string; is_active: boolean }
+  child: { id: string; name: string; is_active: boolean; archived: boolean }
 }
 
 export type Conversation = {
@@ -41,6 +42,9 @@ export type Conversation = {
   unread: boolean
   flag_reason: FlagReason | null
   intake_in_progress: boolean
+  last_client_message_at: string | null
+  is_window_open: boolean
+  flagged_at: string | null
 }
 
 export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'unread'> & {
@@ -72,6 +76,7 @@ export type ConversationListParams = {
   status?: ConversationStatus
   unread?: boolean
   flagged?: boolean
+  holder?: ('bot' | 'mine' | 'others')[]
   q?: string
   page?: number
   page_size?: number
@@ -133,6 +138,8 @@ export const conversationQueries = {
       queryFn: async () => {
         const response = await api.get<Page<Conversation>>('/api/conversations', {
           params: { page_size: DEFAULT_PAGE_SIZE, ...params },
+          // holder=bot&holder=mine, not holder[]=bot
+          paramsSerializer: { indexes: null },
         })
 
         return response.data

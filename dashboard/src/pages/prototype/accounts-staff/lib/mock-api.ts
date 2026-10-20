@@ -357,6 +357,7 @@ export function readCounts(db: Database, isAdmin: boolean): CountsRead {
     children_awaiting_evaluation: db.children.filter(
       (child) => !child.archived && !child.evaluated,
     ).length,
+    children_needing_tutor: 0,
     bookings_to_sort_out: 2,
     unread_chats: 2,
   };

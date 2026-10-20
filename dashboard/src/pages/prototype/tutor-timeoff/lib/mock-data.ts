@@ -248,6 +248,7 @@ export const TIME_OFF: ExceptionRow[] = [
 export const COUNTS_BASE = {
   needs_attention: 4,
   children_awaiting_evaluation: 2,
+  children_needing_tutor: 0,
   bookings_to_sort_out: 3,
   unread_chats: 2,
 };

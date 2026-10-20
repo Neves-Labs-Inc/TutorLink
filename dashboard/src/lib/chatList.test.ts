@@ -72,6 +72,9 @@ describe('conversationDisplayName', () => {
     unread: false,
     flag_reason: null,
     intake_in_progress: false,
+    last_client_message_at: null,
+    is_window_open: false,
+    flagged_at: null,
   }
 
   it('renders the bare phone number when guardian is null', () => {
@@ -97,6 +100,9 @@ describe('conversationHolderLabel', () => {
     unread: false,
     flag_reason: null,
     intake_in_progress: false,
+    last_client_message_at: null,
+    is_window_open: false,
+    flagged_at: null,
   }
 
   it('is null while the bot is answering', () => {

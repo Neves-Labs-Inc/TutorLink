@@ -16,6 +16,9 @@ const conversation = (overrides: Partial<Conversation>): Conversation => ({
   unread: false,
   flag_reason: null,
   intake_in_progress: false,
+  last_client_message_at: null,
+  is_window_open: false,
+  flagged_at: null,
   ...overrides,
 })
 

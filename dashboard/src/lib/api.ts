@@ -31,10 +31,7 @@ export const authApi = axios.create({ ...clientConfig })
 
 export const requestLogin = (email: string, password: string) =>
   // Form-encoded, and the field is `username`, not `email` (D-021). JSON here returns 400.
-  authApi.post<TokenPairResponse>(
-    '/auth/token',
-    new URLSearchParams({ username: email, password }),
-  )
+  authApi.post<TokenPairResponse>('/auth/token', new URLSearchParams({ username: email, password }))
 
 export const requestForgotPassword = (email: string) =>
   authApi.post<{ detail: string }>('/auth/password/forgot', { email })
@@ -78,6 +75,37 @@ export const warningsOf = (error: unknown): BookingWarning[] | null => {
   }
 
   return warnings
+}
+
+// What a 409 from the Booking writes means, so the screen can pick the right recovery: confirm
+// the warnings, reload a stale row, pick another time, or just show the sentence.
+export type Conflict =
+  | { kind: 'warnings'; warnings: BookingWarning[] }
+  | { kind: 'stale' }
+  | { kind: 'overlap' }
+  | { kind: 'refused'; detail: string }
+
+const STALE_DETAIL = /changed since/i
+const OVERLAP_DETAIL = /overlap/i
+
+// Null when the failure is not a 409. The API words these in `detail` (`booking_writes.py`,
+// `booking_status.py`); only the warnings 409 has a structured body.
+export const conflictOf = (error: unknown): Conflict | null => {
+  if (errorStatus(error) !== 409) return null
+
+  const warnings = warningsOf(error)
+  const detail = errorDetail(error) ?? ''
+  let conflict: Conflict = { kind: 'refused', detail }
+
+  if (warnings !== null) {
+    conflict = { kind: 'warnings', warnings }
+  } else if (STALE_DETAIL.test(detail)) {
+    conflict = { kind: 'stale' }
+  } else if (OVERLAP_DETAIL.test(detail)) {
+    conflict = { kind: 'overlap' }
+  }
+
+  return conflict
 }
 
 // The HTTP status of a failed request, so callers can tell a refusal (403) from a conflict (409)

@@ -61,6 +61,7 @@ type ErrorStateProps = {
   body: string;
   onRetry: () => void;
   isRetrying?: boolean;
+  isBare?: boolean;
 };
 
 export function ErrorState({
@@ -68,11 +69,15 @@ export function ErrorState({
   body,
   onRetry,
   isRetrying = false,
+  isBare = false,
 }: ErrorStateProps): ReactNode {
   return (
     <div
       role="alert"
-      className={cn(CARD, "flex flex-col items-center px-6 py-12 text-center")}
+      className={cn(
+        "flex flex-col items-center px-6 py-12 text-center",
+        !isBare && CARD,
+      )}
     >
       <span className="inline-flex size-16 items-center justify-center rounded-full bg-(--tl-danger-tint) text-(--tl-danger)">
         <TriangleAlert aria-hidden className="size-7" />

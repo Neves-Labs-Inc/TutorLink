@@ -6,6 +6,7 @@ const NO_COUNTS: CountsRead = {
   needs_attention: 0,
   time_off_pending: 0,
   children_awaiting_evaluation: 0,
+  children_needing_tutor: 0,
   bookings_to_sort_out: 0,
   unread_chats: 0,
 };
@@ -14,6 +15,7 @@ const SOME_COUNTS: CountsRead = {
   needs_attention: 9,
   time_off_pending: 4,
   children_awaiting_evaluation: 2,
+  children_needing_tutor: 4,
   bookings_to_sort_out: 3,
   unread_chats: 7,
 };
@@ -29,7 +31,7 @@ function getBadges(items: NavItem[]): Record<string, unknown> {
 }
 
 const ADMIN_LINKS: [string, string][] = [
-  ["Home", "/dashboard"],
+  ["Home", "/home"],
   ["Bookings", "/bookings"],
   ["Chats", "/chats"],
   ["Families", "/children"],
@@ -82,9 +84,17 @@ describe("getNav", () => {
       hasOfficeTimeOff: true,
     });
     expect(getBadges(items)).toEqual({
-      Bookings: { count: 5, label: "to sort out", tone: "pink" },
+      Bookings: { count: 9, label: "to sort out", tone: "pink" },
       Chats: { count: 7, label: "unread", tone: "primary" },
       "Time off": { count: 4, label: "to review", tone: "pink" },
+    });
+  });
+
+  it("sums sort-out Bookings, Evaluations and Children needing a Tutor on Bookings", () => {
+    const counts = { ...NO_COUNTS, children_needing_tutor: 4 };
+    const items = getNav("admin", { counts });
+    expect(getBadges(items)).toEqual({
+      Bookings: { count: 4, label: "to sort out", tone: "pink" },
     });
   });
 
@@ -99,6 +109,7 @@ describe("getNav", () => {
 
 describe("getNavIdForPath", () => {
   it.each([
+    ["/home", "home"],
     ["/dashboard", "home"],
     ["/bookings", "bookings"],
     ["/chats", "chats"],

@@ -51,7 +51,7 @@ const HOME: NavItem = {
   id: "home",
   label: "Home",
   icon: House,
-  path: "/dashboard",
+  path: "/home",
 };
 const BOOKINGS: NavItem = {
   id: "bookings",
@@ -109,6 +109,7 @@ const TUTOR_NAV: NavItem[] = [
 // First path segment → the item it belongs to. Pages without an item of
 // their own (Guardians, Users, Reminders) mark their nearest one.
 const NAV_ID_BY_SEGMENT: Record<string, NavId> = {
+  home: "home",
   dashboard: "home",
   bookings: "bookings",
   chats: "chats",
@@ -129,6 +130,7 @@ export type CountsRead = {
   needs_attention: number;
   time_off_pending: number | null;
   children_awaiting_evaluation: number;
+  children_needing_tutor: number;
   bookings_to_sort_out: number;
   unread_chats: number;
 };
@@ -158,7 +160,10 @@ function getCountBadge(id: NavId, counts: CountsRead): NavBadge | undefined {
   let badge: NavBadge | undefined;
   if (id === "bookings") {
     badge = {
-      count: counts.bookings_to_sort_out + counts.children_awaiting_evaluation,
+      count:
+        counts.bookings_to_sort_out +
+        counts.children_awaiting_evaluation +
+        counts.children_needing_tutor,
       label: "to sort out",
       tone: "pink",
     };

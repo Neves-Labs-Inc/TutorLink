@@ -35,6 +35,7 @@ export type CountsRead = {
   needs_attention: number;
   time_off_pending: number | null;
   children_awaiting_evaluation: number;
+  children_needing_tutor: number;
   bookings_to_sort_out: number;
   unread_chats: number;
 };

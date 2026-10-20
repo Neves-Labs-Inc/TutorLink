@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import AppLayout from "@/components/layout/app-layout";
 import LegacyPage from "@/components/layout/legacy-page";
@@ -16,10 +22,8 @@ import { Children } from "@/pages/admin/Children";
 import { ChildDetail } from "@/pages/admin/ChildDetail";
 import { Guardians } from "@/pages/admin/Guardians";
 import { GuardianDetail } from "@/pages/admin/GuardianDetail";
-import { ChatsLayout } from "@/components/chat/ChatsLayout";
-import { ChatThread } from "@/pages/admin/ChatThread";
 import { Bookings } from "@/pages/admin/Bookings";
-import { Reminders } from "@/pages/admin/Reminders";
+import ChatsPage from "@/pages/chats/chats-page";
 import { Users } from "@/pages/admin/Users";
 import { Settings } from "@/pages/admin/Settings";
 import { Schedule } from "@/pages/tutor/Schedule";
@@ -47,6 +51,12 @@ function renderLegacy(allow: readonly Role[], screen: ReactNode): ReactNode {
   );
 }
 
+// The old Reminders URL, keeping ?week=.
+function RedirectToReminders(): ReactNode {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: "/chats/reminders", search }} replace />;
+}
+
 export const App = (): ReactNode => (
   <BrowserRouter>
     <AuthProvider>
@@ -64,22 +74,45 @@ export const App = (): ReactNode => (
           }
         >
           <Route
-            path="/dashboard"
+            path="/home"
             element={renderLegacy(OFFICE_ROLES, <Dashboard />)}
           />
+          <Route path="/dashboard" element={<Navigate to="/home" replace />} />
           <Route
             path="/bookings"
             element={renderLegacy(OFFICE_ROLES, <Bookings />)}
           />
           <Route
             path="/chats"
-            element={renderLegacy(OFFICE_ROLES, <ChatsLayout />)}
-          >
-            <Route path=":id" element={<ChatThread />} />
-          </Route>
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <ChatsPage tab="conversations" />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/chats/reminders"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <ChatsPage tab="reminders" />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/chats/:id"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <ChatsPage tab="conversations" />
+              </RouteGuard>
+            }
+          />
           <Route
             path="/reminders"
-            element={renderLegacy(OFFICE_ROLES, <Reminders />)}
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <RedirectToReminders />
+              </RouteGuard>
+            }
           />
           <Route
             path="/children"

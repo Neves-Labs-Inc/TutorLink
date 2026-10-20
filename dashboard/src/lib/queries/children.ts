@@ -96,6 +96,9 @@ export type ChildListParams = {
   awaiting_evaluation?: boolean
   // Only Children who are not yet Evaluated and have no live Evaluation.
   evaluable?: boolean
+  // Active, Evaluated Children with no Assigned Tutor (To do's Bookings group).
+  needs_tutor?: boolean
+  evaluated?: boolean
   page?: number
   page_size?: number
 }

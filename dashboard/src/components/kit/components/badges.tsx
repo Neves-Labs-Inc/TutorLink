@@ -13,6 +13,7 @@ import {
   Home,
   Sparkles,
   UserRound,
+  UserRoundPlus,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn, TONE_CLASSES } from "@/components/kit/tokens";
@@ -325,9 +326,26 @@ const AVATAR_SIZES = {
   lg: "size-12 text-[15px]",
 };
 
-type AvatarProps = { name: string; size?: keyof typeof AVATAR_SIZES };
+const UNNAMED_ICON_SIZES = { sm: "size-4", md: "size-5", lg: "size-5" };
 
+type AvatarProps = { name: string | null; size?: keyof typeof AVATAR_SIZES };
+
+// A `null` name is an unnamed number (Intake not finished): a sunk disc with
+// a "new person" icon. The number is always written beside it.
 export function Avatar({ name, size = "md" }: AvatarProps): ReactNode {
+  if (name === null) {
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "inline-flex shrink-0 items-center justify-center rounded-full bg-(--tl-surface-sunk) text-(--tl-muted)",
+          AVATAR_SIZES[size],
+        )}
+      >
+        <UserRoundPlus className={UNNAMED_ICON_SIZES[size]} />
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden

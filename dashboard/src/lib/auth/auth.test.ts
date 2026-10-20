@@ -81,9 +81,9 @@ describe('decodeAccessToken', () => {
 
 describe('landingPath', () => {
   const cases: { role: Role; expected: string }[] = [
-    { role: 'admin', expected: '/dashboard' },
-    { role: 'developer', expected: '/dashboard' },
-    { role: 'manager', expected: '/dashboard' },
+    { role: 'admin', expected: '/home' },
+    { role: 'developer', expected: '/home' },
+    { role: 'manager', expected: '/home' },
     { role: 'tutor', expected: '/sessions' },
   ]
 
@@ -135,10 +135,10 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'manager', OFFICE_ROLES)).toEqual({ kind: 'allow' })
   })
 
-  it('sends a manager on an admin-only route such as /users or /settings to the dashboard', () => {
+  it('sends a manager on an admin-only route such as /users or /settings to Home', () => {
     expect(guardDecision('authenticated', 'manager', ADMIN_ROLES)).toEqual({
       kind: 'redirect',
-      to: '/dashboard',
+      to: '/home',
     })
   })
 

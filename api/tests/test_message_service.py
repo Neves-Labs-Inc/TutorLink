@@ -118,16 +118,14 @@ def test_a_duplicate_does_not_move_the_ordering_key(db: Session) -> None:
     assert conversation.last_message_at == recorded_at
 
 
-def test_a_bot_reply_is_sent_with_no_sid(db: Session) -> None:
-    """**D-P7-2** / amendment **P7-3**: a TwiML reply has no `MessageSid` at the moment it is
-    written, so `POST /webhook/whatsapp/status` can never advance it and `queued` would park
-    every bot line in the system at pending forever."""
+def test_a_bot_reply_is_recorded_queued_with_no_sid(db: Session) -> None:
+    """The bot sends through the REST API, so the SID comes after the record."""
     conversation = _make_conversation(db)
 
     reply = record_bot_reply(db, conversation=conversation, body="Thursday at 4pm works")
 
     assert reply.author_kind is MessageAuthor.BOT
-    assert reply.status is MessageStatus.SENT
+    assert reply.status is MessageStatus.QUEUED
     assert reply.twilio_sid is None
     assert reply.author_user_id is None
 

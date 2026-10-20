@@ -1069,7 +1069,7 @@ def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
     return db.execute(
         select(Conversation)
         .where(Conversation.phone_number == phone_number)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 
@@ -1141,10 +1141,13 @@ def _locked(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
     enforce on its callers. Every writer here flushes, so there is no pending in-memory change
     for the refresh to discard.
     """
+    # FOR NO KEY UPDATE, not FOR UPDATE: it serialises every writer of the row just the same,
+    # but doesn't wait on the key-share lock a message insert takes on its conversation. A bot
+    # turn recording a message mid-turn would otherwise hold up the webhook and Takeover.
     conversation = db.execute(
         select(Conversation)
         .where(Conversation.id == conversation_id)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 

@@ -255,7 +255,12 @@ def _turn(
             button=button,
         )
         _apply(db, conversation=conversation, decided=decided, inbound=inbound)
-        reply = message_service.record_bot_reply(db, conversation=conversation, body=decided.reply)
+        reply = message_service.mark_sent_inline(
+            db,
+            message=message_service.record_bot_reply(
+                db, conversation=conversation, body=decided.reply
+            ),
+        )
         twiml = twilio_service.twiml_reply(decided.reply)
 
     recorded = tuple(row for row in (inbound, reply) if row is not None)

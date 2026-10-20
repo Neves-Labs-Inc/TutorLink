@@ -1,5 +1,7 @@
 """`fake_twilio`: the stand-in for Twilio's REST sends and the signer of its status callbacks.
 
+Typing indicators are recorded in `typing_indicators`, not sent.
+
 No test may reach Twilio. As a backstop, the fixture also replaces `twilio_service.Client`, so a
 send from a module missing from `SEND_CALLERS`, or one made through `twilio_service` itself,
 fails the test instead of reaching the real REST client. The fake replaces `send_whatsapp_message` and `send_whatsapp_template`
@@ -26,11 +28,12 @@ from app.services.twilio_service import TwilioSendFailed
 
 SEND_CALLERS = (
     "app.routers.conversation_stream",
+    "app.services.bot_turn",
     "app.services.notice_service",
     "app.services.reminder_service",
     "app.services.webhook_service",
 )
-SEND_FUNCTION_NAMES = ("send_whatsapp_message", "send_whatsapp_template")
+SEND_FUNCTION_NAMES = ("send_whatsapp_message", "send_whatsapp_template", "send_typing_indicator")
 
 CODE_OUTSIDE_WINDOW = "63016"
 CODE_UNDELIVERABLE = "63049"
@@ -61,6 +64,9 @@ class SentMessage:
 class FakeTwilio:
     def __init__(self) -> None:
         self.sent: list[SentMessage] = []
+        # The inbound message SIDs each typing indicator was shown against, in order.
+        self.typing_indicators: list[str] = []
+        self._typing_failures = 0
         self._failures: list[TwilioSendFailed] = []
         self._sid_numbers = itertools.count(1)
         self._during_send: Callable[[str], None] | None = None
@@ -74,6 +80,19 @@ class FakeTwilio:
         return self._accept(
             to=to, content_sid=content_sid, content_variables=dict(content_variables)
         )
+
+    def send_typing_indicator(self, *, message_sid: str) -> None:
+        if self._typing_failures:
+            self._typing_failures -= 1
+            raise TwilioSendFailed(
+                "fake Twilio refused the typing indicator", code=None, is_retryable=False
+            )
+
+        self.typing_indicators.append(message_sid)
+
+    def fail_next_typing_indicator(self) -> None:
+        """Refuse the next typing indicator."""
+        self._typing_failures += 1
 
     def fail_next(self, *, code: str, times: int = 1) -> None:
         """Refuse the next `times` sends with Twilio error `code`, as a 4xx the caller can't retry."""

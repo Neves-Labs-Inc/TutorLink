@@ -56,3 +56,5 @@ Collected during the WhatsApp bot agent wave 1 (2026-10-19).
 - **`run_in_background` suite runs can die with exit 144** at ~15–37% under parallel load. Start the full suite with `nohup ... > /tmp/<name>.log 2>&1; echo "EXIT $?" >> /tmp/<name>.log &` and read the log's tail.
 - **Load flake:** `test_conversation_routes.py::test_total_counts_the_filtered_query_before_paging` can fail under parallel load; rerun the module alone.
 - **`git worktree remove` must run from inside the repo**, not the parent folder.
+- **Aborted test runs leave committed rows** in `<db>_test` that break later row-counting suites (`test_cli_seed`). Drop `<db>_test` after any killed run.
+- **`test_bot_worker.py` lock count is cluster-wide** (`pg_locks` with no database filter); it can flake if another agent runs it at the same time. Rerun alone.

@@ -22,7 +22,8 @@ from app.models.conversation import Conversation
 @dataclass(frozen=True)
 class ToolContext:
     db: Session
-    # Row-locked by the turn.
+    # A detached copy of the row: not locked, not in the session. The turn applies what a tool
+    # changes on it to the row at the end, under the lock. Change the conversation only here.
     conversation: Conversation
     # Aware UTC instant for this turn.
     now: datetime.datetime

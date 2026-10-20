@@ -105,12 +105,15 @@ def create_child(
     *,
     guardian_ids: Sequence[uuid.UUID],
     name: str,
-    date_of_birth: datetime.date,
+    date_of_birth: datetime.date | None,
     grade_level: int | None,
     school_name: str,
     notes: str | None = None,
 ) -> Child:
-    _assert_plausible(date_of_birth)
+    # The bot saves a Child without one: it is asked for only when volunteered.
+    if date_of_birth is not None:
+        _assert_plausible(date_of_birth)
+
     guardians = _validated_guardian_ids(db, guardian_ids)
 
     child = Child(

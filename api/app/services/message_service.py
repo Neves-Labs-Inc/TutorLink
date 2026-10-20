@@ -115,31 +115,31 @@ def record_inbound(
 
 
 def record_bot_reply(db: Session, *, conversation: Conversation, body: str) -> Message:
-    """Record the bot's reply, `sent` and with no SID.
+    """Record a bot reply `queued` with no SID, before it is sent.
 
-    **Not `queued`.** `erd.md:320-322` says an outbound message starts `queued` and is advanced
-    by Twilio's delivery callback, and that describes messages sent through the REST API. A bot
-    reply is returned as TwiML inside `POST /webhook/whatsapp`'s own response, and Twilio mints
-    a `MessageSid` for it only *after* reading that response — so `twilio_sid` is NULL at the
-    moment this row is written, `POST /webhook/whatsapp/status` has nothing to match it
-    against, and a `queued` bot reply would sit pending forever with the thread showing a
-    permanent spinner on the bot's half. Divergence **D-P7-2**, proposed amendment **P7-3**:
-    the contract describes one mechanism and the webhook uses another. Do not "fix" this to
-    `queued`.
-
-    Every bot reply carries `twilio_sid = NULL` and they do not collide, because PostgreSQL
-    treats NULLs as distinct under a unique index — which is what makes a bot reply recordable
-    at all.
+    The bot answers through the REST send API (docs/specs/whatsapp-bot-agent.md §7), so a reply
+    is recorded first and `attach_twilio_sid` stores the SID once Twilio accepts it; the status
+    callback then advances it like an office reply. A send that fails for good is `mark_failed`.
     """
     return _insert(
         db,
         conversation=conversation,
         author_kind=MessageAuthor.BOT,
         body=body,
-        status=MessageStatus.SENT,
+        status=MessageStatus.QUEUED,
         twilio_sid=None,
         author_user_id=None,
     )
+
+
+def mark_sent_inline(db: Session, *, message: Message) -> Message:
+    """Mark a bot reply returned as inline TwiML `sent`: Twilio never reports a SID for it, so
+    no callback could advance it from `queued`. Only the state machine's webhook path uses this,
+    until the async cutover removes inline replies."""
+    message.status = MessageStatus.SENT
+    db.flush()
+
+    return message
 
 
 def record_admin_message(

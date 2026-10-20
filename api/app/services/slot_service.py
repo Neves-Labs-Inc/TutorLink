@@ -212,6 +212,30 @@ def allowed_locations(
     return frozenset().union(*(MODE_LOCATIONS[row.mode] for row in ranges))
 
 
+def has_assigned_tutor(
+    db: Session, *, child_id: uuid.UUID, subject_id: uuid.UUID, location: BookingLocation
+) -> bool:
+    """Whether any of the Child's Assigned Tutors teaches `subject_id` at the Child's level and
+    has an active range, on any weekday, whose `mode` allows `location`: the Tutors
+    `find_available_slots(assigned_only=True, location=...)` could ever offer. Lets the bot tell
+    "nobody teaches it there" (an Office handoff) from "nobody is free" (other days)."""
+    names = _qualified_tutor_names(
+        db, subject_id=subject_id, child_id=child_id, tutor_id=None, assigned_only=True
+    )
+    allowing_modes = [mode for mode, allowed in MODE_LOCATIONS.items() if location in allowed]
+    any_range = db.scalar(
+        select(TutorAvailability.id)
+        .where(
+            TutorAvailability.tutor_id.in_(list(names)),
+            TutorAvailability.is_active.is_(True),
+            TutorAvailability.mode.in_(allowing_modes),
+        )
+        .limit(1)
+    )
+
+    return any_range is not None
+
+
 def _qualified_tutor_names(
     db: Session,
     *,

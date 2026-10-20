@@ -43,6 +43,19 @@ DEFAULT_BRAND_COLOR_MIGRATION = MIGRATIONS_DIR / "0035_email_brand_color_setting
 PER_EMAIL_BRAND_COLOR_MIGRATION = MIGRATIONS_DIR / "0051_per_email_brand_color.py"
 
 
+@pytest.fixture(autouse=True)
+def _no_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """No test may reach the paid Anthropic API, e.g. through the app's start-up warm-up; a test
+    that needs a key sets a dummy one itself."""
+    # Imported lazily, like `client` below.
+    from app.config import get_settings
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def whatsapp_chat(
     db: Session, request: pytest.FixtureRequest

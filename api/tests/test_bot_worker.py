@@ -292,6 +292,37 @@ def test_the_lifespan_starts_the_bot_worker_and_cancels_it_on_exit(
     assert callable(given[0])
 
 
+def test_the_lifespan_warms_the_model_up_once_without_waiting_for_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app import main
+    from app.services import bot_agent
+
+    release = threading.Event()
+    warm_ups: list[object] = []
+
+    def stuck_warm_up(deps: object) -> None:
+        warm_ups.append(deps)
+        release.wait(10)
+
+    async def idle_worker(
+        session_factory: Callable[[], Session], *, take_turn: Callable[..., object]
+    ) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(bot_agent, "warm_up", stuck_warm_up)
+    monkeypatch.setattr(main, "run_bot_turns_forever", idle_worker)
+
+    try:
+        with TestClient(main.create_app()) as client:
+            assert client.get("/health").status_code == 200
+            assert len(warm_ups) == 1
+    finally:
+        release.set()
+
+
 @pytest.fixture
 def sessions(_test_engine: Engine) -> Generator[sessionmaker[Session], None, None]:
     """Sessions on their own engine, one real connection each, committing for real."""

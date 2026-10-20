@@ -81,11 +81,20 @@ class Step:
 
 @dataclass
 class FakeModel:
-    """Answers each `create` with the next scripted step; an exception step is raised."""
+    """Answers each `create` with the next scripted step; an exception step is raised. A
+    warm-up is recorded and answered with `warm_up_answer`, or raises it."""
 
     script: list[Step | Exception]
     requests: list[dict[str, Any]] = field(default_factory=list)
+    warm_ups: list[dict[str, Any]] = field(default_factory=list)
+    warm_up_answer: float | Exception | None = None
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1))
+
+    def warm_up(self, *, system: str, tools: list[dict[str, Any]]) -> float | None:
+        self.warm_ups.append({"system": system, "tools": tools})
+        if isinstance(self.warm_up_answer, Exception):
+            raise self.warm_up_answer
+        return self.warm_up_answer
 
     def create(
         self,

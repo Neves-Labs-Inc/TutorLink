@@ -63,13 +63,15 @@ if not app_logger.handlers:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Run the retention, reminder and reply-window schedulers and the bot's due-turn worker for
-    exactly as long as the app is served.
+    exactly as long as the app is served, and warm the bot's model up in the background.
 
     Here rather than in the scheduler modules, which are service code and know nothing about
     FastAPI. No task touches the database until its first tick, so entering this is free. On
     shutdown all are cancelled and awaited, so none outlives the process's event loop; a run
     already on its worker thread finishes or fails on its own.
     """
+    bot_deps = bot_agent.default_deps()
+    bot_agent.start_warm_up(bot_deps)
     schedulers = [
         asyncio.create_task(run_forever(SessionLocal)),
         asyncio.create_task(run_reminders_forever(SessionLocal)),
@@ -77,7 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(
             run_bot_turns_forever(
                 BotWorkerSessionLocal,
-                take_turn=bot_agent.turn_runner(bot_agent.default_deps()),
+                take_turn=bot_agent.turn_runner(bot_deps),
             )
         ),
     ]

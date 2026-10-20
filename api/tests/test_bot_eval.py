@@ -23,6 +23,7 @@ GUARDIAN_NAME = "Karen Mitchell"
 FIRST_MESSAGE = "hi! I'm Karen Mitchell, I'd like tutoring for my son"
 SECOND_MESSAGE = "great, thanks"
 BOT_REPLY = "Thanks Karen! What's your son's name?"
+WARM_UP_SECONDS = 7.5
 # Per model call; on Sonnet 5.5 ($2 / $10 per MTok) that is $0.003 a call.
 FAKE_USAGE = ModelUsage(
     input_tokens=1000, output_tokens=100, cache_read_input_tokens=0, cache_creation_input_tokens=0
@@ -34,6 +35,11 @@ class FakeAgentModel:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.warm_up_tools: list[list[str]] = []
+
+    def warm_up(self, *, system: str, tools: list[dict[str, Any]]) -> float | None:
+        self.warm_up_tools.append([tool["name"] for tool in tools])
+        return WARM_UP_SECONDS
 
     def create(
         self,
@@ -106,7 +112,8 @@ def test_one_persona_runs_end_to_end_and_its_database_is_dropped(tmp_path: pathl
     clients = bot_eval.Clients(agent_model=lambda _model, _effort: agent, guardian=guardian)
 
     status = bot_eval.main(
-        ["--models", "sonnet", "--personas", "intake", "--langs", "en", "--out", str(tmp_path)],
+        # Two runs on one model: the Spanish one finds the scripted messages spent and ends at once.
+        ["--models", "sonnet", "--personas", "intake", "--langs", "en,es", "--out", str(tmp_path)],
         clients=clients,
     )
 
@@ -132,6 +139,11 @@ def test_one_persona_runs_end_to_end_and_its_database_is_dropped(tmp_path: pathl
     assert BOT_REPLY in guardian.threads[1]
     summary = (tmp_path / "summary.md").read_text()
     assert "| intake | en | sonnet |" in summary
+    # Warmed up once for both runs, with the production tools.
+    [warm_up_tools] = agent.warm_up_tools
+    assert "create_guardian" in warm_up_tools
+    assert "reply" in warm_up_tools
+    assert "- sonnet: 7.5 s" in summary
     assert not _database_exists(_database_named_in(report))
 
 

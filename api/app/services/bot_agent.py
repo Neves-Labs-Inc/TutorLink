@@ -8,9 +8,15 @@ model. This module is the one place the real ones are put together, for `main.py
 worker still starts, and every turn is an outage: the chat is flagged "Bot got stuck" and the
 Guardian gets the fixed apology once, so the office sees the problem in the inbox, not only in
 the logs.
+
+**The worker warms the model up** when it starts (`start_warm_up`): one request with the real
+tools and system prompt, on a background thread, so the first Guardian after a deploy doesn't
+wait on the API compiling a changed tool schema. It never blocks or fails start-up, and is
+skipped without an API key.
 """
 
 import logging
+import threading
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -45,6 +51,10 @@ class UnconfiguredModel:
     ) -> ModelResponse:
         raise ModelUnavailable("anthropic_api_key is unset")
 
+    def warm_up(self, *, system: str, tools: list[dict[str, Any]]) -> float | None:
+        logger.info("bot model warm-up skipped: ANTHROPIC_API_KEY is unset")
+        return None
+
 
 def default_deps() -> TurnDeps:
     """The real model, every agent tool, the cached system prompt and the per-turn context."""
@@ -63,6 +73,29 @@ def turn_runner(deps: TurnDeps) -> Callable[[Session, uuid.UUID], TurnOutcome]:
         return bot_turn.take_turn(db, conversation_id=conversation_id, deps=deps)
 
     return run
+
+
+def warm_up(deps: TurnDeps) -> float | None:
+    """Send `deps.model` one request with the tools and system prompt a turn sends. Returns the
+    seconds it took, or None when it was skipped or failed; never raises."""
+    seconds = None
+    try:
+        seconds = deps.model.warm_up(
+            system=deps.system_prompt(), tools=bot_turn.tool_definitions(deps.tools)
+        )
+    except Exception:
+        # A bug, not an outage: logged so it's seen, and start-up goes on.
+        logger.exception("bot model warm-up crashed")
+
+    return seconds
+
+
+def start_warm_up(deps: TurnDeps) -> threading.Thread:
+    """`warm_up` on a daemon thread, so start-up doesn't wait for it and shutdown doesn't
+    either."""
+    thread = threading.Thread(target=warm_up, args=(deps,), name="bot-model-warm-up", daemon=True)
+    thread.start()
+    return thread
 
 
 def _model(settings: Settings) -> ModelClient:

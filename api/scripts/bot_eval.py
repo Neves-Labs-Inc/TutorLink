@@ -30,6 +30,10 @@ fixed messages and handoff notes, what got saved, per-turn latency, tokens and e
 and every tool call the agent made with its input and result) and `summary.md`, which is also
 printed. The tool calls show values, unlike the app log: the family is made up.
 
+**Warm-up.** Each model is warmed up once, before its first persona, the way the worker warms
+production up at start-up (`bot_agent.warm_up`), so turn 1 doesn't pay for compiling the tool
+schemas. `summary.md` gives each warm-up's latency.
+
 To rerun only some conversations, filter: `--personas booking --langs en --models haiku`.
 """
 
@@ -438,6 +442,10 @@ class MeteredModel:
         self._tool_calls += [(call.name, call.input) for call in response.tool_calls]
         return response
 
+    def warm_up(self, *, system: str, tools: list[dict[str, Any]]) -> float | None:
+        # Not a call of any run: kept out of the per-turn records.
+        return self._inner.warm_up(system=system, tools=tools)
+
     def drain(self) -> list[CallRecord]:
         """The calls since the last drain."""
         calls, self._calls = self._calls, []
@@ -819,6 +827,13 @@ class RunContext:
     max_turns: int
 
 
+def warm_up_model(spec: RunSpec, context: RunContext) -> float | None:
+    """Warm `spec`'s model up with the production tools and prompt: the seconds it took, or None
+    when it failed."""
+    model = context.clients.agent_model(spec.model_id, context.effort)
+    return bot_agent.warm_up(dataclasses.replace(bot_agent.default_deps(), model=model))
+
+
 def run_one(spec: RunSpec, *, run_index: int, context: RunContext) -> RunResult:
     """One simulated conversation, start to finish."""
     family = FAMILIES[spec.language]
@@ -1117,7 +1132,9 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
-def render_summary(results: list[RunResult], failures: list[str]) -> str:
+def render_summary(
+    results: list[RunResult], failures: list[str], warm_ups: dict[str, float | None]
+) -> str:
     rows = [
         f"| {r.spec.persona.key} | {r.spec.language} | {r.spec.model_alias} |"
         f" {r.guardian_messages} | {sum(t.outcome != 'replied' for t in r.turns)} |"
@@ -1147,6 +1164,15 @@ def render_summary(results: list[RunResult], failures: list[str]) -> str:
         "",
         *totals,
         f"- Guardian simulator: ${sum(r.simulator_cost for r in results):.4f}",
+        "",
+        "## Warm-up by model",
+        "",
+        "One request before the model's first persona, so turn 1 finds the schemas compiled.",
+        "",
+        *(
+            f"- {alias}: {'failed' if seconds is None else f'{seconds:.1f} s'}"
+            for alias, seconds in warm_ups.items()
+        ),
         "",
         *(
             ["## Failed runs", "", *(f"- {failure}" for failure in failures), ""]
@@ -1260,11 +1286,13 @@ def main(argv: list[str] | None = None, *, clients: Clients | None = None) -> in
                     effort=args.effort or settings.bot_effort,
                     max_turns=args.max_turns,
                 )
-                results, failures = _run_all(specs, context, out=args.out, database=url.database)
+                results, failures, warm_ups = _run_all(
+                    specs, context, out=args.out, database=url.database
+                )
         finally:
             engine.dispose()
 
-    summary = render_summary(results, failures)
+    summary = render_summary(results, failures, warm_ups)
     (args.out / "summary.md").write_text(summary)
     print(summary)
     return EXIT_FAILED if failures else 0
@@ -1272,10 +1300,14 @@ def main(argv: list[str] | None = None, *, clients: Clients | None = None) -> in
 
 def _run_all(
     specs: list[RunSpec], context: RunContext, *, out: pathlib.Path, database: str | None
-) -> tuple[list[RunResult], list[str]]:
+) -> tuple[list[RunResult], list[str], dict[str, float | None]]:
     results: list[RunResult] = []
     failures: list[str] = []
+    warm_ups: dict[str, float | None] = {}
     for run_index, spec in enumerate(specs, start=1):
+        if spec.model_alias not in warm_ups:
+            print(f"warming up {spec.model_alias}", file=sys.stderr)
+            warm_ups[spec.model_alias] = warm_up_model(spec, context)
         print(f"[{run_index}/{len(specs)}] {spec.file_name}", file=sys.stderr)
         try:
             result = run_one(spec, run_index=run_index, context=context)
@@ -1286,7 +1318,7 @@ def _run_all(
             continue
         (out / spec.file_name).write_text(render_run(result, database=database or ""))
         results.append(result)
-    return results, failures
+    return results, failures, warm_ups
 
 
 if __name__ == "__main__":

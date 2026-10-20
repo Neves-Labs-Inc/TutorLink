@@ -262,10 +262,7 @@ def _run_agent(
         tools_by_name={spec.name: spec for spec in deps.tools},
         messages=[{"role": "user", "content": _turn_input(context)}],
     )
-    definitions = [
-        {"name": spec.name, "description": spec.description, "input_schema": spec.input_schema}
-        for spec in deps.tools
-    ] + [REPLY_TOOL]
+    definitions = tool_definitions(deps.tools)
 
     for _ in range(MAX_MODEL_CALLS):
         response = _call_model(loop, definitions)
@@ -274,6 +271,15 @@ def _run_agent(
             return agent_reply
 
     raise _Outage(f"no reply after {MAX_MODEL_CALLS} model calls")
+
+
+def tool_definitions(tools: tuple[ToolSpec, ...]) -> list[dict[str, Any]]:
+    """The tool definitions a turn sends the model: `tools`, then `reply`. The warm-up sends the
+    same list, so its compiled schemas are the ones a turn uses."""
+    return [
+        {"name": spec.name, "description": spec.description, "input_schema": spec.input_schema}
+        for spec in tools
+    ] + [REPLY_TOOL]
 
 
 def _turn_input(context: TurnContext) -> str:

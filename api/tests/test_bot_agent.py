@@ -4,8 +4,11 @@ Through `take_turn`, the seam the worker calls: the real tools, prompt and conte
 model scripted or left unconfigured. No test here calls Anthropic.
 """
 
+import logging
+import threading
 from collections.abc import Generator
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session
@@ -68,6 +71,68 @@ def test_a_turn_offers_the_model_every_agent_tool_and_the_cached_prompt(
     assert {tool["name"] for tool in request["tools"]} == AGENT_TOOLS
     assert request["system"] == bot_prompt.system_prompt()
     assert "Guardian: hello" in request["messages"][0]["content"]
+
+
+def test_the_warm_up_sends_the_tools_and_prompt_a_turn_sends_once(
+    db: Session, fake_twilio: FakeTwilio
+) -> None:
+    conversation = _chat_with_a_message(db)
+    model = FakeModel(script=[reply("Hello! What's your name?")], warm_up_answer=8.5)
+    deps = replace(bot_agent.default_deps(), model=model)
+
+    seconds = bot_agent.warm_up(deps)
+    bot_agent.turn_runner(deps)(db, conversation.id)
+
+    [warm_up] = model.warm_ups
+    [request] = model.requests
+    assert seconds == 8.5
+    assert warm_up["tools"] == request["tools"]
+    assert {tool["name"] for tool in warm_up["tools"]} == AGENT_TOOLS
+    assert warm_up["system"] == request["system"] == bot_prompt.system_prompt()
+
+
+def test_a_crashing_warm_up_is_logged_and_never_raises(caplog: pytest.LogCaptureFixture) -> None:
+    model = FakeModel(script=[], warm_up_answer=RuntimeError("boom"))
+
+    with caplog.at_level(logging.ERROR, logger="app.services.bot_agent"):
+        seconds = bot_agent.warm_up(replace(bot_agent.default_deps(), model=model))
+
+    assert seconds is None
+    assert "bot model warm-up crashed" in caplog.text
+
+
+def test_with_no_api_key_the_warm_up_is_skipped(
+    no_api_key: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO, logger="app.services.bot_agent"):
+        seconds = bot_agent.warm_up(bot_agent.default_deps())
+
+    assert seconds is None
+    assert "warm-up skipped" in caplog.text
+
+
+class BlockingModel(FakeModel):
+    """A warm-up that waits until released, like one stuck on a slow schema compile."""
+
+    def __init__(self) -> None:
+        super().__init__(script=[])
+        self.release = threading.Event()
+
+    def warm_up(self, *, system: str, tools: list[dict[str, Any]]) -> float | None:
+        self.release.wait(5)
+        return None
+
+
+def test_the_background_warm_up_returns_before_the_request_finishes() -> None:
+    model = BlockingModel()
+
+    thread = bot_agent.start_warm_up(replace(bot_agent.default_deps(), model=model))
+
+    assert thread.is_alive()
+    assert thread.daemon
+    model.release.set()
+    thread.join(5)
+    assert not thread.is_alive()
 
 
 def test_with_no_api_key_a_turn_is_an_outage_the_office_can_see(

@@ -14,8 +14,9 @@ the API. `AnthropicModelClient` is the one real adapter (docs/specs/whatsapp-bot
   the budget. Whatever is left after the retry is a `ModelUnavailable`, which the turn treats
   as an outage.
 - **Refusals:** server-side fallback (`fallbacks: "default"`) re-runs a declined request on a
-  fallback model inside the same call. A request still declined, or cut off at `max_tokens`, is
-  a `ModelUnavailable` too: there is no usable reply to send.
+  fallback model inside the same call. Haiku models have no server-side fallback, so their
+  requests leave it out. A request still declined, or cut off at `max_tokens`, is a
+  `ModelUnavailable` too: there is no usable reply to send.
 """
 
 import time
@@ -43,6 +44,10 @@ SERVER_ERROR = 500
 # A WhatsApp reply plus low-effort thinking stays far below this; the cap only stops a runaway.
 MAX_TOKENS = 8192
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+SERVER_SIDE_FALLBACK = {"betas": [FALLBACK_BETA], "fallbacks": "default"}
+# Haiku 5.5 has no server-side fallback: a declined request stays declined (claude-api skill,
+# Migrating to Claude Haiku 5.5, Safeguards).
+NO_FALLBACK_MODEL_PREFIX = "claude-haiku-"
 CACHE_BREAKPOINT = {"type": "ephemeral"}
 TOOL_CHOICE_AUTO = {"type": "auto"}
 # The stop reasons that leave a reply or a tool call to act on.
@@ -136,8 +141,7 @@ class AnthropicModelClient:
             "tool_choice": TOOL_CHOICE_AUTO,
             "messages": messages,
             "output_config": {"effort": self._effort},
-            "betas": [FALLBACK_BETA],
-            "fallbacks": "default",
+            **({} if self._model.startswith(NO_FALLBACK_MODEL_PREFIX) else SERVER_SIDE_FALLBACK),
         }
         deadline = self._monotonic() + timeout_s
         message: BetaMessage | None = None

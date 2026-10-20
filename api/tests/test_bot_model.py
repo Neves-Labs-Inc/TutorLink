@@ -92,10 +92,10 @@ class FakeSdk:
         return answer
 
 
-def _create(sdk: FakeSdk, timeout_s: float = 30.0) -> Any:
+def _create(sdk: FakeSdk, timeout_s: float = 30.0, model: str = "claude-sonnet-5-5") -> Any:
     client = AnthropicModelClient(
         client=sdk,  # type: ignore[arg-type]
-        model="claude-sonnet-5-5",
+        model=model,
         effort="low",
         monotonic=sdk.monotonic,
     )
@@ -142,6 +142,18 @@ def test_tools_are_strict_with_auto_choice_and_the_configured_model_and_effort()
     assert sdk.timeouts == [12.0]
     assert request["betas"] == ["server-side-fallback-2026-07-01"]
     assert request["fallbacks"] == "default"
+
+
+def test_a_haiku_request_asks_for_no_server_side_fallback() -> None:
+    """Haiku 5.5 has none: a declined request stays declined, and a fallback list is a 400."""
+    sdk = FakeSdk(_reply_message())
+
+    _create(sdk, model="claude-haiku-5-5")
+
+    [request] = sdk.requests
+    assert request["model"] == "claude-haiku-5-5"
+    assert "fallbacks" not in request
+    assert "betas" not in request
 
 
 def test_the_response_carries_text_tool_calls_usage_and_the_turn_to_send_back() -> None:

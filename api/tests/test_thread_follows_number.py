@@ -2,14 +2,14 @@
 
 When Staff change a Guardian's number from N to M, the Guardian's thread at N is re-keyed to M
 with all its state, a Staff-only `number_change_note` line records the move, and the bot's
-flow at both numbers is reset. N is left with no thread, so whoever writes from N next is
+pending proposal on both threads is dropped. N is left with no thread, so whoever writes from N next is
 recognised by the number alone. The 24-hour window counts only what the Guardian wrote after
 the latest number change.
 
 Seams: the clients PATCH/POST routes, the signed inbound webhook with `fake_twilio`, the
 conversation detail, messages and takeover routes, and the reminders route plus
-`reminder_service.due_guardians`. **No test here calls Anthropic**: START needs no parse and
-the parser raises if reached.
+`reminder_service.due_guardians`. **No test here calls Anthropic**: the webhook only records a
+message and stamps the chat's turn; no turn is run.
 """
 
 import datetime
@@ -36,9 +36,7 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.message import Message
 from app.models.system_setting import SystemSetting
 from app.models.user import User
-from app.schemas.bot import BotIntent, ParsedIntent
-from app.services import bot_service, conversation_service, parser_service
-from app.services.bot_state import FlowState, load_state, save_state
+from app.services import conversation_service
 from app.services.bot_context import build_turn_context
 from app.services.reminder_service import run_week
 from tests.fake_twilio import FakeTwilio
@@ -46,14 +44,7 @@ from tests.test_whatsapp_block_follows_number import EN_SID, NOW, World
 
 NUMBER_CHANGE_NOTE = SystemMessageKind.NUMBER_CHANGE_NOTE.value
 STAFF_NAME = "Test Staff"
-
-
-@pytest.fixture(autouse=True)
-def no_parser(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(**kwargs: object) -> object:
-        raise AssertionError("a test here reached the parser")
-
-    monkeypatch.setattr(parser_service, "parse_intent", refuse)
+PROPOSED_AT = datetime.datetime(2026, 10, 12, 9, 0, tzinfo=datetime.UTC)
 
 
 @pytest.fixture
@@ -68,16 +59,16 @@ def world(db: Session, api: TestClient, fake_twilio: FakeTwilio) -> World:
     return World(db=db, api=api, fake=fake_twilio)
 
 
-def _parse_as_greeting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A message from an unknown number is parsed for its language only; read it as English
-    with nothing to act on, so the bot greets and opens Intake."""
+def _propose(world: World, thread: Conversation) -> None:
+    """A booking offer the bot has made on `thread` and is waiting for a yes to."""
+    thread.proposal_actions = [{"kind": "book", "child_id": str(uuid.uuid4())}]
+    thread.proposed_at = PROPOSED_AT
+    world.db.flush()
 
-    def read_hello(**kwargs: object) -> ParsedIntent:
-        return ParsedIntent(
-            intent=BotIntent.UNKNOWN, answer=None, fields={}, confidence_is_low=False
-        )
 
-    monkeypatch.setattr(parser_service, "parse_intent", read_hello)
+def _has_proposal(world: World, thread: Conversation) -> bool:
+    world.db.refresh(thread)
+    return thread.proposal_actions is not None or thread.proposed_at is not None
 
 
 def _thread_at(world: World, phone_number: str) -> Conversation | None:
@@ -183,21 +174,33 @@ def test_the_moved_thread_gets_one_staff_only_number_change_line_that_is_never_s
     assert len(world.fake.sent) == sent_before
 
 
-def test_the_bot_flow_at_both_numbers_is_reset(world: World) -> None:
+def test_the_bots_pending_proposal_on_the_guardians_thread_is_dropped(world: World) -> None:
     guardian = world.guardian()
-    old_number = guardian.phone_number
+    world.say("START", from_number=guardian.phone_number)
+    thread = _thread_at(world, guardian.phone_number)
+    assert thread is not None
+    _propose(world, thread)
+
+    world.move(guardian, world.fresh_number())
+
+    assert not _has_proposal(world, thread)
+
+
+def test_the_bots_pending_proposal_on_the_thread_at_the_new_number_is_dropped(
+    world: World,
+) -> None:
+    guardian = world.guardian()
     new_number = world.fresh_number()
-    for number in (old_number, new_number):
-        save_state(
-            world.db,
-            phone_number=number,
-            state=FlowState(step=bot_service.STEP_BOOK_CHILD, prompt="Which child?"),
-        )
+    world.say("Hello", from_number=new_number)
+    thread = _thread_at(world, new_number)
+    assert thread is not None
+    _propose(world, thread)
 
     world.move(guardian, new_number)
 
-    assert load_state(world.db, phone_number=old_number) is None
-    assert load_state(world.db, phone_number=new_number) is None
+    followed = _thread_at(world, new_number)
+    assert followed is not None and followed.id == thread.id
+    assert not _has_proposal(world, followed)
 
 
 def test_the_same_number_in_another_format_moves_nothing_and_writes_no_line(
@@ -231,14 +234,11 @@ def test_a_guardian_with_no_thread_changes_number_without_a_thread_or_a_line(
 # --- a thread already at the new number ------------------------------------------------------
 
 
-def test_a_thread_at_the_new_number_is_merged_into_the_guardians_thread(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_thread_at_the_new_number_is_merged_into_the_guardians_thread(world: World) -> None:
     guardian = world.guardian()
     old_number = guardian.phone_number
     new_number = world.fresh_number()
     world.say("START", from_number=old_number)
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=new_number)
     world.say("START", from_number=old_number)
     old_thread = _thread_at(world, old_number)
@@ -248,12 +248,8 @@ def test_a_thread_at_the_new_number_is_merged_into_the_guardians_thread(
         m["id"] for m in _messages(world, new_thread)
     }
     gone_id = new_thread.id
-    for number in (old_number, new_number):
-        save_state(
-            world.db,
-            phone_number=number,
-            state=FlowState(step=bot_service.STEP_BOOK_CHILD, prompt="Which child?"),
-        )
+    for thread in (old_thread, new_thread):
+        _propose(world, thread)
 
     world.move(guardian, new_number)
 
@@ -269,18 +265,14 @@ def test_a_thread_at_the_new_number_is_merged_into_the_guardians_thread(
     assert messages[0]["id"] == note["id"]
     gone = world.api.get(f"/api/conversations/{gone_id}", headers=world.auth())
     assert gone.status_code == 404
-    assert load_state(world.db, phone_number=old_number) is None
-    assert load_state(world.db, phone_number=new_number) is None
+    assert not _has_proposal(world, merged)
 
 
-def test_the_merged_thread_keeps_only_the_guardians_thread_state(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_merged_thread_keeps_only_the_guardians_thread_state(world: World) -> None:
     guardian = world.guardian()
     old_number = guardian.phone_number
     new_number = world.fresh_number()
     world.say("START", from_number=old_number)
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=new_number)
     old_thread = _thread_at(world, old_number)
     new_thread = _thread_at(world, new_number)
@@ -360,14 +352,13 @@ def test_a_message_waiting_for_its_turn_at_the_new_number_is_still_answered_afte
 
 
 def test_a_thread_at_the_new_number_already_linked_to_the_guardian_is_merged_too(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
     """Data from before threads followed their Guardian: a thread at M linked to them."""
     guardian = world.guardian()
     old_number = guardian.phone_number
     new_number = world.fresh_number()
     world.say("START", from_number=old_number)
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=new_number)
     old_thread = _thread_at(world, old_number)
     new_thread = _thread_at(world, new_number)
@@ -392,12 +383,11 @@ def test_a_thread_at_the_new_number_already_linked_to_the_guardian_is_merged_too
 
 
 def test_with_no_thread_at_the_old_number_the_thread_at_the_new_number_becomes_theirs(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
     guardian = world.guardian()
     old_number = guardian.phone_number
     new_number = world.fresh_number()
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=new_number)
     new_thread = _thread_at(world, new_number)
     assert new_thread is not None
@@ -450,13 +440,12 @@ def test_a_number_whose_thread_belongs_to_another_guardian_is_refused_and_change
 
 
 def test_a_guardian_merged_at_the_new_number_has_their_start_there_recorded_for_them(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
     guardian = world.guardian()
     old_number = guardian.phone_number
     new_number = world.fresh_number()
     world.say("START", from_number=old_number)
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=new_number)
     old_thread = _thread_at(world, old_number)
     assert old_thread is not None
@@ -478,10 +467,9 @@ def test_a_guardian_merged_at_the_new_number_has_their_start_there_recorded_for_
 
 
 def test_a_guardian_created_at_a_number_with_an_unlinked_thread_gets_that_thread(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
     number = world.fresh_number()
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=number)
     thread = _thread_at(world, number)
     assert thread is not None
@@ -514,14 +502,13 @@ def test_a_guardian_created_at_a_number_whose_thread_is_another_guardians_leaves
 
 
 def test_a_new_guardian_added_on_a_child_at_a_number_with_an_unlinked_thread_gets_it(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
     guardian = world.guardian()
     child_id = world.db.scalars(
         select(ChildGuardian.child_id).where(ChildGuardian.guardian_id == guardian.id)
     ).one()
     number = world.fresh_number()
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=number)
     thread = _thread_at(world, number)
     assert thread is not None
@@ -665,7 +652,6 @@ def test_a_thread_opened_at_the_new_number_during_the_change_is_left_alone_witho
     old_number = guardian.phone_number
     new_number = world.fresh_number()
     world.say("START", from_number=old_number)
-    _parse_as_greeting(monkeypatch)
     world.say("Hello", from_number=new_number)
     old_thread = _thread_at(world, old_number)
     assert old_thread is not None
@@ -781,8 +767,7 @@ def test_a_number_change_by_a_deleted_staff_account_is_refused_and_changes_nothi
     world.say("START", from_number=old_number)
     thread = _thread_at(world, old_number)
     assert thread is not None
-    flow = FlowState(step=bot_service.STEP_BOOK_CHILD, prompt="Which child?")
-    save_state(world.db, phone_number=old_number, state=flow)
+    _propose(world, thread)
     gone = CurrentUser(
         id=uuid.uuid4(), email="gone@example.com", role=UserRole.ADMIN, tutor_id=None
     )
@@ -799,6 +784,4 @@ def test_a_number_change_by_a_deleted_staff_account_is_refused_and_changes_nothi
     assert guardian.phone_number == old_number
     assert _thread_at(world, old_number) == thread
     assert _notes(world, thread) == []
-    state = load_state(world.db, phone_number=old_number)
-    assert state is not None
-    assert state.step == bot_service.STEP_BOOK_CHILD
+    assert _has_proposal(world, thread)

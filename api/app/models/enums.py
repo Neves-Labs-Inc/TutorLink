@@ -102,9 +102,9 @@ class MessageStatus(str, enum.Enum):
 class FlagReason(str, enum.Enum):
     """Why an admin needs to look at a conversation.
 
-    `DIDNT_UNDERSTAND` means the bot couldn't make sense of the Guardian: it ran out of
-    re-prompts, or judged the chat was going in circles. `STUCK` means the bot itself failed (a
-    model or parser outage, an unexpected error, a reply that could not be sent), so the
+    `DIDNT_UNDERSTAND` means the bot couldn't make sense of the Guardian: it made no progress
+    for several turns, or judged the chat was going in circles. `STUCK` means the bot itself
+    failed (a model outage, an unexpected error, a reply that could not be sent), so the
     Guardian is not to blame. The two swapped meanings in 0053, which also retired `parse_error`.
 
     `GUARDIAN_LINK_REQUEST` is **not** a failure: the bot worked, understood a second guardian

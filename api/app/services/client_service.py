@@ -7,7 +7,7 @@ router decides it is a 400.
 **A `phone_number` change takes the Guardian's thread with it** (#126, reversing D-L / #55,
 `docs/erd.md` §conversations). The thread at the old number that is this Guardian's is re-keyed
 to the new one, a Staff-only `number_change_note` line naming the Staff member records the move,
-and the bot's flow at both numbers is reset. Left behind, the thread would hand this Guardian to
+and the bot's pending proposal on both threads is dropped. Left behind, the thread would hand this Guardian to
 the old number's next holder. A thread already at the new number is merged into the
 Guardian's, or becomes theirs when they have none; one linked to another Guardian refuses the
 change (`WhatsAppChatTaken`). Echoing the same number moves nothing. Both threads are locked
@@ -40,7 +40,6 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.user import User
 from app.services import conversation_service, message_service
-from app.services.bot_state import clear_state
 from app.services.conversation_service import LATEST_CONVERSATION_FIRST
 from app.services.home_service import HomeDetails, home_details
 from app.services.guardian_state import (
@@ -450,7 +449,8 @@ def _follow_number_change(
     phone_number: str,
     staff: User,
 ) -> None:
-    """Move the Guardian's thread to their new number, note it there, and reset the bot."""
+    """Move the Guardian's thread to their new number (dropping the bot's pending proposal on
+    both threads) and note it there."""
     thread = conversation_service.follow_number_change(db, change=change)
 
     if thread is not None:
@@ -462,10 +462,6 @@ def _follow_number_change(
             ),
             author_user_id=staff.id,
         )
-
-    # A half-finished flow at either number belongs to whoever was there before.
-    for number in (previous_number, phone_number):
-        clear_state(db, phone_number=number)
 
 
 def _guardian(db: Session, *, client_id: uuid.UUID) -> Guardian:

@@ -55,7 +55,7 @@ PROPOSAL_TTL = datetime.timedelta(minutes=30)
 # Bounds one `list_slots` call: two weeks of the default five slots a day is already a lot of
 # prompt.
 MAX_LIST_DAYS = 14
-# Staff-facing, so it is not a catalogue message (the state machine's `BOOKING_NOTE`).
+# Staff-facing, so it is not a catalogue message.
 BOOKING_NOTE = "Booked by the WhatsApp assistant."
 
 NOTHING_PENDING = "nothing_pending"

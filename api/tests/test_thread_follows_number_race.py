@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import get_db
 from app.main import app
-from app.models.bot_flow_state import BotFlowState
 from app.models.conversation import Conversation
 from app.models.enums import MessageAuthor, MessageStatus, SystemMessageKind, UserRole
 from app.models.guardian import Guardian
@@ -106,7 +105,6 @@ def committed(committed_sessions: sessionmaker[Session]) -> Generator[Committed,
         with committed_sessions() as session:
             session.execute(delete(Message).where(Message.conversation_id.in_(thread_ids)))
             session.execute(delete(Conversation).where(Conversation.id.in_(thread_ids)))
-            session.execute(delete(BotFlowState).where(BotFlowState.phone_number.in_(numbers)))
             session.execute(delete(Guardian).where(Guardian.phone_number.in_(numbers)))
             session.execute(delete(User).where(User.id == staff.id))
             session.commit()

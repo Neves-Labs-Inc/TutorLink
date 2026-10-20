@@ -46,7 +46,6 @@ from sqlalchemy.orm import Session
 from app.services.retention_service import (
     PurgeResult,
     purge_expired_messages,
-    reap_expired_flow_states,
     reap_expired_login_attempts,
 )
 from app.services.settings_service import get_int_setting
@@ -55,10 +54,9 @@ RETENTION_PURGE_HOUR_SETTING = "retention_purge_hour_utc"
 RETENTION_LOCK_NAMESPACE = 8102
 RETENTION_LOCK_KEY = 1
 
-RAN_MESSAGE = "retention purge: ran messages=%d conversations=%d flow_states=%d login_attempts=%d"
+RAN_MESSAGE = "retention purge: ran messages=%d conversations=%d login_attempts=%d"
 RAN_CHAT_DISABLED_MESSAGE = (
-    "retention purge: ran, chat purge disabled (chat_retention_days=0)"
-    " flow_states=%d login_attempts=%d"
+    "retention purge: ran, chat purge disabled (chat_retention_days=0) login_attempts=%d"
 )
 SKIPPED_MESSAGE = "retention purge: skipped, another instance holds the lock"
 FAILED_MESSAGE = "retention purge: failed"
@@ -74,15 +72,14 @@ class PurgeRun:
 
     ran: bool
     purge: PurgeResult | None
-    flow_states_deleted: int
     login_attempts_deleted: int
 
 
 def run_guarded_purge(session_factory: Callable[[], Session]) -> PurgeRun:
-    """The purge and both reaps in one transaction, under the retention advisory lock.
+    """The purge and the login-attempt reap in one transaction, under the retention advisory lock.
 
     One transaction is the whole contract: the lock is released by the commit, so a commit
-    between the three steps would let a second instance start deleting while this one is still
+    between the two steps would let a second instance start deleting while this one is still
     running. Logs exactly one of the four outcome lines, and re-raises a failure after logging it
     so the CLI can exit non-zero and `run_forever` can wait for the next hour.
     """
@@ -139,18 +136,16 @@ def _purge_under_lock(session: Session) -> PurgeRun:
 
     if acquired:
         purge = purge_expired_messages(session)
-        flow_states_deleted = reap_expired_flow_states(session)
         login_attempts_deleted = reap_expired_login_attempts(session)
         session.commit()
         run = PurgeRun(
             ran=True,
             purge=purge,
-            flow_states_deleted=flow_states_deleted,
             login_attempts_deleted=login_attempts_deleted,
         )
     else:
         session.rollback()
-        run = PurgeRun(ran=False, purge=None, flow_states_deleted=0, login_attempts_deleted=0)
+        run = PurgeRun(ran=False, purge=None, login_attempts_deleted=0)
 
     return run
 
@@ -163,11 +158,10 @@ def _log_run(run: PurgeRun) -> None:
             RAN_MESSAGE,
             run.purge.messages_deleted,
             run.purge.conversations_deleted,
-            run.flow_states_deleted,
             run.login_attempts_deleted,
         )
     else:
-        logger.info(RAN_CHAT_DISABLED_MESSAGE, run.flow_states_deleted, run.login_attempts_deleted)
+        logger.info(RAN_CHAT_DISABLED_MESSAGE, run.login_attempts_deleted)
 
 
 def _read_purge_hour(session_factory: Callable[[], Session]) -> int:

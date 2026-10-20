@@ -26,112 +26,14 @@ from app.services import bot_messages
 from app.services.bot_messages import MESSAGES, render
 
 EXPECTED_IDS = {
-    "GREETING_NEW",
-    "ASK_CHILD_GRADE",
-    "NUDGE_child_grade",
-    "GRADE_OUT_OF_RANGE",
-    "CHILD_ADDED",
-    "EVALUATION_NOTICE",
-    "ASK_REMINDERS",
-    "REMINDERS_ON",
-    "REMINDERS_DECLINED",
-    "NUDGE_reminders",
-    "REMINDERS_LEFT_OFF",
-    "CLIENT_READY",
     "TEMPLATE_booking_reminder",
     "BUTTON_book_a_session",
     "BUTTON_stop_reminders",
-    "REMINDER_ALL_BOOKED",
-    "REMINDER_BOOK_ONE",
-    "ASK_WHICH_CHILD",
     "OPTED_OUT",
     "OPTED_IN",
     "TAKEOVER_NOTICE",
     "HANDBACK_NOTICE",
-    "FIRST_SESSION_HANDOFF",
-    "SUBJECT_NEEDS_OFFICE",
-    "GREETING_RETURNING",
-    "ASK_GUARDIAN_NAME",
-    "ASK_ADDRESS",
-    "ASK_DIRECTIONS",
-    "ASK_HOME_LABEL",
-    "ASK_CHILD_REGISTERED",
-    "ASK_CHILD_NAME",
-    "ASK_CHILD_DOB",
-    "ASK_CHILD_SCHOOL",
-    "ASK_CHILD_NOTES",
-    "ASK_MORE_CHILDREN",
-    "ASK_MENU",
-    "SMALL_TALK_REPLY",
-    "QUESTION_PASSED_ON",
-    "NO_CHILDREN_YET",
-    "NO_ACTIVE_CHILDREN",
-    "ASK_SUBJECT",
-    "ASK_TUTOR",
-    "ANY_TUTOR_LABEL",
-    "ASK_DATE",
-    "ASK_WHERE",
-    "OFFICE_OPTION",
-    "AT_OFFICE",
-    "AT_HOME_LABELLED",
-    "AT_HOME",
-    "SESSION_CHANGED_MEANWHILE",
-    "ASK_SLOT",
-    "SHOWING_SOME",
-    "CONFIRM_SLOT",
-    "CONFIRM_RESCHEDULE",
-    "BOOKING_CONFIRMED",
-    "BOOKING_MOVED",
-    "NO_SLOTS",
-    "DATE_NOT_BOOKABLE",
-    "SLOT_JUST_TAKEN",
-    "ASK_WHICH_TO_CANCEL",
-    "CONFIRM_CANCEL",
-    "CANCEL_KEPT",
-    "CANCELLED",
-    "ASK_WHICH_TO_MOVE",
-    "ASK_NEW_DATE",
-    "NO_UPCOMING",
-    "NUDGE_intake_name",
-    "NUDGE_intake_address",
-    "NUDGE_intake_directions",
-    "NUDGE_intake_label",
-    "NUDGE_child_registered",
-    "NUDGE_child_name",
-    "NUDGE_child_date_of_birth",
-    "NUDGE_child_school",
-    "NUDGE_child_notes",
-    "NUDGE_child_more",
-    "NUDGE_menu",
-    "NUDGE_book_child",
-    "NUDGE_book_subject",
-    "NUDGE_first_session_subject",
-    "NUDGE_book_tutor",
-    "NUDGE_book_date",
-    "NUDGE_book_home",
-    "NUDGE_book_slot",
-    "NUDGE_book_confirm",
-    "NUDGE_first_session_date",
-    "NUDGE_cancel_pick",
-    "NUDGE_cancel_confirm",
-    "NUDGE_reschedule_pick",
-    "NUDGE_reactivation_confirm",
-    "IMPLAUSIBLE_BIRTH_DATE",
-    "UNREADABLE_DATE",
-    "OPTION_OUT_OF_RANGE",
-    "AMBIGUOUS_NAME",
-    "AMBIGUOUS_CHILD",
-    "CUTOFF_DECLINED",
-    "GUARDIAN_LINK_REPLY",
-    "BAILED_OUT",
-    "PARSER_UNAVAILABLE",
-    "CANNOT_CONTINUE",
-    "REACTIVATION_OFFER",
-    "REACTIVATION_REQUESTED",
-    "REACTIVATION_NOT_NEEDED",
-    "REACTIVATION_PENDING",
     "TAKEOVER_NOTICE_GENERIC",
-    "RESCHEDULE_NEEDS_OFFICE",
     "OUTAGE_APOLOGY",
     "COMMIT_BOOKED_ONE",
     "COMMIT_BOOKED_BOTH",
@@ -139,6 +41,9 @@ EXPECTED_IDS = {
     "COMMIT_CANCELLED",
     "COMMIT_RESCHEDULED",
     "COMMIT_MIXED",
+    "AT_OFFICE",
+    "AT_HOME_LABELLED",
+    "AT_HOME",
 }
 GENERIC_IDS = {"TAKEOVER_NOTICE_GENERIC"}
 
@@ -172,63 +77,25 @@ def test_template_bodies_use_named_placeholders() -> None:
     assert _placeholders(MESSAGES["TEMPLATE_booking_reminder"]["en"]) == {"names", "week"}
 
 
-def test_shared_nudge_row_becomes_two_ids_with_the_same_text() -> None:
-    assert MESSAGES["NUDGE_book_subject"] == MESSAGES["NUDGE_first_session_subject"]
-
-
 def test_render_returns_the_spanish_or_english_line() -> None:
-    assert (
-        render("ASK_MENU", "es")
-        == "Puedo reservar una sesión, cancelarla o cambiarla a otro horario. ¿Qué desea hacer?"
+    assert render("OPTED_IN", "es") == (
+        "Listo, recibirá un recordatorio semanal para reservar. Responda STOP en cualquier"
+        " momento para dejar de recibirlos."
     )
-    assert render("ASK_MENU", None) == (
-        "I can book a session, cancel one, or move one to another time. What would you like to do?"
+    assert render("OPTED_IN", None) == (
+        "Done, you'll get a booking reminder each week. Reply STOP at any time to end them."
     )
-
-
-@pytest.mark.parametrize(
-    ("message_id", "language", "expected"),
-    [
-        (
-            "ASK_DIRECTIONS",
-            "en",
-            "Is there anything the tutor should know to get in, such as a gate or door code,"
-            ' parking, or which entrance to use? You can reply "none".',
-        ),
-        (
-            "ASK_DIRECTIONS",
-            "es",
-            "¿Hay algo que el tutor deba saber para entrar, como un código de portón o puerta,"
-            ' dónde estacionar o qué entrada usar? Puede responder "ninguno".',
-        ),
-        (
-            "NUDGE_intake_directions",
-            "en",
-            'Please send any directions the tutor needs to get in, or reply "none".',
-        ),
-        (
-            "NUDGE_intake_directions",
-            "es",
-            "Por favor, envíe las indicaciones que el tutor necesite para entrar, o responda"
-            ' "ninguno".',
-        ),
-    ],
-)
-def test_the_directions_step_asks_for_a_way_in(
-    message_id: str, language: str, expected: str
-) -> None:
-    assert render(message_id, language) == expected
 
 
 def test_render_fills_placeholders() -> None:
-    assert render("CHILD_ADDED", "es", name="Ana") == "Ya tenemos los datos de Ana."
+    assert render("AT_HOME_LABELLED", "es", label="Casa de papá") == "en Casa de papá"
 
 
 def test_render_rejects_unknown_id_and_language() -> None:
     with pytest.raises(KeyError):
         render("NOT_A_MESSAGE", "en")
     with pytest.raises(ValueError):
-        render("ASK_MENU", "fr")
+        render("OPTED_IN", "fr")
 
 
 @pytest.mark.parametrize(
@@ -334,44 +201,21 @@ def test_other_text_is_not_a_stop_keyword(text: str) -> None:
 
 
 def test_cancel_words_are_not_stop_words() -> None:
-    stop_words = bot_messages.STOP_KEYWORDS | bot_messages.STOP_PHRASES
-    assert not {"cancel", "cancelar"} & stop_words
+    assert not {"cancel", "cancelar"} & bot_messages.STOP_KEYWORDS
 
 
 def test_normalize_lowercases_and_strips_accents() -> None:
     assert bot_messages.normalize("SÍ, Perfecto Ñu") == "si, perfecto nu"
 
 
-def test_spanish_word_lists_ignore_accents_and_case() -> None:
-    assert bot_messages.matches_word("SI", bot_messages.SPANISH_YES_WORDS)
-    assert bot_messages.matches_word("todavia no", bot_messages.SPANISH_NO_WORDS)
-    assert bot_messages.matches_word("Ninguna", bot_messages.SPANISH_SKIP_WORDS)
-    assert not bot_messages.matches_word("maybe", bot_messages.SPANISH_YES_WORDS)
-
-
-def test_slot_label_names_the_tutor_in_both_languages() -> None:
-    assert bot_messages.format_slot_label("4:00-5:00 PM", "Mr. Lee", "at the office", "en") == (
-        "4:00-5:00 PM with Mr. Lee at the office"
-    )
-    assert bot_messages.format_slot_label("4:00-5:00 p. m.", "Sr. Lee", "en casa", "es") == (
-        "4:00-5:00 p. m. con Sr. Lee en casa"
-    )
-
-
 @pytest.mark.parametrize(
     ("text", "words"),
     [
-        ("Sí.", bot_messages.SPANISH_YES_WORDS),
-        ("¡Sí!", bot_messages.SPANISH_YES_WORDS),
-        ("  claro   que   sí ! ", bot_messages.SPANISH_YES_WORDS),
-        ("No, gracias.", bot_messages.SPANISH_NO_WORDS),
-        ("¿Omitir?", bot_messages.SPANISH_SKIP_WORDS),
         ("STOP!", bot_messages.STOP_KEYWORDS),
+        ("  stop ! ", bot_messages.STOP_KEYWORDS),
         ("¡BAJA!", bot_messages.STOP_KEYWORDS),
         ("Start.", bot_messages.START_KEYWORDS),
-        ("No más   recordatorios...", bot_messages.STOP_PHRASES),
-        ("Stop reminders!", bot_messages.STOP_PHRASES),
-        ("Send me reminders?", bot_messages.START_PHRASES),
+        ("¿Alta?", bot_messages.START_KEYWORDS),
     ],
 )
 def test_matching_ignores_edge_punctuation_and_repeated_spaces(
@@ -387,11 +231,6 @@ def test_stop_and_start_keywords_ignore_edge_punctuation() -> None:
 
 def test_punctuation_inside_a_message_still_stops_a_match() -> None:
     assert not bot_messages.matches_word("no, stop", bot_messages.STOP_KEYWORDS)
-
-
-def test_phrase_lists_hold_the_doc_phrases() -> None:
-    assert "no más recordatorios" in bot_messages.STOP_PHRASES
-    assert "send me reminders" in bot_messages.START_PHRASES
 
 
 # --- fixed messages: commit confirmations, outage apology, business name ----------------------

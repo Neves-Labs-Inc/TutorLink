@@ -426,7 +426,7 @@ def _add_range(
 
 
 def _set_cutoff(db: Session, hours: int) -> None:
-    """The harness seeds no `cancellation_cutoff_hours` row (see `test_bot_service`)."""
+    """The harness seeds no `cancellation_cutoff_hours` row."""
     row = db.execute(
         select(SystemSetting).where(SystemSetting.key == CUTOFF_SETTING)
     ).scalar_one_or_none()

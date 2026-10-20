@@ -21,12 +21,10 @@ records the message, stamps the chat's turn four seconds ahead and answers empty
 to end case runs the worker's tick with a scripted model: nothing here calls Anthropic.
 """
 
-import ast
 import datetime
 import threading
 import uuid
 from dataclasses import replace
-from pathlib import Path
 from collections.abc import Generator, Iterator
 from typing import Any
 
@@ -69,7 +67,6 @@ from app.services import (
     bot_worker,
     conversation_service,
     message_service,
-    webhook_service,
 )
 from app.services.bot_worker import run_due_turns
 from app.services.broadcast_service import BroadcastEvent, MessageCreated, MessageUpdated
@@ -765,14 +762,6 @@ def test_each_new_message_pushes_the_turn_on(webhook_client: TestClient, db: Ses
     assert conversation.turn_due_at > first_due
 
 
-def test_the_webhook_imports_neither_the_state_machine_nor_its_parser() -> None:
-    imported = _imported_names(Path(webhook_service.__file__))
-
-    assert imported & {"bot_service", "parser_service"} == set()
-    # The check reads the module's real imports, so it would see one.
-    assert "message_service" in imported
-
-
 # --- delivery callbacks for bot replies ----------------------------------------------------------
 
 
@@ -988,15 +977,3 @@ def _sent_bot_reply(db: Session) -> Message:
     reply = message_service.record_bot_reply(db, conversation=conversation, body=BOT_REPLY)
 
     return message_service.attach_twilio_sid(db, message=reply, twilio_sid=OUTBOUND_SID)
-
-
-def _imported_names(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text())
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names |= {alias.name.rsplit(".", 1)[-1] for alias in node.names}
-        elif isinstance(node, ast.ImportFrom):
-            names |= {(node.module or "").rsplit(".", 1)[-1]}
-            names |= {alias.name for alias in node.names}
-    return names

@@ -1,10 +1,9 @@
-"""`retention_service`'s purge and its two reaps against real timestamps, and the
+"""`retention_service`'s purge and its login-attempt reap against real timestamps, and the
 `purge-messages` CLI command end to end through `run_guarded_purge`.
 
-Every case inserts a message with an explicit `created_at`, and every flow state or login
-attempt with an explicit `expires_at` or `attempted_at`, rather than waiting on wall-clock time,
-so "old" and "recent" are unambiguous regardless of how long the suite takes to reach this file.
-The reaps measure against the database's `now()`, which inside the rolled-back `db` fixture is
+Every case inserts a message with an explicit `created_at`, and every login attempt with an
+explicit `attempted_at`, rather than waiting on wall-clock time, so "old" and "recent" are
+unambiguous regardless of how long the suite takes to reach this file. The reap measures against the database's `now()`, which inside the rolled-back `db` fixture is
 the start of the test's transaction — minutes, not hours, from the Python clock the rows are
 stamped with.
 
@@ -24,7 +23,6 @@ from sqlalchemy.orm import Session
 
 import app.cli as cli_module
 from app.cli import _run_purge_messages
-from app.models.bot_flow_state import BotFlowState
 from app.models.conversation import Conversation
 from app.models.enums import MessageAuthor, MessageStatus
 from app.models.login_attempt import LoginAttempt
@@ -45,7 +43,6 @@ from app.services.retention_scheduler import (
 from app.services.retention_service import (
     CHAT_RETENTION_DAYS_SETTING,
     purge_expired_messages,
-    reap_expired_flow_states,
     reap_expired_login_attempts,
 )
 
@@ -103,18 +100,6 @@ def test_retention_of_zero_deletes_nothing_and_reports_that_it_did_not_run(db: S
     assert db.get(Conversation, conversation.id) is not None
 
 
-def test_an_expired_flow_state_is_reaped_and_a_live_one_is_kept(db: Session) -> None:
-    now = datetime.datetime.now(datetime.UTC)
-    expired = _add_flow_state(db, expires_at=now - datetime.timedelta(minutes=5))
-    live = _add_flow_state(db, expires_at=now + datetime.timedelta(hours=1))
-
-    deleted = reap_expired_flow_states(db)
-
-    assert deleted == 1
-    assert db.get(BotFlowState, expired.phone_number) is None
-    assert db.get(BotFlowState, live.phone_number) is not None
-
-
 def test_login_attempts_are_reaped_only_past_the_larger_of_the_two_windows(db: Session) -> None:
     # Thirty minutes is past the 15-minute IP window and inside the one-hour email window, so it
     # is the row that tells "the larger window" apart from "either window".
@@ -150,14 +135,13 @@ def test_login_attempts_are_reaped_only_past_the_largest_forgot_window(db: Sessi
     assert stale not in _login_attempt_ids(db)
 
 
-def test_both_reaps_run_when_chat_retention_is_zero(
+def test_the_login_attempt_reap_runs_when_chat_retention_is_zero(
     db: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # Expiry is not retention: a client who keeps chat history forever still has dead bot flows
-    # and login attempts no window counts, and neither table may grow without bound.
+    # Expiry is not retention: a client who keeps chat history forever still has login attempts
+    # no window counts, and the table may not grow without bound.
     _set_retention_days(db, 0)
     now = datetime.datetime.now(datetime.UTC)
-    flow_state = _add_flow_state(db, expires_at=now - datetime.timedelta(minutes=5))
     attempt_id = _add_login_attempt(db, attempted_at=now - datetime.timedelta(days=2))
     conversation = _make_conversation(db)
     _add_message(db, conversation.id, created_at=OLD)
@@ -166,14 +150,11 @@ def test_both_reaps_run_when_chat_retention_is_zero(
         run = run_guarded_purge(lambda: db)
 
     assert [record.getMessage() for record in caplog.records] == [
-        "retention purge: ran, chat purge disabled (chat_retention_days=0)"
-        " flow_states=1 login_attempts=1"
+        "retention purge: ran, chat purge disabled (chat_retention_days=0) login_attempts=1"
     ]
     assert run.ran is True
     assert run.purge is not None and run.purge.ran is False
-    assert run.flow_states_deleted == 1
     assert run.login_attempts_deleted == 1
-    assert db.get(BotFlowState, flow_state.phone_number) is None
     assert attempt_id not in _login_attempt_ids(db)
     assert db.get(Conversation, conversation.id) is not None
 
@@ -182,18 +163,14 @@ def test_purge_messages_command_runs_end_to_end(db: Session, capsys, monkeypatch
     monkeypatch.setattr(cli_module, "SessionLocal", lambda: db)
     conversation = _make_conversation(db)
     _add_message(db, conversation.id, created_at=OLD)
-    flow_state = _add_flow_state(
-        db, expires_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=5)
-    )
 
     exit_code = _run_purge_messages()
 
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "purged 1 message(s) and 1 conversation(s)" in captured.out
-    assert "reaped 1 expired flow state(s) and 0 expired login attempt(s)" in captured.out
+    assert "reaped 0 expired login attempt(s)" in captured.out
     assert db.get(Conversation, conversation.id) is None
-    assert db.get(BotFlowState, flow_state.phone_number) is None
 
 
 def test_purge_messages_command_exits_1_and_deletes_nothing_while_the_lock_is_held(
@@ -246,21 +223,6 @@ def _add_message(
     db.flush()
 
     return message
-
-
-def _add_flow_state(db: Session, *, expires_at: datetime.datetime) -> BotFlowState:
-    flow_state = BotFlowState(
-        phone_number=_phone_number(),
-        step="awaiting_name",
-        collected_data={},
-        misses=0,
-        prompt="What is your name?",
-        expires_at=expires_at,
-    )
-    db.add(flow_state)
-    db.flush()
-
-    return flow_state
 
 
 def _add_login_attempt(db: Session, *, attempted_at: datetime.datetime) -> uuid.UUID:

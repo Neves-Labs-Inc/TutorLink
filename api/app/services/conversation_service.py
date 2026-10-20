@@ -322,12 +322,19 @@ def follow_number_change(db: Session, *, change: NumberChange) -> Conversation |
     The savepoint covers a first message from the new number that opened a thread there after
     the lock: `UNIQUE (phone_number)` refuses the move, the savepoint unwinds it, and the
     number change goes on without it rather than as a 500.
+
+    The bot's pending proposal on both threads is dropped: an offer made at either number
+    belongs to whoever was there before, so a yes after the change never commits it.
     """
     guardian_thread = change.guardian_thread
     at_new_number = change.thread_at_new_number
 
     if change.is_new_number_thread_anothers:
         return None
+
+    for thread in (guardian_thread, at_new_number):
+        if thread is not None:
+            _drop_proposal(thread)
 
     followed: Conversation | None = None
     if guardian_thread is not None and at_new_number is not None:
@@ -613,8 +620,7 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     conversation.taken_over_at = None
     _clear_flag_on_hand_back(db, conversation)
     _clear_handled(conversation)
-    conversation.proposal_actions = None
-    conversation.proposed_at = None
+    _drop_proposal(conversation)
     db.flush()
 
     return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
@@ -739,12 +745,8 @@ def mark_turn_due(
 def link_guardian(
     db: Session, *, conversation: Conversation, guardian_id: uuid.UUID
 ) -> Conversation:
-    """Attach the guardian intake has just created to the thread that asked for it.
-
-    One of the two mutations the webhook applies from a `BotTurn` (**P7-C**): the bot returns
-    what it decided and this module writes it, so the flow machine stays testable without a
-    `conversations` row.
-    """
+    """Attach a Guardian to the thread at their number: the one Intake has just created, or the
+    number's current holder."""
     conversation.guardian_id = guardian_id
     db.flush()
 
@@ -754,9 +756,9 @@ def link_guardian(
 def set_language(
     db: Session, *, conversation: Conversation, language: Language | None
 ) -> Conversation:
-    """Store the Guardian language on this thread: what the bot detected (P7-C: the webhook
-    writes what `bot_service` decided), or what Staff chose. `None` is "not detected", so
-    English is used until the bot detects one again."""
+    """Store the Guardian language on this thread: what the bot detected (a Spanish keyword, or
+    the agent's reply), or what Staff chose. `None` is "not detected", so English is used until
+    the bot detects one again."""
     conversation.language = language
     db.flush()
 
@@ -1097,6 +1099,11 @@ def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
         .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
+
+
+def _drop_proposal(conversation: Conversation) -> None:
+    conversation.proposal_actions = None
+    conversation.proposed_at = None
 
 
 def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:

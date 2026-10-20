@@ -44,9 +44,8 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.reminder_consent import ReminderConsent
 from app.models.system_setting import SystemSetting
 from app.models.user import User
-from app.schemas.bot import BotIntent, ParsedIntent, ReminderButton
+from app.schemas.bot import ReminderButton
 from app.security import create_access_token
-from app.services import parser_service
 from app.services.reminder_service import ReminderCandidate, due_guardians, run_week
 from app.services import bot_tools_profile
 from app.services.bot_turn import TurnDeps, take_turn
@@ -66,14 +65,6 @@ BLOCKED_ERROR = (
 # Valid US numbers, unlike a random `+1` string, so the PATCH route's normaliser accepts them.
 AREA_CODES = ("202", "212", "312", "415", "617")
 SUBSCRIBER_NUMBERS = 10_000
-
-
-@pytest.fixture(autouse=True)
-def no_parser(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(**kwargs: object) -> object:
-        raise AssertionError("a test here reached the parser")
-
-    monkeypatch.setattr(parser_service, "parse_intent", refuse)
 
 
 @dataclass
@@ -288,7 +279,7 @@ def test_a_start_from_a_number_staff_swapped_in_does_not_lift_the_block(
 
 @pytest.mark.parametrize("code", OPT_OUT_CODES)
 def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
-    world: World, code: str, monkeypatch: pytest.MonkeyPatch
+    world: World, code: str
 ) -> None:
     guardian = world.guardian()
     blocked_number = guardian.phone_number
@@ -300,7 +291,7 @@ def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
 
     # A thread still linked to the Guardian at the swapped-in number, as one from before threads
     # followed their Guardian (#126) would be. Its START must not reach the Guardian at all: the
-    # number is a stranger's now, so it is parsed as an Intake opener.
+    # number is a stranger's now, so it is an ordinary message for the agent.
     world.db.add(
         Conversation(
             phone_number=staff_number,
@@ -311,12 +302,6 @@ def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
     world.db.flush()
     consents_before = [row.id for row in world.consents(guardian)]
 
-    def read_hello(**kwargs: object) -> ParsedIntent:
-        return ParsedIntent(
-            intent=BotIntent.UNKNOWN, answer=None, fields={}, confidence_is_low=False
-        )
-
-    monkeypatch.setattr(parser_service, "parse_intent", read_hello)
     world.say("START", from_number=staff_number)
 
     assert [row.id for row in world.consents(guardian)] == consents_before

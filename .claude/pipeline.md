@@ -58,3 +58,4 @@ Collected during the WhatsApp bot agent wave 1 (2026-10-19).
 - **`git worktree remove` must run from inside the repo**, not the parent folder.
 - **Aborted test runs leave committed rows** in `<db>_test` that break later row-counting suites (`test_cli_seed`). Drop `<db>_test` after any killed run.
 - **`test_bot_worker.py` lock count is cluster-wide** (`pg_locks` with no database filter); it can flake if another agent runs it at the same time. Rerun alone.
+- **conftest imports run before the test env is set.** A fixture module that imports `app.db` at top level breaks test collection; import it lazily inside the fixture.

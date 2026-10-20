@@ -53,6 +53,7 @@ from app.services import (
     subject_service,
 )
 from app.services.bot_tool_contract import ToolContext, ToolResult, ToolSpec
+from app.services.intake_progress import intake_progress
 from app.services.name_rules import InvalidName, normalize_name
 from app.services.phone_service import InvalidPhoneNumber
 
@@ -191,9 +192,10 @@ def _create_home(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResu
         directions=details.directions,
     )
 
-    _mark_redacted(ctx, fields=_home_fields(home), since=None)
+    fields = _home_fields(home)
+    _mark_redacted(ctx, fields=fields, since=None)
 
-    return ToolResult(status="ok", content=_home_content(home), progress=True)
+    return ToolResult(status="ok", content=_home_content(home), progress=True, redacted=fields)
 
 
 def _create_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResult:
@@ -274,9 +276,10 @@ def _create_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolRes
     except child_service.InvalidDateOfBirth:
         return _refused(DATE_OF_BIRTH_IMPLAUSIBLE)
 
-    _mark_redacted(ctx, fields=_child_fields(child), since=None)
+    fields = _child_fields(child)
+    _mark_redacted(ctx, fields=fields, since=None)
 
-    return ToolResult(status="ok", content=_child_content(child), progress=True)
+    return ToolResult(status="ok", content=_child_content(child), progress=True, redacted=fields)
 
 
 def _update_guardian(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResult:
@@ -290,7 +293,7 @@ def _update_guardian(ctx: ToolContext, tool_input: Mapping[str, object]) -> Tool
     if guardian.is_archived:
         return _refused(GUARDIAN_DEACTIVATED)
 
-    if not _intake_in_progress(ctx.db, guardian_id=guardian.id):
+    if not intake_progress(ctx.db, conversation=ctx.conversation).in_progress:
         return _refused(SAVED_DETAILS_GO_TO_OFFICE)
 
     try:
@@ -353,10 +356,14 @@ def _update_home(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResu
             ctx.db, home_id=home.id, label=new_label, address=None, directions=new_directions
         )
 
-    if new_directions is not None:
-        _mark_redacted(ctx, fields=(RedactedField.HOME_DIRECTIONS,), since=last_saved_at)
+    filled: tuple[RedactedField, ...] = (
+        () if new_directions is None else (RedactedField.HOME_DIRECTIONS,)
+    )
+    _mark_redacted(ctx, fields=filled, since=last_saved_at)
 
-    return ToolResult(status="ok", content=_home_content(home), progress=is_changed)
+    return ToolResult(
+        status="ok", content=_home_content(home), progress=is_changed, redacted=filled
+    )
 
 
 def _update_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResult:
@@ -419,7 +426,9 @@ def _update_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolRes
     )
     _mark_redacted(ctx, fields=filled, since=last_saved_at)
 
-    return ToolResult(status="ok", content=_child_content(child), progress=bool(filled))
+    return ToolResult(
+        status="ok", content=_child_content(child), progress=bool(filled), redacted=filled
+    )
 
 
 def _list_subjects(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResult:
@@ -708,18 +717,6 @@ def _archived_child(ctx: ToolContext, *, child_id: str) -> Child | None:
     return next(
         (child for child in children if str(child.id) == child_id and child.is_archived), None
     )
-
-
-def _intake_in_progress(db: Session, *, guardian_id: uuid.UUID) -> bool:
-    """No Home or no Child yet (spec §8); archived ones count, as on the chat's badge."""
-    has_home = db.scalars(
-        select(GuardianHome.id).where(GuardianHome.guardian_id == guardian_id).limit(1)
-    ).first()
-    has_child = db.scalars(
-        select(ChildGuardian.id).where(ChildGuardian.guardian_id == guardian_id).limit(1)
-    ).first()
-
-    return has_home is None or has_child is None
 
 
 def _changes_saved(stored: object, given: object) -> bool:

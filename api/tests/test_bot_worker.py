@@ -228,6 +228,70 @@ def test_a_failed_statement_under_the_lock_still_releases_it_before_the_connecti
 # --- helpers -----------------------------------------------------------------------------------
 
 
+def test_a_poll_runs_at_most_its_limit_oldest_first_and_leaves_the_rest_due(
+    sessions: sessionmaker[Session], make_chat: MakeChat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bot_worker, "MAX_DUE_PER_POLL", 2)
+    # Long before any other test's chat, so these are the oldest due.
+    long_ago = datetime.datetime(2000, 1, 3, 12, 0, tzinfo=datetime.UTC)
+    oldest, middle, newest = (make_chat(turn_due_at=long_ago + n * SECOND) for n in range(3))
+    turn = RecordingTurn()
+
+    run_due_turns(sessions, now=long_ago + 3 * SECOND, take_turn=turn)
+
+    assert sorted(turn.calls) == sorted([oldest, middle])
+    assert _marker(sessions, newest) == long_ago + 2 * SECOND
+
+
+def test_a_chat_held_for_a_number_change_is_skipped_and_stays_due(
+    sessions: sessionmaker[Session], make_chat: MakeChat
+) -> None:
+    chat = make_chat(turn_due_at=NOON)
+    turn = RecordingTurn()
+
+    with sessions() as holder:
+        bot_worker.hold_turns(holder, conversation_ids=[chat])
+        run_due_turns(sessions, now=NOON, take_turn=turn)
+        assert turn.calls.count(chat) == 0
+        assert _marker(sessions, chat) == NOON
+        holder.commit()
+
+    run_due_turns(sessions, now=NOON, take_turn=turn)
+    assert turn.calls.count(chat) == 1
+
+
+def test_the_lifespan_starts_the_bot_worker_and_cancels_it_on_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    started = threading.Event()
+    cancelled = threading.Event()
+    given: list[object] = []
+
+    async def fake_run_forever(
+        session_factory: Callable[[], Session], *, take_turn: Callable[..., object]
+    ) -> None:
+        given.append(take_turn)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(main, "run_bot_turns_forever", fake_run_forever)
+
+    with TestClient(main.create_app()):
+        assert started.wait(5) is True
+        assert cancelled.is_set() is False
+
+    assert cancelled.is_set() is True
+    assert callable(given[0])
+
+
 @pytest.fixture
 def sessions(_test_engine: Engine) -> Generator[sessionmaker[Session], None, None]:
     """Sessions on their own engine, one real connection each, committing for real."""

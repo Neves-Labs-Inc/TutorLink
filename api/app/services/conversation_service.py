@@ -82,7 +82,7 @@ from app.models.enums import (
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.services import child_service, intake_progress
+from app.services import bot_worker, child_service, intake_progress
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
 
 # WhatsApp's customer-service window: free-form messages only within this of the last inbound.
@@ -279,7 +279,20 @@ def lock_number_change(
     Guardian's new number, so the lock order stays conversation first. Holding the thread at
     the new number before the Guardian row means a turn there finishes first: an Intake that
     ends by writing a Guardian at that number wins it, and the change is the 409.
+
+    A bot turn running on either thread is waited for first (`bot_worker.hold_turns`), and no
+    new one starts until the change commits. A turn holds the row lock only at its start and
+    end, so without this a merge would wait on the turn's open transaction and then fail on a
+    message the turn wrote into the thread it deletes, or deadlock with the turn's end lock.
     """
+    bot_worker.hold_turns(
+        db,
+        conversation_ids=db.scalars(
+            select(Conversation.id).where(
+                Conversation.phone_number.in_((previous_number, phone_number))
+            )
+        ).all(),
+    )
     found: dict[str, Conversation | None] = {}
     # One order for every change, so two changes over the same pair of numbers cannot deadlock.
     for number in sorted({previous_number, phone_number}):
@@ -396,8 +409,9 @@ def link_to_holder(db: Session, *, conversation: Conversation) -> uuid.UUID | No
     """The Guardian holding the thread's number, linking the thread to them when it names
     someone else or no one; `None` when nobody holds it.
 
-    For a turn the bot does not take (a thread under Takeover), which would otherwise leave a
-    thread left behind at a number showing, and recording consent for, its old Guardian.
+    The webhook asks this for every inbound message, and the agent's tools before they write:
+    otherwise a thread left behind at a number would show, and record consent for, its old
+    Guardian.
     """
     owner = owner_id(db, conversation=conversation)
 
@@ -706,6 +720,17 @@ def touch_last_message(
     construction. `unread` does not read it: that is decided from the inbound messages.
     """
     conversation.last_message_at = at
+    db.flush()
+
+    return conversation
+
+
+def mark_turn_due(
+    db: Session, *, conversation: Conversation, at: datetime.datetime
+) -> Conversation:
+    """Schedule the bot's debounced turn for `at`, replacing any earlier time: each new message
+    pushes it on. `bot_worker` runs the turn and clears the marker."""
+    conversation.turn_due_at = at
     db.flush()
 
     return conversation
@@ -1080,7 +1105,14 @@ def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:
     `messages` is the only table that references a conversation. Both rows are locked by the
     caller. The delete is a statement rather than `Session.delete`, which would try to null
     the foreign key on any message the session still has loaded under `merged`.
+
+    A bot turn still due on `merged` moves to `into`, at the earlier of the two times: its
+    message moves too, and would otherwise never be answered. The worker clears it if `into`
+    is Taken over.
     """
+    due_times = [at for at in (into.turn_due_at, merged.turn_due_at) if at is not None]
+    if due_times:
+        into.turn_due_at = min(due_times)
     db.flush()
     db.execute(
         update(Message)

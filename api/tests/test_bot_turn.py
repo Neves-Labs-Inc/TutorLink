@@ -22,6 +22,7 @@ from app.models.enums import (
     Language,
     MessageAuthor,
     MessageStatus,
+    RedactedField,
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
@@ -281,6 +282,41 @@ def test_each_paragraph_of_the_reply_is_its_own_message_in_order(
         "Diego's first session is an evaluation.",
         "Would you like reminders?",
     ]
+
+
+def test_a_reply_after_a_private_save_is_marked_with_the_saved_fields(
+    turn: Turn, fake_twilio: FakeTwilio
+) -> None:
+    """The reply may echo the address back ("Saved 12 Oak Street"), so history shows it as a
+    placeholder like the Guardian's message that gave it (spec §5)."""
+    turn.guardian_says("12 Oak Street, gate code 1234")
+    saved = ToolResult(
+        status="ok",
+        content={"home_id": "h1"},
+        progress=True,
+        redacted=(RedactedField.HOME_ADDRESS, RedactedField.HOME_DIRECTIONS),
+    )
+
+    turn.run(
+        [
+            call(("create_home", {})),
+            reply("Saved 12 Oak Street.\n\nWhat's your child's name?"),
+        ],
+        tools=(tool("create_home", lambda ctx, tool_input: saved),),
+    )
+
+    assert [m.redacted_fields for m in turn.bot_messages()] == [
+        ["home_address", "home_directions"],
+        ["home_address", "home_directions"],
+    ]
+
+
+def test_a_reply_after_no_private_save_is_not_marked(turn: Turn, fake_twilio: FakeTwilio) -> None:
+    turn.guardian_says("hi")
+
+    turn.run([call(("list_subjects", {})), reply("We teach Maths.")], tools=(lookup(),))
+
+    assert [m.redacted_fields for m in turn.bot_messages()] == [None]
 
 
 def test_the_model_gets_the_prompt_the_tools_with_reply_and_one_user_message(

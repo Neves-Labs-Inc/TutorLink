@@ -1,4 +1,5 @@
-"""A number change racing an Intake that finishes at the Guardian's new number.
+"""A number change racing a bot turn: an Intake that finishes at the Guardian's new number, and
+a turn still running on a thread the change merges.
 
 The inbound turn from M holds the thread at M for the whole turn and, as Intake ends, inserts a
 Guardian at M. The PATCH moving the Guardian to M locks the thread at M before it writes M into
@@ -12,15 +13,17 @@ with sessions of its own; the inbound turn is played on this thread as the two s
 matter, the thread lock and the Guardian insert.
 """
 
+import datetime
 import random
 import threading
+import time
 import uuid
 from collections.abc import Generator
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,11 +31,13 @@ from app.db import get_db
 from app.main import app
 from app.models.bot_flow_state import BotFlowState
 from app.models.conversation import Conversation
-from app.models.enums import UserRole
+from app.models.enums import MessageAuthor, MessageStatus, SystemMessageKind, UserRole
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
 from app.security import create_access_token
+from app.services import conversation_service, message_service
+from app.services.bot_worker import run_due_turns
 
 # Long enough that a PATCH which did not wait on the thread at M would have written M by then.
 PATCH_SETTLE_SECONDS = 1.0
@@ -161,3 +166,210 @@ def test_a_number_change_racing_an_intake_at_the_new_number_loses_to_it_without_
     with committed_sessions() as session:
         guardian = session.get_one(Guardian, committed.guardian_id)
         assert guardian.phone_number == committed.old_number
+
+
+def test_a_number_change_merging_a_thread_waits_for_the_bot_turn_running_there(
+    committed_sessions: sessionmaker[Session],
+    committed: Committed,
+    committed_api: TestClient,
+) -> None:
+    """A turn holds the thread's row lock only at its start and end, so mid-turn the merge
+    would otherwise delete the thread at M under a message the turn is about to commit there,
+    and fail. It waits for the turn instead, and the turn's message moves with the rest."""
+    token = create_access_token(
+        user_id=committed.staff.id, role=committed.staff.role, tutor_id=None
+    )
+    due_at = datetime.datetime.now(tz=datetime.UTC)
+    with committed_sessions() as session:
+        session.execute(
+            update(Conversation)
+            .where(Conversation.id == committed.new_thread_id)
+            .values(turn_due_at=due_at)
+        )
+        session.commit()
+    turn_running = threading.Event()
+    release_turn = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def turn(db: Session, conversation_id: uuid.UUID) -> None:
+        if conversation_id != committed.new_thread_id:
+            return
+        # A handoff note recorded mid-turn: inserted, not committed, no row lock on the thread.
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                author_kind=MessageAuthor.SYSTEM,
+                system_kind=SystemMessageKind.HANDOFF_NOTE,
+                body=TURN_NOTE,
+                status=MessageStatus.SENT,
+                created_at=datetime.datetime.now(tz=datetime.UTC),
+            )
+        )
+        db.flush()
+        turn_running.set()
+        release_turn.wait(TURN_HOLD_SECONDS)
+        db.commit()
+
+    def patch() -> None:
+        response = committed_api.patch(
+            f"/api/clients/{committed.guardian_id}",
+            json={"phone_number": committed.new_number},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        outcome["result"] = response.status_code
+
+    worker = threading.Thread(
+        target=lambda: run_due_turns(committed_sessions, now=due_at, take_turn=turn)
+    )
+    worker.start()
+    assert turn_running.wait(TURN_HOLD_SECONDS)
+    patching = threading.Thread(target=patch)
+    patching.start()
+    patching.join(PATCH_SETTLE_SECONDS)
+    is_waiting = patching.is_alive()
+    release_turn.set()
+    worker.join()
+    patching.join()
+
+    assert is_waiting is True
+    assert outcome["result"] == 200
+    with committed_sessions() as session:
+        thread = session.scalars(
+            select(Conversation).where(Conversation.phone_number == committed.new_number)
+        ).one()
+        bodies = session.scalars(select(Message.body).where(Message.conversation_id == thread.id))
+        assert thread.guardian_id == committed.guardian_id
+        assert TURN_NOTE in list(bodies)
+        assert session.get(Conversation, committed.new_thread_id) is None
+
+
+def test_a_message_arriving_while_the_number_change_waits_is_still_answered_after_the_merge(
+    committed_sessions: sessionmaker[Session],
+    committed: Committed,
+    committed_api: TestClient,
+) -> None:
+    """The change waits for the turn at M; a new message at M stamps M's turn meanwhile. The
+    merge deletes M's row, so the turn has to move to the Guardian's thread."""
+    token = create_access_token(
+        user_id=committed.staff.id, role=committed.staff.role, tutor_id=None
+    )
+    due_at = datetime.datetime.now(tz=datetime.UTC)
+    with committed_sessions() as session:
+        session.execute(
+            update(Conversation)
+            .where(Conversation.id == committed.new_thread_id)
+            .values(turn_due_at=due_at)
+        )
+        session.commit()
+    turn_running = threading.Event()
+    release_turn = threading.Event()
+    statuses: list[int] = []
+
+    def turn(db: Session, conversation_id: uuid.UUID) -> None:
+        if conversation_id == committed.new_thread_id:
+            turn_running.set()
+            release_turn.wait(TURN_HOLD_SECONDS)
+
+    def patch() -> None:
+        response = committed_api.patch(
+            f"/api/clients/{committed.guardian_id}",
+            json={"phone_number": committed.new_number},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        statuses.append(response.status_code)
+
+    worker = threading.Thread(
+        target=lambda: run_due_turns(committed_sessions, now=due_at, take_turn=turn)
+    )
+    worker.start()
+    assert turn_running.wait(TURN_HOLD_SECONDS)
+    patching = threading.Thread(target=patch)
+    patching.start()
+    patching.join(PATCH_SETTLE_SECONDS)
+    # What the webhook does for a message at M, on its own connection, while the PATCH waits.
+    with committed_sessions() as session:
+        thread = conversation_service.resolve_or_create(session, phone_number=committed.new_number)
+        message_service.record_inbound(
+            session,
+            conversation=thread,
+            body="Are you there?",
+            twilio_sid=f"SMin{uuid.uuid4().hex}",
+        )
+        stamped = due_at + datetime.timedelta(seconds=4)
+        conversation_service.mark_turn_due(session, conversation=thread, at=stamped)
+        session.commit()
+    release_turn.set()
+    worker.join()
+    patching.join()
+
+    assert statuses == [200]
+    with committed_sessions() as session:
+        merged = session.scalars(
+            select(Conversation).where(Conversation.phone_number == committed.new_number)
+        ).one()
+        assert merged.guardian_id == committed.guardian_id
+        assert merged.turn_due_at == stamped
+
+
+def test_staff_creating_a_guardian_that_deadlocks_with_an_intake_turn_gets_a_409_not_a_500(
+    committed_sessions: sessionmaker[Session],
+    committed: Committed,
+    committed_api: TestClient,
+) -> None:
+    """The turn at M has inserted its Guardian and then waits for the chat's row at its end
+    lock; the POST holds that row and waits on the turn's Guardian. PostgreSQL aborts the POST
+    (the first to wait); its one retry then waits for the turn and finds the number taken."""
+    token = create_access_token(
+        user_id=committed.staff.id, role=committed.staff.role, tutor_id=None
+    )
+    statuses: list[int] = []
+
+    def post() -> None:
+        response = committed_api.post(
+            "/api/clients",
+            json={"name": "Staff Entry", "phone_number": committed.new_number},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        statuses.append(response.status_code)
+
+    with committed_sessions() as turn:
+        turn.add(Guardian(name="Intake", phone_number=committed.new_number))
+        turn.flush()
+        posting = threading.Thread(target=post)
+        posting.start()
+        _wait_until_a_guardian_insert_waits(committed_sessions)
+        # The turn's end lock, now waiting on the POST: the deadlock.
+        conversation_service.lock(turn, conversation_id=committed.new_thread_id)
+        turn.commit()
+    posting.join()
+
+    assert statuses == [409]
+    with committed_sessions() as session:
+        names = session.scalars(
+            select(Guardian.name).where(Guardian.phone_number == committed.new_number)
+        ).all()
+        assert names == ["Intake"]
+
+
+def _wait_until_a_guardian_insert_waits(sessions: sessionmaker[Session]) -> None:
+    """Until another connection's insert into `guardians` is waiting on a lock."""
+    deadline = time.monotonic() + TURN_HOLD_SECONDS
+    is_waiting = False
+    while not is_waiting and time.monotonic() < deadline:
+        with sessions() as session:
+            is_waiting = bool(
+                session.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+                        " AND wait_event_type = 'Lock' AND query ILIKE 'INSERT INTO guardians%'"
+                    )
+                )
+            )
+        time.sleep(POLL_SECONDS)
+    assert is_waiting
+
+
+TURN_NOTE = "Asked the office about a refund."
+POLL_SECONDS = 0.05
+# How long the fake turn holds its lock at most; the test releases it well before.
+TURN_HOLD_SECONDS = 10.0

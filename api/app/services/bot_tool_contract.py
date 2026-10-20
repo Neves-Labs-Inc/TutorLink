@@ -17,6 +17,7 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from app.models.conversation import Conversation
+from app.models.enums import RedactedField
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class ToolResult:
     progress: bool = False
     # Set only by `commit_proposal`.
     committed: tuple[CommittedAction, ...] = ()
+    # The private fields this call saved. The turn marks its own reply with them, since the
+    # reply may echo a value back and is recorded after the tools ran (spec §5).
+    redacted: tuple[RedactedField, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -17,9 +17,9 @@ contract is the reason.
 `conversation_service.touch_last_message`, so no caller has to remember to, and the inbox's
 ordering key is the newest message's `created_at` exactly. `created_at` is set explicitly from
 Python's clock rather than left to the column's `now()` default: `now()` is transaction start
-time, the webhook writes the inbound message and the bot's reply inside one transaction, and
-two messages sharing a timestamp would let `ORDER BY created_at DESC` return the reply above or
-below the message it answers depending on the plan. Same clock as
+time, a bot turn writes its confirmation and reply messages inside one transaction, and two
+messages sharing a timestamp would let `ORDER BY created_at DESC` return them in either order
+depending on the plan. Same clock as
 `conversation_service.mark_read`, for the reason that module's docstring gives.
 
 **A terminal status is reachable without a `twilio_sid`.** `advance_status` is keyed on the SID
@@ -30,8 +30,8 @@ a SID it was never given. The caller's evidence decides which function it uses: 
 carries a SID, a local failure carries the row.
 
 `failed` is the only status that rule can reach this way, and deliberately. `received` and
-`sent` are written at insert time and `sent` already has its SID-less path (`record_bot_reply`,
-amendment P7-3). `delivered` is not a fact any caller here can hold: only Twilio knows a message
+`sent` are written at insert time, and `sent` without a SID is only the Staff-only notes that
+are never sent. `delivered` is not a fact any caller here can hold: only Twilio knows a message
 arrived and it says so with the SID that names the row, so a SID-less `mark_delivered` would
 have no honest caller and would only be a way to write a delivery that never happened.
 
@@ -48,6 +48,7 @@ conversation nobody has. That call and `touch_last_message` are everything this 
 
 import datetime
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
@@ -57,7 +58,7 @@ from sqlalchemy.orm import Session
 from app.models.booking_reminder import BookingReminder
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import MessageAuthor, MessageStatus, SystemMessageKind
+from app.models.enums import MessageAuthor, MessageStatus, RedactedField, SystemMessageKind
 from app.models.message import Message
 from app.models.user import User
 from app.services import conversation_service
@@ -114,14 +115,23 @@ def record_inbound(
     return message
 
 
-def record_bot_reply(db: Session, *, conversation: Conversation, body: str) -> Message:
+def record_bot_reply(
+    db: Session,
+    *,
+    conversation: Conversation,
+    body: str,
+    redacted_fields: Sequence[RedactedField] = (),
+) -> Message:
     """Record a bot reply `queued` with no SID, before it is sent.
 
     The bot answers through the REST send API (docs/specs/whatsapp-bot-agent.md §7), so a reply
     is recorded first and `attach_twilio_sid` stores the SID once Twilio accepts it; the status
     callback then advances it like an office reply. A send that fails for good is `mark_failed`.
+
+    `redacted_fields` are the private fields saved in the turn this reply ends: it may echo
+    them, so the bot's history shows it as a placeholder (spec §5).
     """
-    return _insert(
+    message = _insert(
         db,
         conversation=conversation,
         author_kind=MessageAuthor.BOT,
@@ -130,14 +140,9 @@ def record_bot_reply(db: Session, *, conversation: Conversation, body: str) -> M
         twilio_sid=None,
         author_user_id=None,
     )
-
-
-def mark_sent_inline(db: Session, *, message: Message) -> Message:
-    """Mark a bot reply returned as inline TwiML `sent`: Twilio never reports a SID for it, so
-    no callback could advance it from `queued`. Only the state machine's webhook path uses this,
-    until the async cutover removes inline replies."""
-    message.status = MessageStatus.SENT
-    db.flush()
+    if redacted_fields:
+        message.redacted_fields = list(dict.fromkeys(field.value for field in redacted_fields))
+        db.flush()
 
     return message
 
@@ -287,6 +292,16 @@ def mark_failed(db: Session, *, message: Message, error_code: str | None) -> Mes
     db.flush()
 
     return message
+
+
+def bot_reply_conversation_id(db: Session, *, twilio_sid: str) -> uuid.UUID | None:
+    """The chat of the bot reply carrying `twilio_sid`, read without a lock; `None` when no bot
+    reply carries it. For a caller that must lock the chat before the message row."""
+    return db.scalar(
+        select(Message.conversation_id).where(
+            Message.twilio_sid == twilio_sid, Message.author_kind == MessageAuthor.BOT
+        )
+    )
 
 
 def advance_status(

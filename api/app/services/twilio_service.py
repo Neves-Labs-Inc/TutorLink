@@ -1,14 +1,10 @@
 """Sending an outbound WhatsApp message (free-form or approved template) through Twilio's REST
-API, and building the two TwiML responses the webhook returns.
+API, and the empty TwiML the inbound webhook answers with.
 
-Two mechanisms, two status lifecycles (amendment P7-3, `docs/erd.md:349-356`,
-`docs/api-design.md:527-534`). `send_whatsapp_message` is the REST path: it starts a message
-`queued`, and `POST /webhook/whatsapp/status` advances it to `sent`/`delivered`/`failed` once
-Twilio calls back with the `MessageSid` this function returns. A bot reply never calls this
-function — it goes out as `twiml_reply`'s TwiML in the webhook's own response, and Twilio does
-not mint a `MessageSid` for it until after reading that response, so a bot reply is recorded
-`status = 'sent'` with `twilio_sid` NULL and never reaches the status callback. Mixing the two up
-leaves every bot reply stuck `queued` forever.
+Every outbound message, bot replies included (docs/specs/whatsapp-bot-agent.md §7), goes out
+through `send_whatsapp_message` or `send_whatsapp_template`: it starts `queued`, and
+`POST /webhook/whatsapp/status` advances it to `sent`/`delivered`/`failed` once Twilio calls back
+with the `MessageSid` the send returned.
 
 No FastAPI import, no `Session` parameter: this module raises the domain exceptions below and
 knows nothing about routers, sockets or the database.
@@ -17,7 +13,6 @@ knows nothing about routers, sockets or the database.
 import json
 import logging
 import socket
-from xml.sax.saxutils import escape
 
 from twilio.base.exceptions import TwilioRestException, TwilioServiceException
 from twilio.http.http_client import TwilioHttpClient
@@ -208,10 +203,6 @@ def _was_never_sent(error: BaseException) -> bool:
         current = current.__cause__ or current.__context__
 
     return any(isinstance(link, _NEVER_SENT_CAUSES) for link in seen)
-
-
-def twiml_reply(body: str) -> str:
-    return f"<Response><Message>{escape(body, {'"': '&quot;', "'": '&apos;'})}</Message></Response>"
 
 
 def twiml_empty() -> str:

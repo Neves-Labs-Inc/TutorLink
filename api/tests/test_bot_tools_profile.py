@@ -20,6 +20,7 @@ from app.models.enums import (
     FlagReason,
     MessageAuthor,
     MessageStatus,
+    RedactedField,
     SystemMessageKind,
     UserRole,
 )
@@ -132,6 +133,8 @@ def test_create_home_labels_the_first_home_with_the_guardians_first_name(
     assert result.progress is True
     assert result.content["home_id"] == str(home.id)
     assert (home.label, home.address, home.directions) == ("Maria's", "12 Oak Street", "Gate 1234")
+    # The turn marks its own reply with these, since it may echo the address back.
+    assert result.redacted == (RedactedField.HOME_ADDRESS, RedactedField.HOME_DIRECTIONS)
 
 
 def test_create_home_needs_a_label_for_a_second_home(
@@ -157,6 +160,7 @@ def test_create_home_returns_the_existing_home_for_the_same_address(
     assert again.status == "ok"
     assert again.content["home_id"] == first.content["home_id"]
     assert again.progress is False
+    assert again.redacted == ()
     assert len(guardian_homes(db, guardian.id)) == 1
 
 
@@ -377,6 +381,7 @@ def test_update_child_fills_empty_notes_and_date_of_birth(ctx: ToolContext, ana:
     assert result.status == "ok"
     assert result.progress is True
     assert (ana.notes, ana.date_of_birth) == ("Loves maths", datetime.date(2016, 4, 23))
+    assert result.redacted == (RedactedField.CHILD_DATE_OF_BIRTH, RedactedField.CHILD_NOTES)
 
 
 def test_update_child_refuses_to_change_saved_values(ctx: ToolContext, ana: Child) -> None:

@@ -5,22 +5,23 @@ connections can contend for the conversation row's lock. Rows are deleted afterw
 """
 
 import threading
+import time
 import uuid
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.conversation import Conversation
-from app.models.enums import ConversationStatus, MessageAuthor, UserRole
+from app.models.enums import ConversationStatus, FlagReason, MessageAuthor, UserRole
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.services import conversation_service, message_service
+from app.services import bot_messages, conversation_service, message_service
 from app.services.bot_tool_contract import ToolContext, ToolResult, ToolSpec
 from app.services.bot_turn import TurnDeps, TurnOutcome, take_turn
 from tests.fake_twilio import FakeTwilio
@@ -244,3 +245,43 @@ def test_a_guardian_message_sent_while_the_offer_is_being_sent_is_not_the_yes(
     proposed_at = chat.conversation().proposed_at
     assert proposed_at is not None
     assert written[0].created_at < proposed_at
+
+
+def test_a_database_error_at_the_end_lock_is_an_outage(chat: Chat, fake_twilio: FakeTwilio) -> None:
+    """A number change racing the turn can deadlock it, or hold the row past a lock timeout,
+    where the turn records its reply. That is an outage like any other: the saves roll back,
+    the chat is flagged "Bot got stuck" and the Guardian gets the apology."""
+    chat.guardian_says("I'm Maria")
+    holder_has_lock = threading.Event()
+
+    def hold_the_row() -> None:
+        with chat.sessions() as session:
+            conversation_service.lock(session, conversation_id=chat.conversation_id)
+            holder_has_lock.set()
+            time.sleep(ROW_HOLD_SECONDS)
+            session.commit()
+
+    def save_while_another_writer_holds_the_row(
+        ctx: ToolContext, tool_input: dict[str, Any]
+    ) -> ToolResult:
+        _save_guardian(ctx)
+        # Only this turn's transaction gives up quickly; the outage's fresh one waits.
+        ctx.db.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
+        threading.Thread(target=hold_the_row, daemon=True).start()
+        assert holder_has_lock.wait(UNBLOCKED_WITHIN_SECONDS)
+        return ToolResult(status="ok", content={"saved": True}, progress=True)
+
+    outcome = chat.run(
+        [call(("create_guardian", {})), reply("Thanks, Maria.")],
+        (tool("create_guardian", save_while_another_writer_holds_the_row),),
+    )
+
+    assert outcome.kind == "outage"
+    assert chat.conversation().flag_reason is FlagReason.STUCK
+    assert [sent.body for sent in fake_twilio.sent] == [bot_messages.render("OUTAGE_APOLOGY", "en")]
+    with chat.sessions() as session:
+        assert session.scalar(select(Guardian.name).where(Guardian.name == SAVED_NAME)) is None
+
+
+LOCK_TIMEOUT_MS = 200
+ROW_HOLD_SECONDS = 1.0

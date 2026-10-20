@@ -793,3 +793,9 @@ def is_start_keyword(text: str) -> bool:
 
 def is_spanish_keyword(text: str) -> bool:
     return matches_word(text, SPANISH_ONLY_KEYWORDS)
+
+
+def keyword_language(body: str) -> str | None:
+    """Spanish for a Spanish-only stop/start keyword (BAJA, PARAR, ALTA), else `None`: STOP and
+    START are neutral and leave the chat's language as it is."""
+    return SPANISH if is_spanish_keyword(body) else None

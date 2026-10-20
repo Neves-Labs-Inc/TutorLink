@@ -39,6 +39,7 @@ from app.models.user import User
 from app.schemas.bot import BotIntent, ParsedIntent
 from app.services import bot_service, conversation_service, parser_service
 from app.services.bot_state import FlowState, load_state, save_state
+from app.services.bot_context import build_turn_context
 from app.services.reminder_service import run_week
 from tests.fake_twilio import FakeTwilio
 from tests.test_whatsapp_block_follows_number import EN_SID, NOW, World
@@ -327,6 +328,37 @@ def test_the_merged_thread_keeps_only_the_guardians_thread_state(
     assert detail["guardian"]["id"] == str(guardian.id)  # type: ignore[index]
 
 
+@pytest.mark.parametrize("guardians_thread_due", ["never", "earlier", "later"])
+def test_a_message_waiting_for_its_turn_at_the_new_number_is_still_answered_after_the_merge(
+    world: World, guardians_thread_due: str
+) -> None:
+    """A number change inside the 4 s debounce: the turn moves with the message, at the earlier
+    of the two due times."""
+    guardian = world.guardian()
+    old_number = guardian.phone_number
+    new_number = world.fresh_number()
+    world.say("START", from_number=old_number)
+    world.say("Hello, it's me on my new phone", from_number=new_number)
+    old_thread = _thread_at(world, old_number)
+    new_thread = _thread_at(world, new_number)
+    assert old_thread is not None and new_thread is not None
+    waiting = new_thread.turn_due_at
+    assert waiting is not None
+    offsets = {"earlier": -10, "later": 10}
+    if guardians_thread_due in offsets:
+        old_thread.turn_due_at = waiting + datetime.timedelta(seconds=offsets[guardians_thread_due])
+        world.db.flush()
+    expected = min(at for at in (waiting, old_thread.turn_due_at) if at is not None)
+
+    world.move(guardian, new_number)
+
+    merged = _thread_at(world, new_number)
+    assert merged is not None
+    world.db.refresh(merged)
+    assert merged.id == old_thread.id
+    assert merged.turn_due_at == expected
+
+
 def test_a_thread_at_the_new_number_already_linked_to_the_guardian_is_merged_too(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -578,24 +610,25 @@ def test_the_new_holder_of_a_reassigned_number_lifts_their_own_block_with_start(
 
 
 def test_a_stranger_writing_from_a_number_the_guardian_left_starts_intake(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
     guardian = world.guardian()
     number = guardian.phone_number
     world.say("START", from_number=number)
     world.move(guardian, world.fresh_number())
-    _parse_as_greeting(monkeypatch)
 
     world.say("Hello", from_number=number)
 
     thread = _thread_at(world, number)
     assert thread is not None
     assert thread.guardian_id is None
-    state = load_state(world.db, phone_number=number)
-    assert state is not None
-    assert state.step == bot_service.STEP_INTAKE_NAME
-    replies = [m["body"] for m in _messages(world, thread) if m["author_kind"] == "bot"]
-    assert all("Ana" not in str(reply) for reply in replies)
+    assert thread.turn_due_at is not None
+    # The agent's turn sees a stranger mid-Intake, never the Guardian who left or their Child.
+    snapshot = build_turn_context(
+        world.db, conversation=thread, now=datetime.datetime.now(tz=datetime.UTC)
+    ).snapshot
+    assert "Guardian: not named yet" in snapshot
+    assert "Ana" not in snapshot
 
 
 # --- the 24-hour window ----------------------------------------------------------------------

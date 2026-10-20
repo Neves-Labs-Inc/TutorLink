@@ -29,7 +29,7 @@ import contextlib
 import datetime
 import logging
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import Connection, func, select, update
@@ -43,6 +43,9 @@ TakeTurn = Callable[[Session, uuid.UUID], object]
 # The schedulers hold (8102, 1..3); chats get their own namespace so no chat can block a job.
 BOT_TURN_LOCK_NAMESPACE = 8103
 MAX_CONCURRENT_TURNS = 4
+# Bounds one poll's read and the tasks it queues; the rest stay due for a later poll, oldest
+# first.
+MAX_DUE_PER_POLL = 50
 
 TURN_FAILED_MESSAGE = "bot worker: turn failed conversation_id=%s"
 POLL_FAILED_MESSAGE = "bot worker: poll failed"
@@ -114,7 +117,8 @@ async def run_forever(
 
 
 def _poll_due(session_factory: Callable[[], Session], *, now: datetime.datetime) -> list[uuid.UUID]:
-    """Clear Taken-over chats' markers, and return the bot chats due at `now`, oldest first."""
+    """Clear Taken-over chats' markers, and return the bot chats due at `now`, oldest first, at
+    most `MAX_DUE_PER_POLL`."""
     with session_factory() as db:
         db.execute(
             update(Conversation)
@@ -129,6 +133,7 @@ def _poll_due(session_factory: Callable[[], Session], *, now: datetime.datetime)
                 select(Conversation.id)
                 .where(Conversation.turn_due_at <= now)
                 .order_by(Conversation.turn_due_at)
+                .limit(MAX_DUE_PER_POLL)
             )
         )
         db.commit()
@@ -184,6 +189,20 @@ def _chat_lock(
         finally:
             if is_locked:
                 _unlock(connection, key)
+
+
+def hold_turns(db: Session, *, conversation_ids: Iterable[uuid.UUID]) -> None:
+    """Wait for any turn running on these chats to finish, and keep new ones from starting until
+    `db`'s transaction ends.
+
+    For a write that must not interleave with a turn, such as a number change merging two
+    threads. Takes the same per-chat keys as the worker, transaction-scoped, in one order so
+    two holders can't deadlock. Take it before any row lock, or a turn waiting on one of those
+    rows would wait on a holder that is waiting on the turn. Never call it inside a turn: the
+    turn's own chat lock is held on another connection, so it would wait forever.
+    """
+    for key in sorted({_lock_key(conversation_id) for conversation_id in conversation_ids}):
+        db.execute(select(func.pg_advisory_xact_lock(BOT_TURN_LOCK_NAMESPACE, key)))
 
 
 def _unlock(connection: Connection, key: int) -> None:

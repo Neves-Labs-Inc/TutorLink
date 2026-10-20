@@ -51,6 +51,7 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.services import clock, conversation_service
+from app.services.bot_tools_booking import PROPOSAL_TTL
 from app.services.guardian_state import guardian_states
 from app.services.intake_progress import (
     MISSING_CHILD,
@@ -62,8 +63,6 @@ from app.services.intake_progress import (
 
 WINDOW_SIZE = 20
 GAP = datetime.timedelta(hours=3)
-# Matches `commit_proposal`'s expiry (spec §2 "Propose then commit").
-PROPOSAL_TTL = datetime.timedelta(minutes=30)
 HOURS_PER_DAY = 24
 # Past this many hours a gap reads in days.
 GAP_HOURS_LIMIT = 48
@@ -344,7 +343,7 @@ def _proposal_lines(
     db: Session, *, conversation: Conversation, now: datetime.datetime
 ) -> list[str]:
     """What a "yes" from the Guardian would commit, resolved to names. `now` is naive business
-    wall-clock time; past `PROPOSAL_TTL` the proposal reads as expired, as commit will judge it."""
+    wall-clock time; past `commit_proposal`'s `PROPOSAL_TTL` the proposal reads as expired."""
     actions = conversation.proposal_actions
     proposed_at = conversation.proposed_at
 

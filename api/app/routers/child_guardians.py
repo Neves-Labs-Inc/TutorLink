@@ -24,6 +24,7 @@ from app.models.child import Child
 from app.schemas.child import ChildRead, GuardianLinkCreate
 from app.services.child_service import ChildNotFound
 from app.services.client_service import PhoneNumberTaken
+from app.services.deadlock_retry import retry_on_deadlock
 from app.services.guardian_link_service import (
     AlreadyLinked,
     GuardianChoiceInvalid,
@@ -58,12 +59,16 @@ def create(
     )
 
     try:
-        linked = link_guardian(
+        # A new Guardian can deadlock with a bot turn finishing Intake at that number.
+        linked = retry_on_deadlock(
             db,
-            child_id=child_id,
-            guardian_id=payload.guardian_id,
-            new_guardian=new_guardian,
-            home_ids=payload.home_ids,
+            lambda: link_guardian(
+                db,
+                child_id=child_id,
+                guardian_id=payload.guardian_id,
+                new_guardian=new_guardian,
+                home_ids=payload.home_ids,
+            ),
         )
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc

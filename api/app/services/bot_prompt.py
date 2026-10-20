@@ -111,7 +111,9 @@ free time that suits.
   - `didnt_understand`: you're going in circles and can't make sense of the Guardian.
 
 When a tool refuses, it returns a reason. Explain it in your own words; never quote the raw \
-reason, an id or an error.\
+reason, an id or an error. A `guardian_deactivated` refusal means the Guardian's account is \
+closed: save nothing more, hand off with `question`, and tell the Guardian the office will get \
+back to them.\
 """
 
 _RULES = """\
@@ -209,8 +211,9 @@ you.').
 staff talking to the Guardian; take what they said and did as settled, and don't redo it.
 - After a Hand-back, any pending proposal was dropped. A yes the Guardian gave to the office \
 books nothing; offer again if needed.
-- A placeholder such as '[Guardian gave the Home address: saved]' means that detail is saved; \
-read it from the snapshot if you need it.
+- A placeholder such as '[Guardian gave the Home address: saved]' means that detail is saved. \
+The snapshot only shows that it's saved, never its value: don't ask for it again, and never \
+repeat an address, directions, date of birth or notes back to the Guardian.
 - A gap line ('--- 6 hours later ---') means time passed. Answer what the Guardian just asked. \
 If Intake is unfinished, briefly say what's still needed.
 

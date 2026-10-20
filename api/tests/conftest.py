@@ -5,6 +5,7 @@ import os
 from collections.abc import Callable, Generator
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +18,10 @@ from sqlalchemy.orm import Session
 # autouse: no test may reach a real SMTP server, and a send from a background task would not
 # show up in a test that forgot to request the fixture.
 from tests.fake_mail import fake_mail  # noqa: F401
-from tests.fake_twilio import fake_twilio  # noqa: F401
+from tests.fake_twilio import FakeTwilio, fake_twilio  # noqa: F401
+
+if TYPE_CHECKING:
+    from tests.whatsapp_chat import WhatsAppChat
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
@@ -37,6 +41,18 @@ SEEDED_SETTING_MIGRATIONS = (
 # 0035 seeded the default brand colour, which 0051 copies to one row per email.
 DEFAULT_BRAND_COLOR_MIGRATION = MIGRATIONS_DIR / "0035_email_brand_color_setting.py"
 PER_EMAIL_BRAND_COLOR_MIGRATION = MIGRATIONS_DIR / "0051_per_email_brand_color.py"
+
+
+@pytest.fixture
+def whatsapp_chat(
+    db: Session, request: pytest.FixtureRequest
+) -> Generator["WhatsAppChat", None, None]:
+    """One WhatsApp number posting to the real webhook route (`tests/whatsapp_chat.py`)."""
+    # Imported lazily, like `client` below: app.db needs the environment above.
+    from tests.whatsapp_chat import open_whatsapp_chat
+
+    fake: FakeTwilio = request.getfixturevalue("fake_twilio")
+    yield from open_whatsapp_chat(db, fake)
 
 
 @pytest.fixture

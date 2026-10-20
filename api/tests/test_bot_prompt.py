@@ -125,3 +125,15 @@ def test_contains_no_emoji(prompt: str) -> None:
 
 def test_is_long_enough_to_cache(prompt: str) -> None:
     assert len(prompt) >= MIN_CACHEABLE_TOKENS * MAX_CHARS_PER_TOKEN
+
+
+def test_a_closed_account_refusal_is_handed_to_the_office_as_a_question(prompt: str) -> None:
+    sentence = next(line for line in prompt.split(". ") if "`guardian_deactivated`" in line)
+
+    assert "closed" in sentence
+    assert "hand off with `question`" in prompt.split("`guardian_deactivated`", 1)[1][:200]
+
+
+def test_the_agent_is_told_saved_private_details_are_never_repeated(prompt: str) -> None:
+    assert "read it from the snapshot" not in prompt
+    assert "never repeat an address, directions, date of birth or notes" in prompt

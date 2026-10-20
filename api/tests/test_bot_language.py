@@ -1,16 +1,14 @@
-"""The Guardian language: detected by the parser, stored by the webhook, used for every reply.
+"""The state machine's Guardian language: detected by the parser, used for every reply.
 
-Two seams. `reply_for` (with the parser scripted) for the switch rule, the opener, subject names
-and the Spanish skip/none words. The webhook route, with the real bot behind it and `fake_twilio`
-signing each inbound message, for one Spanish fixture conversation per flow: every reply equals
-`render(..., "es", ...)` and the rows written match the English flow. **No test here calls
-Anthropic** (P7-I): the parser is scripted for every test in this module.
+One seam: `reply_for` (with the parser scripted) for the switch rule, the opener, subject names
+and the Spanish skip/none words. The webhook no longer runs this state machine (the agent
+cutover); the agent's language is `bot_turn`'s, tested in `test_bot_turn.py`. **No test here
+calls Anthropic** (P7-I): the parser is scripted for every test in this module.
 """
 
 import datetime
 import uuid
-import xml.etree.ElementTree as ElementTree
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -18,19 +16,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db import get_db
-from app.main import app
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.conversation import Conversation
 from app.models.enums import (
-    AvailabilityMode,
     BookingKind,
     BookingLocation,
     BookingStatus,
     FlagReason,
-    Language,
     UserRole,
 )
 from app.models.subject import Subject
@@ -42,13 +35,10 @@ from app.services import bot_service, parser_service
 from app.services.bot_messages import (
     format_date,
     format_session_line,
-    format_slot_label,
     format_time_range,
     render,
 )
-from tests.fake_twilio import FakeTwilio
 from tests.test_bot_service import (
-    CANONICAL_NUMBER,
     CHILD_LEVEL,
     DATE,
     NOW,
@@ -56,7 +46,6 @@ from tests.test_bot_service import (
     ClientWorld,
     ScriptedParser,
     _answer_up_to_the_notes,
-    _assign,
     _evaluate,
     _make_client,
     _open_intake,
@@ -418,251 +407,12 @@ def test_directions_are_otherwise_kept_as_written(chat: Chat) -> None:
     assert chat.state.collected_data["directions"] == "Gate code 1234"
 
 
-# --- Spanish fixture conversations (the webhook) ------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class SpanishWorld:
     subject: Subject
     tutor: Tutor
     availability_id: uuid.UUID
     client: ClientWorld
-
-
-@dataclass
-class WhatsApp:
-    """One Guardian's thread, posted to the real webhook route with the real bot behind it."""
-
-    api: TestClient
-    fake: FakeTwilio
-    parser: ScriptedParser
-    db: Session
-    sent: int = 0
-
-    def say(
-        self,
-        body: str,
-        *,
-        value: str | None = None,
-        intent: BotIntent = BotIntent.UNKNOWN,
-        language: GuardianLanguage | None = None,
-    ) -> str:
-        """Post `body` with the parser scripted to read it as given; return the TwiML reply."""
-        from app.schemas.bot import ParsedIntent
-
-        self.parser.script(
-            ParsedIntent(
-                intent=intent,
-                answer=value,
-                fields={},
-                confidence_is_low=False,
-                language=language,
-            )
-        )
-        self.sent += 1
-        response = self.fake.post_inbound(
-            self.api,
-            from_number=CANONICAL_NUMBER,
-            body=body,
-            sid=f"SM{self.sent:032d}",
-        )
-        assert response.status_code == 200
-        message = ElementTree.fromstring(response.text).find("Message")
-        assert message is not None and message.text is not None
-
-        return message.text
-
-    def conversation(self) -> Conversation:
-        return self.db.scalars(
-            select(Conversation).where(Conversation.phone_number == CANONICAL_NUMBER)
-        ).one()
-
-
-@pytest.fixture
-def whatsapp(
-    db: Session, fake_twilio: FakeTwilio, parser: ScriptedParser
-) -> Generator[WhatsApp, None, None]:
-    app.dependency_overrides[get_db] = lambda: db
-    try:
-        yield WhatsApp(api=TestClient(app), fake=fake_twilio, parser=parser, db=db)
-    finally:
-        del app.dependency_overrides[get_db]
-
-
-@pytest.fixture
-def spanish(db: Session) -> SpanishWorld:
-    """A Guardian with one Evaluated child (levelled in the subject) and one home, a Spanish
-    conversation, and one tutor free 9:00-10:00 on `DATE` for a subject with a Spanish name."""
-    client = _make_client(db)
-    world = _make_world(db, name_es=SPANISH_SUBJECT)
-    _evaluate(db, client.child_id, levels={world.subject.id: CHILD_LEVEL})
-    _assign(db, client.child_id, world.tutor.id)
-    db.add(
-        Conversation(
-            phone_number=CANONICAL_NUMBER,
-            guardian_id=client.guardian_id,
-            language=Language.ES,
-            last_message_at=datetime.datetime.now(tz=datetime.UTC),
-        )
-    )
-    db.flush()
-
-    return SpanishWorld(
-        subject=world.subject,
-        tutor=world.tutor,
-        availability_id=world.availability_id,
-        client=client,
-    )
-
-
-def test_hola_at_the_webhook_stores_spanish_on_the_conversation(
-    whatsapp: WhatsApp, db: Session
-) -> None:
-    reply = whatsapp.say("Hola", language="es")
-
-    assert reply == f"{render('GREETING_NEW', 'es')} {render('ASK_GUARDIAN_NAME', 'es')}"
-    assert whatsapp.conversation().language is Language.ES
-
-
-def test_a_spanish_guardian_books_a_session_in_spanish(
-    whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
-) -> None:
-    tutor = spanish.tutor.user.name
-    slot = format_slot_label(format_time_range(NINE, TEN, "es"), tutor, "en Home", "es")
-    date = format_date(DATE, "es")
-
-    replies = [
-        whatsapp.say("Hola"),
-        whatsapp.say("quiero reservar una sesión", intent=BotIntent.BOOK, language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("cualquiera", value="2", language="es"),
-        whatsapp.say("el miércoles", value=DATE.isoformat(), language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("sí", value="yes", language="es"),
-    ]
-
-    assert replies == [
-        f"{render('GREETING_RETURNING', 'es', name=GUARDIAN_NAME)} {render('ASK_MENU', 'es')}",
-        f"{render('ASK_SUBJECT', 'es')}\n1. {SPANISH_SUBJECT}",
-        f"{render('ASK_TUTOR', 'es')}\n1. {tutor}\n2. {render('ANY_TUTOR_LABEL', 'es')}",
-        render("ASK_DATE", "es"),
-        f"{render('ASK_SLOT', 'es', date=date)}\n1. {slot}",
-        render("CONFIRM_SLOT", "es", label=slot, date=date),
-        render("BOOKING_CONFIRMED", "es", label=slot, date=date),
-    ]
-    booking = db.execute(select(Booking)).scalar_one()
-    assert booking.status is BookingStatus.CONFIRMED
-    assert booking.child_id == spanish.client.child_id
-    assert booking.home_id == spanish.client.home_id
-    assert booking.subject_id == spanish.subject.id
-    assert booking.user_id == spanish.tutor.user_id
-    assert booking.booked_by_guardian_id == spanish.client.guardian_id
-    assert (booking.scheduled_date, booking.start_time) == (DATE, NINE)
-    assert whatsapp.conversation().language is Language.ES
-
-
-def test_a_spanish_guardian_is_asked_where_and_books_at_the_office_in_spanish(
-    whatsapp: WhatsApp, db: Session, spanish: SpanishWorld
-) -> None:
-    """One home and a Home or office range: the Location question, its office option and the
-    booked reply all in Spanish (#132)."""
-    db.get_one(TutorAvailability, spanish.availability_id).mode = AvailabilityMode.ANYWHERE
-    db.flush()
-    tutor = spanish.tutor.user.name
-    slot = format_slot_label(
-        format_time_range(NINE, TEN, "es"), tutor, render("AT_OFFICE", "es"), "es"
-    )
-    date = format_date(DATE, "es")
-
-    replies = [
-        whatsapp.say("Hola"),
-        whatsapp.say("quiero reservar una sesión", intent=BotIntent.BOOK, language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("1", value="1", language="es"),
-        whatsapp.say("el miércoles", value=DATE.isoformat(), language="es"),
-        whatsapp.say("2", value="2", language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("sí", value="yes", language="es"),
-    ]
-
-    assert replies[4:] == [
-        f"{render('ASK_WHERE', 'es')}\n1. Home\n2. {render('OFFICE_OPTION', 'es')}",
-        f"{render('ASK_SLOT', 'es', date=date)}\n1. {slot}",
-        render("CONFIRM_SLOT", "es", label=slot, date=date),
-        render("BOOKING_CONFIRMED", "es", label=slot, date=date),
-    ]
-    assert "en la oficina" in replies[-1]
-    booking = db.execute(select(Booking)).scalar_one()
-    assert booking.location is BookingLocation.IN_OFFICE
-    assert booking.home_id is None
-
-
-def test_a_spanish_guardian_cancels_a_session_in_spanish(
-    whatsapp: WhatsApp, db: Session, spanish: SpanishWorld, cutoff: None
-) -> None:
-    booking = _make_booking(db, spanish, start=FOUR_PM)
-    line = _session_line(spanish, start=FOUR_PM, end=FIVE_PM)
-
-    replies = [
-        whatsapp.say("Hola"),
-        whatsapp.say("quiero cancelar una sesión", intent=BotIntent.CANCEL, language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("sí", value="yes", language="es"),
-    ]
-
-    assert replies == [
-        f"{render('GREETING_RETURNING', 'es', name=GUARDIAN_NAME)} {render('ASK_MENU', 'es')}",
-        f"{render('ASK_WHICH_TO_CANCEL', 'es')}\n1. {line}",
-        render(
-            "CONFIRM_CANCEL",
-            "es",
-            child=CHILD_NAME,
-            date=format_date(DATE, "es"),
-            time=format_time_range(FOUR_PM, FIVE_PM, "es"),
-        ),
-        render("CANCELLED", "es"),
-    ]
-    assert db.get(Booking, booking.id).status is BookingStatus.CANCELLED
-
-
-def test_a_spanish_guardian_moves_a_session_in_spanish(
-    whatsapp: WhatsApp, db: Session, spanish: SpanishWorld, cutoff: None
-) -> None:
-    original = _make_booking(db, spanish, start=FOUR_PM)
-    line = _session_line(spanish, start=FOUR_PM, end=FIVE_PM)
-    slot = format_slot_label(
-        format_time_range(NINE, TEN, "es"), spanish.tutor.user.name, "en Home", "es"
-    )
-    date = format_date(DATE, "es")
-
-    replies = [
-        whatsapp.say("Hola"),
-        whatsapp.say("necesito cambiar una sesión", intent=BotIntent.RESCHEDULE, language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("el miércoles", value=DATE.isoformat(), language="es"),
-        whatsapp.say("1", value="1"),
-        whatsapp.say("sí", value="yes", language="es"),
-    ]
-
-    assert replies == [
-        f"{render('GREETING_RETURNING', 'es', name=GUARDIAN_NAME)} {render('ASK_MENU', 'es')}",
-        f"{render('ASK_WHICH_TO_MOVE', 'es')}\n1. {line}",
-        render("ASK_NEW_DATE", "es"),
-        f"{render('ASK_SLOT', 'es', date=date)}\n1. {slot}",
-        render(
-            "CONFIRM_RESCHEDULE",
-            "es",
-            label=slot,
-            date=date,
-            child=CHILD_NAME,
-            old_date=date,
-            old_time=format_time_range(FOUR_PM, FIVE_PM, "es"),
-        ),
-        render("BOOKING_MOVED", "es", label=slot, date=date),
-    ]
-    live = db.scalars(select(Booking).where(Booking.status == BookingStatus.CONFIRMED)).all()
-    assert db.get(Booking, original.id).status is BookingStatus.CANCELLED
-    assert [(row.scheduled_date, row.start_time) for row in live] == [(DATE, NINE)]
 
 
 # --- world building -----------------------------------------------------------------------------

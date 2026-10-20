@@ -699,11 +699,8 @@ def _adopted_language(
 
 
 def keyword_language(body: str) -> GuardianLanguage | None:
-    """Spanish for a Spanish-only stop/start keyword, else `None` (no clear language).
-
-    Public because the webhook applies the same rule to a keyword sent under Takeover.
-    """
-    return "es" if bot_messages.is_spanish_keyword(body) else None
+    """Spanish for a Spanish-only stop/start keyword, else `None` (no clear language)."""
+    return "es" if bot_messages.keyword_language(body) is not None else None
 
 
 def _effective_language(

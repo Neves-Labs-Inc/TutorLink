@@ -1,42 +1,31 @@
 """The end of Intake: the Overall grade step, the evaluation notice and the reminder question.
 
-Two seams. `reply_for` (with the parser scripted) for the step cases: grade answers, re-prompts
-and resume. The webhook route, with the real bot behind it and `fake_twilio` signing each
-inbound message, for full Intakes in English and Spanish and for the consent rows, which only
-the webhook writes because only it has the inbound message's id. **No test here calls
-Anthropic** (P7-I): the parser is scripted for every test in this module.
+One seam: `reply_for` (with the parser scripted) for the step cases: grade answers, re-prompts
+and resume. The webhook no longer runs this state machine (the agent cutover); its webhook
+cases went with it. **No test here calls Anthropic** (P7-I): the parser is scripted for every
+test in this module.
 """
 
 import datetime
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db import get_db
-from app.main import app
 from app.models.child import Child
-from app.models.guardian import Guardian
-from app.models.message import Message
-from app.models.reminder_consent import ReminderConsent
 from app.models.enums import ConsentAction, ConsentSource
 from app.schemas.bot import (
     AnswerKind,
     BotIntent,
     BotTurn,
     ConsentInstruction,
-    GuardianLanguage,
     ParsedIntent,
 )
-from app.services import bot_service, client_service, parser_service, reminder_consent_service
+from app.services import bot_service, parser_service
 from app.services.bot_messages import render
-from app.services.bot_state import FlowState, load_state, save_state
-from tests.fake_twilio import FakeTwilio
-from tests.test_bot_language import WhatsApp
+from app.services.bot_state import FlowState, save_state
 from tests.test_bot_service import (
-    CANONICAL_NUMBER,
     DATE_OF_BIRTH,
     NOW,
     Chat,
@@ -290,199 +279,3 @@ def test_two_unclear_reminder_answers_leave_reminders_off_and_record_nothing(
     assert [first.consent, second.consent] == [None, None]
     assert [first.flag_reason, second.flag_reason] == [None, None]
     assert chat.step == bot_service.STEP_MENU
-
-
-# --- full Intakes and the consent rows (the webhook) ----------------------------------------------
-
-
-@pytest.fixture
-def whatsapp(
-    db: Session, fake_twilio: FakeTwilio, parser: ScriptedParser
-) -> Generator[WhatsApp, None, None]:
-    app.dependency_overrides[get_db] = lambda: db
-    try:
-        yield WhatsApp(api=TestClient(app), fake=fake_twilio, parser=parser, db=db)
-    finally:
-        del app.dependency_overrides[get_db]
-
-
-def _step(db: Session) -> str | None:
-    state = load_state(db, phone_number=CANONICAL_NUMBER)
-
-    return None if state is None else state.step
-
-
-def _consents(db: Session) -> list[ReminderConsent]:
-    return list(db.scalars(select(ReminderConsent).order_by(ReminderConsent.created_at)).all())
-
-
-def _last_inbound(db: Session, whatsapp: WhatsApp) -> Message:
-    return db.scalars(select(Message).where(Message.twilio_sid == f"SM{whatsapp.sent:032d}")).one()
-
-
-def _child_turns(name: str, language: str) -> list[tuple[str, str, str]]:
-    """One Child's answers, from its name to its notes: (answer, expected reply, next step)."""
-    return [
-        (name, render("ASK_CHILD_DOB", language), bot_service.STEP_CHILD_DOB),
-        (
-            DATE_OF_BIRTH.isoformat(),
-            render("ASK_CHILD_SCHOOL", language),
-            bot_service.STEP_CHILD_SCHOOL,
-        ),
-        (
-            "Test School",
-            render("ASK_CHILD_GRADE", language, name=name),
-            bot_service.STEP_CHILD_GRADE,
-        ),
-        ("5", render("ASK_CHILD_NOTES", language), bot_service.STEP_CHILD_NOTES),
-        (
-            "none",
-            f"{render('CHILD_ADDED', language, name=name)} {render('ASK_MORE_CHILDREN', language)}",
-            bot_service.STEP_CHILD_MORE,
-        ),
-    ]
-
-
-@pytest.mark.parametrize("language", ["en", "es"])
-@pytest.mark.parametrize("children", [["Sam"], ["Sam", "Robin"]])
-def test_a_first_intake_ends_with_one_evaluation_notice_and_the_reminder_question(
-    whatsapp: WhatsApp, db: Session, language: GuardianLanguage, children: list[str]
-) -> None:
-    script: list[tuple[str, str, str]] = [
-        ("Ada Guardian", render("ASK_ADDRESS", language), bot_service.STEP_INTAKE_ADDRESS),
-        ("1 Test Street", render("ASK_DIRECTIONS", language), bot_service.STEP_INTAKE_DIRECTIONS),
-        ("1234", render("ASK_HOME_LABEL", language), bot_service.STEP_INTAKE_LABEL),
-        ("Home", render("ASK_CHILD_REGISTERED", language), bot_service.STEP_CHILD_REGISTERED),
-        ("no", render("ASK_CHILD_NAME", language), bot_service.STEP_CHILD_NAME),
-    ]
-    for index, name in enumerate(children):
-        if index > 0:
-            script += [
-                (
-                    "yes",
-                    render("ASK_CHILD_REGISTERED", language),
-                    bot_service.STEP_CHILD_REGISTERED,
-                ),
-                ("no", render("ASK_CHILD_NAME", language), bot_service.STEP_CHILD_NAME),
-            ]
-        script += _child_turns(name, language)
-    script += [
-        (
-            "no",
-            f"{render('EVALUATION_NOTICE', language)} {render('ASK_REMINDERS', language)}",
-            bot_service.STEP_REMINDERS_OPT_IN,
-        ),
-        (
-            "yes",
-            f"{render('REMINDERS_ON', language)} {_ready(language)}",
-            bot_service.STEP_MENU,
-        ),
-    ]
-
-    opening = whatsapp.say("Hola" if language == "es" else "Hello", language=language)
-    replies = [opening]
-    steps = [_step(db)]
-    for answer, _, _ in script:
-        replies.append(whatsapp.say(answer, value=answer))
-        steps.append(_step(db))
-
-    greeting = f"{render('GREETING_NEW', language)} {render('ASK_GUARDIAN_NAME', language)}"
-    assert replies == [greeting] + [reply for _, reply, _ in script]
-    assert steps == [bot_service.STEP_INTAKE_NAME] + [step for _, _, step in script]
-    assert sum(render("EVALUATION_NOTICE", language) in reply for reply in replies) == 1
-    assert sorted(db.scalars(select(Child.name)).all()) == sorted(children)
-
-
-@pytest.mark.parametrize(
-    ("body", "value", "action", "language"),
-    [
-        ("yes", "yes", ConsentAction.OPT_IN, "en"),
-        ("no", "no", ConsentAction.OPT_OUT, "en"),
-        ("STOP", None, ConsentAction.OPT_OUT, "en"),
-        ("BAJA", None, ConsentAction.OPT_OUT, "es"),
-    ],
-)
-def test_the_reminder_answer_is_recorded_with_the_reply_as_its_evidence(
-    whatsapp: WhatsApp,
-    db: Session,
-    body: str,
-    value: str | None,
-    action: ConsentAction,
-    language: str,
-) -> None:
-    _webhook_intake_to_the_reminder_question(whatsapp)
-    guardian = db.scalars(select(Guardian)).one()
-
-    reply = whatsapp.say(body, value=value)
-
-    consent = db.scalars(select(ReminderConsent)).one()
-    lead = "REMINDERS_ON" if action is ConsentAction.OPT_IN else "REMINDERS_DECLINED"
-    assert reply == f"{render(lead, language)} {_ready(language)}"
-    assert (consent.guardian_id, consent.action, consent.source) == (
-        guardian.id,
-        action,
-        ConsentSource.INTAKE,
-    )
-    assert consent.message_id == _last_inbound(db, whatsapp).id
-    # The thread's number, which the Intake just stored as the Guardian's.
-    assert consent.phone_number == guardian.phone_number
-
-
-def test_two_unclear_reminder_answers_at_the_webhook_record_no_consent(
-    whatsapp: WhatsApp, db: Session
-) -> None:
-    _webhook_intake_to_the_reminder_question(whatsapp)
-
-    whatsapp.say("maybe")
-    reply = whatsapp.say("hmm")
-
-    assert reply == f"{render('REMINDERS_LEFT_OFF', 'en')} {_ready()}"
-    assert _consents(db) == []
-    assert whatsapp.conversation().flag_reason is None
-    assert _step(db) == bot_service.STEP_MENU
-
-
-@pytest.mark.parametrize("earlier", [None, ConsentAction.OPT_IN, ConsentAction.OPT_OUT])
-def test_an_existing_guardian_adding_a_child_is_asked_about_reminders_only_without_consent(
-    whatsapp: WhatsApp, db: Session, earlier: ConsentAction | None
-) -> None:
-    detail = client_service.create_client(
-        db,
-        name="Ada Guardian",
-        phone_number=CANONICAL_NUMBER,
-        home=client_service.HomeInput(label="Home", address="1 Test Street", directions="1234"),
-    )
-    if earlier is not None:
-        reminder_consent_service.record_consent(
-            db,
-            guardian_id=detail.client.id,
-            action=earlier,
-            source=ConsentSource.STAFF,
-            message_id=None,
-            phone_number=None,
-        )
-    whatsapp.say("hi")
-    whatsapp.say("book", intent=BotIntent.BOOK)
-    whatsapp.say("no", value="no")
-    for answer, _, _ in _child_turns("Sam", "en"):
-        whatsapp.say(answer, value=answer)
-
-    reply = whatsapp.say("no", value="no")
-
-    notice = render("EVALUATION_NOTICE", "en")
-    if earlier is None:
-        assert reply == f"{notice} {render('ASK_REMINDERS', 'en')}"
-        assert _step(db) == bot_service.STEP_REMINDERS_OPT_IN
-    else:
-        assert reply == f"{notice} {_ready()}"
-        assert _step(db) == bot_service.STEP_MENU
-    assert len(_consents(db)) == (0 if earlier is None else 1)
-
-
-def _webhook_intake_to_the_reminder_question(whatsapp: WhatsApp) -> None:
-    whatsapp.say("Hello")
-    for answer in ["Ada Guardian", "1 Test Street", "1234", "Home", "no"]:
-        whatsapp.say(answer, value=answer)
-    for answer, _, _ in _child_turns("Sam", "en"):
-        whatsapp.say(answer, value=answer)
-    whatsapp.say("no", value="no")

@@ -40,6 +40,7 @@ from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.services import bot_tools_booking
+from app.services.bot_context import build_turn_context
 from app.services.bot_tool_contract import CommittedAction, ToolContext, ToolResult, ToolSpec
 
 BUSINESS_ZONE = ZoneInfo("America/New_York")
@@ -278,6 +279,27 @@ def test_propose_stores_one_proposal_and_writes_no_booking(db: Session, world: W
     assert world.conversation.proposed_at == NOW
     assert len(world.conversation.proposal_actions or []) == 1
     assert _live_bookings(db, world) == []
+
+
+@pytest.mark.parametrize("kind", ["book", "cancel", "reschedule"])
+def test_the_snapshot_reads_back_every_part_of_a_stored_proposal(
+    db: Session, world: World, kind: str
+) -> None:
+    """`bot_context` renders the action shape `propose` stores; a key either side renamed alone
+    would read as "unknown" to the agent."""
+    booking_id = _book(db, world, child_id=world.child_id, start=NINE, end=TEN)
+    action = {
+        "book": _book_action(world, start="10:30"),
+        "cancel": _cancel_action(booking_id),
+        "reschedule": _reschedule_action(world, booking_id),
+    }[kind]
+    assert _propose(db, world, [action]).status == "ok"
+
+    snapshot = build_turn_context(db, conversation=world.conversation, now=NOW).snapshot
+
+    proposal = snapshot[snapshot.index("Pending proposal") :]
+    assert "waiting for the Guardian's yes" in proposal
+    assert "unknown" not in proposal
 
 
 def test_a_second_propose_replaces_the_first(db: Session, world: World) -> None:

@@ -8,12 +8,13 @@ webhook and Takeover write the conversation row, and must never wait on a model 
 turn locks the row briefly to read it, then lets go. The tools work on a detached copy of the
 row (`ToolContext.conversation`), and their changes to it are applied under the lock at the
 end. A column someone else changed meanwhile keeps their value. One turn per chat at a time is
-the worker's per-chat advisory lock (ticket 11), not this row lock.
+the worker's per-chat advisory lock (`bot_worker`), held across the whole of `take_turn`,
+sending and settling the proposal included: the proposal "yes" rule relies on it.
 
 **One transaction for the saves.** Every save the tools make joins one transaction, committed
-with the reply. An outage (the model failing after its retry, a tool raising, or the 60 s cap)
-rolls all of it back. A fresh transaction then flags "Bot got stuck" and, once per outage
-stretch, records the fixed apology.
+with the reply. An outage (the model failing after its retry, a tool raising, the 60 s cap, or
+a database error such as a deadlock while recording the reply) rolls all of it back. A fresh
+transaction then flags "Bot got stuck" and, once per outage stretch, records the fixed apology.
 
 **The Takeover check** runs under the end lock, right before the reply is recorded and sent: a
 chat Taken over during the turn drops the reply. The turn's saves stay.
@@ -45,10 +46,17 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from sqlalchemy import inspect, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.models.conversation import Conversation
-from app.models.enums import ConversationStatus, FlagReason, Language, MessageAuthor
+from app.models.enums import (
+    ConversationStatus,
+    FlagReason,
+    Language,
+    MessageAuthor,
+    RedactedField,
+)
 from app.models.message import Message
 from app.services import bot_messages, conversation_service, message_service
 from app.services.bot_model import ModelClient, ModelResponse, ModelUnavailable, ToolCall
@@ -187,13 +195,19 @@ def take_turn(db: Session, *, conversation_id: uuid.UUID, deps: TurnDeps) -> Tur
 
     with _typing_indicator(start.inbound_sid, conversation_id):
         try:
-            agent_reply = _run_agent(db, start.working, deps, started_at)
+            recorded = _record_reply(db, start, _run_agent(db, start.working, deps, started_at))
         except _Outage as exc:
             logger.error("bot turn on conversation %s is an outage: %s", conversation_id, exc)
-            db.rollback()
-            recorded = _Recorded(_record_outage(db, conversation_id=conversation_id, deps=deps))
-        else:
-            recorded = _record_reply(db, start, agent_reply)
+            recorded = _outage(db, conversation_id=conversation_id, deps=deps)
+        except DBAPIError as exc:
+            # A deadlock or lock timeout at the end lock (a number change racing the turn, for
+            # one). No statement text: it can quote the Guardian's data.
+            logger.error(
+                "bot turn on conversation %s is an outage: database error %s",
+                conversation_id,
+                type(exc.orig).__name__,
+            )
+            recorded = _outage(db, conversation_id=conversation_id, deps=deps)
 
         is_delivered = _send(
             db,
@@ -210,6 +224,11 @@ def take_turn(db: Session, *, conversation_id: uuid.UUID, deps: TurnDeps) -> Tur
             )
 
     return recorded.outcome
+
+
+def _outage(db: Session, *, conversation_id: uuid.UUID, deps: TurnDeps) -> _Recorded:
+    db.rollback()
+    return _Recorded(_record_outage(db, conversation_id=conversation_id, deps=deps))
 
 
 def _start_turn(db: Session, *, conversation_id: uuid.UUID) -> _TurnStart | None:
@@ -408,9 +427,19 @@ def _record_reply(db: Session, start: _TurnStart, agent_reply: _AgentReply) -> _
         db.commit()
         recorded = _Recorded(TurnOutcome(kind="skipped_takeover", sent_message_ids=()))
     else:
+        confirmation, paragraphs = _reply_bodies(db, agent_reply)
+        # The reply may echo a private value saved this turn, so it is marked like the
+        # Guardian's message that gave it (spec §5). The fixed confirmation never does.
+        redacted = tuple(field for result in agent_reply.results for field in result.redacted)
+        bodies: list[tuple[str, tuple[RedactedField, ...]]] = [
+            *([] if confirmation is None else [(confirmation, ())]),
+            *((body, redacted) for body in paragraphs),
+        ]
         messages = [
-            message_service.record_bot_reply(db, conversation=row, body=body)
-            for body in _reply_bodies(db, agent_reply)
+            message_service.record_bot_reply(
+                db, conversation=row, body=body, redacted_fields=fields
+            )
+            for body, fields in bodies
         ]
         new_proposal_at = _hold_new_proposal(db, row, start)
         db.commit()
@@ -436,22 +465,25 @@ def _apply_tool_changes(row: Conversation, start: _TurnStart) -> None:
         setattr(row, key, after)
 
 
-def _reply_bodies(db: Session, agent_reply: _AgentReply) -> list[str]:
-    """The commit confirmation, then the reply's paragraphs, at most `MAX_REPLY_MESSAGES`."""
+def _reply_bodies(db: Session, agent_reply: _AgentReply) -> tuple[str | None, list[str]]:
+    """The commit confirmation, if anything was committed, and the reply's paragraphs, at most
+    `MAX_REPLY_MESSAGES`."""
     paragraphs = [part.strip() for part in agent_reply.text.split(PARAGRAPH_BREAK) if part.strip()]
     if len(paragraphs) > MAX_REPLY_MESSAGES:
         kept = MAX_REPLY_MESSAGES - 1
         paragraphs = [*paragraphs[:kept], PARAGRAPH_BREAK.join(paragraphs[kept:])]
 
     committed = [action for result in agent_reply.results for action in result.committed]
-    if committed:
-        confirmation = bot_messages.commit_confirmation(
+    confirmation = (
+        bot_messages.commit_confirmation(
             db,
             committed=[(action.kind, action.booking_id) for action in committed],
             language=agent_reply.language.value,
         )
-        paragraphs = [confirmation, *paragraphs]
-    return paragraphs
+        if committed
+        else None
+    )
+    return confirmation, paragraphs
 
 
 def _hold_new_proposal(

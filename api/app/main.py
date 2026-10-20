@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import get_settings
-from app.db import SessionLocal
+from app.db import BotWorkerSessionLocal, SessionLocal
 from app.routers import (
     archive,
     assigned_tutors,
@@ -46,6 +46,8 @@ from app.routers import (
     users,
     webhook,
 )
+from app.services import bot_agent
+from app.services.bot_worker import run_forever as run_bot_turns_forever
 from app.services.reminder_scheduler import run_forever as run_reminders_forever
 from app.services.reply_window_scheduler import run_forever as run_reply_window_checks_forever
 from app.services.retention_scheduler import run_forever
@@ -60,8 +62,8 @@ if not app_logger.handlers:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the retention, reminder and reply-window schedulers for exactly as long as the app
-    is served.
+    """Run the retention, reminder and reply-window schedulers and the bot's due-turn worker for
+    exactly as long as the app is served.
 
     Here rather than in the scheduler modules, which are service code and know nothing about
     FastAPI. No task touches the database until its first tick, so entering this is free. On
@@ -72,6 +74,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(run_forever(SessionLocal)),
         asyncio.create_task(run_reminders_forever(SessionLocal)),
         asyncio.create_task(run_reply_window_checks_forever(SessionLocal)),
+        asyncio.create_task(
+            run_bot_turns_forever(
+                BotWorkerSessionLocal,
+                take_turn=bot_agent.turn_runner(bot_agent.default_deps()),
+            )
+        ),
     ]
     try:
         yield

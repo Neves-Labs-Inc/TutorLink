@@ -1924,7 +1924,8 @@ list reads as an inbox.
       "last_message_at": "2026-08-20T14:31:02Z",
       "last_message_preview": "Could we move Tommy to Thursday?",
       "unread": true,
-      "flag_reason": null
+      "flag_reason": null,
+      "intake_in_progress": false
     }
   ],
   "total": 42,
@@ -1945,6 +1946,10 @@ independent of `status` — a flagged conversation can still be `bot` (unattende
 it is not null, which is what lets an admin triage the queue instead of scanning the whole inbox for
 one. A flag stays until an admin marks the conversation handled or, for `reactivation_request`,
 approves or denies the request; a later flag replaces an earlier one and re-stamps `flagged_at`.
+
+`intake_in_progress` (on the list item and the detail) is derived on read, never stored: `true`
+while the chat has no Guardian who holds its number, or its Guardian has no Home or no Child
+(an archived Child still counts). It drives the office's "Intake in progress" badge.
 
 ### `GET /api/conversations/{id}`
 
@@ -1967,7 +1972,8 @@ returns **404**.
   "reactivation_request": null,
   "message_count": 412,
   "unread_count": 3,
-  "created_at": "2026-06-02T09:14:00Z"
+  "created_at": "2026-06-02T09:14:00Z",
+  "intake_in_progress": false
 }
 ```
 

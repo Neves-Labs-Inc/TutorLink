@@ -63,6 +63,7 @@ the Guardian is reached outside the bot, so there is nothing for Staff to take o
 
 import datetime
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, ScalarSelect, Select, case, delete, func, or_, select, update
@@ -81,7 +82,7 @@ from app.models.enums import (
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.services import child_service
+from app.services import child_service, intake_progress
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
 
 # WhatsApp's customer-service window: free-form messages only within this of the last inbound.
@@ -113,6 +114,7 @@ class ConversationListItem:
     unread: bool
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
+    intake_in_progress: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +129,7 @@ class ConversationDetail:
     reactivation_child: Child | None
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
+    intake_in_progress: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +350,48 @@ def owner_id(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     return guardian.id if is_holding else None
 
 
+def owner_ids(
+    db: Session, *, conversation_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """`owner_id` for many threads in one query. Same rule, so the two cannot disagree.
+
+    A Guardian whose stored number equals the thread's holds it outright. Only a mismatch needs
+    `_spellings` (which reads a setting), so the ordinary page costs no per-row query.
+    """
+    rows = db.execute(
+        select(Conversation.id, Conversation.phone_number, Guardian.id, Guardian.phone_number)
+        .outerjoin(Guardian, Guardian.id == Conversation.guardian_id)
+        .where(Conversation.id.in_(conversation_ids))
+    ).all()
+
+    return {
+        conversation_id: _holder_id(
+            db,
+            thread_number=thread_number,
+            guardian_id=guardian_id,
+            guardian_number=guardian_number,
+        )
+        for conversation_id, thread_number, guardian_id, guardian_number in rows
+    }
+
+
+def _holder_id(
+    db: Session,
+    *,
+    thread_number: str,
+    guardian_id: uuid.UUID | None,
+    guardian_number: str | None,
+) -> uuid.UUID | None:
+    if guardian_id is None or guardian_number is None:
+        return None
+
+    is_holding = guardian_number == thread_number or guardian_number in _spellings(
+        db, phone_number=thread_number
+    )
+
+    return guardian_id if is_holding else None
+
+
 def link_to_holder(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     """The Guardian holding the thread's number, linking the thread to them when it names
     someone else or no one; `None` when nobody holds it.
@@ -435,6 +480,10 @@ def list_conversations(
         .limit(limit)
         .offset(offset)
     ).all()
+    # One batched read for the page, so the badge adds a fixed number of queries, not one a row.
+    in_progress = intake_progress.intake_in_progress_for(
+        db, [conversation.id for conversation, *_ in rows]
+    )
     items = [
         ConversationListItem(
             conversation=conversation,
@@ -444,6 +493,9 @@ def list_conversations(
             unread=unread_row,
             last_client_message_at=last_client,
             is_window_open=is_window_open(last_client, now=now),
+            # A thread merged away between the page query and the batch has no entry; it still
+            # shows, so default to the badge rather than failing the whole inbox.
+            intake_in_progress=in_progress.get(conversation.id, True),
         )
         for conversation, guardian, holder, preview, unread_row, last_client in rows
     ]
@@ -1115,6 +1167,9 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         is_window_open=is_window_open(
             last_client_message_at, now=datetime.datetime.now(tz=datetime.UTC)
         ),
+        intake_in_progress=intake_progress.intake_progress(
+            db, conversation=conversation
+        ).in_progress,
     )
 
 

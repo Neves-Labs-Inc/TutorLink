@@ -11,7 +11,7 @@ is 400 and not 404. The addressed resource is the child. Precedent:
 `user_service._assert_profile_matches_role` for a `tutor_id` that does not resolve.
 
 `date_of_birth_is_plausible` is the one date-of-birth rule (A-46): the router turns a refusal
-into a 400, the bot into a re-prompt. "Today" is the business date (`clock.business_today`,
+into a 400, the bot's tool into a refusal. "Today" is the business date (`clock.business_today`,
 per `BUSINESS_TIMEZONE`), which a test freezes through `clock.business_now`. `notes` is normalised here rather than in a validator (CONSTITUTION §7): stripped,
 and blank is stored as NULL. On update, an absent `notes` or `date_of_birth` is left alone, a
 blank `notes` clears it, and `date_of_birth` cannot be cleared (A-47).
@@ -105,12 +105,15 @@ def create_child(
     *,
     guardian_ids: Sequence[uuid.UUID],
     name: str,
-    date_of_birth: datetime.date,
+    date_of_birth: datetime.date | None,
     grade_level: int | None,
     school_name: str,
     notes: str | None = None,
 ) -> Child:
-    _assert_plausible(date_of_birth)
+    # The bot saves a Child without one: it is asked for only when volunteered.
+    if date_of_birth is not None:
+        _assert_plausible(date_of_birth)
+
     guardians = _validated_guardian_ids(db, guardian_ids)
 
     child = Child(

@@ -38,7 +38,8 @@ IaC.
 - **Redis removed everywhere** (prod, dev, CI). Its four jobs move to PostgreSQL:
   - chat broadcast: LISTEN/NOTIFY;
   - login limiter: `login_attempts` table plus an advisory lock;
-  - bot flow state: `bot_flow_state` table;
+  - bot flow state: `bot_flow_state` table (since dropped in `0054`: the bot agent keeps its state on
+    `conversations` and `messages`);
   - duplicate-delivery guard: `UNIQUE(messages.twilio_sid)` only.
 - **Retention purge:** runs in-process every hour, fires at `retention_purge_hour_utc` (an
   admin-editable setting, default 3 UTC), and is guarded by `pg_try_advisory_xact_lock(8102, 1)` so
@@ -79,7 +80,7 @@ The "done" rows exist in `56b5f9e`. None of them has been through the verificati
 | **B1** | Broadcast on LISTEN/NOTIFY; the socket pump rebuilds frames from the DB | **partial**: `broadcast_service.py` is converted; `routers/conversation_stream.py` and its tests still use Redis | — |
 | **B2** | Publishers drop Redis; duplicate deliveries handled by the unique constraint only | **partial**: routers and `webhook_service.py` are converted; `tests/test_webhook_routes.py` still uses the Redis double | — |
 | **RL** | Login limiter on `login_attempts` | not started | M0 |
-| **BS** | Bot flow state on `bot_flow_state` | not started | M0 |
+| **BS** | Bot flow state on `bot_flow_state` | superseded: the bot agent replaced it; `0054` dropped the table | M0 |
 | **P** | In-process hourly retention scheduler | not started | M0, S |
 | **X** | Delete Redis from the code, dependencies, compose, CI and Readme | not started | B1, B2, RL, BS, P, S, D (last) |
 | **CD** | Deploy workflow for ECR, the migration task and the ECS service | not started | — |
@@ -138,6 +139,10 @@ Files: `services/rate_limit_service.py`, `routers/auth.py`, `tests/test_auth_rat
 
 ### BS — bot flow state on PostgreSQL
 
+> Superseded: the WhatsApp bot agent replaced the state machine, and migration `0054` dropped
+> `bot_flow_state`. The bot's runtime state lives on `conversations` (`proposal_actions`/`proposed_at`,
+> `no_progress_count`, `outage_apology_sent_at`, `turn_due_at`) and `messages.redacted_fields`.
+
 Files: `services/bot_state.py`, `services/bot_service.py`, `tests/test_bot_state.py`,
 `tests/test_bot_service.py`.
 
@@ -158,12 +163,12 @@ bounds entry, 0–23); `cli.py`; `main.py` (lifespan wiring only); tests.
 - **What `run_guarded_purge` does:** one transaction under `pg_try_advisory_xact_lock(8102, 1)`, which
   covers:
   - `purge_expired_messages`
-  - reaping expired `bot_flow_state` rows
+  - reaping expired `bot_flow_state` rows (removed with the table in `0054`)
   - reaping `login_attempts` rows older than their window
-- **Log lines**, exactly (the runbook quotes them):
+- **Log lines**, exactly (the runbook quotes them; `flow_states=%d` went with `bot_flow_state` in `0054`):
   ```
-  retention purge: ran messages=%d conversations=%d flow_states=%d login_attempts=%d
-  retention purge: ran, chat purge disabled (chat_retention_days=0) flow_states=%d login_attempts=%d
+  retention purge: ran messages=%d conversations=%d login_attempts=%d
+  retention purge: ran, chat purge disabled (chat_retention_days=0) login_attempts=%d
   retention purge: skipped, another instance holds the lock
   retention purge: failed
   ```

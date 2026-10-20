@@ -1,21 +1,21 @@
-"""Age- and expiry-based cleanup: chat history past `chat_retention_days`, bot flows past their
-`expires_at`, and login attempts past the larger rate-limit window.
+"""Age- and expiry-based cleanup: chat history past `chat_retention_days`, and login attempts
+past the larger rate-limit window.
 
 This is a separate module from `message_service` and `conversation_service` on purpose
 (**P7-R**): the age-based DELETE shares no query with the record-and-read path those two modules
 own. It imports `Conversation` and `Message` read-only and writes its own two statements rather
-than reusing theirs. The two reaps live beside it because all three run in the same nightly
-transaction — `retention_scheduler.run_guarded_purge`, the one caller of all three, reached from
-the API's hourly tick and from the `purge-messages` CLI command alike.
+than reusing theirs. The reap lives beside it because both run in the same nightly transaction —
+`retention_scheduler.run_guarded_purge`, the one caller of both, reached from the API's hourly
+tick and from the `purge-messages` CLI command alike.
 
-**The two reaps run even when `chat_retention_days = 0`.** That setting is a records-retention
-choice about chat history (`erd.md:358`); `bot_flow_state` and `login_attempts` are not records.
-A flow past its `expires_at` is already dead to the bot, and a login attempt older than every
-rate-limit window is already invisible to the limiter, so deleting them is expiry, not
-retention — and skipping them because chat purging is off would let both tables grow forever.
+**The reap runs even when `chat_retention_days = 0`.** That setting is a records-retention
+choice about chat history (`erd.md:358`); `login_attempts` are not records. A login attempt
+older than every rate-limit window is already invisible to the limiter, so deleting it is
+expiry, not retention — and skipping it because chat purging is off would let the table grow
+forever.
 
 Nothing here commits. The caller owns the transaction boundary, and it has to be one transaction
-for all three: `run_guarded_purge` holds a transaction-scoped advisory lock across them, and a
+for both: `run_guarded_purge` holds a transaction-scoped advisory lock across them, and a
 commit in the middle would release it while the rest of the run is still deleting.
 """
 
@@ -25,7 +25,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models.bot_flow_state import BotFlowState
 from app.models.conversation import Conversation
 from app.models.enums import ConversationStatus
 from app.models.login_attempt import LoginAttempt
@@ -80,10 +79,6 @@ def purge_expired_messages(db: Session) -> PurgeResult:
         )
 
     return result
-
-
-def reap_expired_flow_states(db: Session) -> int:
-    return db.execute(delete(BotFlowState).where(BotFlowState.expires_at <= func.now())).rowcount
 
 
 def reap_expired_login_attempts(db: Session) -> int:

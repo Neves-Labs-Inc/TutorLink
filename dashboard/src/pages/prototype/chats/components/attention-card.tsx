@@ -26,7 +26,7 @@ type AttentionCardProps = {
   isCompact?: boolean;
 };
 
-const BOT_PROBLEMS = ["stuck", "parse_error"];
+const BOT_PROBLEMS = ["stuck", "didnt_understand"];
 
 export default function AttentionCard({
   conversation,

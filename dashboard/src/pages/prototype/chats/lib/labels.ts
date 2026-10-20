@@ -16,19 +16,21 @@ export const FLAG_LABEL: Record<FlagReason, AttentionReason> = {
   guardian_link_request: "Link request",
   reactivation_request: "Reactivation request",
   stuck: "Bot got stuck",
-  parse_error: "Bot didn't understand",
+  didnt_understand: "Bot didn't understand",
 };
 
 // One line under the reason: what happened and what the office does.
 export const FLAG_EXPLANATION: Record<FlagReason, string> = {
   booking_request:
-    "The bot can't book this one (a Child who isn't Evaluated, or a subject with no Subject level). Book it, then tell the Guardian.",
-  question: "The Guardian asked something the bot can't answer.",
+    "The bot can’t book this one (a Child who isn’t Evaluated, or a subject with no Subject level). Book it, then tell the Guardian.",
+  question: "The Guardian asked something the bot can’t answer.",
   guardian_link_request:
-    "A second Guardian wants to be linked to a Child. Check they're who they say, then link them.",
+    "A second Guardian wants to be linked to a Child. Check they’re who they say, then link them.",
   reactivation_request: "The Guardian asked to restore an archived Child.",
-  stuck: "The bot asked twice and still couldn't get a usable answer.",
-  parse_error: "The bot couldn't read the Guardian's message.",
+  stuck:
+    "Something failed on the bot’s side. The Guardian was told the office will get back to them.",
+  didnt_understand:
+    "The bot kept failing to make sense of the Guardian’s messages.",
 };
 
 export const LANGUAGE_LABEL: Record<Language, string> = {

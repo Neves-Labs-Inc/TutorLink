@@ -197,9 +197,9 @@ def blocked_guardian_ids(db: Session, *, guardian_ids: Collection[uuid.UUID]) ->
 
 
 def _canonical(db: Session, *, phone_number: str) -> str:
-    """`phone_service`'s form of a number, or the number as given when it cannot be parsed:
-    `bot_service._recognise`'s rule, so a stored number compares like with like against
-    `guardians.phone_number` without ever refusing an inbound one."""
+    """`phone_service`'s form of a number, or the number as given when it cannot be parsed, so
+    a stored number compares like with like against `guardians.phone_number` without ever
+    refusing an inbound one."""
     try:
         canonical = normalize_phone_number(db, raw=phone_number)
     except InvalidPhoneNumber:

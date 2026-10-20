@@ -531,6 +531,14 @@ Form-encoded body:
 6. In both branches, broadcast the new message to connected admin sockets — see
    [WebSocket](#websocket).
 
+> **Superseded by the WhatsApp bot agent** (`docs/specs/whatsapp-bot-agent.md`). The webhook now
+> records the message, stamps the chat's `turn_due_at` and answers an empty TwiML document; a worker
+> runs the agent turn and sends the reply through the REST API. The parser, the state machine and its
+> `bot_flow_state` table are gone (the table was dropped in migration `0054`). The bot's runtime state
+> lives on `conversations` (`proposal_actions`/`proposed_at`, `no_progress_count`,
+> `outage_apology_sent_at`, `turn_due_at`) and `messages.redacted_fields`. The two sections below
+> describe the state machine's behaviour and are kept as history.
+
 **When the bot cannot use the message**
 
 Two situations look alike from the client's side — no useful reply arrives — but are not the same
@@ -539,8 +547,7 @@ failure and are handled differently.
 A message the parser returns but the flow cannot act on (an answer that doesn't match what was
 asked, an unrecognised choice) gets a re-prompt. A second consecutive one gets a second re-prompt.
 A third failure in the same step stops the bot from asking again: it replies that it couldn't
-follow along and an admin will reach out, leaves the flow state untouched — it expires 30 minutes
-after its last write rather than being cleared — and flags the conversation `stuck`. The reply still
+follow along and an admin will reach out, and flags the conversation `stuck`. The reply still
 goes out; the flag brings an admin to look, it does not replace the answer the client is owed.
 
 A parser outage — the model call itself failing, rather than returning something the flow can't use
@@ -604,12 +611,9 @@ stream of retries against an endpoint that will keep declining to answer. An emp
 valid instruction to send no reply, which is precisely the semantics of a paused bot: the webhook
 succeeded, the message is recorded, and there is no outbound message to make.
 
-`bot_flow_state` is untouched by a takeover. Live bot flow state keeps its 30-minute expiry and will
-usually expire during a handoff of any length, so when the bot is released the client resumes from a
-fresh state — the same behaviour as any other client who went quiet for half an hour. Freezing the expiry for
-the duration of the handoff was the alternative and is worse: it restores a half-finished intake
-that the admin has by then completed by hand, and the client is asked again for details already on
-file.
+A takeover leaves the bot's runtime state alone, except that handing the chat back drops any
+pending proposal (`proposal_actions`/`proposed_at`), so a yes typed to Staff never commits a Booking.
+When the bot is released it carries on from the chat's history, including whatever Staff did by hand.
 
 ### `POST /webhook/whatsapp/status`
 
@@ -1924,7 +1928,8 @@ list reads as an inbox.
       "last_message_at": "2026-08-20T14:31:02Z",
       "last_message_preview": "Could we move Tommy to Thursday?",
       "unread": true,
-      "flag_reason": null
+      "flag_reason": null,
+      "intake_in_progress": false
     }
   ],
   "total": 42,
@@ -1945,6 +1950,10 @@ independent of `status` — a flagged conversation can still be `bot` (unattende
 it is not null, which is what lets an admin triage the queue instead of scanning the whole inbox for
 one. A flag stays until an admin marks the conversation handled or, for `reactivation_request`,
 approves or denies the request; a later flag replaces an earlier one and re-stamps `flagged_at`.
+
+`intake_in_progress` (on the list item and the detail) is derived on read, never stored: `true`
+while the chat has no Guardian who holds its number, or its Guardian has no Home or no Child
+(an archived Child still counts). It drives the office's "Intake in progress" badge.
 
 ### `GET /api/conversations/{id}`
 
@@ -1967,7 +1976,8 @@ returns **404**.
   "reactivation_request": null,
   "message_count": 412,
   "unread_count": 3,
-  "created_at": "2026-06-02T09:14:00Z"
+  "created_at": "2026-06-02T09:14:00Z",
+  "intake_in_progress": false
 }
 ```
 
@@ -2074,7 +2084,7 @@ conversation stuck in a pause.
 Releasing a conversation that is already `bot` is a no-op **200**, for the same reason a duplicate
 claim by the holder is: the caller asked for a state the conversation is already in.
 
-The bot resumes from a fresh flow state, not from wherever it was when the takeover began — see
+The bot carries on from the chat's history, with any pending proposal dropped — see
 [`POST /webhook/whatsapp`](#post-webhookwhatsapp).
 
 ### `POST /api/conversations/{id}/read`

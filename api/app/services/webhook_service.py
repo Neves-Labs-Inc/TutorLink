@@ -1,4 +1,4 @@
-"""What the two Twilio webhooks do: check the signature, record the delivery, run one turn.
+"""What the two Twilio webhooks do: check the signature, record the delivery, schedule a turn.
 
 **The signature is the whole of this surface's authentication.** `/webhook/*` carries no auth
 dependency (see `app/routers/webhook.py`), so `signature_is_valid` returning `True` is the only
@@ -12,13 +12,16 @@ cannot turn a committed write into the 500 Twilio would retry for hours.
 
 **The inbound insert is the only redelivery dedup.** Twilio retries a delivery it believes
 failed with the same `MessageSid`, and `UNIQUE (messages.twilio_sid)` is what recognises it:
-`record_inbound` returns `None` when the SID is already recorded, and `_turn` stops there with
-empty TwiML — no status branch, no row lock, no bot turn, nothing for the router to publish.
-That is sufficient on its own, concurrency included. A duplicate arriving while the first is
-still in flight blocks on the unique index until the first transaction ends: if it committed,
-the duplicate's insert conflicts and it takes the empty branch; if it rolled back, nothing was
-recorded and the duplicate is the one turn that runs. Either way exactly one bot turn commits.
-No second store is consulted first, so there is nothing to fall out of step with the row.
+`record_inbound` returns `None` when the SID is already recorded, and `handle_inbound` stops
+there — no keyword, no turn marker, nothing for the router to publish. A duplicate arriving
+while the first is still in flight blocks on the unique index until the first transaction
+ends, and then either conflicts or is the one that records.
+
+**The bot answers later, never here** (docs/specs/whatsapp-bot-agent.md §7). A message to a
+chat with the bot stamps `turn_due_at` four seconds ahead, each new message pushing it on, and
+`bot_worker` runs one turn for the burst once it falls due. The webhook always answers Twilio
+with empty TwiML. The one reply written here is the fixed STOP/START confirmation, recorded
+`queued` and sent by the router after the commit; a keyword starts no turn.
 
 **`From` is stored with the `whatsapp:` prefix stripped and nothing else done to it** (P7-H).
 It does not go through `phone_service`: an inbound message is proof of dialability by delivery,
@@ -26,13 +29,13 @@ and a strict validator refusing it on stale libphonenumber metadata would drop a
 message behind a 400 Twilio then retries forever. Every other write path in this codebase
 normalises, and that asymmetry is deliberate rather than an oversight.
 
-**Two outbound mechanisms, two status lifecycles, and they never meet** (amendment P7-3,
-`docs/erd.md:349-356`, `docs/api-design.md:527-534`). A bot reply leaves as TwiML in this
-webhook's own response and is recorded `sent` with a NULL `twilio_sid`, so it can never reach
-`handle_status`; that callback advances only messages sent through Twilio's REST API, which is
-an admin's reply typed on the socket.
+**Every outbound message goes through Twilio's REST API and carries a SID**, so the status
+callback advances bot replies, office replies and notices alike (§7 "Limits and retries"). A
+bot reply Twilio reports `failed` or `undelivered` also flags the chat "Bot got stuck"; it is
+never resent, since a late resend could land after the chat moved on.
 """
 
+import datetime
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -46,20 +49,20 @@ from app.models.enums import (
     ConsentAction,
     ConsentSource,
     ConversationStatus,
+    FlagReason,
     Language,
+    MessageAuthor,
     MessageStatus,
     SystemMessageKind,
 )
 from app.models.message import Message
-from app.schemas.bot import BotTurn, ReminderButton
+from app.schemas.bot import ReminderButton
 from app.services import (
     bot_messages,
-    bot_service,
     conversation_service,
     message_service,
     reminder_consent_service,
     reminder_service,
-    twilio_service,
 )
 from app.services.twilio_service import (
     TwilioSendFailed,
@@ -70,6 +73,11 @@ from app.services.twilio_service import (
 logger = logging.getLogger(__name__)
 
 WHATSAPP_PREFIX = "whatsapp:"
+# The debounce (spec §7): a burst of messages gets one turn, this long after the last of them.
+TURN_DEBOUNCE = datetime.timedelta(seconds=4)
+
+# A merge can move a message to another chat once while a callback waits on the first.
+CHAT_LOCK_ATTEMPTS = 2
 
 # Twilio sends more delivery states than `messages.status` models. `undelivered` is a terminal
 # failure carrying an `ErrorCode` and is recorded as one; `sending` and `read` are the finer
@@ -88,18 +96,17 @@ TWILIO_STATUSES: dict[str, MessageStatus] = {
 
 
 @dataclass(frozen=True, slots=True)
-class InboundTurn:
-    """The TwiML to answer Twilio with, and the rows the router broadcasts after it commits.
+class Inbound:
+    """The rows the router broadcasts after it commits.
 
-    `recorded` is empty on a redelivery, one row when an admin holds the thread, and two when
-    the bot answered. It carries `Message` rows rather than serialised events so the mapping to
-    a response shape stays in the router (§5).
+    `recorded` is empty on a redelivery and holds the inbound message otherwise. It carries
+    `Message` rows rather than serialised events so the mapping to a response shape stays in
+    the router (§5).
 
-    `notice` is a reminder-consent confirmation recorded `queued` under Takeover. The router
-    sends it with `send_notice` after the commit, then broadcasts it.
+    `notice` is a STOP/START confirmation recorded `queued`. The router sends it with
+    `send_notice` after the commit, then broadcasts it.
     """
 
-    twiml: str
     recorded: tuple[Message, ...]
     notice: Message | None = None
 
@@ -128,23 +135,40 @@ def handle_inbound(
     body: str,
     twilio_sid: str,
     button_payload: str | None = None,
-) -> InboundTurn:
-    """Record one inbound message and decide what to say back.
-
-    The order of what follows is the specification, not an implementation choice
-    (`docs/api-design.md:461-478`), and the router's signature check precedes all of it.
+) -> Inbound:
+    """Record one inbound message, answer a STOP/START keyword, and schedule the bot's turn.
 
     `button_payload` is Twilio's `ButtonPayload`: a quick-reply tap, whose `body` is the
-    button's text. A payload that is not a reminder button is ignored, and the tap is read as
-    the text it carries.
+    button's text. "Stop reminders" is a STOP; any other tap ("Book a session" included) is
+    read as the text it carries.
     """
-    return _turn(
-        db,
-        twilio_from=twilio_from,
-        body=body,
-        twilio_sid=twilio_sid,
-        button=_reminder_button(button_payload),
+    phone_number = twilio_from.removeprefix(WHATSAPP_PREFIX)
+    # Locked (FOR NO KEY UPDATE) and re-read: the status read below is the current one.
+    conversation = conversation_service.resolve_or_create(db, phone_number=phone_number)
+
+    # Recorded before anything else, whoever holds the chat: the office must be able to read
+    # what the Guardian said while the bot was silent.
+    inbound = message_service.record_inbound(
+        db, conversation=conversation, body=body, twilio_sid=twilio_sid
     )
+
+    if inbound is None:
+        return Inbound(recorded=())
+
+    # A thread whose Guardian left its number is re-linked to whoever holds it now, or a STOP
+    # would be recorded for the old Guardian.
+    conversation_service.link_to_holder(db, conversation=conversation)
+    notice = _confirm_consent_keyword(
+        db, conversation=conversation, inbound=inbound, button=_reminder_button(button_payload)
+    )
+    if notice is None and conversation.status is ConversationStatus.BOT:
+        conversation_service.mark_turn_due(
+            db,
+            conversation=conversation,
+            at=datetime.datetime.now(tz=datetime.UTC) + TURN_DEBOUNCE,
+        )
+
+    return Inbound(recorded=(inbound,), notice=notice)
 
 
 def handle_status(
@@ -167,6 +191,9 @@ def handle_status(
     `messages.status` folds into `delivered`. That step may wait for a reminder send still
     being recorded (`twilio_to`, the callback's `To`), after which the message's SID is
     committed too.
+
+    A bot reply that fails here flags its chat "Bot got stuck" (spec §6), once: a replayed
+    callback no longer moves the row, so it flags nothing.
     """
     reminder_service.apply_delivery_status(
         db,
@@ -180,9 +207,41 @@ def handle_status(
     if status is None:
         return None
 
-    return message_service.advance_status(
+    if status is MessageStatus.FAILED:
+        _lock_bot_reply_chat(db, twilio_sid=twilio_sid)
+    advanced = message_service.advance_status(
         db, twilio_sid=twilio_sid, status=status, error_code=error_code
     )
+    if advanced is not None and _is_failed_bot_reply(advanced):
+        logger.error(
+            "bot message %s on conversation %s failed at Twilio (code %s); flagging the chat",
+            advanced.id,
+            advanced.conversation_id,
+            error_code,
+        )
+        conversation = conversation_service.lock(db, conversation_id=advanced.conversation_id)
+        conversation_service.flag(db, conversation=conversation, reason=FlagReason.STUCK)
+
+    return advanced
+
+
+def _lock_bot_reply_chat(db: Session, *, twilio_sid: str) -> None:
+    """Lock the chat of the bot reply `twilio_sid` names, before `advance_status` locks the
+    message: conversation first, as a number change's merge takes them. A merge that moved the
+    message while this waited deleted the chat it was in, so the lookup is retried once."""
+    for _ in range(CHAT_LOCK_ATTEMPTS):
+        conversation_id = message_service.bot_reply_conversation_id(db, twilio_sid=twilio_sid)
+        if conversation_id is None:
+            break
+        try:
+            conversation_service.lock(db, conversation_id=conversation_id)
+        except conversation_service.ConversationNotFound:
+            continue
+        break
+
+
+def _is_failed_bot_reply(message: Message) -> bool:
+    return message.author_kind is MessageAuthor.BOT and message.status is MessageStatus.FAILED
 
 
 def _reminder_button(payload: str | None) -> ReminderButton | None:
@@ -193,74 +252,6 @@ def _reminder_button(payload: str | None) -> ReminderButton | None:
         button = None
 
     return button
-
-
-def _turn(
-    db: Session,
-    *,
-    twilio_from: str,
-    body: str,
-    twilio_sid: str,
-    button: ReminderButton | None,
-) -> InboundTurn:
-    phone_number = twilio_from.removeprefix(WHATSAPP_PREFIX)
-    conversation = conversation_service.resolve_or_create(db, phone_number=phone_number)
-
-    # Recorded **before** the branch, never inside the `bot` arm
-    # (`docs/api-design.md:475-478`). The whole point of a handoff is that the admin can read
-    # what the client said while the bot was silent, so recording as a side effect of bot
-    # processing would lose exactly the messages the takeover feature exists to show.
-    inbound = message_service.record_inbound(
-        db, conversation=conversation, body=body, twilio_sid=twilio_sid
-    )
-
-    if inbound is None:
-        return InboundTurn(twiml=twilio_service.twiml_empty(), recorded=())
-
-    notice = None
-
-    if conversation.status is ConversationStatus.HUMAN:
-        reply = None
-        twiml = twilio_service.twiml_empty()
-        # The bot's turn re-links a thread whose Guardian left its number; this one must too,
-        # or Staff read the sender as that Guardian and their STOP finds no one to record for.
-        conversation_service.link_to_holder(db, conversation=conversation)
-        notice = _confirm_consent_keyword(
-            db, conversation=conversation, inbound=inbound, button=button
-        )
-    else:
-        # REQ-130.4 / P7D-I. Re-read the pending request from the row, never from the identity
-        # map, and under the row lock held to the commit: two overlapping turns must not both
-        # see "nothing pending" and both record one. The lock serialises overlapping *distinct*
-        # messages from one number; a redelivery never reaches this line, since it stopped at
-        # the conflicting insert above. The insert's `last_message_at` update happens to hold
-        # the lock already, and `with_for_update` takes it here regardless, where the read
-        # depends on it, so a change to how recording touches the conversation cannot quietly
-        # drop it. Conversation first, children after — the order `resolve_reactivation`
-        # takes them in (P7D-E), so an approval racing this turn waits rather than deadlocks.
-        # `flag_reason` is re-read under the same lock: `flag()` decides precedence from it,
-        # and so is `language`, which Staff can change from the dashboard.
-        db.refresh(
-            conversation,
-            attribute_names=["reactivation_child_id", "flag_reason", "language"],
-            with_for_update=True,
-        )
-        decided = bot_service.reply_for(
-            db,
-            phone_number=phone_number,
-            body=body,
-            guardian_id=conversation_service.owner_id(db, conversation=conversation),
-            reactivation_pending=conversation.reactivation_child_id is not None,
-            language=None if conversation.language is None else conversation.language.value,
-            button=button,
-        )
-        _apply(db, conversation=conversation, decided=decided, inbound=inbound)
-        reply = message_service.record_bot_reply(db, conversation=conversation, body=decided.reply)
-        twiml = twilio_service.twiml_reply(decided.reply)
-
-    recorded = tuple(row for row in (inbound, reply) if row is not None)
-
-    return InboundTurn(twiml=twiml, recorded=recorded, notice=notice)
 
 
 def send_notice(db: Session, *, notice: Message) -> Message:
@@ -293,13 +284,13 @@ def send_notice(db: Session, *, notice: Message) -> Message:
 def _confirm_consent_keyword(
     db: Session, *, conversation: Conversation, inbound: Message, button: ReminderButton | None
 ) -> Message | None:
-    """Under Takeover, record a STOP/BAJA/PARAR or START/ALTA keyword, or a "Stop reminders"
-    tap, and queue its confirmation.
+    """Record a STOP/BAJA/PARAR or START/ALTA keyword, or a "Stop reminders" tap, and queue
+    its fixed confirmation, whoever holds the chat (spec §3 "Reminder replies").
 
-    Only the exact keywords and the button: the parser is not called while Staff hold the
-    thread, so a free-text phrase (and a "Book a session" tap) is theirs to handle. A thread with no Guardian has nothing to record
-    against, and is left to Staff the same way. A Spanish-only keyword (BAJA, PARAR, ALTA)
-    switches the thread to Spanish, as it would with the bot, and is confirmed in Spanish.
+    Only the exact keywords and the button: a free-text phrase is the agent's to read, or the
+    office's under Takeover. A chat with no Guardian has nothing to record against, so `None`,
+    and the message is an ordinary one. A Spanish-only keyword (BAJA, PARAR, ALTA) switches the
+    chat to Spanish and is confirmed in Spanish.
     """
     if button is ReminderButton.STOP_REMINDERS or bot_messages.is_stop_keyword(inbound.body):
         action: ConsentAction | None = ConsentAction.OPT_OUT
@@ -311,8 +302,7 @@ def _confirm_consent_keyword(
     notice = None
     owner = conversation_service.owner_id(db, conversation=conversation)
     if action is not None and owner is not None:
-        # The bot's language rule for a keyword: a Spanish-only one switches the thread.
-        detected = bot_service.keyword_language(inbound.body)
+        detected = bot_messages.keyword_language(inbound.body)
         if detected is not None and conversation.language is not Language(detected):
             conversation_service.set_language(
                 db, conversation=conversation, language=Language(detected)
@@ -336,58 +326,3 @@ def _confirm_consent_keyword(
         )
 
     return notice
-
-
-def _apply(db: Session, *, conversation: Conversation, decided: BotTurn, inbound: Message) -> None:
-    """Write the conversation mutations the bot decided on but left to its caller (P7-C).
-
-    A flag does **not** suppress the reply (`docs/api-design.md:479-500`): the client is told
-    an admin will reach out, and that reply is recorded and returned like any other.
-
-    A Guardian language the turn adopted is stored, so the next turn replies in it.
-
-    A reminder consent is recorded with the inbound message as its evidence and the thread's
-    number as where it came from, after the link so a thread linked on this very turn still has
-    its Guardian.
-
-    A reactivation request is recorded last, and flags the thread `reactivation_request`
-    (REQ-132.3). The bot only returns one when the column read under the row lock said nothing
-    was pending, so `ReactivationAlreadyPending` cannot fire here; it is the service's own guard.
-    """
-    if decided.link_guardian_id is not None:
-        conversation_service.link_guardian(
-            db, conversation=conversation, guardian_id=decided.link_guardian_id
-        )
-
-    if decided.language is not None:
-        conversation_service.set_language(
-            db, conversation=conversation, language=Language(decided.language)
-        )
-
-    # Read after the link, so a thread linked on this very turn has its Guardian.
-    owner = conversation_service.owner_id(db, conversation=conversation)
-
-    if decided.consent is not None and owner is None:
-        # The bot asks only at a step that has a Guardian, and reports the link on that turn.
-        logger.warning(
-            "dropped a %s consent on conversation %s: it has no guardian",
-            decided.consent.action.value,
-            conversation.id,
-        )
-    elif decided.consent is not None:
-        reminder_consent_service.record_consent(
-            db,
-            guardian_id=owner,
-            action=decided.consent.action,
-            source=decided.consent.source,
-            message_id=inbound.id,
-            phone_number=conversation.phone_number,
-        )
-
-    if decided.flag_reason is not None:
-        conversation_service.flag(db, conversation=conversation, reason=decided.flag_reason)
-
-    if decided.reactivation_child_id is not None:
-        conversation_service.request_reactivation(
-            db, conversation=conversation, child_id=decided.reactivation_child_id
-        )

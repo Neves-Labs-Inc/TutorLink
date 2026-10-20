@@ -29,14 +29,14 @@ import pathlib
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import delete
+from sqlalchemy import delete, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -50,7 +50,9 @@ from app.models.enums import (
     SystemMessageKind,
     UserRole,
 )
-from app.models.guardian import Guardian
+from app.models.child import Child
+from app.models.guardian import ChildGuardian, Guardian
+from app.models.home import GuardianHome, Home
 from app.models.message import Message
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -122,12 +124,27 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
         "last_client_message_at",
         "is_window_open",
         "flagged_at",
+        "intake_in_progress",
     }
     assert item["guardian"] == {"id": str(guardian.id), "name": guardian.name}
     assert item["taken_over_by"] == {"id": str(admin.id), "name": admin.name}
     assert item["last_message_preview"] == "Could we move Tommy?"
     assert item["status"] == "human"
     assert item["flag_reason"] == "stuck"
+
+
+def test_a_chat_the_bot_did_not_understand_reads_as_didnt_understand(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    _make_conversation(db, marker=marker, flag_reason=FlagReason.DIDNT_UNDERSTAND)
+
+    item = api.get("/api/conversations", params={"q": marker}, headers=_auth(admin)).json()[
+        "items"
+    ][0]
+
+    assert item["flag_reason"] == "didnt_understand"
 
 
 def test_the_list_reads_as_an_inbox_newest_activity_first(api: TestClient, db: Session) -> None:
@@ -461,10 +478,62 @@ def test_the_detail_carries_the_counts_the_thread_header_shows(
         "is_window_open",
         "last_client_message_at",
         "language",
+        "intake_in_progress",
     }
     assert body["message_count"] == 2
     assert "unread_count" not in body
     assert body["created_at"] is not None
+
+
+def test_a_thread_with_no_guardian_is_intake_in_progress_on_list_and_detail(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker)
+
+    listed = _list_rows(api, admin, marker)["items"][0]
+    detail = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert listed["intake_in_progress"] is True
+    assert detail["intake_in_progress"] is True
+
+
+@pytest.mark.parametrize(
+    ("has_home", "has_child", "expected"),
+    [(True, False, True), (False, True, True), (True, True, False)],
+)
+def test_a_named_guardian_is_in_intake_until_they_have_a_home_and_a_child(
+    api: TestClient, db: Session, has_home: bool, has_child: bool, expected: bool
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_held_conversation(db, marker=marker)
+    if has_home:
+        _add_home(db, conversation.guardian_id)
+    if has_child:
+        _add_child(db, conversation.guardian_id)
+
+    listed = _list_rows(api, admin, marker)["items"][0]
+    detail = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert listed["intake_in_progress"] is expected
+    assert detail["intake_in_progress"] is expected
+
+
+def test_the_list_query_count_does_not_grow_with_the_rows(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    small_marker, large_marker = _marker(), _marker()
+    for _ in range(2):
+        _add_home(db, _make_held_conversation(db, marker=small_marker).guardian_id)
+    for _ in range(8):
+        _add_home(db, _make_held_conversation(db, marker=large_marker).guardian_id)
+
+    _list_rows(api, admin, small_marker)  # warms one-off reads (the login row) out of the count
+    small = _statement_count(db, lambda: _list_rows(api, admin, small_marker))
+    large = _statement_count(db, lambda: _list_rows(api, admin, large_marker))
+
+    assert large == small
 
 
 @pytest.mark.parametrize(("method", "path"), ID_BEARING_ROUTES)
@@ -1031,6 +1100,54 @@ def _marker() -> str:
     """The digits every conversation in one test shares, so `?q=` isolates it from the rows the
     test database carries over from earlier runs."""
     return f"{uuid.uuid4().int % 10**8:08d}"
+
+
+def _make_held_conversation(db: Session, *, marker: str) -> Conversation:
+    # The Guardian holds the thread's number: `owner_id` treats any other Guardian as no one.
+    conversation = _make_conversation(db, marker=marker)
+    guardian = Guardian(
+        name=f"Guardian {uuid.uuid4().hex[:8]}",
+        phone_number=conversation.phone_number,
+        is_archived=False,
+    )
+    db.add(guardian)
+    db.flush()
+    conversation.guardian_id = guardian.id
+    db.flush()
+
+    return conversation
+
+
+def _add_home(db: Session, guardian_id: uuid.UUID | None) -> None:
+    home = Home(address="1 Elm St", is_archived=False)
+    db.add(home)
+    db.flush()
+    db.add(GuardianHome(guardian_id=guardian_id, home_id=home.id))
+    db.flush()
+
+
+def _add_child(db: Session, guardian_id: uuid.UUID | None) -> None:
+    child = Child(name="Tommy", school_name="Test School", is_archived=False)
+    db.add(child)
+    db.flush()
+    db.add(ChildGuardian(child_id=child.id, guardian_id=guardian_id))
+    db.flush()
+
+
+def _statement_count(db: Session, call: Callable[[], object]) -> int:
+    statements: list[str] = []
+
+    def record(*args: object) -> None:
+        statements.append(str(args[2]))
+
+    bind = db.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        call()
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+
+    return len(statements)
 
 
 def _phone_number(marker: str) -> str:

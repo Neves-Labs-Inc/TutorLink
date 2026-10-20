@@ -2,7 +2,12 @@ import { createContext, useContext, type ReactNode } from 'react'
 
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { StatusBadge } from '@/components/shared/StatusBadge'
-import { conversationDisplayName, conversationHolderLabel, relativeTimeLabel } from '@/lib/chatList'
+import {
+  conversationDisplayName,
+  conversationHolderLabel,
+  FLAG_REASON_LABELS,
+  relativeTimeLabel,
+} from '@/lib/chatList'
 import type { Conversation } from '@/lib/queries/conversations'
 import { cn } from '@/lib/utils'
 
@@ -102,11 +107,19 @@ const ConversationCell = ({ conversation, isSelected, now }: ConversationCellPro
         <div className="text-xs font-normal text-muted-foreground">{conversation.phone_number}</div>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
+        {conversation.flag_reason && (
+          <StatusBadge
+            status={conversation.flag_reason}
+            label={FLAG_REASON_LABELS[conversation.flag_reason]}
+          />
+        )}
+        {conversation.intake_in_progress && (
+          <StatusBadge status="intake_in_progress" label="Intake in progress" />
+        )}
         <StatusBadge status={holder !== null ? 'human' : 'bot'} />
         {holder !== null && (
           <span className="text-xs font-normal text-muted-foreground">{holder}</span>
         )}
-        {conversation.flag_reason && <StatusBadge status={conversation.flag_reason} />}
       </div>
       <div className="truncate text-sm font-normal text-muted-foreground">
         {conversation.last_message_preview}

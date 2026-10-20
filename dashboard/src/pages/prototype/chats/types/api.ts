@@ -20,7 +20,7 @@ export type ConversationStatus = "bot" | "human";
 
 export type FlagReason =
   | "stuck"
-  | "parse_error"
+  | "didnt_understand"
   | "guardian_link_request"
   | "reactivation_request"
   | "booking_request"
@@ -45,6 +45,7 @@ export type ConversationSummary = {
   last_message_preview: string | null;
   unread: boolean;
   flag_reason: FlagReason | null;
+  intake_in_progress: boolean;
 };
 
 // GET /api/conversations/{id}, and what takeover / transfer / release /
@@ -66,6 +67,7 @@ export type ConversationRead = {
   is_window_open: boolean;
   last_client_message_at: IsoDateTime | null;
   language: Language | null;
+  intake_in_progress: boolean;
 };
 
 // POST /api/conversations/{id}/handled body: a compare token.
@@ -88,7 +90,8 @@ export type SystemMessageKind =
   | "handback_notice"
   | "booking_reminder"
   | "consent_notice"
-  | "number_change_note";
+  | "number_change_note"
+  | "handoff_note";
 
 // GET /api/conversations/{id}/messages → Page<MessageRead>
 export type MessageRead = {

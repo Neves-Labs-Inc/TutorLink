@@ -7,7 +7,7 @@ router decides it is a 400.
 **A `phone_number` change takes the Guardian's thread with it** (#126, reversing D-L / #55,
 `docs/erd.md` §conversations). The thread at the old number that is this Guardian's is re-keyed
 to the new one, a Staff-only `number_change_note` line naming the Staff member records the move,
-and the bot's flow at both numbers is reset. Left behind, the thread would hand this Guardian to
+and the bot's pending proposal on both threads is dropped. Left behind, the thread would hand this Guardian to
 the old number's next holder. A thread already at the new number is merged into the
 Guardian's, or becomes theirs when they have none; one linked to another Guardian refuses the
 change (`WhatsAppChatTaken`). Echoing the same number moves nothing. Both threads are locked
@@ -40,7 +40,6 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
 from app.models.user import User
 from app.services import conversation_service, message_service
-from app.services.bot_state import clear_state
 from app.services.conversation_service import LATEST_CONVERSATION_FIRST
 from app.services.home_service import HomeDetails, home_details
 from app.services.guardian_state import (
@@ -193,12 +192,22 @@ def get_client(db: Session, *, client_id: uuid.UUID) -> ClientDetail:
 
 
 def create_client(
-    db: Session, *, name: str, phone_number: str, home: HomeInput | None
+    db: Session,
+    *,
+    name: str,
+    phone_number: str,
+    home: HomeInput | None,
+    is_bot_turn: bool = False,
 ) -> ClientDetail:
     """Never an upsert: a number any client already holds, active or deactivated, is refused.
 
     An unlinked WhatsApp thread already at the number becomes the new Guardian's. One linked to
     another Guardian (data from before threads followed their Guardian) is left alone.
+
+    `is_bot_turn`: called by a bot turn's Intake on the number's own thread. The thread is
+    neither locked nor linked here: the turn links its detached copy, applied under its end
+    lock, so the webhook and Takeover never wait on the rest of the turn. A Staff write at the
+    same number waits for the turn instead (`conversation_service.lock_thread_at`).
     """
     # Before any write, so a blank address (`BlankAddress`) leaves no Guardian behind.
     details = (
@@ -211,8 +220,10 @@ def create_client(
     if _phone_number_taken(db, phone_number=canonical, exclude_id=None):
         raise PhoneNumberTaken
 
-    # Locked before the Guardian is inserted: conversation first, as every turn does.
-    thread = conversation_service.lock_thread_at(db, phone_number=canonical)
+    # Locked before the Guardian is inserted: conversation first, as every turn's end does.
+    thread = (
+        None if is_bot_turn else conversation_service.lock_thread_at(db, phone_number=canonical)
+    )
     client = Guardian(name=name, phone_number=canonical, is_archived=False)
 
     # The savepoint wraps the insert and nothing else. Unwinding it on `IntegrityError` is what
@@ -450,7 +461,8 @@ def _follow_number_change(
     phone_number: str,
     staff: User,
 ) -> None:
-    """Move the Guardian's thread to their new number, note it there, and reset the bot."""
+    """Move the Guardian's thread to their new number (dropping the bot's pending proposal on
+    both threads) and note it there."""
     thread = conversation_service.follow_number_change(db, change=change)
 
     if thread is not None:
@@ -462,10 +474,6 @@ def _follow_number_change(
             ),
             author_user_id=staff.id,
         )
-
-    # A half-finished flow at either number belongs to whoever was there before.
-    for number in (previous_number, phone_number):
-        clear_state(db, phone_number=number)
 
 
 def _guardian(db: Session, *, client_id: uuid.UUID) -> Guardian:

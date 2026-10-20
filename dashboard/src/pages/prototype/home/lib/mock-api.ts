@@ -59,6 +59,7 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
       "Hola, quería saber si Lucas puede empezar matemáticas también los jueves",
     unread: true,
     flag_reason: "booking_request",
+    intake_in_progress: false,
   },
   {
     id: "c-02",
@@ -70,6 +71,7 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
     last_message_preview: "Ok perfect, and is the office open on Saturday?",
     unread: false,
     flag_reason: "question",
+    intake_in_progress: false,
   },
   {
     id: "c-03",
@@ -81,6 +83,7 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
     last_message_preview: "asdf 3pm?? the one near dolphin mall",
     unread: true,
     flag_reason: "stuck",
+    intake_in_progress: false,
   },
   {
     id: "c-04",
@@ -93,6 +96,7 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
       "I'm Mateo's dad too, can I get the session reminders on my phone?",
     unread: true,
     flag_reason: "guardian_link_request",
+    intake_in_progress: false,
   },
   {
     id: "c-05",
@@ -104,6 +108,7 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
     last_message_preview: "We'd like Emma back for reading this fall",
     unread: true,
     flag_reason: "reactivation_request",
+    intake_in_progress: false,
   },
   {
     // The Guardian last wrote 30h ago: the 24h window has closed.
@@ -116,6 +121,7 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
     last_message_preview: "Can someone call me about the evaluation?",
     unread: false,
     flag_reason: "question",
+    intake_in_progress: false,
   },
   {
     id: "c-07",
@@ -126,7 +132,8 @@ const NEEDS_ATTENTION: ConversationSummary[] = [
     last_message_at: "2026-10-13T13:02:00-04:00",
     last_message_preview: "No entiendo, ¿qué día dijiste?",
     unread: true,
-    flag_reason: "parse_error",
+    flag_reason: "didnt_understand",
+    intake_in_progress: false,
   },
 ];
 

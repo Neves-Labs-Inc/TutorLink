@@ -63,6 +63,7 @@ CONVERSATION_READ_KEYS = {
     "is_window_open",
     "last_client_message_at",
     "language",
+    "intake_in_progress",
 }
 
 

@@ -705,7 +705,7 @@ def test_the_chat_copy_is_a_system_line_on_the_guardians_thread(
     assert copy.twilio_sid == sent.sid
     assert copy.status is MessageStatus.QUEUED
     assert copy.body == (
-        "Hello, this is your weekly reminder from Ms Helping Hands, as you asked. There is no"
+        "Hello, this is your weekly reminder from M's Helping Hands, as you asked. There is no"
         " tutoring session booked yet for Ana in the week of October 12. Tap Book a session to"
         " choose a time, or reply STOP to end these reminders."
     )

@@ -61,13 +61,18 @@ export const conversationHolderLabel = (conversation: Conversation): string | nu
   conversation.status === 'human' ? (conversation.taken_over_by?.name ?? null) : null
 
 // These are routine handoffs, not the bot breaking (P7-E) — `StatusBadge` gives them a tone
-// distinct from the shared destructive tone `stuck`/`parse_error` render in.
+// distinct from the shared destructive tone `stuck`/`didnt_understand` render in.
 const HANDOFF_FLAG_REASONS: readonly FlagReason[] = [
   'guardian_link_request',
   'reactivation_request',
   'booking_request',
   'question',
 ]
+
+export const FLAG_REASON_LABELS: Partial<Record<FlagReason, string>> = {
+  didnt_understand: 'Bot didn’t understand',
+  stuck: 'Bot got stuck',
+}
 
 export const isErrorFlag = (reason: FlagReason): boolean => !HANDOFF_FLAG_REASONS.includes(reason)
 

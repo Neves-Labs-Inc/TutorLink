@@ -84,6 +84,8 @@ class ConversationSummary(BaseModel):
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
     flagged_at: datetime.datetime | None
+    # The office's "Intake in progress" badge: derived, never stored (`intake_progress`).
+    intake_in_progress: bool
 
 
 class ConversationRead(BaseModel):
@@ -106,6 +108,7 @@ class ConversationRead(BaseModel):
     last_client_message_at: datetime.datetime | None
     # The Guardian language on this thread; `null` is not detected, so English is used.
     language: Language | None
+    intake_in_progress: bool
 
 
 class FlagHandled(BaseModel):

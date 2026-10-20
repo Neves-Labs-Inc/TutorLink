@@ -421,6 +421,7 @@ def _summary(row: ConversationListItem) -> ConversationSummary:
         last_client_message_at=row.last_client_message_at,
         is_window_open=row.is_window_open,
         flagged_at=row.conversation.flagged_at,
+        intake_in_progress=row.intake_in_progress,
     )
 
 
@@ -442,6 +443,7 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         is_window_open=detail.is_window_open,
         last_client_message_at=detail.last_client_message_at,
         language=detail.conversation.language,
+        intake_in_progress=detail.intake_in_progress,
     )
 
 

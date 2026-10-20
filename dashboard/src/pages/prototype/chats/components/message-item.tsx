@@ -9,6 +9,7 @@ import {
   Check,
   CheckCheck,
   CircleAlert,
+  ClipboardList,
   Clock,
   Hand,
   NotebookPen,
@@ -87,12 +88,12 @@ export default function MessageItem({
       </div>
       <span className="flex items-center gap-1.5 px-1 text-[12px] text-(--tl-muted) tabular-nums">
         {formatClockTime(message.created_at)}
-        {!isInbound && !isBot && <DeliveryMark status={message.status} />}
+        {!isInbound && (!isBot || isFailed) && <DeliveryMark status={message.status} />}
       </span>
       {isFailed && (
         <span
           role="note"
-          className="flex items-center gap-1.5 px-1 text-[13px] font-medium text-(--tl-danger)"
+          className="kit-fade flex items-center gap-1.5 px-1 text-[13px] font-medium text-(--tl-danger)"
         >
           <CircleAlert aria-hidden className="size-4" />
           {getSendErrorLabel(message.error_code)}
@@ -137,6 +138,11 @@ const SYSTEM_STYLE: Record<
     label: "Office note",
     isStaffOnly: true,
   },
+  handoff_note: {
+    icon: ClipboardList,
+    label: "Bot’s handoff note",
+    isStaffOnly: true,
+  },
 };
 
 type SystemLineProps = {
@@ -149,7 +155,8 @@ function SystemLine({ message, onRetry, canRetry }: SystemLineProps): ReactNode 
   const kind = message.system_kind ?? "takeover_notice";
   const style = SYSTEM_STYLE[kind];
   const Icon = style.icon;
-  const isFailed = message.status === "failed";
+  // Staff-only lines are never sent, so they never fail or retry.
+  const isFailed = message.status === "failed" && !style.isStaffOnly;
   const children = message.reminder_child_names;
   return (
     <li className="flex justify-center px-2">

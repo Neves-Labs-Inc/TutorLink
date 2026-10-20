@@ -3,7 +3,6 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import Booking
 from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
-from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
 from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
@@ -74,7 +73,6 @@ __all__ = [
     "USER_ROLE_VALUES",
     "Booking",
     "BookingStatus",
-    "BotFlowState",
     "Child",
     "ChildAssignedTutor",
     "ChildGuardian",

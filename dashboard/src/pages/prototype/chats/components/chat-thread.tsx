@@ -28,7 +28,7 @@ import type { WindowState } from "@/pages/prototype/chats/lib/time";
 import {
   GuardianAvatar,
   HolderBadge,
-  NewNumberBadge,
+  IntakeInProgressBadge,
   WindowCue,
 } from "@/pages/prototype/chats/components/chat-badges";
 import AttentionCard from "@/pages/prototype/chats/components/attention-card";
@@ -299,7 +299,7 @@ function ThreadHeader({
         )}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {conversation.guardian === null && <NewNumberBadge />}
+        {conversation.intake_in_progress && <IntakeInProgressBadge />}
         <HolderBadge
           status={conversation.status}
           holder={conversation.taken_over_by}

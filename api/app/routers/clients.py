@@ -46,6 +46,7 @@ from app.services.client_service import (
 )
 from app.routers.client_homes import BLANK_HOME_DETAILS_ERROR
 from app.services.child_service import ChildNotFound
+from app.services.deadlock_retry import retry_on_deadlock
 from app.services.guardian_link_service import HomesNotOfChild, create_guardian_in_family
 from app.services.guardian_state import ReminderState, guardian_states
 from app.services.home_service import BlankAddress
@@ -112,13 +113,17 @@ def read_one(client_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> Clie
 @router.post("", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
 def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> ClientRead:
     try:
-        created = create_guardian_in_family(
+        # A bot turn finishing Intake at the same number can deadlock this; retried once.
+        created = retry_on_deadlock(
             db,
-            name=payload.name,
-            phone_number=payload.phone_number,
-            home=_home_input(payload.home),
-            child_ids=payload.child_ids,
-            home_ids=payload.home_ids,
+            lambda: create_guardian_in_family(
+                db,
+                name=payload.name,
+                phone_number=payload.phone_number,
+                home=_home_input(payload.home),
+                child_ids=payload.child_ids,
+                home_ids=payload.home_ids,
+            ),
         )
     except PhoneNumberTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, PHONE_NUMBER_TAKEN_ERROR) from exc

@@ -14,13 +14,14 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.enums import (
     MessageAuthor,
     MessageStatus,
+    RedactedField,
     SystemMessageKind,
     in_values_predicate,
     message_author_enum,
@@ -39,6 +40,8 @@ ADMIN_AUTHOR_PAIR_PREDICATE = (
 )
 SYSTEM_KIND_PAIR_PREDICATE = "(author_kind = 'system') = (system_kind IS NOT NULL)"
 SYSTEM_KIND_LENGTH = 32
+_REDACTABLE = ", ".join(f"'{field.value}'" for field in RedactedField)
+REDACTED_FIELDS_PREDICATE = f"redacted_fields <@ ARRAY[{_REDACTABLE}]::text[]"
 
 
 class Message(HasID, HasTimestamps, Base):
@@ -49,6 +52,7 @@ class Message(HasID, HasTimestamps, Base):
         CheckConstraint(
             in_values_predicate("system_kind", SystemMessageKind), name="ck_messages_system_kind"
         ),
+        CheckConstraint(REDACTED_FIELDS_PREDICATE, name="ck_messages_redacted_fields"),
         Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
     )
 
@@ -74,5 +78,7 @@ class Message(HasID, HasTimestamps, Base):
     system_kind: Mapped[SystemMessageKind | None] = mapped_column(
         varchar_enum(SystemMessageKind, length=SYSTEM_KIND_LENGTH), nullable=True
     )
+    # The `RedactedField` values this message carried. NULL when it carried none.
+    redacted_fields: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

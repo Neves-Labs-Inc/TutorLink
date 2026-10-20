@@ -46,8 +46,18 @@ function client(at: string, body: string): MessageRead {
   return message({ author_kind: "client", body, created_at: at });
 }
 
-function bot(at: string, body: string): MessageRead {
-  return message({ author_kind: "bot", body, created_at: at, status: "sent" });
+function bot(
+  at: string,
+  body: string,
+  status: MessageRead["status"] = "sent",
+): MessageRead {
+  return message({
+    author_kind: "bot",
+    body,
+    created_at: at,
+    status,
+    ...(status === "failed" ? { error_code: "131047" } : {}),
+  });
 }
 
 function staff(at: string, author: UserRef, body: string): MessageRead {
@@ -94,6 +104,7 @@ function conversation(
     is_window_open: true,
     last_client_message_at: lastClient?.created_at ?? null,
     language: "en",
+    intake_in_progress: false,
     ...input,
   };
 }
@@ -256,6 +267,25 @@ export function buildChatData(me: UserRef, colleague: UserRef): ChatData {
         "Thanks, Gabriela. How many children would you like tutoring for?",
       ),
     ],
+    "c-diego": [
+      client("2026-10-13T08:05:00-04:00", "Hi, this is Diego Paz. I want to sign up my son"),
+      bot(
+        "2026-10-13T08:05:10-04:00",
+        "Thanks, Diego. What is your son's name and grade?",
+      ),
+      client("2026-10-13T08:07:00-04:00", "Mateo, 5th grade. Can he start this week?"),
+      notice(
+        "2026-10-13T08:07:20-04:00",
+        "handoff_note",
+        "Diego Paz wants to start Mateo (5th grade) this week. Intake isn't finished: no subject or availability yet.",
+        { status: "sent" },
+      ),
+      bot(
+        "2026-10-13T08:07:25-04:00",
+        "I've asked the office to follow up about a start date.",
+        "failed",
+      ),
+    ],
     "c-monica": [
       client("2026-10-04T17:40:00-04:00", "Perfect, thank you"),
       notice(
@@ -310,7 +340,7 @@ export function buildChatData(me: UserRef, colleague: UserRef): ChatData {
         id: "c-sandra",
         phone_number: "+1 305 555 0163",
         guardian: { id: "g-sandra", name: "Sandra Reyes" },
-        flag_reason: "parse_error",
+        flag_reason: "didnt_understand",
         flagged_at: "2026-10-12T09:10:30-04:00",
       },
       threads["c-sandra"],
@@ -391,8 +421,20 @@ export function buildChatData(me: UserRef, colleague: UserRef): ChatData {
         phone_number: "+1 786 555 0199",
         guardian: null,
         language: null,
+        intake_in_progress: true,
       },
       threads["c-new"],
+    ),
+    conversation(
+      {
+        id: "c-diego",
+        phone_number: "+1 305 555 0121",
+        guardian: { id: "g-diego", name: "Diego Paz" },
+        flag_reason: "stuck",
+        flagged_at: "2026-10-13T08:07:25-04:00",
+        intake_in_progress: true,
+      },
+      threads["c-diego"],
     ),
     conversation(
       {
@@ -429,6 +471,7 @@ export function toSummary(
     last_message_preview: last?.body ?? null,
     unread: isUnread,
     flag_reason: read.flag_reason,
+    intake_in_progress: read.intake_in_progress,
   };
 }
 

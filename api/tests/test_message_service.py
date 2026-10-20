@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.conversation import Conversation
-from app.models.enums import MessageAuthor, MessageStatus, UserRole
+from app.models.enums import MessageAuthor, MessageStatus, SystemMessageKind, UserRole
 from app.models.message import Message
 from app.models.user import User
 from app.security import hash_password
@@ -41,6 +41,7 @@ from app.services.message_service import (
     mark_failed,
     record_admin_message,
     record_bot_reply,
+    record_handoff_note,
     record_inbound,
 )
 
@@ -117,16 +118,14 @@ def test_a_duplicate_does_not_move_the_ordering_key(db: Session) -> None:
     assert conversation.last_message_at == recorded_at
 
 
-def test_a_bot_reply_is_sent_with_no_sid(db: Session) -> None:
-    """**D-P7-2** / amendment **P7-3**: a TwiML reply has no `MessageSid` at the moment it is
-    written, so `POST /webhook/whatsapp/status` can never advance it and `queued` would park
-    every bot line in the system at pending forever."""
+def test_a_bot_reply_is_recorded_queued_with_no_sid(db: Session) -> None:
+    """The bot sends through the REST API, so the SID comes after the record."""
     conversation = _make_conversation(db)
 
     reply = record_bot_reply(db, conversation=conversation, body="Thursday at 4pm works")
 
     assert reply.author_kind is MessageAuthor.BOT
-    assert reply.status is MessageStatus.SENT
+    assert reply.status is MessageStatus.QUEUED
     assert reply.twilio_sid is None
     assert reply.author_user_id is None
 
@@ -351,6 +350,31 @@ def test_only_an_admins_message_carries_an_author(db: Session) -> None:
     assert authors[MessageAuthor.ADMIN].email == admin.email
     assert authors[MessageAuthor.CLIENT] is None
     assert authors[MessageAuthor.BOT] is None
+
+
+def test_a_handoff_note_is_a_staff_only_line_in_the_thread(db: Session) -> None:
+    """Never sent to WhatsApp, so `sent` with no SID, and written by the bot, not by Staff."""
+    conversation = _make_conversation(db)
+
+    record_handoff_note(db, conversation=conversation, body="Wants a Friday slot for Ana")
+
+    items, _ = list_thread(db, conversation_id=conversation.id, before=None, limit=20, offset=0)
+    [note] = [item.message for item in items]
+    assert (
+        note.author_kind,
+        note.system_kind,
+        note.status,
+        note.twilio_sid,
+        note.author_user_id,
+        note.body,
+    ) == (
+        MessageAuthor.SYSTEM,
+        SystemMessageKind.HANDOFF_NOTE,
+        MessageStatus.SENT,
+        None,
+        None,
+        "Wants a Friday slot for Ana",
+    )
 
 
 def test_a_thread_for_an_unknown_conversation_is_not_found(db: Session) -> None:

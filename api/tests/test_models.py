@@ -19,7 +19,6 @@ EXPECTED_TABLES = {
     "conversations",
     "messages",
     "login_attempts",
-    "bot_flow_state",
     "child_subject_levels",
     "reminder_consents",
     "booking_reminders",

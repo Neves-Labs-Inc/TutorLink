@@ -17,7 +17,6 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import Booking
 from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
-from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
@@ -58,7 +57,6 @@ PURGED_MODELS = (
     ReminderConsent,
     BookingReminder,
     BookingReminderRun,
-    BotFlowState,
 )
 KEPT_MODELS = (
     User,
@@ -290,14 +288,6 @@ def _make_test_data(db: Session) -> None:
                 status=ReminderStatus.SENT,
             ),
             BookingReminderRun(week_start=MONDAY),
-            BotFlowState(
-                phone_number=guardian.phone_number,
-                step="start",
-                collected_data={},
-                misses=0,
-                prompt="hi",
-                expires_at=datetime.datetime.now(datetime.UTC),
-            ),
         ]
     )
     # The command closes its session, which would undo rows that were only flushed.

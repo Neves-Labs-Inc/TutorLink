@@ -63,6 +63,7 @@ the Guardian is reached outside the bot, so there is nothing for Staff to take o
 
 import datetime
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, ScalarSelect, Select, case, delete, func, or_, select, update
@@ -81,7 +82,7 @@ from app.models.enums import (
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.services import child_service
+from app.services import bot_worker, child_service, intake_progress
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
 
 # WhatsApp's customer-service window: free-form messages only within this of the last inbound.
@@ -113,6 +114,7 @@ class ConversationListItem:
     unread: bool
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
+    intake_in_progress: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +129,7 @@ class ConversationDetail:
     reactivation_child: Child | None
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
+    intake_in_progress: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,10 +262,19 @@ def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
 def lock_thread_at(db: Session, *, phone_number: str) -> Conversation | None:
     """The thread at `phone_number`, locked for the rest of the transaction; `None` if none.
 
-    For a caller about to write a Guardian at that number: taken first, the lock keeps the
-    order conversation first, so a turn at the number running Intake finishes (and wins the
-    number) instead of deadlocking on the Guardian row.
+    For a Staff write about to create a Guardian at that number. A bot turn running on the
+    thread is waited for first (`bot_worker.hold_turns`), and no new one starts until the
+    write commits: a turn's Intake creates its Guardian without the row lock and takes it only
+    at its end, so a Staff write holding the row while it waits on the turn's Guardian would
+    deadlock with it. Waiting instead, the turn finishes and wins the number, and the Staff
+    write is the 409. Never call it inside a turn: see `hold_turns`.
     """
+    bot_worker.hold_turns(
+        db,
+        conversation_ids=db.scalars(
+            select(Conversation.id).where(Conversation.phone_number == phone_number)
+        ).all(),
+    )
     return _conversation_for(db, phone_number=phone_number)
 
 
@@ -276,7 +288,20 @@ def lock_number_change(
     Guardian's new number, so the lock order stays conversation first. Holding the thread at
     the new number before the Guardian row means a turn there finishes first: an Intake that
     ends by writing a Guardian at that number wins it, and the change is the 409.
+
+    A bot turn running on either thread is waited for first (`bot_worker.hold_turns`), and no
+    new one starts until the change commits. A turn holds the row lock only at its start and
+    end, so without this a merge would wait on the turn's open transaction and then fail on a
+    message the turn wrote into the thread it deletes, or deadlock with the turn's end lock.
     """
+    bot_worker.hold_turns(
+        db,
+        conversation_ids=db.scalars(
+            select(Conversation.id).where(
+                Conversation.phone_number.in_((previous_number, phone_number))
+            )
+        ).all(),
+    )
     found: dict[str, Conversation | None] = {}
     # One order for every change, so two changes over the same pair of numbers cannot deadlock.
     for number in sorted({previous_number, phone_number}):
@@ -306,12 +331,19 @@ def follow_number_change(db: Session, *, change: NumberChange) -> Conversation |
     The savepoint covers a first message from the new number that opened a thread there after
     the lock: `UNIQUE (phone_number)` refuses the move, the savepoint unwinds it, and the
     number change goes on without it rather than as a 500.
+
+    The bot's pending proposal on both threads is dropped: an offer made at either number
+    belongs to whoever was there before, so a yes after the change never commits it.
     """
     guardian_thread = change.guardian_thread
     at_new_number = change.thread_at_new_number
 
     if change.is_new_number_thread_anothers:
         return None
+
+    for thread in (guardian_thread, at_new_number):
+        if thread is not None:
+            _drop_proposal(thread)
 
     followed: Conversation | None = None
     if guardian_thread is not None and at_new_number is not None:
@@ -347,12 +379,55 @@ def owner_id(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     return guardian.id if is_holding else None
 
 
+def owner_ids(
+    db: Session, *, conversation_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """`owner_id` for many threads in one query. Same rule, so the two cannot disagree.
+
+    A Guardian whose stored number equals the thread's holds it outright. Only a mismatch needs
+    `_spellings` (which reads a setting), so the ordinary page costs no per-row query.
+    """
+    rows = db.execute(
+        select(Conversation.id, Conversation.phone_number, Guardian.id, Guardian.phone_number)
+        .outerjoin(Guardian, Guardian.id == Conversation.guardian_id)
+        .where(Conversation.id.in_(conversation_ids))
+    ).all()
+
+    return {
+        conversation_id: _holder_id(
+            db,
+            thread_number=thread_number,
+            guardian_id=guardian_id,
+            guardian_number=guardian_number,
+        )
+        for conversation_id, thread_number, guardian_id, guardian_number in rows
+    }
+
+
+def _holder_id(
+    db: Session,
+    *,
+    thread_number: str,
+    guardian_id: uuid.UUID | None,
+    guardian_number: str | None,
+) -> uuid.UUID | None:
+    if guardian_id is None or guardian_number is None:
+        return None
+
+    is_holding = guardian_number == thread_number or guardian_number in _spellings(
+        db, phone_number=thread_number
+    )
+
+    return guardian_id if is_holding else None
+
+
 def link_to_holder(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     """The Guardian holding the thread's number, linking the thread to them when it names
     someone else or no one; `None` when nobody holds it.
 
-    For a turn the bot does not take (a thread under Takeover), which would otherwise leave a
-    thread left behind at a number showing, and recording consent for, its old Guardian.
+    The webhook asks this for every inbound message, and the agent's tools before they write:
+    otherwise a thread left behind at a number would show, and record consent for, its old
+    Guardian.
     """
     owner = owner_id(db, conversation=conversation)
 
@@ -435,6 +510,10 @@ def list_conversations(
         .limit(limit)
         .offset(offset)
     ).all()
+    # One batched read for the page, so the badge adds a fixed number of queries, not one a row.
+    in_progress = intake_progress.intake_in_progress_for(
+        db, [conversation.id for conversation, *_ in rows]
+    )
     items = [
         ConversationListItem(
             conversation=conversation,
@@ -444,6 +523,9 @@ def list_conversations(
             unread=unread_row,
             last_client_message_at=last_client,
             is_window_open=is_window_open(last_client, now=now),
+            # A thread merged away between the page query and the batch has no entry; it still
+            # shows, so default to the badge rather than failing the whole inbox.
+            intake_in_progress=in_progress.get(conversation.id, True),
         )
         for conversation, guardian, holder, preview, unread_row, last_client in rows
     ]
@@ -534,7 +616,8 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
 
     Releasing a conversation that is already `bot` is a no-op success, for the same reason a
     re-claim by the holder is. A real release also clears the Needs attention flag (the admin
-    dealt with the chat) and forgets the last Mark done, so Undo cannot follow a Hand back.
+    dealt with the chat), forgets the last Mark done, so Undo cannot follow a Hand back, and
+    drops the bot's pending proposal, so a yes typed to Staff never commits a Booking.
     """
     conversation = _locked(db, conversation_id=conversation_id)
 
@@ -546,6 +629,7 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     conversation.taken_over_at = None
     _clear_flag_on_hand_back(db, conversation)
     _clear_handled(conversation)
+    _drop_proposal(conversation)
     db.flush()
 
     return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
@@ -656,15 +740,22 @@ def touch_last_message(
     return conversation
 
 
+def mark_turn_due(
+    db: Session, *, conversation: Conversation, at: datetime.datetime
+) -> Conversation:
+    """Schedule the bot's debounced turn for `at`, replacing any earlier time: each new message
+    pushes it on. `bot_worker` runs the turn and clears the marker."""
+    conversation.turn_due_at = at
+    db.flush()
+
+    return conversation
+
+
 def link_guardian(
     db: Session, *, conversation: Conversation, guardian_id: uuid.UUID
 ) -> Conversation:
-    """Attach the guardian intake has just created to the thread that asked for it.
-
-    One of the two mutations the webhook applies from a `BotTurn` (**P7-C**): the bot returns
-    what it decided and this module writes it, so the flow machine stays testable without a
-    `conversations` row.
-    """
+    """Attach a Guardian to the thread at their number: the one Intake has just created, or the
+    number's current holder."""
     conversation.guardian_id = guardian_id
     db.flush()
 
@@ -674,9 +765,9 @@ def link_guardian(
 def set_language(
     db: Session, *, conversation: Conversation, language: Language | None
 ) -> Conversation:
-    """Store the Guardian language on this thread: what the bot detected (P7-C: the webhook
-    writes what `bot_service` decided), or what Staff chose. `None` is "not detected", so
-    English is used until the bot detects one again."""
+    """Store the Guardian language on this thread: what the bot detected (a Spanish keyword, or
+    the agent's reply), or what Staff chose. `None` is "not detected", so English is used until
+    the bot detects one again."""
     conversation.language = language
     db.flush()
 
@@ -757,7 +848,7 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
     the child and still ends the request.
 
     The flag is cleared only while it is still `reactivation_request` (REQ-131.2): a later
-    `stuck` or `parse_error` overwrote it and is a separate reason for an admin to look, which
+    `stuck` or `didnt_understand` overwrote it and is a separate reason for an admin to look, which
     ending the request does not answer. No message is written and nothing is sent (OQ-72).
     """
     conversation = _locked(db, conversation_id=conversation_id)
@@ -1014,9 +1105,14 @@ def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
     return db.execute(
         select(Conversation)
         .where(Conversation.phone_number == phone_number)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
+
+
+def _drop_proposal(conversation: Conversation) -> None:
+    conversation.proposal_actions = None
+    conversation.proposed_at = None
 
 
 def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:
@@ -1025,7 +1121,14 @@ def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:
     `messages` is the only table that references a conversation. Both rows are locked by the
     caller. The delete is a statement rather than `Session.delete`, which would try to null
     the foreign key on any message the session still has loaded under `merged`.
+
+    A bot turn still due on `merged` moves to `into`, at the earlier of the two times: its
+    message moves too, and would otherwise never be answered. The worker clears it if `into`
+    is Taken over.
     """
+    due_times = [at for at in (into.turn_due_at, merged.turn_due_at) if at is not None]
+    if due_times:
+        into.turn_due_at = min(due_times)
     db.flush()
     db.execute(
         update(Message)
@@ -1086,10 +1189,13 @@ def _locked(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
     enforce on its callers. Every writer here flushes, so there is no pending in-memory change
     for the refresh to discard.
     """
+    # FOR NO KEY UPDATE, not FOR UPDATE: it serialises every writer of the row just the same,
+    # but doesn't wait on the key-share lock a message insert takes on its conversation. A bot
+    # turn recording a message mid-turn would otherwise hold up the webhook and Takeover.
     conversation = db.execute(
         select(Conversation)
         .where(Conversation.id == conversation_id)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 
@@ -1112,6 +1218,9 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         is_window_open=is_window_open(
             last_client_message_at, now=datetime.datetime.now(tz=datetime.UTC)
         ),
+        intake_in_progress=intake_progress.intake_progress(
+            db, conversation=conversation
+        ).in_progress,
     )
 
 

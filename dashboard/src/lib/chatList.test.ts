@@ -71,6 +71,7 @@ describe('conversationDisplayName', () => {
     last_message_preview: 'hi',
     unread: false,
     flag_reason: null,
+    intake_in_progress: false,
   }
 
   it('renders the bare phone number when guardian is null', () => {
@@ -95,6 +96,7 @@ describe('conversationHolderLabel', () => {
     last_message_preview: 'hi',
     unread: false,
     flag_reason: null,
+    intake_in_progress: false,
   }
 
   it('is null while the bot is answering', () => {
@@ -113,9 +115,9 @@ describe('conversationHolderLabel', () => {
 })
 
 describe('isErrorFlag', () => {
-  it('treats stuck and parse_error as errors', () => {
+  it('treats stuck and didnt_understand as errors', () => {
     expect(isErrorFlag('stuck')).toBe(true)
-    expect(isErrorFlag('parse_error')).toBe(true)
+    expect(isErrorFlag('didnt_understand')).toBe(true)
   })
 
   it('treats guardian_link_request as not an error', () => {

@@ -41,8 +41,7 @@ at.** The dashboard's contract (#151) is: every failing warning comes back at on
 `warnings[]`, the client resubmits naming the codes it confirms, and the write lands only if
 every warning raised on *that* submission is confirmed. `confirm_warnings=None` is the other
 caller — the bot — which cannot confirm anything: for it each warning is still its rule's own
-refusal, the first failing one, exactly as before the contract existed, so `bot_service`'s
-`except` clauses keep working untouched.
+refusal, the first failing one, exactly as before the contract existed.
 
 **The status codes are deliberately not uniform**: a missing or retired reference (an inactive
 user included) is 400, as is rule 1's hard half; overlap, a live Evaluation and unconfirmed

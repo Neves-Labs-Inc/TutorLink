@@ -12,7 +12,7 @@ import type { WindowState } from "@/pages/prototype/chats/lib/time";
 import {
   GuardianAvatar,
   HolderBadge,
-  NewNumberBadge,
+  IntakeInProgressBadge,
   WindowCue,
 } from "@/pages/prototype/chats/components/chat-badges";
 import PrototypeNote from "@/pages/prototype/chats/components/prototype-note";
@@ -202,7 +202,7 @@ function Row({
             {chat.flag_reason && (
               <AttentionBadge reason={FLAG_LABEL[chat.flag_reason]} />
             )}
-            {chat.guardian === null && <NewNumberBadge />}
+            {chat.intake_in_progress && <IntakeInProgressBadge />}
             <HolderBadge
               status={chat.status}
               holder={chat.taken_over_by}

@@ -26,8 +26,11 @@ bound to that database, and it refuses to seed one it did not just create. It on
 server on this machine (localhost or a unix socket) unless `--allow-remote-db` is passed.
 
 **Output**, in `--out`: one Markdown file per persona × language × model (the transcript with
-fixed messages and handoff notes, what got saved, and per-turn latency, tokens and estimated
-cost) and `summary.md`, which is also printed.
+fixed messages and handoff notes, what got saved, per-turn latency, tokens and estimated cost,
+and every tool call the agent made with its input and result) and `summary.md`, which is also
+printed. The tool calls show values, unlike the app log: the family is made up.
+
+To rerun only some conversations, filter: `--personas booking --langs en --models haiku`.
 """
 
 import argparse
@@ -101,6 +104,7 @@ from app.services.bot_model import (  # noqa: E402
     ModelUnavailable,
     ModelUsage,
 )
+from app.services.bot_tool_contract import ToolResult, ToolSpec  # noqa: E402
 
 EXIT_FAILED = 1
 EXIT_NO_KEY = 2
@@ -412,6 +416,7 @@ class MeteredModel:
     def __init__(self, inner: ModelClient) -> None:
         self._inner = inner
         self._calls: list[CallRecord] = []
+        self._tool_calls: list[tuple[str, dict[str, Any]]] = []
 
     def create(
         self,
@@ -430,12 +435,80 @@ class MeteredModel:
             self._calls.append(CallRecord(time.monotonic() - started, None))
             raise
         self._calls.append(CallRecord(time.monotonic() - started, response.usage))
+        self._tool_calls += [(call.name, call.input) for call in response.tool_calls]
         return response
 
     def drain(self) -> list[CallRecord]:
         """The calls since the last drain."""
         calls, self._calls = self._calls, []
         return calls
+
+    def drain_tool_calls(self) -> list[tuple[str, dict[str, Any]]]:
+        """Every tool call the model asked for since the last drain, `reply` included."""
+        tool_calls, self._tool_calls = self._tool_calls, []
+        return tool_calls
+
+
+@dataclass(frozen=True)
+class ToolCallRecord:
+    """One tool call for the report. Eval-only: inputs and results carry the made-up family's
+    data, which the app log never does."""
+
+    tool: str
+    input: dict[str, Any]
+    # `ok`, `refused: <reason>`, `error: <type>: <message>`, `reply`, or why it never ran.
+    outcome: str
+    # The result the model got back.
+    detail: dict[str, Any] | None = None
+
+
+class ToolRecorder:
+    """Wraps the agent's tools to keep each call's input and result, or the error it raised."""
+
+    def __init__(self) -> None:
+        self._records: list[ToolCallRecord] = []
+
+    def wrap(self, tools: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
+        return tuple(dataclasses.replace(spec, run=self._recorded(spec)) for spec in tools)
+
+    def drain(self) -> list[ToolCallRecord]:
+        records, self._records = self._records, []
+        return records
+
+    def _recorded(self, spec: ToolSpec) -> Callable[[Any, dict[str, Any]], ToolResult]:
+        def run(ctx: Any, tool_input: dict[str, Any]) -> ToolResult:
+            try:
+                result = spec.run(ctx, tool_input)
+            except Exception as exc:
+                self._records.append(
+                    ToolCallRecord(spec.name, tool_input, f"error: {type(exc).__name__}: {exc}")
+                )
+                raise
+            outcome = "ok" if result.status == "ok" else f"refused: {result.content.get('reason')}"
+            self._records.append(ToolCallRecord(spec.name, tool_input, outcome, result.content))
+            return result
+
+        return run
+
+
+def merge_tool_calls(
+    asked: list[tuple[str, dict[str, Any]]], ran: list[ToolCallRecord]
+) -> list[ToolCallRecord]:
+    """The model's calls in order, each with what running it gave. The turn runs the calls
+    other than `reply` in order, so `ran` lines up with them; a call with no record had an
+    unknown name or came after a tool that raised."""
+    pending = list(ran)
+    merged = []
+    for name, tool_input in asked:
+        if name == bot_turn.REPLY_TOOL_NAME:
+            merged.append(ToolCallRecord(name, tool_input, "reply"))
+        elif pending and pending[0].tool == name:
+            merged.append(pending.pop(0))
+        else:
+            merged.append(
+                ToolCallRecord(name, tool_input, "not run (unknown tool or an earlier error)")
+            )
+    return merged
 
 
 @dataclass(frozen=True)
@@ -703,6 +776,7 @@ class TurnRecord:
     latency_s: float
     calls: list[CallRecord]
     model_id: str
+    tool_calls: list[ToolCallRecord] = field(default_factory=list)
 
     def total(self, field_name: str) -> int:
         return sum(getattr(call.usage, field_name) for call in self.calls if call.usage)
@@ -749,8 +823,11 @@ def run_one(spec: RunSpec, *, run_index: int, context: RunContext) -> RunResult:
     """One simulated conversation, start to finish."""
     family = FAMILIES[spec.language]
     model = MeteredModel(context.clients.agent_model(spec.model_id, context.effort))
-    # The production prompt, tools and context builder, with the model under test.
-    deps = dataclasses.replace(bot_agent.default_deps(), model=model)
+    recorder = ToolRecorder()
+    production = bot_agent.default_deps()
+    # The production prompt, tools and context builder, with the model under test and every
+    # tool call kept for the report.
+    deps = dataclasses.replace(production, model=model, tools=recorder.wrap(production.tools))
     result = RunResult(spec=spec)
     system = simulator_prompt(spec.persona, spec.language)
 
@@ -780,6 +857,7 @@ def run_one(spec: RunSpec, *, run_index: int, context: RunContext) -> RunResult:
                     latency_s=time.monotonic() - started,
                     calls=model.drain(),
                     model_id=spec.model_id,
+                    tool_calls=merge_tool_calls(model.drain_tool_calls(), recorder.drain()),
                 )
             )
 
@@ -1015,8 +1093,28 @@ def render_run(result: RunResult, *, database: str) -> str:
         "",
         f"Agent cost: ${_money(result.cost)}; simulator cost: ${result.simulator_cost:.4f}",
         "",
+        "## Tool calls",
+        "",
+        *(line for turn in result.turns for line in _tool_call_lines(turn)),
     ]
     return "\n".join(lines)
+
+
+def _tool_call_lines(turn: TurnRecord) -> list[str]:
+    calls = [
+        line
+        for number, record in enumerate(turn.tool_calls, start=1)
+        for line in (
+            f"{number}. `{record.tool}`: {record.outcome}",
+            f"   - input: `{_json(record.input)}`",
+            *([] if record.detail is None else [f"   - result: `{_json(record.detail)}`"]),
+        )
+    ]
+    return [f"### Turn {turn.index} ({turn.outcome})", "", *(calls or ["(no tool calls)"]), ""]
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def render_summary(results: list[RunResult], failures: list[str]) -> str:

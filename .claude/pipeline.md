@@ -59,3 +59,4 @@ Collected during the WhatsApp bot agent wave 1 (2026-10-19).
 - **Aborted test runs leave committed rows** in `<db>_test` that break later row-counting suites (`test_cli_seed`). Drop `<db>_test` after any killed run.
 - **`test_bot_worker.py` lock count is cluster-wide** (`pg_locks` with no database filter); it can flake if another agent runs it at the same time. Rerun alone.
 - **conftest imports run before the test env is set.** A fixture module that imports `app.db` at top level breaks test collection; import it lazily inside the fixture.
+- **`bot_worker.hold_turns` inside a bot turn waits forever** on that turn's own chat lock. Never call it from agent-tool code paths; pytest runs that hit it hang (kill by PID, drop the `_test` DB with FORCE).

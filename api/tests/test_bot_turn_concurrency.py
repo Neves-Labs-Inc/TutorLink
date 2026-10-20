@@ -4,10 +4,11 @@ These run on committed data, each session on its own connection, because only se
 connections can contend for the conversation row's lock. Rows are deleted afterwards.
 """
 
+import contextlib
 import threading
 import time
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +22,14 @@ from app.models.enums import ConversationStatus, FlagReason, MessageAuthor, User
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.services import bot_messages, conversation_service, message_service
+from app.services import (
+    bot_messages,
+    bot_tools_profile,
+    bot_worker,
+    client_service,
+    conversation_service,
+    message_service,
+)
 from app.services.bot_tool_contract import ToolContext, ToolResult, ToolSpec
 from app.services.bot_turn import TurnDeps, TurnOutcome, take_turn
 from tests.fake_twilio import FakeTwilio
@@ -86,8 +94,20 @@ class Chat:
 
 @pytest.fixture
 def chat(_test_engine: Engine) -> Generator[Chat, None, None]:
-    sessions = sessionmaker(bind=_test_engine, autoflush=False, expire_on_commit=False)
-    phone_number = f"+1555{uuid.uuid4().int % 10**7:07d}"
+    yield from _chat_at(_test_engine, phone_number=f"+1555{uuid.uuid4().int % 10**7:07d}")
+
+
+@pytest.fixture
+def intake_chat(_test_engine: Engine) -> Generator[Chat, None, None]:
+    """A chat at a number libphonenumber accepts, so the real `create_guardian` can save."""
+    suffix = uuid.uuid4().int
+    yield from _chat_at(
+        _test_engine, phone_number=f"+1202{200 + suffix % 800}{suffix // 1000 % 10000:04d}"
+    )
+
+
+def _chat_at(engine: Engine, *, phone_number: str) -> Generator[Chat, None, None]:
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with sessions() as session:
         staff = User(
             email=f"staff-{uuid.uuid4().hex[:12]}@example.com",
@@ -109,6 +129,14 @@ def chat(_test_engine: Engine) -> Generator[Chat, None, None]:
             session.execute(delete(Guardian).where(Guardian.phone_number == phone_number))
             session.execute(delete(User).where(User.id == ids[1]))
             session.commit()
+
+
+@contextlib.contextmanager
+def bot_worker_lock(chat: Chat) -> Iterator[None]:
+    """The chat's turn lock, held as the worker holds it around `take_turn`."""
+    with bot_worker._chat_lock(chat.sessions, chat.conversation_id) as connection:
+        assert connection is not None
+        yield
 
 
 def _in_another_thread(action: Callable[[], object]) -> bool:
@@ -285,3 +313,83 @@ def test_a_database_error_at_the_end_lock_is_an_outage(chat: Chat, fake_twilio: 
 
 LOCK_TIMEOUT_MS = 200
 ROW_HOLD_SECONDS = 1.0
+
+
+@pytest.mark.parametrize("other_write", ["webhook", "takeover"])
+def test_an_intake_turn_that_creates_the_guardian_does_not_hold_the_chat(
+    intake_chat: Chat, fake_twilio: FakeTwilio, other_write: str
+) -> None:
+    """The real `create_guardian`: Intake used to lock the chat's row for the rest of the turn
+    (through `client_service.create_client`), so the webhook and Takeover waited on it."""
+    chat = intake_chat
+    chat.guardian_says("I'm Maria")
+    unblocked: list[bool] = []
+    create_guardian = next(s for s in bot_tools_profile.TOOLS if s.name == "create_guardian")
+
+    def take_over() -> None:
+        with chat.sessions() as session:
+            conversation_service.claim(
+                session, conversation_id=chat.conversation_id, user_id=chat.staff_id
+            )
+            session.commit()
+
+    def create_then_other_writes(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:
+        result = create_guardian.run(ctx, tool_input)
+        write = (lambda: chat.guardian_says("also, hi")) if other_write == "webhook" else take_over
+        unblocked.append(_in_another_thread(write))
+        return result
+
+    chat.run(
+        [call(("create_guardian", {"name": SAVED_NAME})), reply("Thanks, Maria.")],
+        (tool("create_guardian", create_then_other_writes),),
+    )
+
+    assert unblocked == [True]
+    with chat.sessions() as session:
+        guardian_id = session.scalar(select(Guardian.id).where(Guardian.name == SAVED_NAME))
+        assert guardian_id is not None
+        assert session.get_one(Conversation, chat.conversation_id).guardian_id == guardian_id
+
+
+def test_a_staff_create_at_the_number_waits_for_the_intake_turn_and_is_the_409(
+    intake_chat: Chat, fake_twilio: FakeTwilio
+) -> None:
+    """No deadlock: the Staff write holds the turn off the chat (`hold_turns`) rather than
+    holding the row while it waits on the turn's new Guardian, so Intake wins the number."""
+    chat = intake_chat
+    chat.guardian_says("I'm Maria")
+    create_guardian = next(s for s in bot_tools_profile.TOOLS if s.name == "create_guardian")
+    staff_outcome: list[str] = []
+    started = threading.Event()
+
+    def staff_creates() -> None:
+        with chat.sessions() as session:
+            started.set()
+            try:
+                client_service.create_client(
+                    session, name="Staff Maria", phone_number=chat.phone_number, home=None
+                )
+                session.commit()
+                staff_outcome.append("created")
+            except client_service.PhoneNumberTaken:
+                staff_outcome.append("409")
+
+    worker = threading.Thread(target=staff_creates, daemon=True)
+
+    def create_then_staff_starts(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:
+        result = create_guardian.run(ctx, tool_input)
+        worker.start()
+        started.wait(UNBLOCKED_WITHIN_SECONDS)
+        # Give the Staff write time to reach its wait on the turn.
+        time.sleep(0.5)
+        return result
+
+    with bot_worker_lock(chat):
+        outcome = chat.run(
+            [call(("create_guardian", {"name": SAVED_NAME})), reply("Thanks, Maria.")],
+            (tool("create_guardian", create_then_staff_starts),),
+        )
+    worker.join(UNBLOCKED_WITHIN_SECONDS)
+
+    assert outcome.kind == "replied"
+    assert staff_outcome == ["409"]

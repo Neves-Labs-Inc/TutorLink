@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.services.bot_model import ModelResponse, ModelUsage, ToolCall
+from app.services.bot_tool_contract import ToolResult, ToolSpec
 from scripts import bot_eval
 
 GUARDIAN_NAME = "Karen Mitchell"
@@ -119,6 +120,13 @@ def test_one_persona_runs_end_to_end_and_its_database_is_dropped(tmp_path: pathl
         r"\| 1 \| replied \| [\d.]+ \| 2 \| 2000 \| 200 \| 0 \| 0 \| 0\.0060 \|", report
     )
     assert "goal_met" in report
+    # Every tool call, with its input and result, under its turn.
+    tool_calls = report[report.index("## Tool calls") :]
+    assert "### Turn 1" in tool_calls
+    assert "1. `create_guardian`: ok" in tool_calls
+    assert f'input: `{{"name": "{GUARDIAN_NAME}"}}`' in tool_calls
+    assert '"guardian_id": "' in tool_calls
+    assert "2. `reply`" in tool_calls
     # The simulator sees the bot's WhatsApp reply, and only from its second move on.
     assert BOT_REPLY not in guardian.threads[0]
     assert BOT_REPLY in guardian.threads[1]
@@ -158,3 +166,31 @@ def test_it_refuses_a_postgres_server_that_is_not_local(
     assert status == bot_eval.EXIT_REMOTE_DB
     assert "db.example.com" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_the_tool_recorder_keeps_a_refusal_and_an_error_and_reraises() -> None:
+    def refuse(ctx: Any, tool_input: dict[str, Any]) -> ToolResult:
+        return ToolResult(status="refused", content={"reason": "invalid_input", "field": "date"})
+
+    def explode(ctx: Any, tool_input: dict[str, Any]) -> ToolResult:
+        raise TypeError("string indices must be integers, not 'str'")
+
+    recorder = bot_eval.ToolRecorder()
+    refusing, exploding = recorder.wrap(
+        (_spec("propose", refuse), _spec("commit_proposal", explode))
+    )
+    refusing.run(None, {"book": ["oops"]})
+    with pytest.raises(TypeError):
+        exploding.run(None, {})
+
+    [refused, failed] = recorder.drain()
+    assert refused.tool == "propose"
+    assert refused.input == {"book": ["oops"]}
+    assert refused.outcome == "refused: invalid_input"
+    assert refused.detail == {"reason": "invalid_input", "field": "date"}
+    assert failed.outcome == "error: TypeError: string indices must be integers, not 'str'"
+    assert recorder.drain() == []
+
+
+def _spec(name: str, run: Any) -> ToolSpec:
+    return ToolSpec(name=name, description=name, input_schema={}, run=run)

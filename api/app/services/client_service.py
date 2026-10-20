@@ -192,12 +192,22 @@ def get_client(db: Session, *, client_id: uuid.UUID) -> ClientDetail:
 
 
 def create_client(
-    db: Session, *, name: str, phone_number: str, home: HomeInput | None
+    db: Session,
+    *,
+    name: str,
+    phone_number: str,
+    home: HomeInput | None,
+    is_bot_turn: bool = False,
 ) -> ClientDetail:
     """Never an upsert: a number any client already holds, active or deactivated, is refused.
 
     An unlinked WhatsApp thread already at the number becomes the new Guardian's. One linked to
     another Guardian (data from before threads followed their Guardian) is left alone.
+
+    `is_bot_turn`: called by a bot turn's Intake on the number's own thread. The thread is
+    neither locked nor linked here: the turn links its detached copy, applied under its end
+    lock, so the webhook and Takeover never wait on the rest of the turn. A Staff write at the
+    same number waits for the turn instead (`conversation_service.lock_thread_at`).
     """
     # Before any write, so a blank address (`BlankAddress`) leaves no Guardian behind.
     details = (
@@ -210,8 +220,10 @@ def create_client(
     if _phone_number_taken(db, phone_number=canonical, exclude_id=None):
         raise PhoneNumberTaken
 
-    # Locked before the Guardian is inserted: conversation first, as every turn does.
-    thread = conversation_service.lock_thread_at(db, phone_number=canonical)
+    # Locked before the Guardian is inserted: conversation first, as every turn's end does.
+    thread = (
+        None if is_bot_turn else conversation_service.lock_thread_at(db, phone_number=canonical)
+    )
     client = Guardian(name=name, phone_number=canonical, is_archived=False)
 
     # The savepoint wraps the insert and nothing else. Unwinding it on `IntegrityError` is what

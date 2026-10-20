@@ -16,15 +16,22 @@ names nothing or another family's, before any rule could leak something about it
 In that order the new time can overlap the old one with the same Tutor, which the other order
 refuses as an overlap with itself; the savepoint undoes the cancel if the booking fails.
 
+**`propose` takes one list per kind** (`book`, `cancel`, `reschedule`), not one list of
+actions tagged by kind: strict mode can then require every field each kind needs without a
+union type, which the API caps across a request. Nothing the agent sends can raise: a malformed
+shape or field is an `invalid_input` refusal naming every problem, its place (`book[0].date`)
+and the format expected, so one retry can fix it all.
+
 A rule refusal is a `refused` ToolResult with a stable `reason` and the details the agent may
 rephrase (`hours`, `action`). Anything else raises: the turn loop treats it as an outage. Every
 call and result goes to the app log with the conversation id; there's no DB audit.
 """
 
 import datetime
+import json
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -36,6 +43,7 @@ from app.models.booking import Booking
 from app.models.child import Child
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, MessageAuthor
 from app.models.guardian import ChildGuardian
+from app.models.home import GuardianHome, Home
 from app.models.message import Message
 from app.models.tutor import Tutor
 from app.services import (
@@ -96,8 +104,37 @@ _WRITE_REFUSALS: dict[type[booking_write_service.BookingWriteError], str] = {
 _LOCATIONS = {"home": BookingLocation.HOME, "office": BookingLocation.IN_OFFICE}
 _LOCATION_NAMES = {location: name for name, location in _LOCATIONS.items()}
 
-_UUID = {"type": "string", "description": "A UUID."}
-_DATE = {"type": "string", "description": "YYYY-MM-DD."}
+# The order a proposal's actions run, are stored and are named in refusals (`cancel[0]`):
+# freeing a time first lets a book in the same proposal take it.
+_KINDS = ("cancel", "reschedule", "book")
+_SLOT_FIELDS = ("tutor_id", "date", "start_time", "location")
+# What each kind reads; `home_id` too when the location is home.
+_NEEDS = {
+    "book": ("child_id", "subject_id", *_SLOT_FIELDS),
+    "cancel": ("booking_id",),
+    "reschedule": ("booking_id", *_SLOT_FIELDS),
+}
+# What a refusal tells the agent a field must hold, so one retry can fix it.
+_EXPECTED = {
+    "child_id": "the Child's child id from the snapshot (a UUID)",
+    "subject_id": "the Subject's subject id from the snapshot (a UUID)",
+    "booking_id": "the session's booking id from the snapshot (a UUID)",
+    "tutor_id": "the tutor_id of the chosen list_slots slot (a UUID)",
+    "home_id": "the home id of one of the family's Homes, from the snapshot (a UUID)",
+    "date": "a date as YYYY-MM-DD, e.g. 2026-10-28: the date of the chosen list_slots slot",
+    "start_time": (
+        "a time as HH:MM on the 24-hour clock, e.g. 16:30 (not 4:30 PM): the start_time of the "
+        "chosen list_slots slot"
+    ),
+    "location": "home or office",
+    "date_from": "a date as YYYY-MM-DD, e.g. 2026-10-28",
+    "date_to": "a date as YYYY-MM-DD, on or after date_from",
+}
+MISSING = "missing"
+NOT_VALID = "not valid"
+
+_UUID = {"type": "string", "format": "uuid"}
+_DATE = {"type": "string", "format": "date", "description": "YYYY-MM-DD."}
 _LOCATION = {"type": "string", "enum": list(_LOCATIONS)}
 
 
@@ -109,6 +146,22 @@ class _Refused(Exception):
         super().__init__(reason)
         self.reason = reason
         self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class _Problem:
+    """One thing wrong with the agent's input. `at` names it without its value: `date_to`,
+    `book[0].start_time`, or `book[1]` for an item that isn't an object."""
+
+    at: str
+    field: str
+    kind: str
+    expected: str
+    # The action it belongs to (`book[0]`), if any.
+    action: str | None = None
+
+    def as_json(self) -> dict[str, str]:
+        return {"at": self.at, "problem": self.kind, "expected": self.expected}
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,11 +212,13 @@ class _Done:
 
 
 def _list_slots(ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-    child_id = _uuid_of(raw, "child_id")
-    subject_id = _uuid_of(raw, "subject_id")
-    date_from = _date_of(raw, "date_from")
-    date_to = _date_of(raw, "date_to")
-    location = _location_of(raw)
+    fields = _Fields(raw)
+    child_id = fields.uuid("child_id")
+    subject_id = fields.uuid("subject_id")
+    date_from = fields.date("date_from")
+    date_to = fields.date("date_to")
+    location = fields.location()
+    fields.check()
     wall_now = _wall_clock(ctx)
 
     _check_bookable_child(ctx, child_id=child_id)
@@ -173,7 +228,7 @@ def _list_slots(ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
         raise _Refused(NO_TUTOR_FOR_SUBJECT)
 
     slots = [
-        _slot_json(slot)
+        _slot_json(slot, location=location)
         for day in _days_in_window(ctx.db, date_from, date_to, today=wall_now.date())
         for slot in slot_service.find_available_slots(
             ctx.db,
@@ -195,7 +250,7 @@ def _days_in_window(
 ) -> list[datetime.date]:
     """The requested days, clipped to the booking window (today to `booking_lookahead_days`)."""
     if date_to < date_from:
-        raise _Refused(INVALID_INPUT, field="date_to")
+        raise _invalid([_Problem("date_to", "date_to", NOT_VALID, _EXPECTED["date_to"])])
     if (date_to - date_from).days >= MAX_LIST_DAYS:
         raise _Refused(RANGE_TOO_LONG, max_days=MAX_LIST_DAYS)
 
@@ -213,12 +268,14 @@ def _days_in_window(
     ]
 
 
-def _slot_json(slot: slot_service.OpenSlot) -> dict[str, Any]:
+def _slot_json(slot: slot_service.OpenSlot, *, location: BookingLocation) -> dict[str, Any]:
+    """`tutor_id`, `date`, `start_time` and `location` are exactly what `propose` takes."""
     return {
+        "tutor_id": str(slot.tutor_id),
         "date": slot.date.isoformat(),
         "start_time": _hhmm(slot.start_time),
+        "location": _LOCATION_NAMES[location],
         "end_time": _hhmm(slot.end_time),
-        "tutor_id": str(slot.tutor_id),
         "tutor_name": slot.tutor_name,
     }
 
@@ -231,8 +288,8 @@ def _propose(ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
     replacing any earlier proposal. A refused one drops the earlier proposal too: the Guardian
     has changed their mind, so a later message mustn't commit the old one."""
     try:
-        parsed = [_parse_action(item, index) for index, item in enumerate(raw["actions"])]
-        actions = [_stamped(ctx.db, action) for action in parsed]
+        homes = _family_homes(ctx)
+        actions = [_stamped(ctx.db, action) for action in _proposed_actions(raw, homes=homes)]
         done = _run_actions(ctx, actions, keep=False)
     except _Refused:
         _drop_proposal(ctx)
@@ -315,15 +372,15 @@ def _drop_proposal(ctx: ToolContext) -> None:
 
 def _run_actions(ctx: ToolContext, actions: list[_Action], *, keep: bool) -> list[_Done]:
     """Every action in one savepoint: all land (`keep`) or none do. A refusal names the action
-    it came from by index."""
+    it came from as the agent sent it (`book[1]`)."""
     wall_now = _wall_clock(ctx)
     guardian_id = _guardian_id(ctx)
     savepoint = ctx.db.begin_nested()
 
     try:
         done = [
-            _run_action(ctx, action, index=index, guardian_id=guardian_id, wall_now=wall_now)
-            for index, action in enumerate(actions)
+            _run_action(ctx, action, label=label, guardian_id=guardian_id, wall_now=wall_now)
+            for action, label in zip(actions, _labels(actions), strict=True)
         ]
     except BaseException:
         savepoint.rollback()
@@ -340,7 +397,7 @@ def _run_action(
     ctx: ToolContext,
     action: _Action,
     *,
-    index: int,
+    label: str,
     guardian_id: uuid.UUID,
     wall_now: datetime.datetime,
 ) -> _Done:
@@ -352,7 +409,7 @@ def _run_action(
         else:
             done = _reschedule(ctx, action, guardian_id=guardian_id, wall_now=wall_now)
     except _Refused as refusal:
-        raise _Refused(refusal.reason, **refusal.detail, action=index) from refusal
+        raise _Refused(refusal.reason, **refusal.detail, action=label) from refusal
 
     return done
 
@@ -596,44 +653,255 @@ def _wall_clock(ctx: ToolContext) -> datetime.datetime:
 # --- input, storage and output shapes -----------------------------------------------------------
 
 
-def _parse_action(raw: dict[str, Any], index: int) -> _Action:
-    try:
-        action = _action_of(raw)
-    except _Refused as refusal:
-        raise _Refused(refusal.reason, **refusal.detail, action=index) from refusal
+def _proposed_actions(raw: Mapping[str, Any], *, homes: Sequence[Home]) -> list[_Action]:
+    """The agent's `book`, `cancel` and `reschedule` lists as actions, in `_KINDS` order. Every
+    problem in the input is reported at once, so one retry can fix them all. A list (or an
+    item) sent as JSON text is read as the JSON it holds: a common model slip, and unambiguous.
+    `homes` are the Guardian's active Homes: with exactly one, a home action may leave out
+    `home_id`."""
+    problems: list[_Problem] = []
+    actions: list[_Action] = []
 
-    return action
-
-
-def _action_of(raw: dict[str, Any]) -> _Action:
-    kind = raw["kind"]
-
-    if kind == "book":
-        action: _Action = _Book(
-            child_id=_uuid_of(raw, "child_id"),
-            subject_id=_uuid_of(raw, "subject_id"),
-            slot=_slot_of(raw),
+    if "actions" in raw:
+        problems.append(
+            _Problem(
+                "actions",
+                "actions",
+                NOT_VALID,
+                "no `actions` field: put each action in the book, cancel or reschedule list",
+            )
         )
-    elif kind == "cancel":
-        action = _Cancel(booking_id=_uuid_of(raw, "booking_id"), expected_updated_at=None)
-    else:
+
+    for kind in _KINDS:
+        items = _decoded(raw.get(kind, []))
+        if not isinstance(items, list):
+            problems.append(
+                _Problem(kind, kind, NOT_VALID, f"a list of {kind} objects (empty for none)")
+            )
+            continue
+
+        for index, item in enumerate(items):
+            label = f"{kind}[{index}]"
+            fields = _Fields(_decoded(item), action=label)
+            action = _action_of(kind, fields, homes=homes)
+            problems += fields.problems
+            if action is not None:
+                actions.append(action)
+
+    if not problems and not actions:
+        problems.append(
+            _Problem("book", "book", MISSING, "at least one action in book, cancel or reschedule")
+        )
+    if problems:
+        raise _invalid(problems)
+
+    return actions
+
+
+def _action_of(kind: str, fields: "_Fields", *, homes: Sequence[Home]) -> _Action | None:
+    """The action `fields` describes, or `None` with its problems left on `fields`."""
+    if not fields.is_object:
+        return None
+
+    if kind == "cancel":
+        action: _Action = _Cancel(booking_id=fields.uuid("booking_id"), expected_updated_at=None)
+    elif kind == "reschedule":
         action = _Reschedule(
-            booking_id=_uuid_of(raw, "booking_id"), slot=_slot_of(raw), expected_updated_at=None
+            booking_id=fields.uuid("booking_id"),
+            slot=_slot_of(fields, homes=homes),
+            expected_updated_at=None,
         )
-    return action
+    else:
+        action = _Book(
+            child_id=fields.uuid("child_id"),
+            subject_id=fields.uuid("subject_id"),
+            slot=_slot_of(fields, homes=homes),
+        )
+
+    # Built from placeholders when a field had a problem; never used then.
+    return None if fields.problems else action
 
 
-def _slot_of(raw: dict[str, Any]) -> _Slot:
-    location = _location_of(raw)
-    home_id = _uuid_of(raw, "home_id") if location is BookingLocation.HOME else None
+def _slot_of(fields: "_Fields", *, homes: Sequence[Home]) -> _Slot:
+    location = fields.location()
 
     return _Slot(
-        tutor_id=_uuid_of(raw, "tutor_id"),
-        date=_date_of(raw, "date"),
-        start_time=_time_of(raw, "start_time"),
+        tutor_id=fields.uuid("tutor_id"),
+        date=fields.date("date"),
+        start_time=fields.time("start_time"),
         location=location,
-        home_id=home_id,
+        home_id=_home_of(fields, location=location, homes=homes),
     )
+
+
+def _home_of(
+    fields: "_Fields", *, location: BookingLocation | None, homes: Sequence[Home]
+) -> uuid.UUID | None:
+    """The Home a home action is at: the one given, or the family's only Home. With no
+    location (it had a problem) and no Home to fill in, the missing `home_id` is reported now
+    too, so one retry fixes both."""
+    is_given = fields.has("home_id")
+    only_home = homes[0].id if len(homes) == 1 else None
+    home_id = None
+
+    if location is BookingLocation.HOME and is_given:
+        home_id = fields.uuid("home_id")
+    elif location is BookingLocation.HOME and only_home is not None:
+        home_id = only_home
+    elif location is not BookingLocation.IN_OFFICE and not is_given and only_home is None:
+        fields.add_missing("home_id", _home_choices(homes))
+    return home_id
+
+
+def _home_choices(homes: Sequence[Home]) -> str:
+    """What `home_id` must be when it can't be filled in: the agent picks from these."""
+    if not homes:
+        return (
+            "a Home's id, but the Guardian has no Home saved: save one with create_home, or "
+            "book at the office"
+        )
+
+    choices = ", ".join(
+        f"{home.id} ({'no label' if home.label is None else home.label})" for home in homes
+    )
+    return f"needed when location is home: the home id of one of the family's Homes: {choices}"
+
+
+def _family_homes(ctx: ToolContext) -> list[Home]:
+    """The Guardian's active Homes, the ones the snapshot lists; none before a Guardian."""
+    guardian_id = ctx.conversation.guardian_id
+    if guardian_id is None:
+        return []
+
+    return list(
+        ctx.db.scalars(
+            select(Home)
+            .join(GuardianHome, GuardianHome.home_id == Home.id)
+            .where(GuardianHome.guardian_id == guardian_id, Home.is_archived.is_(False))
+            .order_by(Home.created_at, Home.id)
+        ).all()
+    )
+
+
+def _labels(actions: list[_Action]) -> list[str]:
+    """`book[0]`, `cancel[1]`...: each action's place in its own kind's list, as the agent sent
+    it. Actions run and are stored grouped in `_KINDS` order, so this recounts the same."""
+    seen: dict[str, int] = {}
+    labels = []
+    for action in actions:
+        kind = _kind_of(action)
+        labels.append(f"{kind}[{seen.get(kind, 0)}]")
+        seen[kind] = seen.get(kind, 0) + 1
+    return labels
+
+
+def _kind_of(action: _Action) -> str:
+    if isinstance(action, _Book):
+        return "book"
+    return "cancel" if isinstance(action, _Cancel) else "reschedule"
+
+
+class _Fields:
+    """Reads one input object's fields, collecting every problem instead of stopping at the
+    first. A field with a problem reads as `None`; check `problems` before using the values."""
+
+    def __init__(self, raw: object, *, action: str | None = None) -> None:
+        self._raw: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+        self._action = action
+        self.is_object = isinstance(raw, Mapping)
+        self.problems: list[_Problem] = []
+        if not self.is_object:
+            kind = (action or "").split("[")[0]
+            needs = ", ".join(_NEEDS.get(kind, ()))
+            self.problems.append(
+                _Problem(
+                    action or "input",
+                    kind or "input",
+                    NOT_VALID,
+                    f"a JSON object with {needs}",
+                    action,
+                )
+            )
+
+    def uuid(self, field: str) -> Any:
+        return self._read(field, uuid.UUID)
+
+    def date(self, field: str) -> Any:
+        return self._read(field, datetime.date.fromisoformat)
+
+    def time(self, field: str) -> Any:
+        return self._read(field, _naive_time)
+
+    def location(self) -> Any:
+        return self._read("location", _LOCATIONS.__getitem__)
+
+    def has(self, field: str) -> bool:
+        return self._raw.get(field) is not None
+
+    def add_missing(self, field: str, expected: str) -> None:
+        at = field if self._action is None else f"{self._action}.{field}"
+        self.problems.append(_Problem(at, field, MISSING, expected, self._action))
+
+    def check(self) -> None:
+        if self.problems:
+            raise _invalid(self.problems)
+
+    def _read[T](self, field: str, parse: Callable[[str], T]) -> T | None:
+        value = self._raw.get(field)
+        problem = None
+        parsed = None
+        if value is None:
+            problem = MISSING
+        elif not isinstance(value, str):
+            problem = NOT_VALID
+        else:
+            try:
+                parsed = parse(value)
+            except (ValueError, KeyError):
+                problem = NOT_VALID
+
+        if problem is not None:
+            at = field if self._action is None else f"{self._action}.{field}"
+            self.problems.append(_Problem(at, field, problem, _EXPECTED[field], self._action))
+        return parsed
+
+
+def _naive_time(value: str) -> datetime.time:
+    """HH:MM (seconds tolerated); a time with a zone isn't a wall-clock slot."""
+    parsed = datetime.time.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        raise ValueError(value)
+    return parsed
+
+
+def _decoded(value: object) -> object:
+    """`value`, or the JSON a string of it holds when it decodes to a list or an object."""
+    if not isinstance(value, str):
+        return value
+
+    try:
+        decoded = json.loads(value)
+    # Deeply nested text overflows the decoder's recursion: as unreadable as malformed JSON.
+    except (ValueError, RecursionError):
+        return value
+
+    return decoded if isinstance(decoded, list | dict) else value
+
+
+def _invalid(problems: list[_Problem]) -> "_Refused":
+    """The refusal for bad input, naming every problem. A Home id left out is the one problem
+    with its own reason: `home_needed`."""
+    first = problems[0]
+    is_home_needed = all(p.field == "home_id" and p.kind == MISSING for p in problems)
+    detail: dict[str, object] = {
+        "field": first.field,
+        "expected": first.expected,
+        "problems": [problem.as_json() for problem in problems],
+    }
+    if first.action is not None:
+        detail["action"] = first.action
+
+    return _Refused(HOME_NEEDED if is_home_needed else INVALID_INPUT, **detail)
 
 
 def _action_json(action: _Action) -> dict[str, object]:
@@ -648,7 +916,7 @@ def _action_json(action: _Action) -> dict[str, object]:
 
     stamp = action.expected_updated_at
     stored: dict[str, object] = {
-        "kind": "cancel" if isinstance(action, _Cancel) else "reschedule",
+        "kind": _kind_of(action),
         "booking_id": str(action.booking_id),
         "expected_updated_at": None if stamp is None else stamp.isoformat(),
     }
@@ -670,7 +938,11 @@ def _slot_json_of(slot: _Slot) -> dict[str, object]:
 def _stored_action(stored: dict[str, object]) -> _Action:
     """The inverse of `_action_json`. Written by `propose` only, so a malformed row is a bug
     and raises."""
-    action = _action_of(stored)
+    kind = str(stored.get("kind"))
+    fields = _Fields(stored, action=kind)
+    action = _action_of(kind, fields, homes=())
+    if action is None:
+        raise ValueError(f"malformed stored action: {[p.at for p in fields.problems]}")
     raw_stamp = stored.get("expected_updated_at")
     stamp = datetime.datetime.fromisoformat(raw_stamp) if isinstance(raw_stamp, str) else None
 
@@ -689,41 +961,6 @@ def _booking_json(booking: Booking) -> dict[str, Any]:
         "end_time": _hhmm(booking.end_time),
         "location": _LOCATION_NAMES[booking.location],
     }
-
-
-def _uuid_of(raw: dict[str, Any], field: str) -> uuid.UUID:
-    return _parsed(raw, field, uuid.UUID)
-
-
-def _date_of(raw: dict[str, Any], field: str) -> datetime.date:
-    return _parsed(raw, field, datetime.date.fromisoformat)
-
-
-def _time_of(raw: dict[str, Any], field: str) -> datetime.time:
-    return _parsed(raw, field, datetime.time.fromisoformat)
-
-
-def _location_of(raw: dict[str, Any]) -> BookingLocation:
-    location = _LOCATIONS.get(raw.get("location") or "")
-    if location is None:
-        raise _Refused(INVALID_INPUT, field="location")
-
-    return location
-
-
-def _parsed[T](raw: dict[str, Any], field: str, parse: Callable[[str], T]) -> T:
-    """A required string field, parsed; a missing or malformed one is the agent's mistake to
-    fix, not an outage."""
-    value = raw.get(field)
-    if not isinstance(value, str):
-        raise _Refused(HOME_NEEDED if field == "home_id" else INVALID_INPUT, field=field)
-
-    try:
-        parsed = parse(value)
-    except ValueError as error:
-        raise _Refused(INVALID_INPUT, field=field) from error
-
-    return parsed
 
 
 def _hhmm(value: datetime.time) -> str:
@@ -750,9 +987,10 @@ def _logged(
                 status="refused", content={"reason": refusal.reason, **refusal.detail}
             )
             logger.warning(
-                "bot_tool.%s refused: %s",
+                "bot_tool.%s refused: %s%s",
                 name,
                 refusal.reason,
+                _refusal_where(refusal.detail),
                 extra={**context, "content": result.content},
             )
         except Exception:
@@ -764,6 +1002,20 @@ def _logged(
         return result
 
     return logged_run
+
+
+def _refusal_where(detail: dict[str, object]) -> str:
+    """` (book[0].date, book[0].start_time)`: where a refusal points, by field and action name
+    only. Never a value: the input carries the Guardian's data."""
+    problems = detail.get("problems")
+    if isinstance(problems, list):
+        places = [str(problem["at"]) for problem in problems]
+    elif detail.get("action") is not None:
+        places = [str(detail["action"])]
+    else:
+        places = []
+
+    return f" ({', '.join(places)})" if places else ""
 
 
 def _loggable(result: ToolResult) -> dict[str, object]:
@@ -790,50 +1042,57 @@ def _strict(
     }
 
 
-_ACTION_SCHEMA = _strict(
-    {
-        "kind": {"type": "string", "enum": ["book", "cancel", "reschedule"]},
-        "booking_id": {**_UUID, "description": "Cancel and reschedule: the Session."},
-        "child_id": {**_UUID, "description": "Book only."},
-        "subject_id": {**_UUID, "description": "Book only."},
-        "tutor_id": {**_UUID, "description": "Book and reschedule: from list_slots."},
-        "date": {"type": "string", "description": "Book and reschedule: YYYY-MM-DD."},
-        "start_time": {
-            "type": "string",
-            "description": "Book and reschedule: HH:MM, from list_slots.",
-        },
-        "location": {**_LOCATION, "description": "Book and reschedule."},
-        "home_id": {**_UUID, "description": "Required when location is home."},
+_SLOT_PROPERTIES = {
+    "tutor_id": {**_UUID, "description": "The chosen list_slots slot's tutor_id."},
+    "date": {**_DATE, "description": "The chosen slot's date, YYYY-MM-DD."},
+    "start_time": {
+        "type": "string",
+        "description": "The chosen slot's start_time: HH:MM, 24-hour (16:30, not 4:30 PM).",
     },
-    # `kind` alone is always needed; each kind reads the rest (a missing one is invalid_input).
-    optional=frozenset(
-        {
-            "booking_id",
-            "child_id",
-            "subject_id",
-            "tutor_id",
-            "date",
-            "start_time",
-            "location",
-            "home_id",
-        }
-    ),
+    "location": {**_LOCATION, "description": "The location list_slots was asked for."},
+    "home_id": {
+        **_UUID,
+        "description": "The Home's home id from the snapshot. Needed when location is home and "
+        "the family has more than one Home; with one Home it is filled in. Leave out for office.",
+    },
+}
+_BOOK_SCHEMA = _strict(
+    {
+        "child_id": {**_UUID, "description": "The Child's child id from the snapshot."},
+        "subject_id": {**_UUID, "description": "The Subject's subject id from the snapshot."},
+        **_SLOT_PROPERTIES,
+    },
+    optional=frozenset({"home_id"}),
+)
+_CANCEL_SCHEMA = _strict(
+    {"booking_id": {**_UUID, "description": "The session's booking id from the snapshot."}}
+)
+_RESCHEDULE_SCHEMA = _strict(
+    {
+        "booking_id": {
+            **_UUID,
+            "description": "The booking id of the session to move, from the snapshot.",
+        },
+        **_SLOT_PROPERTIES,
+    },
+    optional=frozenset({"home_id"}),
 )
 
 LIST_SLOTS = ToolSpec(
     name="list_slots",
     description=(
         "Free Session times for an Evaluated Child and a Subject, between two dates (at most "
-        f"{MAX_LIST_DAYS} days), at home or at the office. Refused no_tutor_for_subject when "
-        "nobody can teach it at that Location (hand off to the office); an empty list means "
-        "nobody is free in that range (offer other days first)."
+        f"{MAX_LIST_DAYS} days), at home or at the office. Each slot's tutor_id, date, "
+        "start_time and location are exactly what propose takes. Refused no_tutor_for_subject "
+        "when nobody can teach it at that Location (hand off to the office); an empty list "
+        "means nobody is free in that range (offer other days first)."
     ),
     input_schema=_strict(
         {
-            "child_id": _UUID,
-            "subject_id": _UUID,
+            "child_id": {**_UUID, "description": "The Child's child id from the snapshot."},
+            "subject_id": {**_UUID, "description": "The Subject's subject id from the snapshot."},
             "date_from": _DATE,
-            "date_to": _DATE,
+            "date_to": {**_DATE, "description": "YYYY-MM-DD, on or after date_from."},
             "location": _LOCATION,
         }
     ),
@@ -843,11 +1102,20 @@ LIST_SLOTS = ToolSpec(
 PROPOSE = ToolSpec(
     name="propose",
     description=(
-        "Check and hold one or more book, cancel or reschedule actions for the Guardian's yes. "
-        "Replaces any earlier proposal. Nothing is saved until commit_proposal. Refused with a "
-        "reason (and the failing action's index) if any action breaks a rule."
+        "Check and hold book, cancel and reschedule actions for the Guardian's yes; at least "
+        "one action across the three lists, an empty list for a kind you don't need. Replaces "
+        "any earlier proposal. Nothing is saved until commit_proposal. Copy tutor_id, date, "
+        "start_time and location from the chosen list_slots slot, and ids from the snapshot. "
+        "Refused with a reason and the failing action (book[0], cancel[1]...) if any action "
+        "breaks a rule; an invalid_input refusal lists every field to fix and its format."
     ),
-    input_schema=_strict({"actions": {"type": "array", "minItems": 1, "items": _ACTION_SCHEMA}}),
+    input_schema=_strict(
+        {
+            "book": {"type": "array", "items": _BOOK_SCHEMA},
+            "cancel": {"type": "array", "items": _CANCEL_SCHEMA},
+            "reschedule": {"type": "array", "items": _RESCHEDULE_SCHEMA},
+        }
+    ),
     run=_logged("propose", _propose),
 )
 

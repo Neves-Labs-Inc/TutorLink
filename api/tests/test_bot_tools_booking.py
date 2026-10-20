@@ -7,6 +7,8 @@ UTC instant a turn carries.
 """
 
 import datetime
+import json
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,7 +16,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability
@@ -141,6 +143,34 @@ def test_every_input_schema_is_strict(tool: ToolSpec) -> None:
         assert set(schema["required"]) <= set(schema["properties"])
 
 
+@pytest.mark.parametrize(
+    ("kind", "needed", "optional"),
+    [
+        (
+            "book",
+            {"child_id", "subject_id", "tutor_id", "date", "start_time", "location"},
+            {"home_id"},
+        ),
+        ("cancel", {"booking_id"}, set()),
+        (
+            "reschedule",
+            {"booking_id", "tutor_id", "date", "start_time", "location"},
+            {"home_id"},
+        ),
+    ],
+)
+def test_strict_mode_makes_the_agent_send_every_field_its_kind_needs(
+    kind: str, needed: set[str], optional: set[str]
+) -> None:
+    """Optional fields are what let a malformed first attempt through: only `home_id` is."""
+    schema = _tool("propose").input_schema
+    items = schema["properties"][kind]["items"]
+
+    assert set(schema["required"]) == {"book", "cancel", "reschedule"}
+    assert set(items["required"]) == needed
+    assert set(items["properties"]) == needed | optional
+
+
 # --- list_slots ---------------------------------------------------------------------------------
 
 
@@ -154,6 +184,7 @@ def test_list_slots_offers_only_the_assigned_tutors_free_slots(db: Session, worl
         {
             "date": DATE.isoformat(),
             "start_time": "10:30",
+            "location": "home",
             "end_time": "11:30",
             "tutor_id": str(world.assigned_tutor_id),
             "tutor_name": _name_of(db, world.assigned_user_id),
@@ -336,7 +367,7 @@ def test_a_refused_action_refuses_the_whole_proposal_and_stores_nothing(
 
     assert result.status == "refused"
     assert result.content["reason"] == "not_assigned_tutor"
-    assert result.content["action"] == 1
+    assert result.content["action"] == "book[1]"
     assert world.conversation.proposal_actions is None
     assert world.conversation.proposed_at is None
 
@@ -369,7 +400,7 @@ def test_propose_refuses_cancel_inside_the_cutoff_with_the_hours(db: Session, wo
 
     result = _propose(db, world, [_cancel_action(booking_id)], now=now)
 
-    assert result == _refused("inside_cutoff", hours=CUTOFF_HOURS, action=0)
+    assert result == _refused("inside_cutoff", hours=CUTOFF_HOURS, action="cancel[0]")
 
 
 def test_propose_refuses_reschedule_inside_the_cutoff_with_the_hours(
@@ -380,7 +411,7 @@ def test_propose_refuses_reschedule_inside_the_cutoff_with_the_hours(
 
     result = _propose(db, world, [_reschedule_action(world, booking_id)], now=now)
 
-    assert result == _refused("inside_cutoff", hours=CUTOFF_HOURS, action=0)
+    assert result == _refused("inside_cutoff", hours=CUTOFF_HOURS, action="reschedule[0]")
 
 
 def test_propose_refuses_cancelling_another_familys_booking(db: Session, world: World) -> None:
@@ -389,7 +420,7 @@ def test_propose_refuses_cancelling_another_familys_booking(db: Session, world: 
 
     result = _propose(db, world, [_cancel_action(booking_id)])
 
-    assert result == _refused("child_not_linked", action=0)
+    assert result == _refused("child_not_linked", action="cancel[0]")
 
 
 def test_propose_refuses_a_start_whose_session_would_cross_midnight(
@@ -397,7 +428,7 @@ def test_propose_refuses_a_start_whose_session_would_cross_midnight(
 ) -> None:
     result = _propose(db, world, [_book_action(world, start="23:30")])
 
-    assert result == _refused("slot_not_free", action=0)
+    assert result == _refused("slot_not_free", action="book[0]")
 
 
 def test_propose_refuses_a_reschedule_that_would_cross_midnight(db: Session, world: World) -> None:
@@ -405,7 +436,7 @@ def test_propose_refuses_a_reschedule_that_would_cross_midnight(db: Session, wor
 
     result = _propose(db, world, [_reschedule_action(world, booking_id, start="23:30")])
 
-    assert result == _refused("slot_not_free", action=0)
+    assert result == _refused("slot_not_free", action="reschedule[0]")
 
 
 def test_a_refused_propose_drops_the_earlier_proposal(db: Session, world: World) -> None:
@@ -416,6 +447,262 @@ def test_a_refused_propose_drops_the_earlier_proposal(db: Session, world: World)
     assert result.status == "refused"
     assert world.conversation.proposal_actions is None
     assert world.conversation.proposed_at is None
+
+
+# --- malformed input (the eval's booking failures) ----------------------------------------------
+
+
+def test_a_slot_from_list_slots_proposes_as_it_is(db: Session, world: World) -> None:
+    """The agent copies a slot's fields into `propose`; nothing needs reformatting."""
+    slot = _list_slots(db, world).content["slots"][0]
+    book = {
+        "child_id": str(world.child_id),
+        "subject_id": str(world.subject_id),
+        **{key: slot[key] for key in ("tutor_id", "date", "start_time", "location")},
+        "home_id": str(world.home_id),
+    }
+
+    result = _propose_raw(db, world, {"book": [book], "cancel": [], "reschedule": []})
+
+    assert result.status == "ok"
+
+
+def test_propose_names_every_problem_with_its_expected_format(db: Session, world: World) -> None:
+    action = {**_book_action(world), "date": "Nov 2", "start_time": "9:00 AM"}
+    del action["tutor_id"]
+
+    result = _propose(db, world, [action])
+
+    assert result.status == "refused"
+    assert result.content["reason"] == "invalid_input"
+    assert result.content["action"] == "book[0]"
+    problems = {problem["at"]: problem for problem in result.content["problems"]}
+    assert set(problems) == {"book[0].tutor_id", "book[0].date", "book[0].start_time"}
+    assert problems["book[0].tutor_id"]["problem"] == "missing"
+    assert problems["book[0].date"]["problem"] == "not valid"
+    assert "YYYY-MM-DD" in problems["book[0].date"]["expected"]
+    assert "HH:MM" in problems["book[0].start_time"]["expected"]
+    assert "24-hour" in problems["book[0].start_time"]["expected"]
+
+
+def test_propose_names_the_problem_in_the_second_action_of_a_kind(
+    db: Session, world: World
+) -> None:
+    second = {key: value for key, value in _book_action(world).items() if key != "location"}
+
+    result = _propose(db, world, [_book_action(world), second])
+
+    assert result.content["reason"] == "invalid_input"
+    assert [problem["at"] for problem in result.content["problems"]] == ["book[1].location"]
+    assert result.content["expected"] == "home or office"
+
+
+@pytest.mark.parametrize("kind", ["book", "reschedule"])
+def test_a_home_action_without_a_home_id_uses_the_familys_only_home(
+    db: Session, world: World, kind: str
+) -> None:
+    booking_id = _book(db, world, child_id=world.child_id, start=NINE, end=TEN)
+    action = {
+        "book": _book_action(world, start="10:30"),
+        "reschedule": _reschedule_action(world, booking_id),
+    }[kind]
+    del action["home_id"]
+
+    result = _propose(db, world, [action])
+
+    assert result.status == "ok"
+    [stored] = world.conversation.proposal_actions or []
+    assert stored["home_id"] == str(world.home_id)
+
+
+def test_with_two_homes_a_missing_home_id_is_home_needed_naming_both(
+    db: Session, world: World
+) -> None:
+    second = _add_home(db, world, label="Dad's")
+    action = {key: value for key, value in _book_action(world).items() if key != "home_id"}
+
+    result = _propose(db, world, [action])
+
+    assert result.content["reason"] == "home_needed"
+    assert result.content["field"] == "home_id"
+    assert str(world.home_id) in result.content["expected"]
+    assert f"{second} (Dad's)" in result.content["expected"]
+    assert world.conversation.proposal_actions is None
+
+
+def test_with_no_home_a_home_booking_says_to_save_one(db: Session, world: World) -> None:
+    db.execute(delete(GuardianHome).where(GuardianHome.guardian_id == world.guardian_id))
+    db.flush()
+    action = {key: value for key, value in _book_action(world).items() if key != "home_id"}
+
+    result = _propose(db, world, [action])
+
+    assert result.content["reason"] == "home_needed"
+    assert "create_home" in result.content["expected"]
+
+
+def test_a_bad_location_and_a_missing_home_id_are_refused_together(
+    db: Session, world: World
+) -> None:
+    _add_home(db, world, label="Dad's")
+    action = {**_book_action(world), "location": "Home"}
+    del action["home_id"]
+
+    result = _propose(db, world, [action])
+
+    assert result.content["reason"] == "invalid_input"
+    assert [problem["at"] for problem in result.content["problems"]] == [
+        "book[0].location",
+        "book[0].home_id",
+    ]
+
+
+def test_a_bad_location_with_one_home_reports_only_the_location(db: Session, world: World) -> None:
+    action = {**_book_action(world), "location": "Home"}
+    del action["home_id"]
+
+    result = _propose(db, world, [action])
+
+    assert [problem["at"] for problem in result.content["problems"]] == ["book[0].location"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param({"actions": "not json"}, id="old actions field as text"),
+        pytest.param({"book": "not json", "cancel": [], "reschedule": []}, id="list as text"),
+        pytest.param({"book": {"kind": "book"}, "cancel": [], "reschedule": []}, id="dict list"),
+        pytest.param({"book": 3, "cancel": [], "reschedule": []}, id="number list"),
+        pytest.param({"book": ["book"], "cancel": [], "reschedule": []}, id="string item"),
+        pytest.param({"book": [None, 7], "cancel": [], "reschedule": []}, id="null item"),
+        pytest.param({"book": [], "cancel": [], "reschedule": []}, id="no actions"),
+        pytest.param({}, id="nothing at all"),
+    ],
+)
+def test_propose_refuses_a_malformed_shape_instead_of_raising(
+    db: Session, world: World, raw: dict[str, Any]
+) -> None:
+    result = _propose_raw(db, world, raw)
+
+    assert result.status == "refused"
+    assert result.content["reason"] == "invalid_input"
+    assert result.content["problems"]
+    assert world.conversation.proposal_actions is None
+
+
+def test_propose_refuses_the_old_actions_list_and_says_where_actions_go(
+    db: Session, world: World
+) -> None:
+    result = _propose_raw(db, world, {"actions": [_book_action(world)]})
+
+    assert result.content["reason"] == "invalid_input"
+    assert result.content["field"] == "actions"
+    assert "book, cancel or reschedule" in result.content["expected"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start_time", 930),
+        ("start_time", ["09:00"]),
+        ("location", ["home"]),
+        ("location", {"home": True}),
+        ("date", 20261102),
+        ("child_id", 12),
+        ("start_time", "09:00+00:00"),
+    ],
+)
+def test_propose_refuses_a_field_of_the_wrong_type_instead_of_raising(
+    db: Session, world: World, field: str, value: object
+) -> None:
+    result = _propose(db, world, [{**_book_action(world), field: value}])
+
+    assert result.content["reason"] == "invalid_input"
+    assert result.content["field"] == field
+    assert result.content["problems"][0]["problem"] == "not valid"
+
+
+def test_deeply_nested_json_text_is_invalid_input_not_an_error(db: Session, world: World) -> None:
+    depth = 100_000
+    nested = "[" * depth + "]" * depth
+
+    result = _propose_raw(db, world, {"book": nested, "cancel": [nested], "reschedule": []})
+
+    assert result.content["reason"] == "invalid_input"
+    assert [problem["at"] for problem in result.content["problems"]] == ["cancel[0]", "book"]
+
+
+def test_propose_reads_a_list_sent_as_json_text(db: Session, world: World) -> None:
+    """A common model slip, and unambiguous: the text is the list."""
+    book = json.dumps([_grouped([_book_action(world)])["book"][0]])
+
+    result = _propose_raw(db, world, {"book": book, "cancel": "[]", "reschedule": []})
+
+    assert result.status == "ok"
+    assert len(world.conversation.proposal_actions or []) == 1
+
+
+def test_propose_reads_an_action_sent_as_json_text(db: Session, world: World) -> None:
+    item = json.dumps(_grouped([_book_action(world)])["book"][0])
+
+    result = _propose_raw(db, world, {"book": [item], "cancel": [], "reschedule": []})
+
+    assert result.status == "ok"
+
+
+def test_list_slots_names_every_problem_instead_of_raising(db: Session, world: World) -> None:
+    raw = {"child_id": 5, "subject_id": "maths", "date_from": "tomorrow", "location": ["home"]}
+
+    result = _tool("list_slots").run(_context(db, world, NOW), raw)
+
+    assert result.content["reason"] == "invalid_input"
+    assert [problem["at"] for problem in result.content["problems"]] == [
+        "child_id",
+        "subject_id",
+        "date_from",
+        "date_to",
+        "location",
+    ]
+
+
+def test_list_slots_refuses_a_range_that_ends_before_it_starts(db: Session, world: World) -> None:
+    result = _list_slots(db, world, date_to=DATE - datetime.timedelta(days=1))
+
+    assert result.content["reason"] == "invalid_input"
+    assert result.content["field"] == "date_to"
+    assert "on or after date_from" in result.content["expected"]
+
+
+def test_commit_ignores_whatever_input_it_is_sent(db: Session, world: World) -> None:
+    result = _tool("commit_proposal").run(_context(db, world, NOW), {"actions": "yes"})
+
+    assert result == _refused("nothing_pending")
+
+
+def test_the_refusal_log_line_names_the_fields_but_no_values(
+    db: Session, world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret_time = "quarter past nine"
+    action = {**_book_action(world), "start_time": secret_time}
+    del action["date"]
+
+    with caplog.at_level(logging.WARNING, logger=bot_tools_booking.__name__):
+        _propose(db, world, [action])
+
+    [line] = _tool_log(caplog)
+    assert line == "bot_tool.propose refused: invalid_input (book[0].date, book[0].start_time)"
+    assert secret_time not in line
+
+
+def test_a_rule_refusal_log_line_names_the_action(
+    db: Session, world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=bot_tools_booking.__name__):
+        _propose(
+            db, world, [_book_action(world), _book_action(world, tutor_id=world.other_tutor_id)]
+        )
+
+    assert _tool_log(caplog) == ["bot_tool.propose refused: not_assigned_tutor (book[1])"]
 
 
 # --- commit_proposal ----------------------------------------------------------------------------
@@ -525,7 +812,7 @@ def test_when_the_second_action_fails_neither_lands_and_the_proposal_stays(
 
     result = _commit(db, world, now=NOW + datetime.timedelta(minutes=2))
 
-    assert result == _refused("slot_not_free", action=1)
+    assert result == _refused("slot_not_free", action="book[1]")
     assert _live_bookings(db, world) == []
     assert world.conversation.proposal_actions == proposed
     assert world.conversation.proposed_at == NOW
@@ -541,7 +828,7 @@ def test_a_session_that_would_cross_midnight_at_commit_is_refused(
 
     result = _commit(db, world, now=NOW + datetime.timedelta(minutes=2))
 
-    assert result == _refused("slot_not_free", action=0)
+    assert result == _refused("slot_not_free", action="book[0]")
     assert _live_bookings(db, world) == []
 
 
@@ -554,6 +841,44 @@ def test_commit_cancels_a_booking(db: Session, world: World) -> None:
 
     assert result.committed == (CommittedAction(kind="cancel", booking_id=booking_id),)
     assert db.get_one(Booking, booking_id).status is BookingStatus.CANCELLED
+
+
+def test_a_cancel_and_a_book_into_its_slot_commit_together(db: Session, world: World) -> None:
+    """The cancel runs first whatever the agent had in mind, so the freed time can be booked."""
+    booking_id = _book(db, world, child_id=world.child_id, start=NINE, end=TEN)
+    book = _book_action(world, child_id=world.sibling_id, start="09:00")
+    assert _propose(db, world, [book, _cancel_action(booking_id)]).status == "ok"
+    _guardian_says(db, world, at=NOW + datetime.timedelta(minutes=1))
+
+    result = _commit(db, world, now=NOW + datetime.timedelta(minutes=2))
+
+    assert [action.kind for action in result.committed] == ["cancel", "book"]
+    assert db.get_one(Booking, booking_id).status is BookingStatus.CANCELLED
+    [live] = _live_bookings(db, world)
+    assert (live.child_id, live.start_time) == (world.sibling_id, NINE)
+
+
+def test_when_the_book_into_a_cancelled_slot_fails_the_cancel_does_not_land(
+    db: Session, world: World
+) -> None:
+    booking_id = _book(db, world, child_id=world.child_id, start=NINE, end=TEN)
+    book = _book_action(world, child_id=world.sibling_id, start="09:00")
+    _propose(db, world, [book, _cancel_action(booking_id)])
+    db.execute(
+        delete(ChildAssignedTutor).where(
+            ChildAssignedTutor.child_id == world.sibling_id,
+            ChildAssignedTutor.user_id == world.assigned_user_id,
+        )
+    )
+    db.flush()
+    _guardian_says(db, world, at=NOW + datetime.timedelta(minutes=1))
+
+    result = _commit(db, world, now=NOW + datetime.timedelta(minutes=2))
+
+    assert result == _refused("not_assigned_tutor", action="book[0]")
+    assert db.get_one(Booking, booking_id, populate_existing=True).status is (
+        BookingStatus.CONFIRMED
+    )
 
 
 def test_commit_reschedules_a_booking_to_a_new_one(db: Session, world: World) -> None:
@@ -600,7 +925,7 @@ def test_a_reschedule_of_a_booking_changed_since_the_proposal_is_refused(
 
     result = _commit(db, world, now=NOW + datetime.timedelta(minutes=2))
 
-    assert result == _refused("booking_changed", action=0)
+    assert result == _refused("booking_changed", action="reschedule[0]")
     assert db.get_one(Booking, booking_id).status is BookingStatus.CONFIRMED
     assert world.conversation.proposal_actions is not None
 
@@ -616,7 +941,7 @@ def test_cancel_inside_the_cutoff_at_commit_is_refused_with_the_hours(
 
     result = _commit(db, world, now=proposed_at + datetime.timedelta(minutes=15))
 
-    assert result == _refused("inside_cutoff", hours=CUTOFF_HOURS, action=0)
+    assert result == _refused("inside_cutoff", hours=CUTOFF_HOURS, action="cancel[0]")
 
 
 def test_a_tutor_unassigned_since_the_proposal_is_refused_at_commit(
@@ -635,7 +960,7 @@ def test_a_tutor_unassigned_since_the_proposal_is_refused_at_commit(
 
     result = _commit(db, world, now=NOW + datetime.timedelta(minutes=2))
 
-    assert result == _refused("not_assigned_tutor", action=0)
+    assert result == _refused("not_assigned_tutor", action="book[0]")
 
 
 def test_a_child_overlap_arising_since_the_proposal_is_refused_at_commit(
@@ -686,7 +1011,31 @@ def _list_slots(
 def _propose(
     db: Session, world: World, actions: list[dict[str, Any]], *, now: datetime.datetime = NOW
 ) -> ToolResult:
-    return _tool("propose").run(_context(db, world, now), {"actions": actions})
+    return _tool("propose").run(_context(db, world, now), _grouped(actions))
+
+
+def _propose_raw(db: Session, world: World, raw: dict[str, Any]) -> ToolResult:
+    return _tool("propose").run(_context(db, world, NOW), raw)
+
+
+def _tool_log(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == bot_tools_booking.__name__
+    ]
+
+
+def _grouped(actions: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """The tool's input: each action in its own kind's list, without the `kind` key."""
+    return {
+        kind: [
+            {key: value for key, value in action.items() if key != "kind"}
+            for action in actions
+            if action["kind"] == kind
+        ]
+        for kind in ("book", "cancel", "reschedule")
+    }
 
 
 def _commit(db: Session, world: World, *, now: datetime.datetime = NOW) -> ToolResult:
@@ -803,6 +1152,16 @@ def _book(
     db.add(booking)
     db.flush()
     return booking.id
+
+
+def _add_home(db: Session, world: World, *, label: str) -> uuid.UUID:
+    """A second Home for the Guardian, shared with nobody else."""
+    home = Home(address="2 Test Street", label=label)
+    db.add(home)
+    db.flush()
+    db.add(GuardianHome(guardian_id=world.guardian_id, home_id=home.id))
+    db.flush()
+    return home.id
 
 
 def _make_guardian(db: Session) -> uuid.UUID:

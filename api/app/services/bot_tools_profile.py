@@ -126,13 +126,17 @@ def _create_guardian(ctx: ToolContext, tool_input: Mapping[str, object]) -> Tool
 
     try:
         detail = client_service.create_client(
-            ctx.db, name=name, phone_number=ctx.conversation.phone_number, home=None
+            ctx.db,
+            name=name,
+            phone_number=ctx.conversation.phone_number,
+            home=None,
+            is_bot_turn=True,
         )
     except InvalidPhoneNumber:
         return _refused(PHONE_NUMBER_INVALID)
 
-    # `create_client` links only an unlinked thread; one still naming a Guardian who left the
-    # number is relinked here.
+    # Through the turn's copy, never the row: the turn applies it under its end lock, so the
+    # chat's row lock isn't held for the rest of the turn (spec: lock at start and end only).
     conversation_service.link_guardian(
         ctx.db, conversation=ctx.conversation, guardian_id=detail.client.id
     )

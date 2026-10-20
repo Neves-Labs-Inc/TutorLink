@@ -137,3 +137,39 @@ def test_a_closed_account_refusal_is_handed_to_the_office_as_a_question(prompt: 
 def test_the_agent_is_told_saved_private_details_are_never_repeated(prompt: str) -> None:
     assert "read it from the snapshot" not in prompt
     assert "never repeat an address, directions, date of birth or notes" in prompt
+
+
+def _example_calls(prompt: str, tool: str) -> list[str]:
+    """Each example call of `tool`, from its name to the `=>` of its result."""
+    return [
+        prompt[start : prompt.index("=>", start)]
+        for start in (match.start() for match in re.finditer(rf"-> {tool}\(", prompt))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tool", "fields"),
+    [
+        ("list_slots", ("child_id=", "subject_id=", "date_from=", "date_to=", "location=")),
+        ("propose", ("book=", "cancel=", "reschedule=")),
+    ],
+)
+def test_example_booking_calls_use_the_tools_real_field_names(
+    prompt: str, tool: str, fields: tuple[str, ...]
+) -> None:
+    """The eval's agent copied the examples' sketch shape and was refused for it."""
+    calls = _example_calls(prompt, tool)
+
+    assert calls
+    for example in calls:
+        assert all(field in example for field in fields), example
+
+
+def test_example_books_carry_every_field_a_book_needs(prompt: str) -> None:
+    needed = ("child_id:", "subject_id:", "tutor_id:", "date:", "start_time:", "location:")
+    books = [call for call in _example_calls(prompt, "propose") if "book=[{" in call]
+
+    assert books
+    for example in books:
+        assert all(field in example for field in needed), example
+        assert re.search(r'start_time: "\d{2}:\d{2}"', example), example

@@ -452,10 +452,14 @@ def _record_reply(db: Session, start: _TurnStart, agent_reply: _AgentReply) -> _
 
 def _apply_tool_changes(row: Conversation, start: _TurnStart) -> None:
     """Copy each column the tools changed on the working copy onto the locked row, unless
-    someone else changed that column during the turn: their write stands."""
+    someone else changed that column during the turn: their write stands.
+
+    A column that already holds the copy's value needs nothing: a shared service the tools call
+    can write the row itself in the turn's transaction (`client_service.create_client` links
+    the chat to the Guardian it creates), and that is the turn's own change, not a race."""
     for key, before in start.baseline.items():
         after = getattr(start.working, key)
-        if after == before:
+        if after == before or getattr(row, key) == after:
             continue
         if getattr(row, key) != before:
             logger.warning(

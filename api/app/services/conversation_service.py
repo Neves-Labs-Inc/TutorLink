@@ -262,10 +262,19 @@ def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
 def lock_thread_at(db: Session, *, phone_number: str) -> Conversation | None:
     """The thread at `phone_number`, locked for the rest of the transaction; `None` if none.
 
-    For a caller about to write a Guardian at that number: taken first, the lock keeps the
-    order conversation first, so a turn at the number running Intake finishes (and wins the
-    number) instead of deadlocking on the Guardian row.
+    For a Staff write about to create a Guardian at that number. A bot turn running on the
+    thread is waited for first (`bot_worker.hold_turns`), and no new one starts until the
+    write commits: a turn's Intake creates its Guardian without the row lock and takes it only
+    at its end, so a Staff write holding the row while it waits on the turn's Guardian would
+    deadlock with it. Waiting instead, the turn finishes and wins the number, and the Staff
+    write is the 409. Never call it inside a turn: see `hold_turns`.
     """
+    bot_worker.hold_turns(
+        db,
+        conversation_ids=db.scalars(
+            select(Conversation.id).where(Conversation.phone_number == phone_number)
+        ).all(),
+    )
     return _conversation_for(db, phone_number=phone_number)
 
 

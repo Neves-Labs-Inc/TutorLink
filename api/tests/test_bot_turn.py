@@ -2,6 +2,8 @@
 
 import datetime
 import itertools
+import json
+import logging
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -31,7 +33,14 @@ from app.models.message import Message
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
-from app.services import bot_messages, conversation_service, message_service
+from app.services import (
+    bot_messages,
+    bot_tools_booking,
+    bot_tools_profile,
+    bot_turn,
+    conversation_service,
+    message_service,
+)
 from app.services.bot_model import ModelResponse, ModelUnavailable, ModelUsage, ToolCall
 from app.services.bot_tool_contract import CommittedAction, ToolContext, ToolResult, ToolSpec
 from app.services.bot_turn import TurnDeps, TurnOutcome, take_turn
@@ -737,6 +746,121 @@ def test_only_guardian_messages_since_the_last_bot_reply_count_and_keywords_neve
 # --- helpers -----------------------------------------------------------------------------------
 
 SAVED_NAME = "Maria Saved"
+
+
+def test_create_guardian_links_the_chat_without_a_concurrent_change_warning(
+    turn: Turn, fake_twilio: FakeTwilio, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`create_client` links the locked row itself in the turn's transaction, and the tool links
+    the turn's copy too: the same value from the same turn is not someone else's change."""
+    turn.conversation = conversation_service.resolve_or_create(
+        turn.db, phone_number=f"+120255501{uuid.uuid4().int % 100:02d}"
+    )
+    create_guardian = next(
+        spec for spec in bot_tools_profile.TOOLS if spec.name == "create_guardian"
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=bot_turn.__name__):
+        turn.run(
+            [call(("create_guardian", {"name": "Maria Lopez"})), reply("Hi Maria")],
+            (create_guardian,),
+        )
+
+    guardian_id = turn.refreshed().guardian_id
+    assert guardian_id is not None
+    assert turn.db.get_one(Guardian, guardian_id).name == "Maria Lopez"
+    assert not [r for r in caplog.records if "concurrent change" in r.getMessage()]
+
+
+def test_a_column_someone_else_changed_mid_turn_keeps_their_value_and_warns(
+    turn: Turn, fake_twilio: FakeTwilio, caplog: pytest.LogCaptureFixture
+) -> None:
+    staff_value = Language.ES
+
+    def language_changed_meanwhile(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:
+        ctx.conversation.no_progress_count = 3
+        row = ctx.db.get_one(Conversation, ctx.conversation.id)
+        row.no_progress_count = 2
+        row.language = staff_value
+        ctx.db.flush()
+        return ToolResult(status="ok", content={})
+
+    with caplog.at_level(logging.WARNING, logger=bot_turn.__name__):
+        turn.run(
+            [call(("list_subjects", {})), reply("Hola", "es")],
+            (tool("list_subjects", language_changed_meanwhile),),
+        )
+
+    assert [r.getMessage() for r in caplog.records if "concurrent change" in r.getMessage()] == [
+        f"bot turn on conversation {turn.conversation.id} kept a concurrent change to "
+        "no_progress_count"
+    ]
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param({"actions": '[{"kind": "book"}]'}, id="actions as JSON text"),
+        pytest.param({"actions": ["book"]}, id="actions items as strings"),
+        pytest.param(
+            {"book": ["book"], "cancel": [], "reschedule": []}, id="book items as strings"
+        ),
+        pytest.param({"book": "oops", "cancel": [], "reschedule": []}, id="book as plain text"),
+    ],
+)
+def test_a_malformed_propose_is_refused_back_to_the_model_not_an_outage(
+    turn: Turn, fake_twilio: FakeTwilio, malformed: dict[str, Any]
+) -> None:
+    """The eval's Haiku run sent `actions` items as strings, which raised and became an outage."""
+    turn.guardian_says("book math for ana on monday")
+
+    outcome = turn.run(
+        [call(("propose", malformed)), reply("Which time would you like?")],
+        (bot_tools_booking.PROPOSE,),
+    )
+
+    assert outcome.kind == "replied"
+    [result] = turn.model.requests[1]["messages"][2]["content"]
+    content = json.loads(result["content"])
+    assert content["reason"] == "invalid_input"
+    assert content["problems"][0]["expected"]
+    assert [sent.body for sent in fake_twilio.sent] == ["Which time would you like?"]
+
+
+def test_a_refused_propose_then_a_fixed_one_replies_in_the_same_turn(
+    turn: Turn, fake_twilio: FakeTwilio
+) -> None:
+    """Every problem is named in the first refusal, so one retry is enough."""
+    turn.guardian_says("book math for ana on monday")
+    fixed = {"book": [], "cancel": [], "reschedule": []}
+    propose_calls: list[dict[str, Any]] = []
+
+    def propose(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:
+        propose_calls.append(tool_input)
+        return (
+            bot_tools_booking.PROPOSE.run(ctx, tool_input)
+            if len(propose_calls) == 1
+            else ok(progress=True)(ctx, tool_input)
+        )
+
+    outcome = turn.run(
+        [
+            call(("propose", {"book": [{"date": "Monday", "start_time": "4pm"}]})),
+            call(("propose", fixed)),
+            reply("Should I book it?"),
+        ],
+        (tool("propose", propose),),
+    )
+
+    assert outcome.kind == "replied"
+    assert len(turn.model.requests) == 3
+    refusal = json.loads(turn.model.requests[1]["messages"][2]["content"][0]["content"])
+    assert {problem["at"] for problem in refusal["problems"]} >= {
+        "book[0].child_id",
+        "book[0].date",
+        "book[0].start_time",
+        "book[0].location",
+    }
 
 
 def _save_guardian(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:

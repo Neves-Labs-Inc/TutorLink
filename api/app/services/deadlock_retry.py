@@ -1,9 +1,10 @@
 """One retry for a Staff write that PostgreSQL aborted as a deadlock.
 
-A Staff write that creates a Guardian at a number can deadlock with a bot turn finishing
+A Staff write that creates a Guardian at a number could deadlock with a bot turn finishing
 Intake at that number: the turn holds its new Guardian row and waits for the chat's row lock at
-its end, while the Staff write holds the chat and waits on the turn's Guardian. PostgreSQL
-aborts one of them. When it aborts the Staff write, running it once more from a clean
+its end, while the Staff write holds the chat and waits on the turn's Guardian. The Staff write
+now waits for the turn before taking the chat (`conversation_service.lock_thread_at`), so this
+stays as a backstop. When PostgreSQL aborts the Staff write, running it once more from a clean
 transaction usually ends cleanly, most often as the 409 for a number the turn just took, rather
 than a 500.
 

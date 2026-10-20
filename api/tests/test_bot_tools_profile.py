@@ -137,6 +137,16 @@ def test_create_home_labels_the_first_home_with_the_guardians_first_name(
     assert result.redacted == (RedactedField.HOME_ADDRESS, RedactedField.HOME_DIRECTIONS)
 
 
+def test_create_home_reads_omitted_optional_keys_as_null(
+    db: Session, ctx: ToolContext, guardian: Guardian
+) -> None:
+    result = run(ctx, "create_home", address="12 Oak Street")
+
+    [home] = guardian_homes(db, guardian.id)
+    assert result.status == "ok"
+    assert (home.label, home.directions) == ("Maria's", None)
+
+
 def test_create_home_needs_a_label_for_a_second_home(
     db: Session, ctx: ToolContext, guardian: Guardian
 ) -> None:
@@ -229,6 +239,16 @@ def test_create_child_saves_the_required_fields(
     assert result.progress is True
     assert result.content["child_id"] == str(child.id)
     assert (child.name, child.school_name, child.grade_level) == ("Ana", "Lincoln Elementary", 5)
+    assert (child.notes, child.date_of_birth) == (None, None)
+
+
+def test_create_child_reads_omitted_optional_keys_as_null(
+    db: Session, ctx: ToolContext, guardian: Guardian, home: Home
+) -> None:
+    result = run(ctx, "create_child", name="Ana", school="Lincoln Elementary", grade=5)
+
+    [child] = guardian_children(db, guardian.id)
+    assert result.status == "ok"
     assert (child.notes, child.date_of_birth) == (None, None)
 
 
@@ -343,6 +363,13 @@ def test_update_home_fills_empty_directions(ctx: ToolContext, home: Home) -> Non
     assert home.directions == "Gate 1234"
 
 
+def test_update_home_leaves_omitted_fields_alone(ctx: ToolContext, home: Home) -> None:
+    result = run(ctx, "update_home", home_id=str(home.id), directions="Gate 1234")
+
+    assert result.status == "ok"
+    assert (home.label, home.directions) == ("Maria's", "Gate 1234")
+
+
 def test_update_home_refuses_to_change_saved_directions(ctx: ToolContext, home: Home) -> None:
     run(ctx, "update_home", home_id=str(home.id), directions="Gate 1234", label=None)
 
@@ -382,6 +409,13 @@ def test_update_child_fills_empty_notes_and_date_of_birth(ctx: ToolContext, ana:
     assert result.progress is True
     assert (ana.notes, ana.date_of_birth) == ("Loves maths", datetime.date(2016, 4, 23))
     assert result.redacted == (RedactedField.CHILD_DATE_OF_BIRTH, RedactedField.CHILD_NOTES)
+
+
+def test_update_child_leaves_omitted_fields_alone(ctx: ToolContext, ana: Child) -> None:
+    result = run(ctx, "update_child", child_id=str(ana.id), notes="Loves maths")
+
+    assert result.status == "ok"
+    assert (ana.notes, ana.date_of_birth) == ("Loves maths", None)
 
 
 def test_update_child_refuses_to_change_saved_values(ctx: ToolContext, ana: Child) -> None:
@@ -622,7 +656,10 @@ def handoff_notes(db: Session, conversation: Conversation) -> list[Message]:
 def hand_off(
     ctx: ToolContext, reason: str, summary: str, child_id: str | None = None
 ) -> ToolResult:
-    return run(ctx, "hand_off_to_office", reason=reason, summary=summary, child_id=child_id)
+    # An absent child is an omitted key, as the agent sends it.
+    optional = {} if child_id is None else {"child_id": child_id}
+
+    return run(ctx, "hand_off_to_office", reason=reason, summary=summary, **optional)
 
 
 @pytest.mark.parametrize("reason", ["question", "booking_request", "guardian_link_request"])
@@ -725,7 +762,7 @@ def test_every_tool_has_a_strict_input_schema() -> None:
         schema = tool.input_schema
         assert schema["type"] == "object", tool.name
         assert schema["additionalProperties"] is False, tool.name
-        assert sorted(schema["required"]) == sorted(schema["properties"]), tool.name
+        assert set(schema["required"]) <= set(schema["properties"]), tool.name
 
 
 # --- logging ---------------------------------------------------------------------------------

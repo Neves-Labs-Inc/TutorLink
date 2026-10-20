@@ -55,7 +55,7 @@ class ToolResult:
 class ToolSpec:
     name: str
     description: str
-    # Strict JSON Schema: additionalProperties false, every property required (nullable when
-    # optional).
+    # Strict JSON Schema: additionalProperties false; an optional property is simply not in
+    # `required` (never nullable: the API caps union-typed parameters across a request).
     input_schema: dict[str, Any]
     run: Callable[[ToolContext, dict[str, Any]], ToolResult]

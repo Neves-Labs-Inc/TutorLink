@@ -745,7 +745,7 @@ def _text(tool_input: Mapping[str, object], key: str) -> str:
 
 
 def _optional_text(tool_input: Mapping[str, object], key: str) -> str | None:
-    value = tool_input[key]
+    value = tool_input.get(key)
 
     return None if value is None else _text(tool_input, key)
 
@@ -754,12 +754,15 @@ def _refused(reason: str, **detail: object) -> ToolResult:
     return ToolResult(status="refused", content={"reason": reason, **detail})
 
 
-def _schema(properties: dict[str, dict[str, object]]) -> dict[str, Any]:
-    """Strict: every property required (optional ones are nullable), nothing else allowed."""
+def _schema(
+    properties: dict[str, dict[str, object]], *, optional: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """Strict: nothing else allowed. An optional property is left out of `required`, never made
+    nullable, because the API caps the union-typed parameters a request may carry."""
     return {
         "type": "object",
         "properties": properties,
-        "required": list(properties),
+        "required": [name for name in properties if name not in optional],
         "additionalProperties": False,
     }
 
@@ -818,7 +821,6 @@ def _loggable(values: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-_NULLABLE_STRING: dict[str, object] = {"type": ["string", "null"]}
 _STRING: dict[str, object] = {"type": "string"}
 
 TOOLS: tuple[ToolSpec, ...] = (
@@ -844,23 +846,25 @@ TOOLS: tuple[ToolSpec, ...] = (
         name="create_home",
         description=(
             "Save a Home for the Guardian once you have its address. `directions` is how the"
-            " tutor gets in (gate code, parking) if given. Leave `label` null for the first"
+            " tutor gets in (gate code, parking) if given. Omit `label` for the first"
             ' Home; a later Home needs a label (e.g. "Dad\'s"). The same address returns the'
             " saved Home."
         ),
         input_schema=_schema(
-            {"address": _STRING, "directions": _NULLABLE_STRING, "label": _NULLABLE_STRING}
+            {"address": _STRING, "directions": _STRING, "label": _STRING},
+            optional=frozenset({"directions", "label"}),
         ),
         run=_logged("create_home", _create_home),
     ),
     ToolSpec(
         name="update_home",
         description=(
-            "Fill a saved Home's empty `directions` or `label` (null leaves a field alone)."
+            "Fill a saved Home's empty `directions` or `label` (an omitted field is left alone)."
             " Changing a saved value is refused: that goes to the office."
         ),
         input_schema=_schema(
-            {"home_id": _STRING, "directions": _NULLABLE_STRING, "label": _NULLABLE_STRING}
+            {"home_id": _STRING, "directions": _STRING, "label": _STRING},
+            optional=frozenset({"directions", "label"}),
         ),
         run=_logged("update_home", _update_home),
     ),
@@ -870,7 +874,7 @@ TOOLS: tuple[ToolSpec, ...] = (
             "Save a Child of the Guardian once you have its name, school and Overall grade"
             " (0 for Kindergarten to 12). `notes` (allergies, learning needs) and"
             " `date_of_birth` (YYYY-MM-DD) only if the Guardian volunteered them. `home_id`"
-            " may be null when the Guardian has one Home. The same name returns the saved"
+            " may be omitted when the Guardian has one Home. The same name returns the saved"
             " Child; an archived Child's name is refused with its id (a Reactivation request)."
         ),
         input_schema=_schema(
@@ -878,21 +882,23 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "name": _STRING,
                 "school": _STRING,
                 "grade": {"type": "integer"},
-                "notes": _NULLABLE_STRING,
-                "date_of_birth": _NULLABLE_STRING,
-                "home_id": _NULLABLE_STRING,
-            }
+                "notes": _STRING,
+                "date_of_birth": _STRING,
+                "home_id": _STRING,
+            },
+            optional=frozenset({"notes", "date_of_birth", "home_id"}),
         ),
         run=_logged("create_child", _create_child),
     ),
     ToolSpec(
         name="update_child",
         description=(
-            "Fill a saved Child's empty `notes` or `date_of_birth` (YYYY-MM-DD; null leaves a"
-            " field alone). Changing a saved value is refused: that goes to the office."
+            "Fill a saved Child's empty `notes` or `date_of_birth` (YYYY-MM-DD; an omitted field is left"
+            " alone). Changing a saved value is refused: that goes to the office."
         ),
         input_schema=_schema(
-            {"child_id": _STRING, "notes": _NULLABLE_STRING, "date_of_birth": _NULLABLE_STRING}
+            {"child_id": _STRING, "notes": _STRING, "date_of_birth": _STRING},
+            optional=frozenset({"notes", "date_of_birth"}),
         ),
         run=_logged("update_child", _update_child),
     ),
@@ -919,7 +925,7 @@ TOOLS: tuple[ToolSpec, ...] = (
             " free), `guardian_link_request` (a Child already registered by another parent),"
             " `reactivation_request` (bring back an archived Child: `child_id` names it) or"
             " `didnt_understand` (going in circles). `summary` gives the office the details;"
-            " the Guardian never sees it. `child_id` is null for every other reason."
+            " the Guardian never sees it. Omit `child_id` for every other reason."
         ),
         input_schema=_schema(
             {
@@ -928,8 +934,9 @@ TOOLS: tuple[ToolSpec, ...] = (
                     "enum": [reason.value for reason in HANDOFF_REASONS],
                 },
                 "summary": _STRING,
-                "child_id": _NULLABLE_STRING,
-            }
+                "child_id": _STRING,
+            },
+            optional=frozenset({"child_id"}),
         ),
         run=_logged("hand_off_to_office", _hand_off_to_office),
     ),

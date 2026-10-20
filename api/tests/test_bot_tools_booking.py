@@ -131,13 +131,14 @@ def test_the_module_exports_the_three_booking_tools() -> None:
 
 @pytest.mark.parametrize("tool", bot_tools_booking.TOOLS, ids=lambda tool: tool.name)
 def test_every_input_schema_is_strict(tool: ToolSpec) -> None:
-    """Every object, nested ones included, forbids extra properties and requires them all."""
+    """Every object, nested ones included, forbids extra properties; `required` names only
+    properties the object has."""
     objects = list(_objects_in(tool.input_schema))
 
     assert objects
     for schema in objects:
         assert schema["additionalProperties"] is False
-        assert sorted(schema["required"]) == sorted(schema["properties"])
+        assert set(schema["required"]) <= set(schema["properties"])
 
 
 # --- list_slots ---------------------------------------------------------------------------------
@@ -300,6 +301,19 @@ def test_the_snapshot_reads_back_every_part_of_a_stored_proposal(
     proposal = snapshot[snapshot.index("Pending proposal") :]
     assert "waiting for the Guardian's yes" in proposal
     assert "unknown" not in proposal
+
+
+@pytest.mark.parametrize("omitted", ["location", "date", "start_time", "tutor_id"])
+def test_propose_refuses_a_book_that_omits_a_needed_key(
+    db: Session, world: World, omitted: str
+) -> None:
+    action = {key: value for key, value in _book_action(world).items() if key != omitted}
+
+    result = _propose(db, world, [action])
+
+    assert result.status == "refused"
+    assert result.content["reason"] == "invalid_input"
+    assert result.content["field"] == omitted
 
 
 def test_a_second_propose_replaces_the_first(db: Session, world: World) -> None:
@@ -686,9 +700,9 @@ def _book_action(
     tutor_id: uuid.UUID | None = None,
     start: str = "09:00",
 ) -> dict[str, Any]:
+    # Keys that do not apply to the kind are omitted, as the agent sends them.
     return {
         "kind": "book",
-        "booking_id": None,
         "child_id": str(child_id or world.child_id),
         "subject_id": str(world.subject_id),
         "tutor_id": str(tutor_id or world.assigned_tutor_id),
@@ -703,13 +717,6 @@ def _cancel_action(booking_id: uuid.UUID) -> dict[str, Any]:
     return {
         "kind": "cancel",
         "booking_id": str(booking_id),
-        "child_id": None,
-        "subject_id": None,
-        "tutor_id": None,
-        "date": None,
-        "start_time": None,
-        "location": None,
-        "home_id": None,
     }
 
 
@@ -719,8 +726,6 @@ def _reschedule_action(
     return {
         "kind": "reschedule",
         "booking_id": str(booking_id),
-        "child_id": None,
-        "subject_id": None,
         "tutor_id": str(world.assigned_tutor_id),
         "date": DATE.isoformat(),
         "start_time": start,

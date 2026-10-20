@@ -97,7 +97,6 @@ _LOCATIONS = {"home": BookingLocation.HOME, "office": BookingLocation.IN_OFFICE}
 _LOCATION_NAMES = {location: name for name, location in _LOCATIONS.items()}
 
 _UUID = {"type": "string", "description": "A UUID."}
-_NULLABLE_UUID = {"type": ["string", "null"], "description": "A UUID, or null."}
 _DATE = {"type": "string", "description": "YYYY-MM-DD."}
 _LOCATION = {"type": "string", "enum": list(_LOCATIONS)}
 
@@ -778,11 +777,15 @@ def _loggable(result: ToolResult) -> dict[str, object]:
     }
 
 
-def _strict(properties: dict[str, Any]) -> dict[str, Any]:
+def _strict(
+    properties: dict[str, Any], *, optional: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """Strict: closed object. An optional property is left out of `required`, never made
+    nullable, because the API caps the union-typed parameters a request may carry."""
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": list(properties),
+        "required": [name for name in properties if name not in optional],
         "properties": properties,
     }
 
@@ -790,22 +793,31 @@ def _strict(properties: dict[str, Any]) -> dict[str, Any]:
 _ACTION_SCHEMA = _strict(
     {
         "kind": {"type": "string", "enum": ["book", "cancel", "reschedule"]},
-        "booking_id": {**_NULLABLE_UUID, "description": "Cancel and reschedule: the Session."},
-        "child_id": {**_NULLABLE_UUID, "description": "Book only."},
-        "subject_id": {**_NULLABLE_UUID, "description": "Book only."},
-        "tutor_id": {**_NULLABLE_UUID, "description": "Book and reschedule: from list_slots."},
-        "date": {"type": ["string", "null"], "description": "Book and reschedule: YYYY-MM-DD."},
+        "booking_id": {**_UUID, "description": "Cancel and reschedule: the Session."},
+        "child_id": {**_UUID, "description": "Book only."},
+        "subject_id": {**_UUID, "description": "Book only."},
+        "tutor_id": {**_UUID, "description": "Book and reschedule: from list_slots."},
+        "date": {"type": "string", "description": "Book and reschedule: YYYY-MM-DD."},
         "start_time": {
-            "type": ["string", "null"],
+            "type": "string",
             "description": "Book and reschedule: HH:MM, from list_slots.",
         },
-        "location": {
-            "type": ["string", "null"],
-            "enum": [*_LOCATIONS, None],
-            "description": "Book and reschedule.",
-        },
-        "home_id": {**_NULLABLE_UUID, "description": "Required when location is home."},
-    }
+        "location": {**_LOCATION, "description": "Book and reschedule."},
+        "home_id": {**_UUID, "description": "Required when location is home."},
+    },
+    # `kind` alone is always needed; each kind reads the rest (a missing one is invalid_input).
+    optional=frozenset(
+        {
+            "booking_id",
+            "child_id",
+            "subject_id",
+            "tutor_id",
+            "date",
+            "start_time",
+            "location",
+            "home_id",
+        }
+    ),
 )
 
 LIST_SLOTS = ToolSpec(

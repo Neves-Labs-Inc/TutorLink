@@ -359,10 +359,10 @@ def test_the_client_is_built_from_settings_with_the_sdk_retry_off() -> None:
     assert client._client.max_retries == SDK_RETRIES == 0  # noqa: SLF001
 
 
-def test_the_bot_defaults_to_sonnet_at_low_effort() -> None:
+def test_the_bot_defaults_to_haiku_at_low_effort() -> None:
     settings = _settings()
 
-    assert (settings.bot_model, settings.bot_effort) == ("claude-sonnet-5-5", "low")
+    assert (settings.bot_model, settings.bot_effort) == ("claude-haiku-5-5", "low")
 
 
 def test_no_api_key_refuses_to_build_the_client() -> None:

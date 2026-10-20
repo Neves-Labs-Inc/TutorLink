@@ -120,7 +120,7 @@ def test_a_new_guardian_chats_through_every_command_and_the_database_is_dropped(
     transcript = tmp_path / "chat.md"
 
     status = bot_chat.main(
-        ["--scenario", "new", "--show-tools", "--transcript", str(transcript)],
+        ["--scenario", "new", "--model", "sonnet", "--show-tools", "--transcript", str(transcript)],
         model_factory=lambda _model, _effort: model,
         read_line=scripted(
             [

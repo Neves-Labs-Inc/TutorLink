@@ -101,7 +101,7 @@ export const FLAG_REASON_LABEL: Record<FlagReason, AttentionReason> = {
   guardian_link_request: "Link request",
   reactivation_request: "Reactivation request",
   stuck: "Bot got stuck",
-  parse_error: "Bot didn't understand",
+  didnt_understand: "Bot didn't understand",
 };
 
 export const ROLE_LABEL: Record<UserRole, string> = {

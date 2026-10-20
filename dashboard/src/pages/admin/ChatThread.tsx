@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { useConversationStream } from '@/hooks/use-conversation-stream/useConversationStream'
 import { errorDetail } from '@/lib/api'
 import { decodeAccessToken } from '@/lib/auth/auth'
+import { FLAG_REASON_LABELS } from '@/lib/chatList'
 import {
   applyMessageToPages,
   applyMessageUpdate,
@@ -498,7 +499,15 @@ const ChatThreadView = ({ conversationId: id }: ChatThreadViewProps) => {
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
             {conversation.data?.guardian?.name ?? conversation.data?.phone_number ?? 'Conversation'}
           </h1>
-          {conversation.data?.flag_reason && <StatusBadge status={conversation.data.flag_reason} />}
+          {conversation.data?.flag_reason && (
+            <StatusBadge
+              status={conversation.data.flag_reason}
+              label={FLAG_REASON_LABELS[conversation.data.flag_reason]}
+            />
+          )}
+          {conversation.data?.intake_in_progress && (
+            <StatusBadge status="intake_in_progress" label="Intake in progress" />
+          )}
           {conversation.data && <MarkHandledButton conversation={conversation.data} />}
           {conversation.data && (
             <GuardianLanguageSelect

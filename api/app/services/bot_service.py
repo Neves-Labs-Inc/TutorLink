@@ -580,9 +580,7 @@ def _take_turn(
     elif parsed is None:
         # REQ-078.3: flag on the first occurrence and leave the state exactly as it is — the
         # re-prompt counter is not burned on an outage the parent did not cause.
-        decided = BotTurn(
-            reply=_say(turn, "PARSER_UNAVAILABLE"), flag_reason=FlagReason.PARSE_ERROR
-        )
+        decided = BotTurn(reply=_say(turn, "PARSER_UNAVAILABLE"), flag_reason=FlagReason.STUCK)
     else:
         result = None if parsed.confidence_is_low else _HANDLERS[state.step](turn, parsed)
         if isinstance(result, _Next):
@@ -870,11 +868,11 @@ def _miss(turn: _Turn, parsed: ParsedIntent, refusal: _Refusal | None) -> BotTur
         # `_apply` saves the advanced state and resets the counter.
         result = _apply(turn, give_up.move_on(turn))
     elif has_run_out:
-        # `stuck` is "two failed re-prompts in a row" (docs/erd.md): the next stretch of
+        # `didnt_understand` is "two failed re-prompts in a row": the next stretch of
         # unusable replies starts counting from zero instead of re-flagging at once.
         turn.state.misses = 0
         save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
-        result = BotTurn(reply=_say(turn, "BAILED_OUT"), flag_reason=FlagReason.STUCK)
+        result = BotTurn(reply=_say(turn, "BAILED_OUT"), flag_reason=FlagReason.DIDNT_UNDERSTAND)
     else:
         save_state(turn.db, phone_number=turn.phone_number, state=turn.state)
         result = BotTurn(reply=_nudge(turn, refusal))

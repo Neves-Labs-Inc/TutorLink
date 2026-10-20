@@ -81,8 +81,12 @@ describe('messageStatusLabel', () => {
     expect(messageStatusLabel({ author_kind: 'admin', status })).toBe(label)
   })
 
-  it('shows nothing for a bot message sitting at sent by design (P7-3)', () => {
-    expect(messageStatusLabel({ author_kind: 'bot', status: 'sent' })).toBeNull()
+  it.each(['queued', 'sent', 'delivered'] as const)('shows nothing for a bot reply at %s', (status) => {
+    expect(messageStatusLabel({ author_kind: 'bot', status })).toBeNull()
+  })
+
+  it('labels a failed bot reply', () => {
+    expect(messageStatusLabel({ author_kind: 'bot', status: 'failed' })).toBe('Failed to send')
   })
 
   it('shows nothing for a client message', () => {
@@ -321,7 +325,7 @@ describe('canMarkHandled', () => {
     ...overrides,
   })
 
-  const handleableReasons: FlagReason[] = ['stuck', 'parse_error', 'guardian_link_request']
+  const handleableReasons: FlagReason[] = ['stuck', 'didnt_understand', 'guardian_link_request']
 
   it.each(handleableReasons)('is true for %s with a flagged_at', (flagReason) => {
     expect(canMarkHandled(detail({ flag_reason: flagReason, flagged_at: '2026-09-23T10:00:00Z' }))).toBe(
@@ -518,6 +522,16 @@ describe('systemLineLabel', () => {
     expect(
       systemLineLabel(systemMessage({ system_kind: 'number_change_note', status: 'failed', body }), true),
     ).toEqual({ text: body, isFailed: false, canRetry: false })
+  })
+})
+
+describe('systemLineLabel handoff note', () => {
+  it('prefixes the summary and never fails or retries, even at failed', () => {
+    const base = { system_kind: 'handoff_note' as const, body: 'Wants a trial lesson for Emma' }
+    const expected = { text: 'Bot’s handoff note: Wants a trial lesson for Emma', isFailed: false, canRetry: false }
+
+    expect(systemLineLabel(systemMessage({ ...base, status: 'sent' }), true)).toEqual(expected)
+    expect(systemLineLabel(systemMessage({ ...base, status: 'failed' }), true)).toEqual(expected)
   })
 })
 

@@ -61,7 +61,7 @@ whole prompt against the live model; run it after changing either.
 
 **Every vendor failure becomes `ParseFailed`**, a safety refusal (HTTP 200 with
 `stop_reason == "refusal"`, reported with its category) included. CONSTITUTION §6 keeps HTTP out of anything below
-`app/routers/`, and #27 assigns all of them one behaviour anyway: flag `parse_error` at once and
+`app/routers/`, and #27 assigns all of them one behaviour anyway: flag `stuck` at once and
 do **not** burn one of the parent's two re-prompts, because a parser outage is not the parent
 failing to be understood.
 """

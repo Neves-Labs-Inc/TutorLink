@@ -11,8 +11,15 @@ can be rendered into the chat when the template is not needed.
 
 import datetime
 import unicodedata
+import uuid
+from collections.abc import Sequence
 
+from sqlalchemy.orm import Session
+
+from app.models.booking import Booking
 from app.models.enums import BookingLocation
+from app.services.home_set import homes_by_child
+from app.services.settings_service import read_office_address
 
 DEFAULT_LANGUAGE = "en"
 SPANISH = "es"
@@ -22,9 +29,10 @@ NOON_HOUR = 12
 # notice for Staff without a real Display name.
 # `RESCHEDULE_NEEDS_OFFICE` is not in the doc either; Maye approved its Spanish separately too.
 MESSAGES: dict[str, dict[str, str]] = {
+    # COPY: pending Franklin sign-off (respelled "M's Helping Hands")
     "GREETING_NEW": {
-        "en": "Hello, this is the Ms Helping Hands booking assistant. You don't have an account with us yet. Answering a few questions will set one up.",
-        "es": "Hola, le saluda el asistente de reservas de Ms Helping Hands. Todavía no tiene una cuenta con nosotros. Si responde unas preguntas, se la crearemos.",
+        "en": "Hello, this is the M's Helping Hands booking assistant. You don't have an account with us yet. Answering a few questions will set one up.",
+        "es": "Hola, le saluda el asistente de reservas de M's Helping Hands. Todavía no tiene una cuenta con nosotros. Si responde unas preguntas, se la crearemos.",
     },
     "ASK_CHILD_GRADE": {
         "en": "What grade is {name} in? For example, Kindergarten, 3rd grade or 10th grade.",
@@ -46,9 +54,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Each child's first session is an evaluation session, so our tutors can see where they are in each subject. Our office will arrange it with you.",
         "es": "La primera sesión de cada niño es una sesión de evaluación, para que nuestros tutores conozcan su nivel en cada materia. Nuestra oficina la coordinará con usted.",
     },
+    # COPY: pending Franklin sign-off (respelled "M's Helping Hands")
     "ASK_REMINDERS": {
-        "en": "Ms Helping Hands can send you a weekly WhatsApp reminder to book your tutoring sessions. You can reply STOP at any time to end them. Is that OK?",
-        "es": "Ms Helping Hands puede enviarle un recordatorio semanal por WhatsApp para reservar sus sesiones de tutoría. Puede responder STOP en cualquier momento para dejar de recibirlos. ¿Le parece bien?",
+        "en": "M's Helping Hands can send you a weekly WhatsApp reminder to book your tutoring sessions. You can reply STOP at any time to end them. Is that OK?",
+        "es": "M's Helping Hands puede enviarle un recordatorio semanal por WhatsApp para reservar sus sesiones de tutoría. Puede responder STOP en cualquier momento para dejar de recibirlos. ¿Le parece bien?",
     },
     "REMINDERS_ON": {
         "en": "Great, you'll get a reminder each week.",
@@ -70,9 +79,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Your account is set up. Thank you.",
         "es": "Su cuenta está lista. Gracias.",
     },
+    # COPY: pending Franklin sign-off (respelled "M's Helping Hands")
     "TEMPLATE_booking_reminder": {
-        "en": "Hello, this is your weekly reminder from Ms Helping Hands, as you asked. There is no tutoring session booked yet for {names} in the week of {week}. Tap Book a session to choose a time, or reply STOP to end these reminders.",
-        "es": "Hola, este es su recordatorio semanal de Ms Helping Hands, como lo solicitó. Aún no hay ninguna sesión de tutoría reservada para {names} en la semana del {week}. Toque Reservar una sesión para elegir un horario, o responda STOP para dejar de recibir estos recordatorios.",
+        "en": "Hello, this is your weekly reminder from M's Helping Hands, as you asked. There is no tutoring session booked yet for {names} in the week of {week}. Tap Book a session to choose a time, or reply STOP to end these reminders.",
+        "es": "Hola, este es su recordatorio semanal de M's Helping Hands, como lo solicitó. Aún no hay ninguna sesión de tutoría reservada para {names} en la semana del {week}. Toque Reservar una sesión para elegir un horario, o responda STOP para dejar de recibir estos recordatorios.",
     },
     "BUTTON_book_a_session": {
         "en": "Book a session",
@@ -102,13 +112,15 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Done, you'll get a booking reminder each week. Reply STOP at any time to end them.",
         "es": "Listo, recibirá un recordatorio semanal para reservar. Responda STOP en cualquier momento para dejar de recibirlos.",
     },
+    # COPY: pending Franklin sign-off (respelled "M's Helping Hands")
     "TAKEOVER_NOTICE": {
-        "en": "{staff} from Ms Helping Hands has joined this chat and will reply to you here.",
-        "es": "{staff}, de Ms Helping Hands, se ha unido a este chat y le responderá aquí.",
+        "en": "{staff} from M's Helping Hands has joined this chat and will reply to you here.",
+        "es": "{staff}, de M's Helping Hands, se ha unido a este chat y le responderá aquí.",
     },
+    # COPY: pending Franklin sign-off (respelled "M's Helping Hands")
     "HANDBACK_NOTICE": {
-        "en": "You're back with the Ms Helping Hands booking assistant. I can book, cancel or move a session for you.",
-        "es": "Ahora está de nuevo con el asistente de reservas de Ms Helping Hands. Puedo reservar, cancelar o cambiar una sesión por usted.",
+        "en": "You're back with the M's Helping Hands booking assistant. I can book, cancel or move a session for you.",
+        "es": "Ahora está de nuevo con el asistente de reservas de M's Helping Hands. Puedo reservar, cancelar o cambiar una sesión por usted.",
     },
     "FIRST_SESSION_HANDOFF": {
         "en": "Thank you. {name}'s first session will be an evaluation session. Our office will arrange it and be in touch shortly.",
@@ -209,6 +221,25 @@ MESSAGES: dict[str, dict[str, str]] = {
         "es": "¿Dónde debe ser la sesión?",
     },
     "OFFICE_OPTION": {"en": "At the office", "es": "En la oficina"},
+    # COPY: pending Franklin sign-off (outage apology)
+    "OUTAGE_APOLOGY": {
+        "en": "Sorry, I'm having trouble right now. Please try again in a little while, or call our office and we'll help you.",
+        "es": "Lo sentimos, estamos teniendo un problema en este momento. Por favor, inténtelo de nuevo en un rato o llame a nuestra oficina y con gusto le ayudaremos.",
+    },
+    "COMMIT_BOOKED_ONE": {"en": "Your session is booked:", "es": "Su sesión está reservada:"},
+    "COMMIT_BOOKED_BOTH": {
+        "en": "Both sessions are booked:",
+        "es": "Las dos sesiones están reservadas:",
+    },
+    # COPY: pending Franklin sign-off (placeholder lead-ins: three or more books, cancel,
+    # reschedule, mixed commit)
+    "COMMIT_BOOKED_MANY": {
+        "en": "Your sessions are booked:",
+        "es": "Sus sesiones están reservadas:",
+    },
+    "COMMIT_CANCELLED": {"en": "Your cancellation is done:", "es": "Su cancelación está hecha:"},
+    "COMMIT_RESCHEDULED": {"en": "Your session is moved:", "es": "Su sesión se ha cambiado:"},
+    "COMMIT_MIXED": {"en": "All done:", "es": "Todo listo:"},
     "AT_OFFICE": {"en": "at the office", "es": "en la oficina"},
     "AT_HOME_LABELLED": {"en": "at {label}", "es": "en {label}"},
     "AT_HOME": {"en": "at home", "es": "en casa"},
@@ -432,9 +463,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "An earlier request is still waiting for our team, so I can't send another one yet. They'll be in touch.",
         "es": "Una solicitud anterior todavía está pendiente con nuestro equipo, así que aún no puedo enviar otra. Se comunicarán con usted.",
     },
+    # COPY: pending Franklin sign-off (respelled "M's Helping Hands")
     "TAKEOVER_NOTICE_GENERIC": {
-        "en": "A member of the Ms Helping Hands team has joined this chat and will reply to you here.",
-        "es": "Una persona del equipo de Ms Helping Hands se ha unido a este chat y le responderá aquí.",
+        "en": "A member of the M's Helping Hands team has joined this chat and will reply to you here.",
+        "es": "Una persona del equipo de M's Helping Hands se ha unido a este chat y le responderá aquí.",
     },
 }
 
@@ -504,6 +536,12 @@ _SESSION_LINE = {
     "en": "{date}, {time}: {subject} for {child} with {tutor} {place}",
     "es": "{date}, {time}: {subject} para {child} con {tutor} {place}",
 }
+_SUBJECT_FALLBACK = {"en": "Session", "es": "Sesión"}
+_COMMIT_KIND_BOOK = "book"
+_COMMIT_KIND_CANCEL = "cancel"
+_COMMIT_KIND_RESCHEDULE = "reschedule"
+_MANY_HOMES = 2
+_BOTH_BOOKED = 2
 _SLOT_LABEL = {"en": "{time} with {tutor} {place}", "es": "{time} con {tutor} {place}"}
 
 
@@ -586,6 +624,70 @@ def format_session_line(
 def format_slot_label(time: str, tutor: str, place: str, language: str | None) -> str:
     """ "4:00-5:00 PM with Mr. Lee at the office" from a formatted time range, for a slot list."""
     return _SLOT_LABEL[_code(language)].format(time=time, tutor=tutor, place=place)
+
+
+def _lead_in(kinds: Sequence[str], language: str | None) -> str:
+    distinct = set(kinds)
+    if distinct == {_COMMIT_KIND_BOOK}:
+        message_id = {1: "COMMIT_BOOKED_ONE", _BOTH_BOOKED: "COMMIT_BOOKED_BOTH"}.get(
+            len(kinds), "COMMIT_BOOKED_MANY"
+        )
+    elif distinct == {_COMMIT_KIND_CANCEL}:
+        message_id = "COMMIT_CANCELLED"
+    elif distinct == {_COMMIT_KIND_RESCHEDULE}:
+        message_id = "COMMIT_RESCHEDULED"
+    else:
+        message_id = "COMMIT_MIXED"
+    return render(message_id, language)
+
+
+def _commit_subject(booking: Booking, language: str | None) -> str:
+    """The Spanish Subject name for a Spanish reply when Staff gave one, else the English one."""
+    subject = booking.subject
+    if subject is None:
+        return _SUBJECT_FALLBACK[_code(language)]
+
+    spanish = (subject.name_es or "").strip()
+    return spanish if _code(language) == SPANISH and spanish else subject.name
+
+
+def _commit_place(
+    booking: Booking, family_home_count: int, office_address: str | None, language: str | None
+) -> str:
+    """Office: the `office_address` text as is. Home: "at home" until the family has a second
+    Home, then the Home's label."""
+    if booking.location == BookingLocation.IN_OFFICE and office_address:
+        return office_address
+
+    label = booking.home.label if booking.home and family_home_count >= _MANY_HOMES else None
+    return format_location(booking.location, label, language)
+
+
+def commit_confirmation(
+    db: Session, *, committed: Sequence[tuple[str, uuid.UUID]], language: str | None
+) -> str:
+    """One message for everything a turn committed: a lead-in, then a line per Booking.
+
+    `committed` holds `(kind, booking_id)`, kind being "book", "cancel" or "reschedule". The
+    facts come from the saved Bookings, never from what the model said.
+    """
+    bookings = [db.get_one(Booking, booking_id) for _, booking_id in committed]
+    homes = homes_by_child(db, child_ids={b.child_id for b in bookings}, include_archived=False)
+    office_address = read_office_address(db)
+
+    lines = [
+        format_session_line(
+            format_date(booking.scheduled_date, language),
+            format_time_range(booking.start_time, booking.end_time, language),
+            _commit_subject(booking, language),
+            booking.child.name,
+            booking.staff.name,
+            _commit_place(booking, len(homes[booking.child_id]), office_address, language),
+            language,
+        )
+        for booking in bookings
+    ]
+    return "\n".join([_lead_in([kind for kind, _ in committed], language), *lines])
 
 
 def format_names(names: list[str], language: str | None) -> str:

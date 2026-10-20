@@ -534,7 +534,8 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
 
     Releasing a conversation that is already `bot` is a no-op success, for the same reason a
     re-claim by the holder is. A real release also clears the Needs attention flag (the admin
-    dealt with the chat) and forgets the last Mark done, so Undo cannot follow a Hand back.
+    dealt with the chat), forgets the last Mark done, so Undo cannot follow a Hand back, and
+    drops the bot's pending proposal, so a yes typed to Staff never commits a Booking.
     """
     conversation = _locked(db, conversation_id=conversation_id)
 
@@ -546,6 +547,8 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     conversation.taken_over_at = None
     _clear_flag_on_hand_back(db, conversation)
     _clear_handled(conversation)
+    conversation.proposal_actions = None
+    conversation.proposed_at = None
     db.flush()
 
     return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
@@ -757,7 +760,7 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
     the child and still ends the request.
 
     The flag is cleared only while it is still `reactivation_request` (REQ-131.2): a later
-    `stuck` or `parse_error` overwrote it and is a separate reason for an admin to look, which
+    `stuck` or `didnt_understand` overwrote it and is a separate reason for an admin to look, which
     ending the request does not answer. No message is written and nothing is sent (OQ-72).
     """
     conversation = _locked(db, conversation_id=conversation_id)

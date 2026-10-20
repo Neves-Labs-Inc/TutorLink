@@ -10,7 +10,7 @@ Four things here are written to fail against a specific wrong implementation:
   so a comparison that truncates to milliseconds, or one that ignores the token, goes red. The
   two-connection races stage the re-flag while the clear waits on the row lock: with the
   `_locked` read replaced by an unlocked `get`, the webhook-first order clears the webhook's
-  `parse_error` instead of refusing, and the test fails.
+  `didnt_understand` instead of refusing, and the test fails.
 - **A pending reactivation request is never unflagged.** Clearing a later `stuck` over a pending
   request must put the flag back to `reactivation_request` with a fresh `flagged_at`, and the
   request itself can only be ended by Approve — a route that cleared the flag outright fails.
@@ -83,7 +83,7 @@ ONE_MICROSECOND = datetime.timedelta(microseconds=1)
 HANDLED = "/api/conversations/{conversation_id}/handled"
 CLEARABLE_REASONS = [
     FlagReason.STUCK,
-    FlagReason.PARSE_ERROR,
+    FlagReason.DIDNT_UNDERSTAND,
     FlagReason.GUARDIAN_LINK_REQUEST,
     FlagReason.BOOKING_REQUEST,
     FlagReason.QUESTION,
@@ -328,13 +328,13 @@ def test_undo_after_the_bot_flagged_the_chat_again_is_409(api: TestClient, db: S
     admin = _make_user(db)
     conversation = _make_conversation(db, reason=FlagReason.STUCK)
     _post_handled(api, admin, conversation.id, TOKEN.isoformat())
-    flag(db, conversation=_row(db, conversation.id), reason=FlagReason.PARSE_ERROR)
+    flag(db, conversation=_row(db, conversation.id), reason=FlagReason.DIDNT_UNDERSTAND)
     db.commit()
 
     response = _undo(api, admin, conversation.id)
 
     _assert_detail(response, 409, NOTHING_TO_UNDO_ERROR)
-    assert _row(db, conversation.id).flag_reason is FlagReason.PARSE_ERROR
+    assert _row(db, conversation.id).flag_reason is FlagReason.DIDNT_UNDERSTAND
 
 
 def test_undo_after_hand_back_is_409(api: TestClient, db: Session) -> None:
@@ -437,7 +437,7 @@ def test_marking_an_unflagged_conversation_handled_is_a_no_op_200(
     """A double click, a retry or a second admin: the second request asks for the state already
     there. Each 200 still publishes, as takeover and release do."""
     admin = _make_user(db)
-    conversation = _make_conversation(db, reason=FlagReason.PARSE_ERROR)
+    conversation = _make_conversation(db, reason=FlagReason.DIDNT_UNDERSTAND)
 
     first = _post_handled(api, admin, conversation.id, TOKEN.isoformat())
     second = _post_handled(api, admin, conversation.id, TOKEN.isoformat())
@@ -677,10 +677,10 @@ def test_a_reflag_committed_first_makes_the_clear_wait_and_refuse(
     committed_sessions: sessionmaker[Session],
 ) -> None:
     """Criterion 11 (a). The webhook-shaped turn has locked the row with its `last_message_at`
-    update and re-flagged `parse_error`, and the clear is issued with the old token while it
+    update and re-flagged `didnt_understand`, and the clear is issued with the old token while it
     holds the lock. The clear has to block, then compare against the committed re-flag and
     refuse. With an unlocked read it would compare against the old flag, pass, and its update
-    would land after the turn's commit — erasing a `parse_error` nobody saw."""
+    would land after the turn's commit — erasing a `didnt_understand` nobody saw."""
     committed = _make_committed_flag(committed_sessions, child=False)
     turn_locked = threading.Event()
     errors: list[Exception] = []
@@ -719,7 +719,7 @@ def test_a_reflag_committed_first_makes_the_clear_wait_and_refuse(
         assert len(refused) == 1
         assert clear_elapsed[0] >= HOLD_SECONDS * 0.8
         final = _committed_row(committed_sessions, committed.conversation_id)
-        assert final.flag_reason is FlagReason.PARSE_ERROR
+        assert final.flag_reason is FlagReason.DIDNT_UNDERSTAND
         assert final.flagged_at == reflagged_at[0]
     finally:
         _delete_committed_flag(committed_sessions, committed)
@@ -765,7 +765,7 @@ def test_a_reflag_after_the_clear_waits_for_it_and_stands(
         assert errors == []
         assert turn_elapsed[0] >= HOLD_SECONDS * 0.8
         final = _committed_row(committed_sessions, committed.conversation_id)
-        assert final.flag_reason is FlagReason.PARSE_ERROR
+        assert final.flag_reason is FlagReason.DIDNT_UNDERSTAND
         assert final.flagged_at == reflagged_at[0]
     finally:
         _delete_committed_flag(committed_sessions, committed)
@@ -924,7 +924,7 @@ def _reflag_like_the_webhook(session: Session, conversation_id: uuid.UUID) -> da
     touch_last_message(
         session, conversation=conversation, at=datetime.datetime.now(tz=datetime.UTC)
     )
-    flag(session, conversation=conversation, reason=FlagReason.PARSE_ERROR)
+    flag(session, conversation=conversation, reason=FlagReason.DIDNT_UNDERSTAND)
 
     return conversation.flagged_at
 

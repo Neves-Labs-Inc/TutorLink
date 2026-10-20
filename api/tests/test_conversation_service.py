@@ -286,7 +286,7 @@ def test_the_filters_compose_and_the_total_follows_them(db: Session) -> None:
     for _ in range(3):
         _make_conversation(db, marker=marker)
     wanted = _make_conversation(db, marker=marker)
-    flag(db, conversation=wanted, reason=FlagReason.PARSE_ERROR)
+    flag(db, conversation=wanted, reason=FlagReason.DIDNT_UNDERSTAND)
     _open_window(db, wanted)
     claim(db, conversation_id=wanted.id, user_id=admin.id)
 
@@ -374,6 +374,23 @@ def test_any_admin_may_release_not_only_the_holder(db: Session) -> None:
     assert detail.conversation.taken_over_by_user_id is None
     assert detail.conversation.taken_over_at is None
     assert detail.holder is None
+
+
+def test_hand_back_drops_the_pending_proposal(db: Session) -> None:
+    """A yes typed to Staff must never commit a Booking once the bot has the chat again."""
+    holder = _make_user(db)
+    conversation = _make_conversation(db)
+    _open_window(db, conversation)
+    conversation.proposal_actions = [{"kind": "book"}]
+    conversation.proposed_at = NOON
+    db.flush()
+    claim(db, conversation_id=conversation.id, user_id=holder.id)
+    assert _row(db, conversation.id).proposed_at == NOON
+
+    release(db, conversation_id=conversation.id)
+
+    row = _row(db, conversation.id)
+    assert (row.proposal_actions, row.proposed_at) == (None, None)
 
 
 def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_success(db: Session) -> None:
@@ -474,7 +491,7 @@ def test_a_second_flag_overwrites_the_first(db: Session) -> None:
     and later got stuck has to show the state it is actually in."""
     conversation = _make_conversation(db)
 
-    flag(db, conversation=conversation, reason=FlagReason.PARSE_ERROR)
+    flag(db, conversation=conversation, reason=FlagReason.DIDNT_UNDERSTAND)
     first_flagged_at = conversation.flagged_at
     flag(db, conversation=conversation, reason=FlagReason.STUCK)
 

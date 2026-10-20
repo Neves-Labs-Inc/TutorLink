@@ -30,7 +30,7 @@ export type ConversationStatus = "bot" | "human";
 
 export type FlagReason =
   | "stuck"
-  | "parse_error"
+  | "didnt_understand"
   | "guardian_link_request"
   | "reactivation_request"
   | "booking_request"
@@ -46,6 +46,7 @@ export type ConversationSummary = {
   last_message_preview: string | null;
   unread: boolean;
   flag_reason: FlagReason | null;
+  intake_in_progress: boolean;
 };
 
 // GET /api/exceptions?status=pending (schemas/exceptions.py)

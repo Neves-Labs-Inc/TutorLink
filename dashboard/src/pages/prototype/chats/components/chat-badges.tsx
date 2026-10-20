@@ -44,10 +44,10 @@ export function HolderBadge({
   );
 }
 
-export function NewNumberBadge(): ReactNode {
+export function IntakeInProgressBadge(): ReactNode {
   return (
     <Badge tone="yellow" icon={UserRoundPlus}>
-      New number · in Intake
+      Intake in progress
     </Badge>
   );
 }

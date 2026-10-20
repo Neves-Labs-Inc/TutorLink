@@ -306,7 +306,7 @@ def test_the_merged_thread_keeps_only_the_guardians_thread_state(
     new_thread.status = ConversationStatus.HUMAN
     new_thread.taken_over_by_user_id = other_staff.id
     new_thread.taken_over_at = read_at
-    new_thread.flag_reason = FlagReason.PARSE_ERROR
+    new_thread.flag_reason = FlagReason.DIDNT_UNDERSTAND
     new_thread.flagged_at = read_at
     new_thread.language = Language.EN
     new_thread.last_read_at = None

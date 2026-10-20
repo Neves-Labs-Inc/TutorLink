@@ -130,6 +130,20 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
     assert item["flag_reason"] == "stuck"
 
 
+def test_a_chat_the_bot_did_not_understand_reads_as_didnt_understand(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    _make_conversation(db, marker=marker, flag_reason=FlagReason.DIDNT_UNDERSTAND)
+
+    item = api.get("/api/conversations", params={"q": marker}, headers=_auth(admin)).json()[
+        "items"
+    ][0]
+
+    assert item["flag_reason"] == "didnt_understand"
+
+
 def test_the_list_reads_as_an_inbox_newest_activity_first(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     marker = _marker()

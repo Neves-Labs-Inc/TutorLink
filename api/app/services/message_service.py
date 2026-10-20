@@ -219,6 +219,24 @@ def record_number_change_note(
     )
 
 
+def record_handoff_note(db: Session, *, conversation: Conversation, body: str) -> Message:
+    """Record the bot's Staff-only summary of why it handed the chat to the office.
+
+    `sent` with no SID because, like a number change note, it is never sent to WhatsApp. No
+    author: the bot wrote it, not a Staff member.
+    """
+    return _insert(
+        db,
+        conversation=conversation,
+        author_kind=MessageAuthor.SYSTEM,
+        body=body,
+        status=MessageStatus.SENT,
+        twilio_sid=None,
+        author_user_id=None,
+        system_kind=SystemMessageKind.HANDOFF_NOTE,
+    )
+
+
 def requeue(db: Session, *, message: Message, body: str) -> Message:
     """Put a failed notice back to `queued` for a retry, with the copy the retry will send.
 

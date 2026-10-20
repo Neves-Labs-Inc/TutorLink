@@ -53,7 +53,7 @@ export const markConversationHandled = async (
 
 const HANDLEABLE_FLAG_REASONS: readonly FlagReason[] = [
   'stuck',
-  'parse_error',
+  'didnt_understand',
   'guardian_link_request',
   'booking_request',
   'question',
@@ -72,6 +72,8 @@ export const isFlagChangedError = (error: unknown): boolean =>
 export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment =>
   authorKind === 'client' ? 'start' : 'end'
 
+const BOT_FAILED_LABEL = 'Failed to send'
+
 const ADMIN_STATUS_LABELS: Partial<Record<Message['status'], string>> = {
   queued: 'Sending…',
   sent: 'Sent',
@@ -79,13 +81,13 @@ const ADMIN_STATUS_LABELS: Partial<Record<Message['status'], string>> = {
   failed: 'Failed to send',
 }
 
-// Delivery progress only means something on an admin's own outbound message. A bot reply is
-// recorded `sent` forever by design (amendment P7-3, `api-design.md:527-534`) and must never
-// read as pending or failed, and a client message carries no admin-side delivery state at all —
-// both render nothing here.
+// Admin replies show the whole delivery lifecycle. Bot replies also go queued → sent →
+// delivered/failed, but only a failure needs the office's attention, so that's all they show.
+// A client message carries no delivery state at all.
 export const messageStatusLabel = (
   message: Pick<Message, 'author_kind' | 'status'>,
 ): string | null => {
+  if (message.author_kind === 'bot') return message.status === 'failed' ? BOT_FAILED_LABEL : null
   if (message.author_kind !== 'admin') return null
 
   return ADMIN_STATUS_LABELS[message.status] ?? null
@@ -413,8 +415,10 @@ export const systemLineLabel = (
   message: Pick<Message, 'system_kind' | 'status' | 'error_code' | 'reminder_child_names' | 'author' | 'body'>,
   isWindowOpen: boolean,
 ): SystemLineLabel => {
-  // A number-change note is Staff-only and never sent, so it can't fail or retry.
-  const isFailed = message.status === 'failed' && message.system_kind !== 'number_change_note'
+  // Number-change and handoff notes are Staff-only and never sent, so they can't fail or retry.
+  const isStaffOnly =
+    message.system_kind === 'number_change_note' || message.system_kind === 'handoff_note'
+  const isFailed = message.status === 'failed' && !isStaffOnly
   const reason = failureReason(message.error_code)
   const progress = PROGRESS_WORDS[message.status] ?? 'sent'
   const names = joinNames(message.reminder_child_names ?? [])
@@ -443,6 +447,8 @@ export const systemLineLabel = (
     text = isFailed
       ? `Weekly reminder not delivered${names === '' ? '' : `: ${names}`}${reason}`
       : `Weekly reminder sent${names === '' ? '' : `: ${names}`} · ${progress}`
+  } else if (message.system_kind === 'handoff_note') {
+    text = `Bot’s handoff note: ${message.body}`
   } else if (message.system_kind === 'consent_notice') {
     text = isFailed
       ? `Reminder setting confirmation not delivered${reason}`

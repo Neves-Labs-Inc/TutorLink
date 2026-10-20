@@ -563,7 +563,7 @@ def test_a_date_of_birth_that_is_not_a_plausible_iso_date_is_re_prompted(
     assert "child_date_of_birth" not in chat.state.collected_data
 
 
-def test_three_unusable_dates_of_birth_bail_out_stuck(chat: Chat, db: Session) -> None:
+def test_three_unusable_dates_of_birth_bail_out_didnt_understand(chat: Chat, db: Session) -> None:
     """REQ-096.3 through REQ-078.2's existing bail-out: no new failure path for the new step."""
     _answer_up_to_the_child_name(chat)
 
@@ -573,7 +573,7 @@ def test_three_unusable_dates_of_birth_bail_out_stuck(chat: Chat, db: Session) -
 
     assert first.flag_reason is None
     assert second.flag_reason is None
-    assert third.flag_reason is FlagReason.STUCK
+    assert third.flag_reason is FlagReason.DIDNT_UNDERSTAND
     assert third.reply == render("BAILED_OUT", "en")
     assert chat.step == bot_service.STEP_CHILD_DOB
     assert _count(db, Guardian) == 0
@@ -2861,7 +2861,7 @@ def test_two_nudges_then_the_third_unusable_reply_hands_off_to_staff(
 
     assert [first.reply, second.reply] == [_nudge(bot_service.STEP_MENU)] * 2
     assert third.reply == render("BAILED_OUT", "en")
-    assert third.flag_reason is FlagReason.STUCK
+    assert third.flag_reason is FlagReason.DIDNT_UNDERSTAND
     assert chat.state.misses == 0
 
 
@@ -2950,7 +2950,7 @@ def test_small_talk_away_from_the_menu_is_nudged_like_any_unusable_reply(
 # --- the bail-out and the parser outage (REQ-078) -----------------------------------------------
 
 
-def test_two_failed_re_prompts_flag_stuck_and_leave_the_flow_where_it_was(
+def test_two_failed_re_prompts_flag_didnt_understand_and_leave_the_flow_where_it_was(
     chat: Chat, world: BotWorld, client: ClientWorld
 ) -> None:
     """REQ-078.2 and acceptance criterion 8. The state survives so the parent resumes
@@ -2966,7 +2966,7 @@ def test_two_failed_re_prompts_flag_stuck_and_leave_the_flow_where_it_was(
     assert first.flag_reason is None
     assert second.flag_reason is None
     assert second.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
-    assert third.flag_reason is FlagReason.STUCK
+    assert third.flag_reason is FlagReason.DIDNT_UNDERSTAND
     assert third.reply == render("BAILED_OUT", "en")
     assert chat.step == bot_service.STEP_BOOK_SUBJECT
     assert chat.state.collected_data == collected_before
@@ -2991,7 +2991,7 @@ def test_a_usable_message_after_the_bail_out_resumes_mid_flow(
 def test_the_bail_out_resets_the_miss_counter_so_the_next_stretch_re_prompts_again(
     chat: Chat, world: BotWorld, client: ClientWorld
 ) -> None:
-    """`stuck` means two failed re-prompts in a row (docs/erd.md), so after the bail-out the
+    """`didnt_understand` means two failed re-prompts in a row, so after the bail-out the
     parent gets a fresh two re-prompts before the next flag, not an instant one."""
     chat.say("hi")
     chat.say("book", intent=BotIntent.BOOK)
@@ -3000,7 +3000,7 @@ def test_the_bail_out_resets_the_miss_counter_so_the_next_stretch_re_prompts_aga
     chat.say("????")
     bailed = chat.say("still no")
 
-    assert bailed.flag_reason is FlagReason.STUCK
+    assert bailed.flag_reason is FlagReason.DIDNT_UNDERSTAND
     assert chat.state.misses == 0
     assert chat.step == bot_service.STEP_BOOK_SUBJECT
     assert chat.state.collected_data == collected_before
@@ -3013,7 +3013,7 @@ def test_the_bail_out_resets_the_miss_counter_so_the_next_stretch_re_prompts_aga
     assert first.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
     assert second.reply.startswith(_nudge(bot_service.STEP_BOOK_SUBJECT))
     assert third.reply == render("BAILED_OUT", "en")
-    assert third.flag_reason is FlagReason.STUCK
+    assert third.flag_reason is FlagReason.DIDNT_UNDERSTAND
 
 
 def test_a_low_confidence_parse_re_prompts_rather_than_acting_on_a_guess(
@@ -3035,7 +3035,7 @@ def test_a_low_confidence_parse_re_prompts_rather_than_acting_on_a_guess(
     assert chat.state.misses == 1
 
 
-def test_a_parse_failure_flags_parse_error_without_burning_a_re_prompt(
+def test_a_parse_failure_flags_stuck_without_burning_a_re_prompt(
     chat: Chat, client: ClientWorld
 ) -> None:
     """REQ-078.3 and acceptance criterion 9. A parser outage is not the parent failing to be
@@ -3045,19 +3045,19 @@ def test_a_parse_failure_flags_parse_error_without_burning_a_re_prompt(
 
     turn = chat.say("book me in", fails=True)
 
-    assert turn.flag_reason is FlagReason.PARSE_ERROR
+    assert turn.flag_reason is FlagReason.STUCK
     assert turn.reply == render("PARSER_UNAVAILABLE", "en")
     assert chat.state == before
 
 
-def test_three_parse_failures_still_never_reach_the_stuck_bail_out(
+def test_three_parse_failures_still_never_reach_the_didnt_understand_bail_out(
     chat: Chat, client: ClientWorld
 ) -> None:
     chat.say("hi")
 
     reasons = [chat.say("x", fails=True).flag_reason for _ in range(3)]
 
-    assert reasons == [FlagReason.PARSE_ERROR] * 3
+    assert reasons == [FlagReason.STUCK] * 3
     assert chat.state.misses == 0
 
 
@@ -3085,7 +3085,7 @@ def test_a_parse_failure_logs_the_step_and_the_reason_but_not_the_body(
     assert chat.state.step in message
     assert "scripted outage" in message
     assert "SECRET-BODY" not in message
-    assert turn.flag_reason is FlagReason.PARSE_ERROR
+    assert turn.flag_reason is FlagReason.STUCK
 
 
 def test_a_low_confidence_miss_logs_its_metadata_and_no_values(
@@ -3328,7 +3328,7 @@ def test_a_parser_outage_still_attributes_a_recognised_guardian(
 
     turn = chat.say("book me in", fails=True)
 
-    assert turn.flag_reason is FlagReason.PARSE_ERROR
+    assert turn.flag_reason is FlagReason.STUCK
     assert turn.link_guardian_id == client.guardian_id
 
 

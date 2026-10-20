@@ -2,10 +2,26 @@
 
 import datetime
 import re
+import uuid
 
 import pytest
+from sqlalchemy import update
+from sqlalchemy.orm import Session
 
-from app.models.enums import BookingLocation
+from app.models.booking import Booking
+from app.models.child import Child
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    UserRole,
+)
+from app.models.guardian import ChildGuardian, Guardian
+from app.models.home import GuardianHome, Home
+from app.models.subject import Subject
+from app.models.system_setting import SystemSetting
+from app.models.tutor import Tutor
+from app.models.user import User
 from app.services import bot_messages
 from app.services.bot_messages import MESSAGES, render
 
@@ -116,6 +132,13 @@ EXPECTED_IDS = {
     "REACTIVATION_PENDING",
     "TAKEOVER_NOTICE_GENERIC",
     "RESCHEDULE_NEEDS_OFFICE",
+    "OUTAGE_APOLOGY",
+    "COMMIT_BOOKED_ONE",
+    "COMMIT_BOOKED_BOTH",
+    "COMMIT_BOOKED_MANY",
+    "COMMIT_CANCELLED",
+    "COMMIT_RESCHEDULED",
+    "COMMIT_MIXED",
 }
 GENERIC_IDS = {"TAKEOVER_NOTICE_GENERIC"}
 
@@ -369,3 +392,189 @@ def test_punctuation_inside_a_message_still_stops_a_match() -> None:
 def test_phrase_lists_hold_the_doc_phrases() -> None:
     assert "no más recordatorios" in bot_messages.STOP_PHRASES
     assert "send me reminders" in bot_messages.START_PHRASES
+
+
+# --- fixed messages: commit confirmations, outage apology, business name ----------------------
+
+SESSION_DATE = datetime.date(2026, 10, 20)
+SESSION_START = datetime.time(16, 0)
+SESSION_END = datetime.time(17, 0)
+OFFICE_ADDRESS = "12 Main St, Suite 4"
+
+
+class _Family:
+    def __init__(self, db: Session) -> None:
+        suffix = uuid.uuid4().hex[:10]
+        self.db = db
+        self.guardian = Guardian(name="Ada Guardian", phone_number=f"+1{suffix}")
+        self.child = Child(
+            name="Sam", date_of_birth=datetime.date(2014, 5, 2), grade_level=7, school_name="S"
+        )
+        self.subject = Subject(name=f"Math {suffix}", name_es=f"Matemáticas {suffix}")
+        db.add_all([self.guardian, self.child, self.subject])
+        db.flush()
+        db.add(ChildGuardian(child_id=self.child.id, guardian_id=self.guardian.id))
+        self.homes = [self.add_home("Mom's")]
+
+    def add_home(self, label: str | None) -> Home:
+        home = Home(label=label, address="1 Test Street")
+        self.db.add(home)
+        self.db.flush()
+        self.db.add(GuardianHome(guardian_id=self.guardian.id, home_id=home.id))
+        self.db.flush()
+        return home
+
+    def book(
+        self, location: BookingLocation = BookingLocation.HOME, home: Home | None = None
+    ) -> uuid.UUID:
+        home = home or self.homes[0]
+        # A fresh same-named Tutor per Booking: one Tutor cannot hold two overlapping sessions.
+        suffix = uuid.uuid4().hex[:10]
+        tutor = Tutor(
+            user=User(
+                email=f"t-{suffix}@example.com", name="Ada Lovelace Byron", role=UserRole.TUTOR
+            ),
+            phone_number=f"+1{suffix}",
+        )
+        self.db.add(tutor)
+        self.db.flush()
+        booking = Booking(
+            child_id=self.child.id,
+            user_id=tutor.user_id,
+            kind=BookingKind.REGULAR,
+            location=location,
+            subject_id=self.subject.id,
+            home_id=home.id if location == BookingLocation.HOME else None,
+            booked_by_guardian_id=self.guardian.id,
+            scheduled_date=SESSION_DATE,
+            start_time=SESSION_START,
+            end_time=SESSION_END,
+            status=BookingStatus.CONFIRMED,
+        )
+        self.db.add(booking)
+        self.db.flush()
+        return booking.id
+
+
+def _set_office_address(db: Session, value: str) -> None:
+    db.execute(
+        update(SystemSetting).where(SystemSetting.key == "office_address").values(value=value)
+    )
+    db.flush()
+
+
+def _line(subject: str, place: str, *, es: bool = False) -> str:
+    if es:
+        return f"martes 20 de octubre, 4:00-5:00 p. m.: {subject} para Sam con Ada Lovelace Byron {place}"
+    return f"Tuesday, October 20, 4:00-5:00 PM: {subject} for Sam with Ada Lovelace Byron {place}"
+
+
+def test_single_book_confirmation_has_the_lead_in_and_one_line(db: Session) -> None:
+    family = _Family(db)
+    booking_id = family.book()
+
+    text = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="en")
+
+    assert text == f"Your session is booked:\n{_line(family.subject.name, 'at home')}"
+
+
+def test_two_book_confirmation_says_both_and_lists_both(db: Session) -> None:
+    family = _Family(db)
+    ids = [family.book(), family.book()]
+
+    text = bot_messages.commit_confirmation(db, committed=[("book", i) for i in ids], language="en")
+
+    lines = text.split("\n")
+    assert lines[0] == "Both sessions are booked:"
+    assert len(lines) == 3
+
+
+def test_spanish_confirmation_uses_the_spanish_subject_and_lead_in(db: Session) -> None:
+    family = _Family(db)
+    booking_id = family.book()
+
+    text = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="es")
+
+    assert text == f"Su sesión está reservada:\n{_line(family.subject.name_es, 'en casa', es=True)}"
+
+
+def test_spanish_two_book_lead_in(db: Session) -> None:
+    family = _Family(db)
+    ids = [family.book(), family.book()]
+
+    text = bot_messages.commit_confirmation(db, committed=[("book", i) for i in ids], language="es")
+
+    assert text.split("\n")[0] == "Las dos sesiones están reservadas:"
+
+
+def test_place_is_the_home_label_once_the_family_has_two_homes(db: Session) -> None:
+    family = _Family(db)
+    dad = family.add_home("Dad's")
+    booking_id = family.book(home=dad)
+
+    en = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="en")
+    es = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="es")
+
+    assert en.endswith("at Dad's")
+    assert es.endswith("en Dad's")
+
+
+def test_place_is_the_office_address_in_both_languages(db: Session) -> None:
+    family = _Family(db)
+    _set_office_address(db, OFFICE_ADDRESS)
+    booking_id = family.book(BookingLocation.IN_OFFICE)
+
+    en = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="en")
+    es = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="es")
+
+    assert en.endswith(f"Ada Lovelace Byron {OFFICE_ADDRESS}")
+    assert es.endswith(f"Ada Lovelace Byron {OFFICE_ADDRESS}")
+
+
+def test_blank_office_address_falls_back_to_the_office_wording(db: Session) -> None:
+    family = _Family(db)
+    _set_office_address(db, "")
+    booking_id = family.book(BookingLocation.IN_OFFICE)
+
+    en = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="en")
+    es = bot_messages.commit_confirmation(db, committed=[("book", booking_id)], language="es")
+
+    assert en.endswith("at the office")
+    assert es.endswith("en la oficina")
+
+
+@pytest.mark.parametrize(
+    ("kinds", "lead_in"),
+    [
+        (["cancel"], "Your cancellation is done:"),
+        (["reschedule"], "Your session is moved:"),
+        (["cancel", "book"], "All done:"),
+        (["book", "book", "book"], "Your sessions are booked:"),
+    ],
+)
+def test_other_commits_use_their_placeholder_lead_in_and_the_same_line_shape(
+    db: Session, kinds: list[str], lead_in: str
+) -> None:
+    family = _Family(db)
+    committed = [(kind, family.book()) for kind in kinds]
+
+    lines = bot_messages.commit_confirmation(db, committed=committed, language="en").split("\n")
+
+    assert lines[0] == lead_in
+    assert lines[1:] == [_line(family.subject.name, "at home")] * len(kinds)
+
+
+@pytest.mark.parametrize(
+    ("language", "start"), [("en", "Sorry"), ("es", "Lo sentimos"), (None, "Sorry")]
+)
+def test_outage_apology_renders_and_none_falls_back_to_english(
+    language: str | None, start: str
+) -> None:
+    assert render("OUTAGE_APOLOGY", language).startswith(start)
+
+
+def test_no_fixed_string_spells_the_business_name_without_the_apostrophe() -> None:
+    texts = [text for entry in MESSAGES.values() for text in entry.values()]
+
+    assert not any("Ms Helping Hands" in text for text in texts)
+    assert any("M's Helping Hands" in text for text in texts)

@@ -6,7 +6,7 @@ import type { Language } from '@/lib/reminders/reminders'
 export type ConversationStatus = 'bot' | 'human'
 export type FlagReason =
   | 'stuck'
-  | 'parse_error'
+  | 'didnt_understand'
   | 'guardian_link_request'
   | 'reactivation_request'
   | 'booking_request'
@@ -20,6 +20,7 @@ export type SystemMessageKind =
   | 'booking_reminder'
   | 'consent_notice'
   | 'number_change_note'
+  | 'handoff_note'
 
 export type ConversationGuardianRef = { id: string; name: string }
 // The API's `UserRef`: a Staff member is named by Display name, never by email.
@@ -39,6 +40,7 @@ export type Conversation = {
   last_message_preview: string
   unread: boolean
   flag_reason: FlagReason | null
+  intake_in_progress: boolean
 }
 
 export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'unread'> & {

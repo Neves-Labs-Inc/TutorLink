@@ -54,3 +54,42 @@ describe('MessageThread failure announcement', () => {
     await expect.poll(liveRegionText).toBe('A message failed to send.')
   })
 })
+
+const botMessage = (id: string, status: Message['status']): Message => ({
+  ...adminMessage(id, status),
+  author_kind: 'bot',
+})
+
+const handoffNote = (status: Message['status']): Message => ({
+  ...adminMessage('note', status),
+  author_kind: 'system',
+  body: 'Wants a trial lesson for Emma',
+  system_kind: 'handoff_note',
+})
+
+describe('MessageThread bot replies and handoff notes', () => {
+  it('marks a failed bot reply as failed with no Retry button', async () => {
+    await renderWithProviders(<MessageThread {...propsFor([botMessage('b', 'failed')])} />)
+
+    await expect.element(page.getByText('Failed to send')).toBeVisible()
+    expect(document.querySelector('[data-retry]')).toBeNull()
+    expect(document.body.textContent).not.toContain('Retry')
+  })
+
+  it.each(['queued', 'sent', 'delivered'] as const)('shows no delivery mark on a bot reply at %s', async (status) => {
+    await renderWithProviders(<MessageThread {...propsFor([botMessage('b', status)])} />)
+
+    await expect.element(page.getByText('body b')).toBeVisible()
+    expect(document.body.textContent).not.toMatch(/Sending|Sent|Delivered|Failed to send/)
+  })
+
+  it('renders a handoff note as a muted Staff-only line, never failed, with no Retry', async () => {
+    await renderWithProviders(<MessageThread {...propsFor([handoffNote('failed')])} />)
+
+    const line = page.getByText('Bot’s handoff note: Wants a trial lesson for Emma')
+    await expect.element(line).toBeVisible()
+    expect(line.element().className).toContain('text-muted-foreground')
+    expect(line.element().className).not.toContain('text-destructive')
+    expect(document.body.textContent).not.toContain('Retry')
+  })
+})

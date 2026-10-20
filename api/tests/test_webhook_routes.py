@@ -400,7 +400,7 @@ def test_a_routine_handoff_turn_flags_the_conversation_and_returns_the_reply(
         FlagReason.BOOKING_REQUEST,
         FlagReason.GUARDIAN_LINK_REQUEST,
         FlagReason.STUCK,
-        FlagReason.PARSE_ERROR,
+        FlagReason.DIDNT_UNDERSTAND,
     ],
 )
 def test_a_question_does_not_replace_an_existing_flag_but_is_still_answered(

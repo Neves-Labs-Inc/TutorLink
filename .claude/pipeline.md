@@ -49,3 +49,10 @@ Collected from agent `env:` lines during API gaps round 2 (2026-10-16).
 - **New routes need a `test_route_matrix.py` entry.** Every coder that added a route hit 2 failures there first.
 - **Schema validation errors are 400, not 422.** `app/main.py` maps every `RequestValidationError` to 400 `{"detail": "field: ..."}`.
 - **`security-review` skill reads the main checkout's branch diff**, not a worktree; security reviewers review the scoped worktree diff by hand.
+
+Collected during the WhatsApp bot agent wave 1 (2026-10-19).
+
+- **Never kill test runs by pattern.** A coder's `pkill -f "pytest -q -p no:cacheprovider"` killed every parallel coder's suite. Kill your own run by PID only.
+- **`run_in_background` suite runs can die with exit 144** at ~15–37% under parallel load. Start the full suite with `nohup ... > /tmp/<name>.log 2>&1; echo "EXIT $?" >> /tmp/<name>.log &` and read the log's tail.
+- **Load flake:** `test_conversation_routes.py::test_total_counts_the_filtered_query_before_paging` can fail under parallel load; rerun the module alone.
+- **`git worktree remove` must run from inside the repo**, not the parent folder.

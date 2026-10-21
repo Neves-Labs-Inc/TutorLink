@@ -8,8 +8,10 @@ import type { LucideIcon } from "lucide-react";
 import { CountBadge } from "@/components/kit/components/badges";
 import { TextLink } from "@/components/kit/components/button";
 import { Skeleton } from "@/components/kit/states/states";
-import { CARD, CARD_TITLE, cn } from "@/components/kit/tokens";
-import type { Phase } from "@/pages/prototype/home/hooks/use-home-data";
+import { CARD, CARD_TITLE, cn, TONE_CLASSES } from "@/components/kit/tokens";
+import type { Tone } from "@/components/kit/tokens";
+
+export type TodoPhase = "loading" | "error" | "ready";
 
 const SKELETON_ROWS = 3;
 
@@ -17,13 +19,14 @@ type TodoCardProps = {
   id: string;
   title: string;
   icon: LucideIcon;
-  iconClass: string;
-  phase: Phase;
+  tone: Tone;
+  phase: TodoPhase;
   total: number;
   emptyHint: string;
   seeAllLabel: string;
   onSeeAll: () => void;
   onRetry: () => void;
+  isRetrying?: boolean;
   children: ReactNode;
 };
 
@@ -31,13 +34,14 @@ export default function TodoCard({
   id,
   title,
   icon: Icon,
-  iconClass,
+  tone,
   phase,
   total,
   emptyHint,
   seeAllLabel,
   onSeeAll,
   onRetry,
+  isRetrying = false,
   children,
 }: TodoCardProps): ReactNode {
   const headingId = `todo-${id}`;
@@ -45,14 +49,13 @@ export default function TodoCard({
   return (
     <section
       aria-labelledby={headingId}
-      aria-busy={phase === "loading" || undefined}
       className={cn(CARD, "flex min-w-0 flex-col p-4 @2xl:p-5")}
     >
       <div className="flex items-center gap-3">
         <span
           className={cn(
             "inline-flex size-10 shrink-0 items-center justify-center rounded-[14px]",
-            iconClass,
+            TONE_CLASSES[tone],
           )}
         >
           <Icon aria-hidden className="size-[18px]" />
@@ -65,18 +68,25 @@ export default function TodoCard({
         )}
       </div>
 
-      {phase === "loading" && <RowSkeletons />}
-      {phase === "error" && <CardError title={title} onRetry={onRetry} />}
+      {phase === "loading" && <RowSkeletons title={title} />}
+      {phase === "error" && <CardError title={title} onRetry={onRetry} isRetrying={isRetrying} />}
       {isReady && total === 0 && <AllClear hint={emptyHint} />}
       {isReady && total > 0 && (
-        <ul className="-mx-2 mt-3 flex flex-1 flex-col">{children}</ul>
+        <ul className="-mx-2 mt-3">{children}</ul>
       )}
 
       {isReady && total > 0 && (
         <div className="mt-2 border-t border-(--tl-border) pt-1">
-          <TextLink onClick={onSeeAll} aria-label={`See all ${total} ${seeAllLabel}`}>
+          <TextLink
+            onClick={onSeeAll}
+            className="group"
+            aria-label={`See all ${total} ${seeAllLabel}`}
+          >
             See all {total}
-            <ChevronRight aria-hidden className="size-4" />
+            <ChevronRight
+              aria-hidden
+              className="size-4 transition-transform duration-150 group-hover:translate-x-0.5"
+            />
           </TextLink>
         </div>
       )}
@@ -84,9 +94,9 @@ export default function TodoCard({
   );
 }
 
-function RowSkeletons(): ReactNode {
+function RowSkeletons({ title }: { title: string }): ReactNode {
   return (
-    <div className="mt-3 flex flex-col gap-4 py-2">
+    <div role="status" aria-label={`Loading ${title}`} className="mt-3 flex flex-col gap-4 py-2">
       {Array.from({ length: SKELETON_ROWS }, (_, index) => (
         <div key={index} className="flex flex-col gap-2 px-0.5">
           <Skeleton className="h-4 w-2/5 rounded-full" />
@@ -101,7 +111,7 @@ type AllClearProps = { hint: string };
 
 function AllClear({ hint }: AllClearProps): ReactNode {
   return (
-    <div className="mt-3 flex flex-1 items-start gap-3 rounded-[16px] bg-(--tl-surface-sunk) px-4 py-4">
+    <div className="mt-3 flex items-start gap-3 rounded-[16px] bg-(--tl-surface-sunk) px-4 py-4">
       <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-(--tl-success)" />
       <p className="text-[14px] leading-5">
         <span className="font-semibold">All clear</span>
@@ -111,21 +121,32 @@ function AllClear({ hint }: AllClearProps): ReactNode {
   );
 }
 
-type CardErrorProps = { title: string; onRetry: () => void };
+type CardErrorProps = {
+  title: string;
+  onRetry: () => void;
+  isRetrying: boolean;
+};
 
-function CardError({ title, onRetry }: CardErrorProps): ReactNode {
+function CardError({ title, onRetry, isRetrying }: CardErrorProps): ReactNode {
   return (
     <div
       role="alert"
-      className="mt-3 flex flex-1 flex-col items-start gap-2 rounded-[16px] bg-(--tl-danger-tint) px-4 py-3 text-(--tl-danger) @md:flex-row @md:items-center"
+      className="mt-3 flex flex-col items-start gap-2 rounded-[16px] bg-(--tl-danger-tint) px-4 py-3 text-(--tl-danger) @md:flex-row @md:items-center"
     >
       <TriangleAlert aria-hidden className="size-4 shrink-0" />
       <p className="flex-1 text-[14px] leading-5 font-medium">
-        Couldn’t load {title}. Check your connection.
+        Couldn’t load {title.toLowerCase()}. Check your connection and try again.
       </p>
-      <TextLink onClick={onRetry} className="text-(--tl-danger)">
-        <RotateCw aria-hidden className="size-4" />
-        Try again
+      <TextLink
+        onClick={onRetry}
+        disabled={isRetrying}
+        className="text-(--tl-danger)!"
+      >
+        <RotateCw
+          aria-hidden
+          className={cn("size-4", isRetrying && "animate-spin motion-reduce:animate-none")}
+        />
+        {isRetrying ? "Trying again…" : "Try again"}
       </TextLink>
     </div>
   );

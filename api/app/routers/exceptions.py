@@ -12,6 +12,9 @@ target's role for the Developer boundary); this module maps its refusals to stat
   status is never read from the body. The caller is recorded as `entered_by`.
 - `GET /api/exceptions` takes `OfficePrincipal`: every Staff member's Time off, filtered.
   `status` may repeat; a row at any of them matches.
+- `GET /api/exceptions/{exception_id}` takes `Principal`: one row, read by the same people as
+  the per-user list (the owner, or an Office role; a Developer's only a Developer), checked
+  on the loaded row so an unknown id is 404.
 - `PATCH /api/exceptions/{exception_id}` takes `AdminPrincipal`, which is what stops anyone
   approving their own request — the one authorisation rule this feature exists to enforce.
 - `POST /api/exceptions/{exception_id}/cancel` takes `Principal`: the owner or an Admin role,
@@ -65,6 +68,7 @@ from app.services.exception_service import (
     clashes_by_exception,
     create_exception,
     decide_exception,
+    get_exception,
     list_all_exceptions,
     list_exceptions,
     read_status,
@@ -164,6 +168,16 @@ def list_all_staff_exceptions(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/exceptions/{exception_id}", response_model=ExceptionRead)
+def read_staff_exception(exception_id: uuid.UUID, user: Principal, db: DbSession) -> ExceptionRead:
+    try:
+        row = get_exception(db, actor_id=user.id, actor_role=user.role, exception_id=exception_id)
+    except ExceptionRequestError as exc:
+        raise _http_error(exc) from exc
+
+    return _reads(db, [row], now=clock.business_now())[0]
 
 
 @router.post(

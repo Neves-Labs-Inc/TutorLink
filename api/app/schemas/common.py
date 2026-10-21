@@ -6,8 +6,9 @@ One shape everywhere, with **no exceptions** — including endpoints bounded by 
 exists to remove, and the exceptions are never the ones you predicted.
 
 `total` counts rows matching the query **before** paging or any cap, which is the whole point:
-on `/api/slots/available` it reports how many the five-slot cap suppressed, so the bot can say
-"showing 5 of 8" rather than implying 5 is all there is.
+it reports how many rows the page left out. (`/api/slots/available` is uncapped and returns
+every open slot; the bot's five-slot cap lives in `slot_service`, where its `total` lets it say
+"showing 5 of 8".)
 """
 
 from pydantic import BaseModel

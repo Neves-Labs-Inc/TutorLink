@@ -62,11 +62,23 @@ the Guardian is reached outside the bot, so there is nothing for Staff to take o
 """
 
 import datetime
+import enum
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, ScalarSelect, Select, case, delete, func, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    ScalarSelect,
+    Select,
+    and_,
+    case,
+    delete,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
@@ -95,6 +107,14 @@ LATEST_CONVERSATION_FIRST = (Conversation.last_message_at.desc(), Conversation.i
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
+
+class HolderFilter(enum.StrEnum):
+    """The list's **With** filter: who has the conversation, from the calling admin's side."""
+
+    BOT = "bot"
+    MINE = "mine"
+    OTHERS = "others"
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +490,8 @@ def list_conversations(
     q: str | None,
     limit: int,
     offset: int,
+    holders: Collection[HolderFilter] = (),
+    caller_id: uuid.UUID | None = None,
 ) -> tuple[list[ConversationListItem], int]:
     """One page of the inbox, newest activity first, plus the total matching before paging.
 
@@ -490,8 +512,19 @@ def list_conversations(
     `unread` is a Guardian message newer than `last_read_at`, one watermark shared by every
     admin (`erd.md:281-284`); bot, office and system messages never make a chat Unread. The
     same predicate decides the filter and the flag on each row, so the two can never disagree.
+
+    `holders` is the **With** filter, OR-ed within itself and AND-ed with everything else: `bot`
+    is the assistant's, `mine` is taken over by `caller_id`, `others` is taken over by anyone
+    else. Empty, or all three, is no filter. `mine` and `others` need `caller_id`.
     """
-    matching = _matching_conversations(status=status, unread=unread, flagged=flagged, q=q)
+    matching = _matching_conversations(
+        status=status,
+        unread=unread,
+        flagged=flagged,
+        q=q,
+        holders=holders,
+        caller_id=caller_id,
+    )
     # One clock reading, so the SQL order and each row's flag agree on which windows are open.
     now = datetime.datetime.now(tz=datetime.UTC)
     last_client_message_at = _last_client_message_at_column()
@@ -983,6 +1016,8 @@ def _matching_conversations(
     unread: bool | None,
     flagged: bool | None,
     q: str | None,
+    holders: Collection[HolderFilter] = (),
+    caller_id: uuid.UUID | None = None,
 ) -> Select[tuple[Conversation]]:
     # The guardian is outer-joined for every query, not only for `q`: it is a nullable FK to a
     # primary key, so the join cannot multiply a row and `total` stays a count of conversations
@@ -1001,6 +1036,9 @@ def _matching_conversations(
             Conversation.flag_reason.is_not(None) if flagged else Conversation.flag_reason.is_(None)
         )
 
+    if 0 < len(set(holders)) < len(HolderFilter):
+        statement = statement.where(or_(*(_held_by(holder, caller_id) for holder in set(holders))))
+
     if pattern is not None:
         statement = statement.where(
             or_(
@@ -1010,6 +1048,20 @@ def _matching_conversations(
         )
 
     return statement
+
+
+def _held_by(holder: HolderFilter, caller_id: uuid.UUID | None) -> ColumnElement[bool]:
+    if holder is HolderFilter.BOT:
+        return Conversation.status == ConversationStatus.BOT
+
+    if holder is HolderFilter.MINE:
+        return Conversation.taken_over_by_user_id == caller_id
+
+    # `is_distinct_from` so a human thread with no recorded holder still counts as someone else's.
+    return and_(
+        Conversation.status == ConversationStatus.HUMAN,
+        Conversation.taken_over_by_user_id.is_distinct_from(caller_id),
+    )
 
 
 def _count(db: Session, matching: Select[tuple[Conversation]]) -> int:

@@ -18,6 +18,8 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { cn, TONE_CLASSES } from "@/components/kit/tokens";
 import type { Tone } from "@/components/kit/tokens";
+import { BOOKING_REASON } from "@/components/kit/lib/booking-reason";
+import type { BookingReasonKey } from "@/components/kit/lib/booking-reason";
 import { getInitials } from "@/components/kit/format";
 import type {
   AttentionReason,
@@ -136,6 +138,19 @@ export function KindBadge({
   return (
     <Badge tone={style.tone} icon={style.icon}>
       {label}
+    </Badge>
+  );
+}
+
+export function BookingReasonBadge({
+  reason,
+}: {
+  reason: BookingReasonKey;
+}): ReactNode {
+  const style = BOOKING_REASON[reason];
+  return (
+    <Badge tone={style.tone} icon={style.icon}>
+      {style.label}
     </Badge>
   );
 }

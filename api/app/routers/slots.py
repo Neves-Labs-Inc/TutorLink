@@ -7,10 +7,15 @@ tutor-owned mappers — so declaring a scope this route has nothing to narrow wo
 500. `?tutor_id=` is therefore an ordinary optional filter declared on the signature, the same
 shape and for the same reason as `routers/client_bookings.py:29`.
 
-`page` and `page_size` are absent on purpose (REQ-043.3): the answer is capped at
-`max_slots_offered` and there is no continuation. The `Page` envelope stays regardless —
-`CONSTITUTION.md` §8 has no exceptions and `schemas/common.py` names this endpoint — and its
-`total` is the count before the cap, which is what lets the bot say "showing 5 of 8".
+`page` and `page_size` are absent on purpose (REQ-043.3): the answer is every open slot, with no
+continuation. Only the dashboard calls this route; it shows each free time as a chip, so the
+`max_slots_offered` cap (the bot's limit, which the bot applies by calling `slot_service`
+directly) is not applied here. The `Page` envelope stays regardless — `CONSTITUTION.md` §8 has
+no exceptions and `schemas/common.py` names this endpoint — with `total == page_size ==
+len(items)`.
+
+`exclude_booking_id` is the Booking being changed: its window, and the travel gap around it, no
+longer count as busy for its Staff member. An id that matches nothing excludes nothing.
 
 The clock is read here, through `clock.business_now`, and handed to the service as a **naive**
 business wall-clock datetime (`BUSINESS_TIMEZONE`), exactly as `routers/booking_writes.py`
@@ -63,6 +68,7 @@ def list_available_slots(
     # The bot's chosen Location: only ranges whose mode allows it, and no travel gap between
     # two In office sessions. Omitted, every range is read with the full gap, as before.
     location: BookingLocation | None = None,
+    exclude_booking_id: uuid.UUID | None = None,
 ) -> Page[SlotRead]:
     try:
         result = find_available_slots(
@@ -74,6 +80,8 @@ def list_available_slots(
             tutor_id=tutor_id,
             now=clock.business_now(),
             location=location,
+            should_cap=False,
+            exclude_booking_id=exclude_booking_id,
         )
     except DateOutOfWindow as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, DATE_OUT_OF_WINDOW_ERROR) from exc

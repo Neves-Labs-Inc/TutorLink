@@ -301,6 +301,36 @@ def cancel_exception(
     return row
 
 
+def get_exception(
+    db: Session, *, actor_id: uuid.UUID, actor_role: UserRole, exception_id: uuid.UUID
+) -> TutorAvailabilityException:
+    """One row, with `staff`, `decider`, `canceller` and `creator` loaded in the same statement.
+
+    Found first, readability second, as `cancel_exception` orders it: an id matching no row is
+    404 for everyone, another person's row is 403 (the owner or an Office role may read it, a
+    Developer's only a Developer). Nothing is locked; this is a read.
+    """
+    row = db.scalars(
+        select(TutorAvailabilityException)
+        .where(TutorAvailabilityException.id == exception_id)
+        .options(
+            joinedload(TutorAvailabilityException.staff),
+            joinedload(TutorAvailabilityException.decider),
+            joinedload(TutorAvailabilityException.canceller),
+            joinedload(TutorAvailabilityException.creator),
+        )
+    ).one_or_none()
+
+    if row is None:
+        logger.warning("exception_service.get: actor %s, no exception %s", actor_id, exception_id)
+        raise ExceptionNotFound(f"no exception {exception_id}")
+
+    _assert_may_read(actor_id=actor_id, actor_role=actor_role, owner_id=row.user_id)
+    _assert_developer_boundary(actor_id=actor_id, actor_role=actor_role, owner=row.staff)
+
+    return row
+
+
 def list_exceptions(
     db: Session,
     *,

@@ -24,7 +24,7 @@ import {
   listHouseholdHomes,
   readBooking,
 } from "@/pages/prototype/accounts-staff/lib/mock-api";
-import { getChildTones } from "@/pages/prototype/accounts-staff/lib/child-tones";
+import { getChildTones } from "@/components/kit/lib/child-tones";
 
 type FamilyPageProps = {
   anchorGuardianId: string;

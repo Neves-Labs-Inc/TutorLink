@@ -90,13 +90,32 @@ export function ListRow({
   );
 }
 
-type TimeBlockProps = { time: string; caption: string };
+type TimeBlockProps = {
+  time: string;
+  caption: string;
+  // Pink marks an Evaluation.
+  tone?: "primary" | "pink";
+};
+
+const TIME_BLOCK_TONES = {
+  primary: "bg-(--tl-tint) text-(--tl-primary-ink)",
+  pink: "bg-(--tl-pink-tint) text-(--tl-pink-ink)",
+};
 
 // The leading time chip used on Booking and Session rows.
-export function TimeBlock({ time, caption }: TimeBlockProps): ReactNode {
+export function TimeBlock({
+  time,
+  caption,
+  tone = "primary",
+}: TimeBlockProps): ReactNode {
   const [clock, meridiem] = time.split(" ");
   return (
-    <span className="flex w-[72px] shrink-0 flex-col items-center rounded-[16px] bg-(--tl-tint) py-2 text-(--tl-primary-ink) tabular-nums">
+    <span
+      className={cn(
+        "flex w-[72px] shrink-0 flex-col items-center rounded-[16px] py-2 tabular-nums",
+        TIME_BLOCK_TONES[tone],
+      )}
+    >
       <span className="text-[16px] leading-6 font-semibold whitespace-nowrap">
         {clock}
         <span className="ml-0.5 text-[12px] font-medium">{meridiem}</span>

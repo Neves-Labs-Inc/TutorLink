@@ -9,8 +9,8 @@ import { Button, IconButton } from "@/components/kit/components/button";
 import { useToast } from "@/components/kit/overlays/use-toast";
 import BookingBlock from "@/pages/prototype/accounts-staff/components/booking-block";
 import { useArea } from "@/pages/prototype/accounts-staff/hooks/use-area-store";
-import { DOT_CLASSES } from "@/pages/prototype/accounts-staff/lib/child-tones";
-import type { ChildTone } from "@/pages/prototype/accounts-staff/lib/child-tones";
+import { DOT_CLASSES } from "@/components/kit/lib/child-tones";
+import type { ChildTone, DottedChildTone } from "@/components/kit/lib/child-tones";
 import {
   formatShortDate,
   formatWeekdayDate,
@@ -75,7 +75,9 @@ export default function FamilyWeek({ childRefs, tones, onOpenBooking }: FamilyWe
             {childRefs.length > 1 &&
               childRefs.map((child) => (
                 <span key={child.id} className="flex items-center gap-1.5 text-[13px] text-(--tl-ink-soft)">
-                  <span aria-hidden className={cn("size-2.5 rounded-full", DOT_CLASSES[getTone(child.id)])} />
+                  {getTone(child.id) !== "neutral" && (
+                    <span aria-hidden className={cn("size-2.5 rounded-full", DOT_CLASSES[getTone(child.id) as DottedChildTone])} />
+                  )}
                   {child.name.split(" ")[0]}
                 </span>
               ))}

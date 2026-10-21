@@ -8,8 +8,8 @@ import { ArchivedBadge, Avatar, Badge } from "@/components/kit/components/badges
 import { needsTutor } from "@/pages/prototype/accounts-staff/lib/assigned-tutors";
 import { Button } from "@/components/kit/components/button";
 import OpenQuestion from "@/pages/prototype/accounts-staff/components/open-question";
-import { DOT_CLASSES } from "@/pages/prototype/accounts-staff/lib/child-tones";
-import type { ChildTone } from "@/pages/prototype/accounts-staff/lib/child-tones";
+import { DOT_CLASSES } from "@/components/kit/lib/child-tones";
+import type { ChildTone, DottedChildTone } from "@/components/kit/lib/child-tones";
 import {
   formatGrade,
   formatWeekdayDate,
@@ -99,8 +99,8 @@ export default function FamilyChildren({ items, tones, canAdd, onAdd, onOpen }: 
                   <Avatar name={child.name} size="lg" />
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-2">
-                      {items.length > 1 && (
-                        <span aria-hidden className={cn("size-2.5 rounded-full", DOT_CLASSES[tones.get(child.id) ?? "primary"])} />
+                      {items.length > 1 && tones.get(child.id) !== "neutral" && (
+                        <span aria-hidden className={cn("size-2.5 rounded-full", DOT_CLASSES[(tones.get(child.id) ?? "primary") as DottedChildTone])} />
                       )}
                       <span className="kit-display text-[20px] leading-7 font-bold">{child.name}</span>
                       {child.archived && <ArchivedBadge />}

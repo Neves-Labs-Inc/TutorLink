@@ -5,12 +5,12 @@
 // a New booking there.
 import type { ReactNode } from "react";
 import { CalendarPlus, CalendarX2, Plane } from "lucide-react";
-import { Avatar } from "@/components/kit/components/badges";
+import { ArchivedBadge, Avatar } from "@/components/kit/components/badges";
 import { Button } from "@/components/kit/components/button";
 import { EmptyState } from "@/components/kit/states/states";
 import { cn } from "@/components/kit/tokens";
-import TimeGrid from "@/pages/prototype/bookings/components/time-grid";
-import type { GridColumn } from "@/pages/prototype/bookings/components/time-grid";
+import TimeGrid from "@/components/kit/components/time-grid";
+import type { GridBlock, GridColumn } from "@/components/kit/components/time-grid";
 import { DayTable } from "@/pages/prototype/bookings/components/bookings-list";
 import {
   APPROVED_TIME_OFF,
@@ -30,7 +30,27 @@ import {
 } from "@/pages/prototype/bookings/lib/format";
 import type { BookingSummary } from "@/pages/prototype/bookings/lib/wire";
 
+const DAY_COLUMN_MIN_PX = 140;
+
 export type CreateAt = { date: string; time: string | null; userId: string | null };
+
+function toGridBlock(booking: BookingSummary, showsStaff: boolean): GridBlock {
+  const isEvaluation = booking.kind === "evaluation";
+  return {
+    id: booking.id,
+    startTime: booking.start_time,
+    endTime: booking.end_time,
+    time: formatTime(booking.start_time),
+    name: booking.child.name,
+    what: isEvaluation ? "Evaluation" : (booking.subject?.name ?? "Tutoring"),
+    isEvaluation,
+    staffName: booking.staff.name,
+    showsStaff,
+    status: booking.status,
+    reason: booking.sort_out_reasons[0],
+    tone: isEvaluation ? "pink" : "primary",
+  };
+}
 
 function getTimeOffOn(day: string): { userId: string; name: string }[] {
   return APPROVED_TIME_OFF.filter(
@@ -38,11 +58,7 @@ function getTimeOffOn(day: string): { userId: string; name: string }[] {
   ).map((timeOff) => ({ userId: timeOff.staff.id, name: timeOff.staff.name }));
 }
 
-function getWeekColumns(
-  rows: BookingSummary[],
-  weekStart: string,
-  onCreateAt: (at: CreateAt) => void,
-): GridColumn[] {
+function getWeekColumns(rows: BookingSummary[], weekStart: string): GridColumn[] {
   return getWeekDays(weekStart).map((day) => ({
     id: day,
     isToday: day === TODAY,
@@ -61,18 +77,18 @@ function getWeekColumns(
         </span>
       </span>
     ),
-    bookings: rows.filter((row) => row.scheduled_date === day),
-    notes: getTimeOffOn(day).map((off) => `${getFirstName(off.name)} off`),
+    hasNow: day === TODAY,
+    blocks: rows.filter((row) => row.scheduled_date === day).map((row) => toGridBlock(row, true)),
+    timeOff: getTimeOffOn(day).map((off) => ({
+      id: off.userId,
+      label: `${getFirstName(off.name)} off`,
+      title: `${off.name} is off`,
+    })),
     createLabel: (time) => `New booking ${formatShortDay(day)} at ${formatTime(time)}`,
-    onCreateAt: (time) => onCreateAt({ date: day, time, userId: null }),
   }));
 }
 
-function getDayColumns(
-  rows: BookingSummary[],
-  day: string,
-  onCreateAt: (at: CreateAt) => void,
-): GridColumn[] {
+function getDayColumns(rows: BookingSummary[], day: string): GridColumn[] {
   const weekday = getWeekday(day);
   const dayRows = rows.filter((row) => row.scheduled_date === day);
   const offIds = getTimeOffOn(day).map((off) => off.userId);
@@ -94,19 +110,19 @@ function getDayColumns(
           </span>
         </span>
       ),
-      bookings: dayRows.filter((row) => row.staff.id === person.id),
-      freeBands: isOff
+      hasNow: day === TODAY,
+      blocks: dayRows
+        .filter((row) => row.staff.id === person.id)
+        .map((row) => toGridBlock(row, false)),
+      availability: isOff
         ? []
         : AVAILABILITY.filter(
             (range) => range.userId === person.id && range.weekday === weekday,
           ).map((range) => ({ start: `${range.from}:00`, end: `${range.to}:00` })),
-      notes: [
-        ...(isOff ? ["Time off"] : []),
-        ...(person.archived ? ["Archived"] : []),
-      ],
+      timeOff: isOff ? [{ id: person.id, label: "Time off", title: `${person.name} is off` }] : [],
+      notes: person.archived ? <ArchivedBadge /> : undefined,
       createLabel: (time) =>
         `New booking with ${person.name}, ${formatShortDay(day)} at ${formatTime(time)}`,
-      onCreateAt: (time) => onCreateAt({ date: day, time, userId: person.id }),
     };
   });
 }
@@ -216,10 +232,20 @@ export default function CalendarView({
   onOpen,
   onCreateAt,
 }: CalendarViewProps): ReactNode {
-  const columns =
-    scale === "week"
-      ? getWeekColumns(rows, weekStart, onCreateAt)
-      : getDayColumns(rows, day, onCreateAt);
+  const columns = scale === "week" ? getWeekColumns(rows, weekStart) : getDayColumns(rows, day);
+
+  function handleOpen(id: string): void {
+    const booking = rows.find((row) => row.id === id);
+    if (booking) onOpen(booking);
+  }
+
+  function handleCreateAt(columnId: string, time: string): void {
+    onCreateAt(
+      scale === "week"
+        ? { date: columnId, time, userId: null }
+        : { date: day, time, userId: columnId },
+    );
+  }
   return (
     <div className="@container">
       <div className="hidden @3xl:block">
@@ -235,9 +261,9 @@ export default function CalendarView({
         <TimeGrid
           columns={columns}
           nowTime={NOW_TIME}
-          showsStaff={scale === "week"}
-          onOpen={onOpen}
-          minColumnPx={scale === "week" ? 110 : 130}
+          onOpen={handleOpen}
+          onCreateAt={handleCreateAt}
+          minColumnPx={scale === "week" ? undefined : DAY_COLUMN_MIN_PX}
         />
       </div>
       <div className="@3xl:hidden">

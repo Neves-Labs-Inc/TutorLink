@@ -1,14 +1,14 @@
 // Form fields. Each takes `label`, optional `help` and `error`, and wires
 // the label, description and error ids itself; the rest of the props go
 // to the native element. Errors replace the help text and say what to do.
-import { useId } from "react";
+import { useId, useState } from "react";
 import type {
   ComponentPropsWithRef,
   InputHTMLAttributes,
   ReactNode,
   TextareaHTMLAttributes,
 } from "react";
-import { CircleAlert, Search, X } from "lucide-react";
+import { CircleAlert, Eye, EyeOff, Search, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/components/kit/tokens";
 import { getControlClasses } from "@/components/kit/lib/control-classes";
@@ -126,6 +126,66 @@ export function TextField({
             )}
             {...rest}
           />
+        </div>
+      )}
+    </FieldShell>
+  );
+}
+
+type PasswordFieldProps = SharedFieldProps &
+  Omit<InputHTMLAttributes<HTMLInputElement>, "type"> & {
+    autoComplete: "current-password" | "new-password";
+  };
+
+// A text field with a Show/Hide toggle. Paste and password managers are
+// never blocked (WCAG 3.3.8): no onPaste, no autoComplete="off".
+export function PasswordField({
+  label,
+  help,
+  error,
+  isLabelHidden,
+  required,
+  className,
+  ...rest
+}: PasswordFieldProps): ReactNode {
+  const [isVisible, setIsVisible] = useState(false);
+  const ToggleIcon = isVisible ? EyeOff : Eye;
+  return (
+    <FieldShell
+      label={label}
+      help={help}
+      error={error}
+      isRequired={required}
+      isLabelHidden={isLabelHidden}
+    >
+      {({ controlId, describedBy }) => (
+        <div className="relative">
+          <input
+            id={controlId}
+            type={isVisible ? "text" : "password"}
+            aria-describedby={describedBy}
+            aria-invalid={error ? true : undefined}
+            required={required}
+            className={cn(
+              getControlClasses(Boolean(error)),
+              "h-11 rounded-full pr-[92px] pl-4",
+              className,
+            )}
+            {...rest}
+          />
+          <button
+            type="button"
+            aria-label={isVisible ? "Hide password" : "Show password"}
+            aria-controls={controlId}
+            disabled={rest.disabled}
+            // A pointer press must not pull focus (and the caret) out of the input.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setIsVisible((visible) => !visible)}
+            className="absolute top-0 right-0 inline-flex h-11 cursor-pointer items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold text-(--tl-link) transition-colors duration-150 hover:bg-(--tl-tint) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--tl-focus) active:bg-(--tl-tint-strong) disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <ToggleIcon aria-hidden className="size-4" />
+            {isVisible ? "Hide" : "Show"}
+          </button>
         </div>
       )}
     </FieldShell>

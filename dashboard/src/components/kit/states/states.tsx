@@ -1,9 +1,19 @@
 // Empty, loading, error and access states. Each says what happened and
 // what to do next in plain words; none of them shows a code or a stack.
 import type { ReactNode } from "react";
-import { CloudOff, Lock, RotateCw, TriangleAlert } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  Clock,
+  CloudOff,
+  Info,
+  Lock,
+  RotateCw,
+  TriangleAlert,
+  WifiOff,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { CARD, cn } from "@/components/kit/tokens";
+import { CARD, TONE_CLASSES, cn } from "@/components/kit/tokens";
 import { Button } from "@/components/kit/components/button";
 
 type EmptyStateProps = {
@@ -240,6 +250,51 @@ export function TableSkeleton({
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+type FormAlertTone = "danger" | "warning" | "info" | "success";
+
+const FORM_ALERT_ICONS: Record<FormAlertTone, LucideIcon> = {
+  danger: CircleAlert,
+  warning: Clock,
+  info: Info,
+  success: CircleCheck,
+};
+
+type FormAlertProps = {
+  tone: FormAlertTone;
+  title: string;
+  isOffline?: boolean;
+  children?: ReactNode;
+};
+
+// A whole-form message above the submit button: what went wrong and what
+// to do next. Field mistakes stay under their field instead.
+export function FormAlert({
+  tone,
+  title,
+  isOffline = false,
+  children,
+}: FormAlertProps): ReactNode {
+  const Icon = isOffline ? WifiOff : FORM_ALERT_ICONS[tone];
+  const isUrgent = tone === "danger" || tone === "warning";
+  return (
+    <div
+      role={isUrgent ? "alert" : "status"}
+      className={cn(
+        "kit-fade flex gap-3 rounded-[20px] px-4 py-3",
+        TONE_CLASSES[tone],
+      )}
+    >
+      <Icon aria-hidden className="mt-0.5 size-[18px] shrink-0" />
+      <div className="min-w-0 text-[14px] leading-5">
+        <p className="font-semibold">{title}</p>
+        {Boolean(children) && (
+          <div className="mt-0.5 text-(--tl-ink-soft)">{children}</div>
+        )}
+      </div>
     </div>
   );
 }

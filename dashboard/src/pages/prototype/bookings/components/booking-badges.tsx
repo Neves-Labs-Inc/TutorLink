@@ -3,16 +3,11 @@
 // Cancelled show. Sort-out reasons are warning badges with their own icon.
 import type { ReactNode } from "react";
 import {
-  Badge,
+  BookingReasonBadge,
   BookingStatusBadge,
   KindBadge,
 } from "@/components/kit/components/badges";
-import {
-  KIND_LABEL,
-  REASON_LABEL,
-  STATUS_LABEL,
-} from "@/pages/prototype/bookings/lib/format";
-import { REASON_ICON } from "@/pages/prototype/bookings/lib/reason-icons";
+import { KIND_LABEL, STATUS_LABEL } from "@/pages/prototype/bookings/lib/format";
 import type {
   BookingSummary,
   SortOutReason,
@@ -22,9 +17,7 @@ type ReasonBadgeProps = { reason: SortOutReason };
 
 export function ReasonBadge({ reason }: ReasonBadgeProps): ReactNode {
   return (
-    <Badge tone="warning" icon={REASON_ICON[reason]}>
-      {REASON_LABEL[reason]}
-    </Badge>
+    <BookingReasonBadge reason={reason} />
   );
 }
 

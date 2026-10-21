@@ -24,7 +24,7 @@ import PrototypeNote from "@/pages/prototype/home/components/prototype-note";
 import TimeOffDetail from "@/pages/prototype/home/components/time-off-detail";
 import TimeOffTodoRow from "@/pages/prototype/home/components/time-off-todo-row";
 import TodayBookings from "@/pages/prototype/home/components/today-bookings";
-import TodoCard from "@/pages/prototype/home/components/todo-card";
+import TodoCard from "@/components/kit/components/todo-card";
 import type { HomeDataApi } from "@/pages/prototype/home/hooks/use-home-data";
 import { useTodoActions } from "@/pages/prototype/home/hooks/use-todo-actions";
 import { CURRENT_STAFF, TODAY } from "@/pages/prototype/home/lib/mock-api";
@@ -118,7 +118,7 @@ export default function HomeScreen({
       id="chats"
       title="Chats"
       icon={MessageCircle}
-      iconClass="bg-(--tl-tint-strong) text-(--tl-primary-ink)"
+      tone="primary"
       phase={phase}
       total={data?.chats.total ?? 0}
       emptyHint="No chat needs attention. The bot has it."
@@ -144,7 +144,7 @@ export default function HomeScreen({
       id="time-off"
       title="Time off"
       icon={Plane}
-      iconClass="bg-(--tl-yellow-tint) text-(--tl-yellow-ink)"
+      tone="yellow"
       phase={phase}
       total={data?.timeOff?.total ?? 0}
       emptyHint="No time-off requests to review."
@@ -167,7 +167,7 @@ export default function HomeScreen({
       id="bookings"
       title="Bookings"
       icon={CalendarClock}
-      iconClass="bg-(--tl-green-tint) text-(--tl-green-ink)"
+      tone="green"
       phase={phase}
       total={bookingTodos.length}
       emptyHint={

@@ -1,4 +1,8 @@
-import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import axios, {
+  type AxiosError,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from 'axios'
 import type { BookingWarning } from '@/lib/queries/bookings'
 import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
@@ -112,6 +116,15 @@ export const conflictOf = (error: unknown): Conflict | null => {
 // without importing axios.
 export const errorStatus = (error: unknown): number | null =>
   axios.isAxiosError(error) ? (error.response?.status ?? null) : null
+
+// Request config for a call that must outlive the page (a deferred act flushed on `pagehide`):
+// only fetch's `keepalive` survives unload, so it switches to axios's fetch adapter. The request
+// interceptors run before any adapter, so the bearer token still rides along.
+export function getKeepaliveConfig(keepalive: boolean): AxiosRequestConfig {
+  if (!keepalive) return {}
+
+  return { adapter: 'fetch', fetchOptions: { keepalive: true } }
+}
 
 // Single-flight, and module-level on purpose. Refresh tokens rotate on every use (D-017)
 // and the server treats a replayed one as a breach: it revokes the entire family, which

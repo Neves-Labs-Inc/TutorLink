@@ -2,7 +2,7 @@
 // looks on this device, and the app's only Sign out.
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { LogOut, Mail, Pencil } from "lucide-react";
+import { LogOut, Mail, Pencil, Phone } from "lucide-react";
 import { Avatar } from "@/components/kit/components/badges";
 import { Button } from "@/components/kit/components/button";
 import { RadioCards } from "@/components/kit/components/choices";
@@ -13,9 +13,11 @@ import { CARD, HEADING, cn } from "@/components/kit/tokens";
 import { useAuth } from "@/hooks/useAuth";
 import { useMyProfile } from "@/hooks/useMyProfile";
 import { useTheme } from "@/hooks/use-theme";
+import { formatPhoneForDisplay } from "@/lib/guardians/guardians";
 import { parsePreference } from "@/lib/theme/theme";
 import { roleLabel } from "@/lib/users/users";
 import { DisplayNameSheet } from "@/pages/profile/display-name-sheet";
+import ProfileAvailability from "@/pages/profile/profile-availability";
 
 const THEME_OPTIONS: RadioOption[] = [
   { value: "light", label: "Light", description: "Always light." },
@@ -40,6 +42,11 @@ export default function ProfilePage(): ReactNode {
   const hasFailed = !person && (me.isError || me.errorUpdateCount > 0);
   const isLoading = me.isPending && !hasFailed;
   const signOut = <SignOutButton onClick={logout} />;
+  // Only a teaching Manager sets their week here; Tutors have My availability.
+  const managerTutorId =
+    person?.role === "manager" ? (person.tutor_id ?? null) : null;
+  const officePhone =
+    person?.role === "tutor" ? (person.office_phone ?? null) : null;
 
   return (
     <>
@@ -76,6 +83,7 @@ export default function ProfilePage(): ReactNode {
                   <Mail aria-hidden className="mt-0.5 size-4 shrink-0" />
                   <span className="break-all">{person.email}</span>
                 </span>
+                {officePhone && <OfficePhone phone={officePhone} />}
               </p>
             </div>
             <div className="flex flex-col gap-2 @2xl:flex-row">
@@ -90,6 +98,7 @@ export default function ProfilePage(): ReactNode {
             </div>
           </section>
         )}
+        {managerTutorId && <ProfileAvailability tutorId={managerTutorId} />}
         <section
           aria-labelledby="profile-appearance"
           className="flex max-w-[720px] flex-col"
@@ -117,6 +126,28 @@ export default function ProfilePage(): ReactNode {
         />
       )}
     </>
+  );
+}
+
+type OfficePhoneProps = { phone: string };
+
+// Inline text in the meta line, so the 44px target rule doesn't apply.
+// It takes its own line under the email at every width, so no separator
+// is ever left dangling at a wrap.
+function OfficePhone({ phone }: OfficePhoneProps): ReactNode {
+  return (
+    <span className="inline-flex min-w-0 basis-full items-start gap-1.5">
+      <Phone aria-hidden className="mt-0.5 size-4 shrink-0" />
+      <span>
+        The office:{" "}
+        <a
+          href={`tel:${phone}`}
+          className="font-semibold text-(--tl-link) tabular-nums underline-offset-4 hover:underline"
+        >
+          {formatPhoneForDisplay(phone)}
+        </a>
+      </span>
+    </span>
   );
 }
 

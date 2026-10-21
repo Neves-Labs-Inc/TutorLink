@@ -110,7 +110,7 @@ describe("app shell from 1024px", () => {
     ]);
 
     await nav.getByRole("button", { name: /Families/ }).click();
-    await expect.element(currentPath()).toHaveTextContent("/children");
+    await expect.element(currentPath()).toHaveTextContent("/families");
     await nav.getByRole("button", { name: /Staff/ }).click();
     await expect.element(currentPath()).toHaveTextContent("/tutors");
   });
@@ -144,11 +144,12 @@ describe("app shell from 1024px", () => {
       .toHaveAttribute("aria-current", "page");
 
     await nav.getByRole("button", { name: "My availability" }).click();
-    await expect.element(currentPath()).toHaveTextContent("/schedule");
+    await expect.element(currentPath()).toHaveTextContent("/availability");
     expect(getCountRequests()).toBe(0);
   });
 
   it.each([
+    ["/families/g-1", /Families/],
     ["/guardians/g-1", /Families/],
     ["/users", /Staff/],
     ["/reminders", /Chats/],

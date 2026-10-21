@@ -18,19 +18,18 @@ import SetPassword from "@/pages/SetPassword";
 import { Dashboard } from "@/pages/admin/Dashboard";
 import { Tutors } from "@/pages/admin/Tutors";
 import { TutorDetail } from "@/pages/admin/TutorDetail";
-import { Children } from "@/pages/admin/Children";
-import { ChildDetail } from "@/pages/admin/ChildDetail";
-import { Guardians } from "@/pages/admin/Guardians";
-import { GuardianDetail } from "@/pages/admin/GuardianDetail";
 import { Bookings } from "@/pages/admin/Bookings";
 import ChatsPage from "@/pages/chats/chats-page";
 import { Users } from "@/pages/admin/Users";
 import { Settings } from "@/pages/admin/Settings";
-import { Schedule } from "@/pages/tutor/Schedule";
 import { Sessions } from "@/pages/tutor/Sessions";
 import { TimeOff } from "@/pages/tutor/TimeOff";
 import { NotFound } from "@/pages/NotFound";
 import ProfilePage from "@/pages/profile/profile-page";
+import FamiliesPage from "@/pages/families/families-page";
+import FamilyPage from "@/pages/families/family-page";
+import LegacyRedirect from "@/pages/families/legacy-redirect";
+import AvailabilityPage from "@/pages/availability/availability-page";
 import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/VisualDirectionPrototype";
 import HomePrototype from "@/pages/prototype/home/home-prototype";
 import BookingsPrototype from "@/pages/prototype/bookings/bookings-prototype";
@@ -115,20 +114,34 @@ export const App = (): ReactNode => (
             }
           />
           <Route
-            path="/children"
-            element={renderLegacy(OFFICE_ROLES, <Children />)}
+            path="/families"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <FamiliesPage />
+              </RouteGuard>
+            }
           />
           <Route
+            path="/families/:memberId"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <FamilyPage />
+              </RouteGuard>
+            }
+          />
+          {/* Old Children and Guardians URLs live on in Families. */}
+          <Route path="/children" element={<LegacyRedirect kind="child" />} />
+          <Route
             path="/children/:id"
-            element={renderLegacy(OFFICE_ROLES, <ChildDetail />)}
+            element={<LegacyRedirect kind="child" />}
           />
           <Route
             path="/guardians"
-            element={renderLegacy(OFFICE_ROLES, <Guardians />)}
+            element={<LegacyRedirect kind="guardian" />}
           />
           <Route
             path="/guardians/:id"
-            element={renderLegacy(OFFICE_ROLES, <GuardianDetail />)}
+            element={<LegacyRedirect kind="guardian" />}
           />
           <Route
             path="/tutors"
@@ -148,8 +161,16 @@ export const App = (): ReactNode => (
             element={renderLegacy(TUTOR_ONLY, <Sessions />)}
           />
           <Route
+            path="/availability"
+            element={
+              <RouteGuard allow={TUTOR_ONLY}>
+                <AvailabilityPage />
+              </RouteGuard>
+            }
+          />
+          <Route
             path="/schedule"
-            element={renderLegacy(TUTOR_ONLY, <Schedule />)}
+            element={<Navigate to="/availability" replace />}
           />
           <Route
             path="/time-off"

@@ -1,11 +1,14 @@
 // A person's weekly Availability: read-only with one Edit button; Edit
 // puts the whole week into edit mode (add, remove or change any time
 // range, copy a day to other days), with one Save / Cancel pair for
-// everything. Used by Tutor ▸ My availability and the Manager's profile.
+// everything. Save is async: it stays in edit mode, edits kept, when the
+// save fails. Used by My availability, the Manager's profile and Staff
+// details.
 // Times are 24h "HH:MM", matching <input type="time">.
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
+  CircleAlert,
   Clock,
   Copy,
   Pencil,
@@ -71,19 +74,52 @@ function getWeeklyHours(slots: AvailabilitySlot[]): number {
 
 type AvailabilityEditorProps = {
   slots: AvailabilitySlot[];
-  onSave: (slots: AvailabilitySlot[]) => void;
+  // A rejection keeps the week in edit mode, edits intact, with an alert.
+  onSave: (slots: AvailabilitySlot[]) => Promise<void> | void;
+  // No Edit: a Manager viewing someone else's week.
+  isReadOnly?: boolean;
+  // The owner's first name; left out, it is the viewer's own week.
+  ownerName?: string;
+  // Inside a DetailOverlay there is no tab bar for the save bar to clear.
+  isInOverlay?: boolean;
+};
+
+type FocusTarget = "first-control" | "edit" | "save";
+
+const FOCUS_SELECTORS: Record<FocusTarget, string> = {
+  // The first day's first time input, or its "Add a time range".
+  "first-control": "li:first-child :is(input, [data-add-range])",
+  edit: "[data-edit-button]",
+  save: "[data-save-button]",
 };
 
 export function AvailabilityEditor({
   slots,
   onSave,
+  isReadOnly = false,
+  ownerName,
+  isInOverlay = false,
 }: AvailabilityEditorProps): ReactNode {
   const [draft, setDraft] = useState<AvailabilitySlot[] | null>(null);
   const [copyFrom, setCopyFrom] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [hasSaveFailed, setHasSaveFailed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Set alongside the state change that swaps the content in.
+  const pendingFocus = useRef<FocusTarget | null>(null);
   const idPrefix = useId();
   const isEditing = draft !== null;
   const shown = draft ?? slots;
   const invalidCount = shown.filter((slot) => !isSlotValid(slot)).length;
+
+  // Focus moves after the swap renders, so the target exists and is enabled.
+  useEffect(() => {
+    if (pendingFocus.current === null) return;
+    rootRef.current
+      ?.querySelector<HTMLElement>(FOCUS_SELECTORS[pendingFocus.current])
+      ?.focus();
+    pendingFocus.current = null;
+  });
 
   function updateSlot(id: string, patch: Partial<AvailabilitySlot>): void {
     setDraft((current) =>
@@ -115,105 +151,134 @@ export function AvailabilityEditor({
     setCopyFrom(null);
   }
 
-  function handleSave(): void {
-    if (!draft || invalidCount > 0) return;
-    onSave(sortSlots(draft));
+  function handleEdit(): void {
+    setDraft(slots);
+    pendingFocus.current = "first-control";
+  }
+
+  function handleCancel(): void {
     setDraft(null);
+    setHasSaveFailed(false);
+    pendingFocus.current = "edit";
+  }
+
+  async function handleSave(): Promise<void> {
+    if (!draft || invalidCount > 0 || isSaving) return;
+    setIsSaving(true);
+    setHasSaveFailed(false);
+    try {
+      await onSave(sortSlots(draft));
+      setDraft(null);
+      pendingFocus.current = "edit";
+    } catch {
+      // The caller owns the reason; the person keeps their edits and retries.
+      setHasSaveFailed(true);
+      pendingFocus.current = "save";
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div ref={rootRef} className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-[14px] text-(--tl-muted)">
-          {isEditing
-            ? "Editing your whole week. Nothing changes until you save."
-            : `${shown.length} time ranges · about ${getWeeklyHours(shown)} hours a week`}
+          {isEditing ? getEditingLine(ownerName) : getSummary(shown)}
         </p>
-        {!isEditing && (
-          <Button icon={Pencil} onClick={() => setDraft(slots)}>
+        {!isEditing && !isReadOnly && (
+          <Button data-edit-button icon={Pencil} onClick={handleEdit}>
             Edit
           </Button>
         )}
       </div>
 
-      <ul className={cn(CARD, "@container divide-y divide-(--tl-border) overflow-hidden")}>
-        {WEEK.map((day) => {
-          const daySlots = sortSlots(shown.filter((slot) => slot.day === day));
-          return (
-            <li
-              key={day}
-              className={cn(
-                "flex flex-col gap-3 px-4 py-4 @2xl:flex-row @2xl:items-start @2xl:gap-6 @2xl:px-6",
-                isEditing && "bg-(--tl-surface)",
-              )}
-            >
-              <div className="flex items-center justify-between gap-2 @2xl:w-36 @2xl:shrink-0 @2xl:flex-col @2xl:items-start @2xl:pt-2.5">
-                <h3 className="kit-display text-[17px] leading-6 font-bold">{day}</h3>
-                {isEditing && daySlots.length > 0 && (
-                  <TextLink onClick={() => setCopyFrom(day)} className="text-[13px]">
-                    <Copy aria-hidden className="size-3.5" />
-                    Copy to…
-                  </TextLink>
+      {/* One switch for every control while a save runs. */}
+      <fieldset disabled={isSaving} className="min-w-0">
+        <legend className="sr-only">Weekly availability</legend>
+        <ul
+          className={cn(CARD, "@container divide-y divide-(--tl-border) overflow-hidden")}
+        >
+          {WEEK.map((day) => {
+            const daySlots = sortSlots(shown.filter((slot) => slot.day === day));
+            return (
+              <li
+                key={day}
+                className={cn(
+                  "flex flex-col gap-3 px-4 py-4 @2xl:flex-row @2xl:items-start @2xl:gap-6 @2xl:px-6",
+                  isEditing && "bg-(--tl-surface)",
                 )}
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-2">
-                {daySlots.length === 0 && !isEditing && (
-                  <p className="pt-2 text-[14px] text-(--tl-muted)">Not available</p>
-                )}
-                {daySlots.map((slot, index) =>
-                  isEditing ? (
-                    <EditRow
-                      key={slot.id}
-                      slot={slot}
-                      label={`${day} range ${index + 1}`}
-                      onChange={(patch) => updateSlot(slot.id, patch)}
-                      onRemove={() => removeSlot(slot.id)}
-                    />
-                  ) : (
-                    <div
-                      key={slot.id}
-                      className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-[16px] bg-(--tl-surface-sunk) px-4 py-1.5"
-                    >
-                      <span className="flex items-center gap-2 text-[15px] font-semibold tabular-nums">
-                        <Clock aria-hidden className="size-4 text-(--tl-muted)" />
-                        {formatClock(slot.from)} – {formatClock(slot.to)}
-                      </span>
-                      <SlotLocationBadge location={slot.location} />
-                    </div>
-                  ),
-                )}
-                {isEditing && (
-                  <div>
-                    <TextLink onClick={() => addSlot(day)}>
-                      <Plus aria-hidden className="size-4" />
-                      {daySlots.length === 0 ? "Add a time range" : "Add another"}
+              >
+                <div className="flex items-center justify-between gap-2 @2xl:w-36 @2xl:shrink-0 @2xl:flex-col @2xl:items-start @2xl:pt-2.5">
+                  <h3 className="kit-display text-[17px] leading-6 font-bold">{day}</h3>
+                  {isEditing && daySlots.length > 0 && (
+                    <TextLink onClick={() => setCopyFrom(day)} className="text-[13px]">
+                      <Copy aria-hidden className="size-3.5" />
+                      Copy to…
                     </TextLink>
-                  </div>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+                  )}
+                </div>
+                {/* Edit rows switch to one line by this column's width, not the
+                    list's: beside the day column a 720px list is too narrow. */}
+                <div className="@container/ranges flex min-w-0 flex-1 flex-col gap-2">
+                  {daySlots.length === 0 && !isEditing && (
+                    <p className="pt-2 text-[14px] text-(--tl-muted)">Not available</p>
+                  )}
+                  {daySlots.map((slot, index) =>
+                    isEditing ? (
+                      <EditRow
+                        key={slot.id}
+                        slot={slot}
+                        label={`${day} range ${index + 1}`}
+                        onChange={(patch) => updateSlot(slot.id, patch)}
+                        onRemove={() => removeSlot(slot.id)}
+                      />
+                    ) : (
+                      <div
+                        key={slot.id}
+                        className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-[16px] bg-(--tl-surface-sunk) px-4 py-1.5"
+                      >
+                        <span className="flex items-center gap-2 text-[15px] font-semibold tabular-nums">
+                          <Clock aria-hidden className="size-4 text-(--tl-muted)" />
+                          {formatClock(slot.from)} – {formatClock(slot.to)}
+                        </span>
+                        <SlotLocationBadge location={slot.location} />
+                      </div>
+                    ),
+                  )}
+                  {isEditing && (
+                    <div>
+                      <TextLink data-add-range onClick={() => addSlot(day)}>
+                        <Plus aria-hidden className="size-4" />
+                        {daySlots.length === 0 ? "Add a time range" : "Add another"}
+                      </TextLink>
+                    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </fieldset>
 
       {isEditing && (
-        <div className="kit-shadow-raised sticky bottom-[92px] z-10 flex flex-wrap items-center gap-3 rounded-[28px] border border-(--tl-card-border) bg-(--tl-surface) p-3 @5xl:bottom-4">
-          {invalidCount > 0 ? (
-            <p className="flex flex-1 items-center gap-2 pl-1 text-[13px] font-medium text-(--tl-danger)">
-              <TriangleAlert aria-hidden className="size-4 shrink-0" />
-              Fix {invalidCount} {invalidCount === 1 ? "range" : "ranges"} that end before they start.
-            </p>
-          ) : (
-            <p className="hidden flex-1 pl-1 text-[13px] text-(--tl-muted) @2xl:block">
-              Guardians see the new times as soon as you save.
-            </p>
+        <div
+          data-save-bar
+          className={cn(
+            "kit-shadow-raised kit-rise sticky z-10 flex flex-wrap items-center gap-3 rounded-[28px] border border-(--tl-card-border) bg-(--tl-surface) p-3 motion-reduce:animate-none",
+            isInOverlay ? "bottom-4" : "bottom-[92px] @5xl:bottom-4",
           )}
+        >
+          <SaveBarLine invalidCount={invalidCount} hasSaveFailed={hasSaveFailed} />
           <div className="ml-auto flex gap-2">
-            <Button onClick={() => setDraft(null)}>Cancel</Button>
+            <Button onClick={handleCancel} disabled={isSaving}>
+              Cancel
+            </Button>
             <Button
+              data-save-button
               variant="primary"
-              onClick={handleSave}
+              onClick={() => void handleSave()}
               disabled={invalidCount > 0}
+              isLoading={isSaving}
             >
               Save
             </Button>
@@ -230,6 +295,49 @@ export function AvailabilityEditor({
   );
 }
 
+function getEditingLine(ownerName: string | undefined): string {
+  const whose = ownerName ? `${ownerName}’s` : "your";
+  return `Editing ${whose} whole week. Nothing changes until you save.`;
+}
+
+function getSummary(slots: AvailabilitySlot[]): string {
+  if (slots.length === 0) return "No time ranges yet";
+  const ranges = slots.length === 1 ? "time range" : "time ranges";
+  return `${slots.length} ${ranges} · about ${getWeeklyHours(slots)} hours a week`;
+}
+
+type SaveBarLineProps = { invalidCount: number; hasSaveFailed: boolean };
+
+// The save bar's left line: the invalid-range error, the save error, or
+// the hint. The hint hides below 672px; the errors show at every width.
+function SaveBarLine({ invalidCount, hasSaveFailed }: SaveBarLineProps): ReactNode {
+  const errorClasses =
+    "flex flex-1 items-center gap-2 pl-1 text-[13px] font-medium text-(--tl-danger)";
+  let line: ReactNode = (
+    <p className="hidden flex-1 pl-1 text-[13px] text-(--tl-muted) @2xl:block">
+      Guardians see the new times as soon as you save.
+    </p>
+  );
+  if (invalidCount > 0) {
+    line = (
+      <p className={errorClasses}>
+        <TriangleAlert aria-hidden className="size-4 shrink-0" />
+        {invalidCount === 1
+          ? "Fix 1 range that ends before it starts."
+          : `Fix ${invalidCount} ranges that end before they start.`}
+      </p>
+    );
+  } else if (hasSaveFailed) {
+    line = (
+      <p role="alert" className={errorClasses}>
+        <CircleAlert aria-hidden className="size-4 shrink-0" />
+        Couldn’t save the availability. Check your connection and try again.
+      </p>
+    );
+  }
+  return line;
+}
+
 type EditRowProps = {
   slot: AvailabilitySlot;
   label: string;
@@ -243,7 +351,7 @@ function EditRow({ slot, label, onChange, onRemove }: EditRowProps): ReactNode {
   return (
     <div
       className={cn(
-        "rounded-[18px] border p-2",
+        "rounded-[16px] border p-2",
         isValid
           ? "border-(--tl-border) bg-(--tl-surface-sunk)"
           : "border-(--tl-danger) bg-(--tl-danger-tint)",
@@ -251,14 +359,14 @@ function EditRow({ slot, label, onChange, onRemove }: EditRowProps): ReactNode {
     >
       {/* Phones: times on one line, place + remove on the next. From
           672px of list width it's all one line. */}
-      <div className="flex flex-col gap-2 @2xl:flex-row @2xl:items-center">
+      <div className="flex flex-col gap-2 @[34rem]/ranges:flex-row @[34rem]/ranges:items-center">
         <div className="flex items-center gap-2">
           <input
             type="time"
             aria-label={`${label} starts`}
             value={slot.from}
             onChange={(event) => onChange({ from: event.target.value })}
-            className={cn(CONTROL, "min-w-0 flex-1 @2xl:w-[152px] @2xl:flex-none")}
+            className={cn(CONTROL, "min-w-0 flex-1 @[34rem]/ranges:w-[152px] @[34rem]/ranges:flex-none")}
           />
           <span aria-hidden className="text-(--tl-muted)">
             –
@@ -272,7 +380,7 @@ function EditRow({ slot, label, onChange, onRemove }: EditRowProps): ReactNode {
             onChange={(event) => onChange({ to: event.target.value })}
             className={cn(
               CONTROL,
-              "min-w-0 flex-1 @2xl:w-[152px] @2xl:flex-none",
+              "min-w-0 flex-1 @[34rem]/ranges:w-[152px] @[34rem]/ranges:flex-none",
               !isValid && "border-(--tl-danger)",
             )}
           />

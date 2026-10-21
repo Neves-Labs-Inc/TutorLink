@@ -69,7 +69,7 @@ const FAMILIES: NavItem = {
   id: "accounts",
   label: "Families",
   icon: BookUser,
-  path: "/children",
+  path: "/families",
 };
 const STAFF: NavItem = {
   id: "staff",
@@ -101,7 +101,7 @@ const TUTOR_NAV: NavItem[] = [
     id: "my-availability",
     label: "My availability",
     icon: CalendarClock,
-    path: "/schedule",
+    path: "/availability",
   },
   TIME_OFF,
 ];
@@ -114,6 +114,8 @@ const NAV_ID_BY_SEGMENT: Record<string, NavId> = {
   bookings: "bookings",
   chats: "chats",
   reminders: "chats",
+  families: "accounts",
+  // Old URLs that redirect into Families.
   children: "accounts",
   guardians: "accounts",
   tutors: "staff",
@@ -121,6 +123,7 @@ const NAV_ID_BY_SEGMENT: Record<string, NavId> = {
   settings: "settings",
   sessions: "my-sessions",
   schedule: "my-availability",
+  availability: "my-availability",
   "time-off": "time-off",
   profile: "profile",
 };

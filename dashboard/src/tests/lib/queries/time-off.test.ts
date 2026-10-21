@@ -1,0 +1,188 @@
+import { MutationObserver, QueryClient } from "@tanstack/react-query";
+import { AxiosError } from "axios";
+import type { AxiosResponse } from "axios";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createTimeOff,
+  decideTimeOff,
+  timeOffMutations,
+  timeOffQueries,
+} from "@/lib/queries/time-off";
+import type { ExceptionRead, TimeOffWarning } from "@/lib/queries/time-off";
+
+const network = vi.hoisted(() => ({
+  get: vi.fn(),
+  post: vi.fn(),
+  patch: vi.fn(),
+}));
+
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  api: { get: network.get, post: network.post, patch: network.patch },
+}));
+
+const ROW: ExceptionRead = {
+  id: "to-1",
+  staff: { id: "u-tutor", name: "Marco Bell", role: "tutor" },
+  start_date: "2031-10-20",
+  end_date: "2031-10-22",
+  start_time: null,
+  end_time: null,
+  reason: "Family trip",
+  status: "approved",
+  created_at: "2031-10-14T19:10:00Z",
+  decided_by: { id: "u-admin", name: "Rita Souza" },
+  decided_at: "2031-10-14T19:10:00Z",
+  cancelled_by: null,
+  cancelled_at: null,
+  entered_by: { id: "u-admin", name: "Rita Souza" },
+  clashing_bookings: [],
+  clashing_bookings_count: 0,
+};
+
+const CLASH: TimeOffWarning = {
+  code: "booking_clash",
+  message: "This time off clashes with 1 booking(s)",
+  clashing_bookings: [
+    {
+      booking_id: "b-1",
+      date: "2031-10-20",
+      start_time: "15:30:00",
+      end_time: "16:30:00",
+      child_name: "Emma",
+      status: "confirmed",
+    },
+  ],
+};
+
+function apiError(status: number, data: object): AxiosError {
+  const response = { status, data, statusText: "", headers: {} };
+  return new AxiosError(
+    "Request failed",
+    "ERR_BAD_REQUEST",
+    undefined,
+    undefined,
+    response as AxiosResponse,
+  );
+}
+
+beforeEach(() => {
+  network.get.mockReset();
+  network.post.mockReset();
+  network.patch.mockReset();
+});
+
+describe("createTimeOff", () => {
+  it("returns the created row", async () => {
+    network.post.mockResolvedValue({ status: 201, data: ROW });
+    const body = { start_date: "2031-10-20", end_date: "2031-10-22" };
+
+    const result = await createTimeOff("u-tutor", body);
+
+    expect(result).toEqual({ kind: "saved", item: ROW });
+    expect(network.post).toHaveBeenCalledWith(
+      "/api/users/u-tutor/exceptions",
+      body,
+    );
+  });
+
+  it("returns the clash warning as a value, not an error", async () => {
+    network.post.mockRejectedValue(
+      apiError(409, { detail: "Confirm the warnings", warnings: [CLASH] }),
+    );
+
+    const result = await createTimeOff("u-tutor", {
+      start_date: "2031-10-20",
+      end_date: "2031-10-22",
+    });
+
+    expect(result).toEqual({ kind: "warning", warnings: [CLASH] });
+  });
+
+  it("still throws a refusal that carries no warnings", async () => {
+    const refusal = apiError(422, { detail: "That window has ended" });
+    network.post.mockRejectedValue(refusal);
+
+    await expect(
+      createTimeOff("u-tutor", {
+        start_date: "2020-01-01",
+        end_date: "2020-01-01",
+      }),
+    ).rejects.toBe(refusal);
+  });
+});
+
+describe("decideTimeOff", () => {
+  it("sends booking_clash when the clashes are confirmed", async () => {
+    network.patch.mockResolvedValue({ status: 200, data: ROW });
+
+    await decideTimeOff("to-1", "approved", true);
+
+    expect(network.patch).toHaveBeenCalledWith("/api/exceptions/to-1", {
+      status: "approved",
+      confirm_warnings: ["booking_clash"],
+    });
+  });
+
+  it("throws an already-decided 409, which has no warnings", async () => {
+    const conflict = apiError(409, { detail: "Already decided" });
+    network.patch.mockRejectedValue(conflict);
+
+    await expect(decideTimeOff("to-1", "rejected", false)).rejects.toBe(
+      conflict,
+    );
+  });
+});
+
+describe("the list query", () => {
+  it("repeats status for each one asked for", async () => {
+    network.get.mockResolvedValue({ data: { items: [] } });
+    const options = timeOffQueries.list({
+      status: ["pending", "expired"],
+      sort: "requested",
+    });
+
+    await new QueryClient().fetchQuery(options);
+
+    const [url, config] = network.get.mock.calls[0];
+    expect(url).toBe("/api/exceptions");
+    expect(config.paramsSerializer(config.params)).toBe(
+      "status=pending&status=expired&sort=requested",
+    );
+  });
+});
+
+describe("after a write", () => {
+  it("refreshes Time off, Staff and the nav counts", async () => {
+    network.post.mockResolvedValue({
+      status: 200,
+      data: { ...ROW, status: "cancelled" },
+    });
+    const client = new QueryClient();
+    client.setQueryData(["time-off", "list", {}], { items: [] });
+    client.setQueryData(["staff", "list"], { items: [] });
+    client.setQueryData(["counts"], { time_off_pending: 1 });
+    client.setQueryData(["bookings"], []);
+
+    await new MutationObserver(client, timeOffMutations.cancel()).mutate("to-1");
+
+    const isStale = (key: unknown[]) =>
+      client.getQueryState(key)?.isInvalidated;
+    expect(isStale(["time-off", "list", {}])).toBe(true);
+    expect(isStale(["staff", "list"])).toBe(true);
+    expect(isStale(["counts"])).toBe(true);
+    expect(isStale(["bookings"])).toBe(false);
+  });
+
+  it("refreshes them even when the write is refused", async () => {
+    network.post.mockRejectedValue(apiError(409, { detail: "Cancelled" }));
+    const client = new QueryClient();
+    client.setQueryData(["counts"], { time_off_pending: 1 });
+
+    await expect(
+      new MutationObserver(client, timeOffMutations.cancel()).mutate("to-1"),
+    ).rejects.toThrow();
+
+    expect(client.getQueryState(["counts"])?.isInvalidated).toBe(true);
+  });
+});

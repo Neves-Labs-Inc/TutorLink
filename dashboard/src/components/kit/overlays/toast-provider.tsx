@@ -11,7 +11,7 @@ import { ToastContext } from "@/components/kit/overlays/use-toast";
 import type { ToastInput, ToastTone } from "@/components/kit/overlays/use-toast";
 
 const TOAST_MS = 5000;
-const TOAST_WITH_ACTION_MS = 8000;
+export const TOAST_WITH_ACTION_MS = 8000;
 const MAX_TOASTS = 3;
 
 // A leaving toast plays its exit, then removes itself from the list.

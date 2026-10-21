@@ -34,7 +34,7 @@ const ADMIN_LINKS: [string, string][] = [
   ["Home", "/home"],
   ["Bookings", "/bookings"],
   ["Chats", "/chats"],
-  ["Families", "/children"],
+  ["Families", "/families"],
   ["Staff", "/tutors"],
   ["Settings", "/settings"],
 ];
@@ -54,7 +54,7 @@ describe("getNav", () => {
   it("gives a tutor My sessions, My availability and Time off", () => {
     expect(getLinks(getNav("tutor"))).toEqual([
       ["My sessions", "/sessions"],
-      ["My availability", "/schedule"],
+      ["My availability", "/availability"],
       ["Time off", "/time-off"],
     ]);
   });
@@ -115,6 +115,8 @@ describe("getNavIdForPath", () => {
     ["/chats", "chats"],
     ["/chats/c-1", "chats"],
     ["/reminders", "chats"],
+    ["/families", "accounts"],
+    ["/families/g-1", "accounts"],
     ["/children", "accounts"],
     ["/children/k-1", "accounts"],
     ["/guardians", "accounts"],
@@ -125,6 +127,7 @@ describe("getNavIdForPath", () => {
     ["/settings", "settings"],
     ["/sessions", "my-sessions"],
     ["/schedule", "my-availability"],
+    ["/availability", "my-availability"],
     ["/time-off", "time-off"],
     ["/profile", "profile"],
     ["/Children/k-1", "accounts"],

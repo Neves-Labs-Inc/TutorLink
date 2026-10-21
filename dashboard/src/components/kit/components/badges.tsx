@@ -295,7 +295,7 @@ export function SlotLocationBadge({
 
 type CountBadgeProps = {
   count: number;
-  tone?: "primary" | "pink" | "quiet";
+  tone?: "primary" | "pink" | "yellow" | "quiet";
   label?: string;
 };
 
@@ -308,6 +308,7 @@ export function CountBadge({
   const toneClasses = {
     primary: "bg-(--tl-primary) text-(--tl-on-primary)",
     pink: "bg-(--tl-pink-tint) text-(--tl-pink-ink)",
+    yellow: "bg-(--tl-yellow-tint) text-(--tl-yellow-ink)",
     quiet: "bg-(--tl-surface-sunk) text-(--tl-muted)",
   };
   return (

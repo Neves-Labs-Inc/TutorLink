@@ -10,6 +10,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { getTokenStyle } from "@/components/kit/tokens";
 import type { Theme } from "@/components/kit/tokens";
 import ToastProvider from "@/components/kit/overlays/toast-provider";
+import DeferredActionProvider from "@/components/kit/overlays/deferred-action";
 import {
   createOverlayStack,
   OverlayHostContext,
@@ -54,14 +55,16 @@ export default function KitRoot({
     >
       <OverlayHostContext.Provider value={overlayHost}>
         <ToastProvider>
-          <div
-            ref={setScrollArea}
-            data-kit-scroll
-            className="h-full overflow-y-auto"
-          >
-            {children}
-          </div>
-          <div ref={setHostElement} data-kit-overlays className="contents" />
+          <DeferredActionProvider>
+            <div
+              ref={setScrollArea}
+              data-kit-scroll
+              className="h-full overflow-y-auto"
+            >
+              {children}
+            </div>
+            <div ref={setHostElement} data-kit-overlays className="contents" />
+          </DeferredActionProvider>
         </ToastProvider>
       </OverlayHostContext.Provider>
     </div>

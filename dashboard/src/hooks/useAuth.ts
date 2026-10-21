@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { flushDeferredActions } from '@/components/kit/overlays/use-deferred-action'
 import {
   errorDetail,
   errorStatus,
@@ -62,7 +63,12 @@ export const useAuth = () => {
   })
 
   const logoutMutation = useMutation({
-    mutationFn: requestLogout,
+    mutationFn: async () => {
+      // Pending Undo-window acts go out now, while the token is still in the store; once the
+      // session clears they would be sent anonymously.
+      flushDeferredActions()
+      await requestLogout()
+    },
     onSuccess: () => {
       clearSession()
       // Without this the next user to sign in on this tab inherits the previous user's

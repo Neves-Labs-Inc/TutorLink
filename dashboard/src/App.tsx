@@ -29,8 +29,6 @@ import TutorRedirect from "@/pages/staff/tutor-redirect";
 import MySessionsPage from "@/pages/sessions/my-sessions-page";
 import TimeOffPage from "@/pages/time-off/time-off-page";
 import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/VisualDirectionPrototype";
-import TutorTimeOffPrototype from "@/pages/prototype/tutor-timeoff/tutor-timeoff-prototype";
-import AccountsStaffPrototype from "@/pages/prototype/accounts-staff/accounts-staff-prototype";
 
 const TUTOR_ONLY: readonly Role[] = ["tutor"];
 
@@ -207,18 +205,6 @@ export const App = (): ReactNode => (
           <Route
             path="/prototype/visual-direction"
             element={<VisualDirectionPrototype />}
-          />
-        )}
-        {import.meta.env.DEV && (
-          <Route
-            path="/prototype/tutor-timeoff"
-            element={<TutorTimeOffPrototype />}
-          />
-        )}
-        {import.meta.env.DEV && (
-          <Route
-            path="/prototype/accounts-staff"
-            element={<AccountsStaffPrototype />}
           />
         )}
         <Route path="/" element={<Navigate to="/login" replace />} />

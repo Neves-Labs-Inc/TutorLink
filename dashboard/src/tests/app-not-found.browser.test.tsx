@@ -85,6 +85,19 @@ describe("an unknown URL, signed in", () => {
   );
 });
 
+describe("a removed prototype URL", () => {
+  it.each(["/prototype/tutor-timeoff", "/prototype/accounts-staff"])(
+    "shows not found for %s",
+    async (path) => {
+      await openApp("authenticated", "admin", path);
+
+      await expect
+        .element(page.getByRole("heading", { name: NOT_FOUND_TITLE }))
+        .toBeVisible();
+    },
+  );
+});
+
 describe("an unknown URL, signed out", () => {
   it("shows the brand-frame not found and goes to sign in", async () => {
     await openApp("anonymous", null, "/nope");

@@ -1,6 +1,6 @@
 // How Guardian details word a Guardian's wire fields, and which
 // Booking reminders choice Staff can record next (ported from the old
-// screen's lib/guardians/reminders, which ticket 10 removes).
+// screen's guardian reminders helpers, since removed).
 import { BUSINESS_TIME_ZONE, formatDay } from "@/components/kit/format";
 import type { RemindersState } from "@/components/kit/types/domain";
 import type {

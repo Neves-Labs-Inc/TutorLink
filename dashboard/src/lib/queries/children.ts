@@ -183,29 +183,3 @@ export const linkGuardian = async (
 
   return response.data
 }
-
-export const setChildLevel = async (
-  childId: string,
-  subjectId: string,
-  level: number,
-): Promise<ChildLevel> => {
-  const response = await api.put<ChildLevel>(`/api/children/${childId}/levels/${subjectId}`, {
-    level,
-  })
-
-  return response.data
-}
-
-export const removeChildLevel = async (childId: string, subjectId: string): Promise<void> => {
-  await api.delete(`/api/children/${childId}/levels/${subjectId}`)
-}
-
-export const markChildEvaluated = async (childId: string): Promise<Evaluated> => {
-  const response = await api.post<Evaluated>(`/api/children/${childId}/evaluated`)
-
-  return response.data
-}
-
-export const clearChildEvaluated = async (childId: string): Promise<void> => {
-  await api.delete(`/api/children/${childId}/evaluated`)
-}

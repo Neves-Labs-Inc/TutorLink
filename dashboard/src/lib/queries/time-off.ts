@@ -3,7 +3,7 @@
 import { mutationOptions, queryOptions } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import type { BookingStatusWire } from "@/components/kit/components/badges";
-import { api, errorStatus, warningsOf } from "@/lib/api";
+import { api, errorStatus, getKeepaliveConfig, warningsOf } from "@/lib/api";
 import type { Role } from "@/lib/auth/auth";
 import type { Page } from "@/lib/queries/page";
 
@@ -210,6 +210,26 @@ export async function decideTimeOff(
   });
 }
 
+// The deferred send behind Approve and Decline's Undo. Approve confirms
+// the clashes the details list; Decline never warns. Any refusal throws,
+// so the deferred helper shows its error.
+export async function sendTimeOffDecision(
+  id: string,
+  decision: TimeOffDecision,
+  keepalive: boolean,
+): Promise<ExceptionRead> {
+  const body =
+    decision === "approved"
+      ? { status: decision, confirm_warnings: ["booking_clash"] }
+      : { status: decision };
+  const response = await api.patch<ExceptionRead>(
+    `/api/exceptions/${id}`,
+    body,
+    getKeepaliveConfig(keepalive),
+  );
+  return response.data;
+}
+
 export async function cancelTimeOff(id: string): Promise<ExceptionRead> {
   const response = await api.post<ExceptionRead>(
     `/api/exceptions/${id}/cancel`,
@@ -227,6 +247,25 @@ export async function invalidateAfterTimeOffWrite(
     client.invalidateQueries({ queryKey: ["staff"] }),
     client.invalidateQueries({ queryKey: ["counts"] }),
   ]);
+}
+
+// Puts `item` in place of its row in the detail and every cached list,
+// for an optimistic change and its Undo.
+export function replaceCachedTimeOff(client: QueryClient, item: ExceptionRead): void {
+  client.setQueryData(timeOffQueries.detail(item.id).queryKey, item);
+  const replaceIn = (page: Page<ExceptionRead> | undefined) =>
+    page && {
+      ...page,
+      items: page.items.map((row) => (row.id === item.id ? item : row)),
+    };
+  client.setQueriesData<Page<ExceptionRead>>(
+    { queryKey: [...TIME_OFF_KEY, "list"] },
+    replaceIn,
+  );
+  client.setQueriesData<Page<ExceptionRead>>(
+    { queryKey: [...TIME_OFF_KEY, "user"] },
+    replaceIn,
+  );
 }
 
 function storeSaved(client: QueryClient, item: ExceptionRead): void {

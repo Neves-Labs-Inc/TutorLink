@@ -110,6 +110,20 @@ def test_the_detail_of_an_office_evaluation_has_no_subject_and_no_home(
     assert datetime.datetime.fromisoformat(body["updated_at"]) == evaluation.updated_at
 
 
+def test_the_detail_says_when_the_booking_was_made(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Booking details shows "Booked … · Thu, Oct 8, 2:14 PM" from this."""
+    admin = _make_user(db)
+    booking = _book(db, family)
+    booking.created_at = datetime.datetime(2026, 9, 1, 14, 14, tzinfo=UTC)
+    db.flush()
+
+    body = api.get(f"/api/bookings/{booking.id}", headers=_auth(admin)).json()
+
+    assert datetime.datetime.fromisoformat(body["created_at"]) == booking.created_at
+
+
 def test_an_office_evaluation_is_listed_with_a_null_subject(
     api: TestClient, db: Session, family: Family
 ) -> None:

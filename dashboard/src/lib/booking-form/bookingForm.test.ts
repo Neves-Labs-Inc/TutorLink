@@ -113,6 +113,7 @@ const bookingDetail = (overrides: Partial<BookingDetail> = {}): BookingDetail =>
   clash_acknowledged_by: null,
   clash_acknowledged_at: null,
   booked_by_guardian: null,
+  created_at: '2026-08-30T12:00:00Z',
   ...overrides,
 })
 

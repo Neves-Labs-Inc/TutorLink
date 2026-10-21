@@ -9,6 +9,7 @@ import { timeOffMutations, timeOffQueries } from "@/lib/queries/time-off";
 import type { ExceptionRead } from "@/lib/queries/time-off";
 import { getFirstName } from "@/pages/time-off/lib/time-off-copy";
 import type { Viewer } from "@/pages/time-off/lib/time-off-rules";
+import { useTimeOffDecisionStore } from "@/stores/time-off-decision-store";
 
 const NOT_READABLE = new Set([403, 404]);
 const HTTP_CONFLICT = 409;
@@ -33,9 +34,15 @@ export type TimeOffDetails = {
 };
 
 export function useTimeOffDetails(id: string | null, viewer: Viewer): TimeOffDetails {
+  // While an Approve or Decline waits behind its Undo, the server still
+  // has the old status: a refetch (reopening, say) would undo the
+  // optimistic one on screen.
+  const isDecisionQueued = useTimeOffDecisionStore((state) =>
+    id === null ? false : state.queuedIds.has(id),
+  );
   const query = useQuery({
     ...timeOffQueries.detail(id ?? ""),
-    enabled: id !== null,
+    enabled: id !== null && !isDecisionQueued,
   });
   const cancel = useMutation(timeOffMutations.cancel());
   const { showToast } = useToast();

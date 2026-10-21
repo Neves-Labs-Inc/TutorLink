@@ -60,7 +60,7 @@ export const tutorQueries = {
     queryOptions({
       queryKey: ['tutors', 'detail', tutorId],
       queryFn: async () => {
-        const response = await api.get<Tutor>(`/api/tutors/${tutorId}`)
+        const response = await api.get<Tutor>(`/api/tutors/${encodeURIComponent(tutorId)}`)
 
         return response.data
       },

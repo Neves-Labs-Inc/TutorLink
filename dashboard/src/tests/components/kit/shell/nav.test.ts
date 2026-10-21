@@ -35,7 +35,7 @@ const ADMIN_LINKS: [string, string][] = [
   ["Bookings", "/bookings"],
   ["Chats", "/chats"],
   ["Families", "/families"],
-  ["Staff", "/tutors"],
+  ["Staff", "/staff"],
   ["Settings", "/settings"],
 ];
 
@@ -121,6 +121,8 @@ describe("getNavIdForPath", () => {
     ["/children/k-1", "accounts"],
     ["/guardians", "accounts"],
     ["/guardians/g-1", "accounts"],
+    ["/staff", "staff"],
+    ["/staff/u-1", "staff"],
     ["/tutors", "staff"],
     ["/tutors/t-1", "staff"],
     ["/users", "staff"],

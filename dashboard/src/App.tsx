@@ -10,26 +10,25 @@ import { AuthProvider } from "@/components/auth/AuthProvider";
 import AppLayout from "@/components/layout/app-layout";
 import LegacyPage from "@/components/layout/legacy-page";
 import { RouteGuard } from "@/components/layout/RouteGuard";
-import { ADMIN_ROLES, OFFICE_ROLES, ROLES } from "@/lib/auth/auth";
+import { OFFICE_ROLES, ROLES } from "@/lib/auth/auth";
 import type { Role } from "@/lib/auth/auth";
-import { Login } from "@/pages/Login";
-import ForgotPassword from "@/pages/ForgotPassword";
-import SetPassword from "@/pages/SetPassword";
+import SignInPage from "@/pages/auth/sign-in-page";
+import ForgotPasswordPage from "@/pages/auth/forgot-password-page";
+import SetPasswordPage from "@/pages/set-password/set-password-page";
 import { Dashboard } from "@/pages/admin/Dashboard";
-import { Tutors } from "@/pages/admin/Tutors";
-import { TutorDetail } from "@/pages/admin/TutorDetail";
 import { Bookings } from "@/pages/admin/Bookings";
 import ChatsPage from "@/pages/chats/chats-page";
-import { Users } from "@/pages/admin/Users";
-import { Settings } from "@/pages/admin/Settings";
-import { Sessions } from "@/pages/tutor/Sessions";
 import { TimeOff } from "@/pages/tutor/TimeOff";
 import { NotFound } from "@/pages/NotFound";
 import ProfilePage from "@/pages/profile/profile-page";
+import SettingsPage from "@/pages/settings/settings-page";
 import FamiliesPage from "@/pages/families/families-page";
 import FamilyPage from "@/pages/families/family-page";
 import LegacyRedirect from "@/pages/families/legacy-redirect";
 import AvailabilityPage from "@/pages/availability/availability-page";
+import StaffPage from "@/pages/staff/staff-page";
+import TutorRedirect from "@/pages/staff/tutor-redirect";
+import MySessionsPage from "@/pages/sessions/my-sessions-page";
 import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/VisualDirectionPrototype";
 import HomePrototype from "@/pages/prototype/home/home-prototype";
 import BookingsPrototype from "@/pages/prototype/bookings/bookings-prototype";
@@ -60,9 +59,9 @@ export const App = (): ReactNode => (
   <BrowserRouter>
     <AuthProvider>
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/set-password" element={<SetPassword />} />
+        <Route path="/login" element={<SignInPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/set-password" element={<SetPasswordPage />} />
         {/* Every signed-in screen renders inside the one shell; each
             route below still guards its own roles. */}
         <Route
@@ -144,21 +143,48 @@ export const App = (): ReactNode => (
             element={<LegacyRedirect kind="guardian" />}
           />
           <Route
-            path="/tutors"
-            element={renderLegacy(OFFICE_ROLES, <Tutors />)}
+            path="/staff/:id?"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <StaffPage />
+              </RouteGuard>
+            }
           />
+          {/* Users and Tutors became Staff. */}
+          <Route path="/users" element={<Navigate to="/staff" replace />} />
+          <Route path="/tutors" element={<Navigate to="/staff" replace />} />
           <Route
             path="/tutors/:id"
-            element={renderLegacy(OFFICE_ROLES, <TutorDetail />)}
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <TutorRedirect />
+              </RouteGuard>
+            }
           />
-          <Route path="/users" element={renderLegacy(ADMIN_ROLES, <Users />)} />
+          {/* Office roles: a Manager gets "Settings are for Admins". */}
           <Route
             path="/settings"
-            element={renderLegacy(ADMIN_ROLES, <Settings />)}
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <SettingsPage />
+              </RouteGuard>
+            }
           />
           <Route
             path="/sessions"
-            element={renderLegacy(TUTOR_ONLY, <Sessions />)}
+            element={
+              <RouteGuard allow={TUTOR_ONLY}>
+                <MySessionsPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/sessions/:id"
+            element={
+              <RouteGuard allow={TUTOR_ONLY}>
+                <MySessionsPage />
+              </RouteGuard>
+            }
           />
           <Route
             path="/availability"

@@ -121,6 +121,7 @@ def booking_detail(
         sort_out_reasons=sort_out_reasons(db, [row.id], now)[row.id],
         clash_acknowledged_by=user_ref(row.clash_acknowledged_by_user),
         clash_acknowledged_at=row.clash_acknowledged_at,
+        created_at=row.created_at,
         updated_at=row.updated_at,
     )
 

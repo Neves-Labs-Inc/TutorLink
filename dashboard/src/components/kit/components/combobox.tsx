@@ -45,6 +45,7 @@ type ComboboxProps = {
   placeholder?: string;
   help?: string;
   error?: string;
+  isRequired?: boolean;
 };
 
 export function Combobox({
@@ -55,6 +56,7 @@ export function Combobox({
   placeholder = "Search",
   help,
   error,
+  isRequired = false,
 }: ComboboxProps): ReactNode {
   // Destructured: the compiler lint reads any property of an object that
   // holds refs as a ref read during render.
@@ -126,6 +128,9 @@ export function Combobox({
         className="text-[14px] leading-5 font-semibold text-(--tl-ink)"
       >
         {label}
+        {isRequired ? (
+          <span className="font-normal text-(--tl-muted)"> (required)</span>
+        ) : null}
       </label>
       <div className="relative">
         {selected && hasAvatar && (

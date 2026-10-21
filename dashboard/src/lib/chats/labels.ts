@@ -2,6 +2,12 @@
 // and "Meta"/"template" never reach the screen.
 import type { AttentionReason } from "@/components/kit/types/domain";
 import type { FlagReason } from "@/lib/queries/conversations";
+import type {
+  Language,
+  ReminderRow,
+  ReminderStatus,
+  SkipReason,
+} from "@/lib/reminders/reminders";
 
 export const FLAG_REASON_LABEL: Record<FlagReason, AttentionReason> = {
   booking_request: "Wants to book",
@@ -66,4 +72,67 @@ const SEND_ERROR_LABELS: Record<string, string> = {
 // Why an outbound line didn't go out.
 export function getSendErrorLabel(code: string | null): string {
   return (code && SEND_ERROR_LABELS[code]) ?? "Not sent: WhatsApp didn’t accept it.";
+}
+
+export const LANGUAGE_LABEL: Record<Language, string> = {
+  en: "English",
+  es: "Spanish",
+};
+
+export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
+  takeover: "Chat is taken over",
+  blocked_by_whatsapp: "WhatsApp blocked",
+  template_not_approved: "Waiting for WhatsApp approval",
+};
+
+export type ReminderOutcome = {
+  label: string;
+  tone: "success" | "info" | "neutral" | "warning" | "danger";
+  detail: string | null;
+  needsAttention: boolean;
+};
+
+const STATUS_OUTCOME: Record<
+  ReminderStatus,
+  Omit<ReminderOutcome, "detail">
+> = {
+  read: { label: "Read", tone: "success", needsAttention: false },
+  delivered: { label: "Delivered", tone: "success", needsAttention: false },
+  sent: { label: "Sent", tone: "info", needsAttention: false },
+  skipped: { label: "Skipped", tone: "neutral", needsAttention: false },
+  failed: { label: "Not sent", tone: "danger", needsAttention: true },
+  undeliverable: {
+    label: "Couldn’t deliver",
+    tone: "danger",
+    needsAttention: true,
+  },
+};
+
+const NOT_SENT_PREFIX = "Not sent: ";
+const CUT_OFF_DETAIL =
+  "The send was cut off. Check the chat before sending again.";
+
+// What a past Booking reminder did, in the office's words.
+export function getReminderOutcome(row: ReminderRow): ReminderOutcome {
+  const base = STATUS_OUTCOME[row.status];
+  if (row.status === "failed" && row.may_have_been_delivered) {
+    return {
+      label: "May have arrived",
+      tone: "warning",
+      needsAttention: true,
+      detail: CUT_OFF_DETAIL,
+    };
+  }
+
+  let detail: string | null = null;
+  if (row.skip_reason) {
+    detail = SKIP_REASON_LABEL[row.skip_reason];
+  } else if (base.needsAttention) {
+    const reason = getSendErrorLabel(row.error_code).replace(
+      NOT_SENT_PREFIX,
+      "",
+    );
+    detail = reason.charAt(0).toUpperCase() + reason.slice(1);
+  }
+  return { ...base, detail };
 }

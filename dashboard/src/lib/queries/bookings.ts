@@ -96,6 +96,8 @@ export type BookingDetail = Omit<Booking, 'child'> & {
   sort_out_reasons: SortOutReason[]
   clash_acknowledged_by: NamedRef | null
   clash_acknowledged_at: string | null
+  // When the Booking was made (aware).
+  created_at: string
 }
 
 export type BookingListParams = {
@@ -184,6 +186,10 @@ export type BookingWriteResult = {
   end_time: string
 }
 
+// The answer to a status PATCH (`BookingStatusChanged`): the row's new `updated_at` lets an Undo
+// send it as `expected_updated_at`.
+export type BookingStatusChanged = BookingWriteResult & { updated_at: string }
+
 // The API caps `page_size` at 100 (`api/app/schemas/common.py`).
 const MAX_PAGE_SIZE = 100
 
@@ -257,8 +263,8 @@ export const updateBookingStatus = async (
   bookingId: string,
   status: BookingStatus,
   options: BookingStatusOptions = {},
-): Promise<BookingWriteResult> => {
-  const response = await api.patch<BookingWriteResult>(`/api/bookings/${bookingId}`, {
+): Promise<BookingStatusChanged> => {
+  const response = await api.patch<BookingStatusChanged>(`/api/bookings/${bookingId}`, {
     status,
     ...options,
   })

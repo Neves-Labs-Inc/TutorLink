@@ -112,7 +112,7 @@ describe("app shell from 1024px", () => {
     await nav.getByRole("button", { name: /Families/ }).click();
     await expect.element(currentPath()).toHaveTextContent("/families");
     await nav.getByRole("button", { name: /Staff/ }).click();
-    await expect.element(currentPath()).toHaveTextContent("/tutors");
+    await expect.element(currentPath()).toHaveTextContent("/staff");
   });
 
   it("gives a Developer the Admin nav", async () => {
@@ -272,7 +272,7 @@ describe("app shell below 1024px", () => {
       .toHaveAttribute("aria-current", "page");
 
     await sheet.getByRole("button", { name: "Staff" }).click();
-    await expect.element(currentPath()).toHaveTextContent("/tutors");
+    await expect.element(currentPath()).toHaveTextContent("/staff");
   });
 
   it("gives a Manager 5 tabs and no More", async () => {

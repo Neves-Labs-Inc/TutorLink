@@ -95,6 +95,9 @@ type ConfirmDialogProps = {
   keepLabel: string;
   isDestructive?: boolean;
   isWorking?: boolean;
+  // Opens with focus on the keep button, for a confirm whose safe answer
+  // is to stay (leaving with unsaved changes).
+  isKeepFocused?: boolean;
   children: ReactNode;
 };
 
@@ -107,6 +110,7 @@ export function ConfirmDialog({
   keepLabel,
   isDestructive = false,
   isWorking = false,
+  isKeepFocused = false,
   children,
 }: ConfirmDialogProps): ReactNode {
   const icon = isDestructive ? (
@@ -123,7 +127,12 @@ export function ConfirmDialog({
       role={isDestructive ? "alertdialog" : "dialog"}
       footer={
         <>
-          <Button variant="outline" onClick={onClose} disabled={isWorking}>
+          <Button
+            variant="outline"
+            onClick={onClose}
+            disabled={isWorking}
+            data-autofocus={isKeepFocused || undefined}
+          >
             {keepLabel}
           </Button>
           <Button

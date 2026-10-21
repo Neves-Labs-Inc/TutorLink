@@ -150,6 +150,8 @@ class BookingDetail(BaseModel):
     # archived user is still named.
     clash_acknowledged_by: NamedRef | None
     clash_acknowledged_at: datetime.datetime | None
+    # When the Booking was made; Booking details shows it beside who booked it.
+    created_at: datetime.datetime
     updated_at: datetime.datetime
 
 

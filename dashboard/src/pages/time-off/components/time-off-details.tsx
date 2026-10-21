@@ -1,14 +1,16 @@
 // One Time off in the details overlay: the only place its acts live.
-// This ticket brings Cancel; Approve and Decline (ticket 06) join the
-// same footer, before it. Keep it mounted: `id` null closes it.
+// Approve and Decline lead the footer, Cancel follows. Keep it mounted:
+// `id` null closes it.
 import type { ReactNode, RefObject } from "react";
 import {
   ArrowLeft,
   CalendarDays,
+  Check,
   CircleAlert,
   Clock,
   MessageSquareText,
   SearchX,
+  X,
 } from "lucide-react";
 import { Avatar, TimeOffBadge } from "@/components/kit/components/badges";
 import { Button } from "@/components/kit/components/button";
@@ -21,6 +23,8 @@ import TimeOffCancelDialog from "@/pages/time-off/components/time-off-cancel-dia
 import TimeOffClashBlock from "@/pages/time-off/components/time-off-clash-block";
 import TimeOffDetailsSkeleton from "@/pages/time-off/components/time-off-details-skeleton";
 import TimeOffStatusWell from "@/pages/time-off/components/time-off-status-well";
+import { useTimeOffDecision } from "@/pages/time-off/hooks/use-time-off-decision";
+import type { TimeOffDecisionActs } from "@/pages/time-off/hooks/use-time-off-decision";
 import { useTimeOffDetails } from "@/pages/time-off/hooks/use-time-off-details";
 import type { TimeOffDetails as Details } from "@/pages/time-off/hooks/use-time-off-details";
 import {
@@ -29,8 +33,11 @@ import {
   formatTimeOffLength,
 } from "@/pages/time-off/lib/time-off-copy";
 import {
+  canApprove,
   canCancel,
+  canDecline,
   getTimeOffBadgeStatus,
+  isAdminViewer,
 } from "@/pages/time-off/lib/time-off-rules";
 import type { Viewer } from "@/pages/time-off/lib/time-off-rules";
 
@@ -50,9 +57,15 @@ export default function TimeOffDetails({
   const details = useTimeOffDetails(id, viewer);
   const { read, wellRef } = details;
   const item = read.kind === "ready" ? read.item : null;
+  const decision = useTimeOffDecision(item, viewer, wellRef);
   const isOwn = item?.staff.id === viewer.id;
+  const acts = item && !decision.isQueued ? getActs(item, viewer) : NO_ACTS;
   const hasFooter =
-    item !== null && (canCancel(item, viewer) || details.actError !== null);
+    item !== null &&
+    (acts.canApprove ||
+      acts.canDecline ||
+      acts.canCancel ||
+      details.actError !== null);
 
   let header: ReactNode = null;
   let body: ReactNode = <TimeOffDetailsSkeleton />;
@@ -98,7 +111,13 @@ export default function TimeOffDetails({
         header={header}
         footer={
           hasFooter && item ? (
-            <TimeOffFooter item={item} viewer={viewer} details={details} />
+            <TimeOffFooter
+              item={item}
+              viewer={viewer}
+              acts={acts}
+              details={details}
+              decision={decision}
+            />
           ) : null
         }
       >
@@ -116,6 +135,21 @@ export default function TimeOffDetails({
       )}
     </>
   );
+}
+
+type Acts = { canApprove: boolean; canDecline: boolean; canCancel: boolean };
+
+const NO_ACTS: Acts = { canApprove: false, canDecline: false, canCancel: false };
+
+// Only Admins decide, and never on their own request; the rules never
+// offer more than two acts at once.
+function getActs(item: ExceptionRead, viewer: Viewer): Acts {
+  const canDecide = isAdminViewer(viewer) && item.staff.id !== viewer.id;
+  return {
+    canApprove: canDecide && canApprove(item),
+    canDecline: canDecide && canDecline(item),
+    canCancel: canCancel(item, viewer),
+  };
 }
 
 type TimeOffBodyProps = {
@@ -161,13 +195,21 @@ function TimeOffBody({ item, viewer, wellRef }: TimeOffBodyProps): ReactNode {
 type TimeOffFooterProps = {
   item: ExceptionRead;
   viewer: Viewer;
+  acts: Acts;
   details: Details;
+  decision: TimeOffDecisionActs;
 };
 
 // The failure line leads the footer, so it stays in view even when a
 // refetch takes the button away.
-function TimeOffFooter({ item, viewer, details }: TimeOffFooterProps): ReactNode {
-  const isCancellable = canCancel(item, viewer);
+function TimeOffFooter({
+  item,
+  viewer,
+  acts,
+  details,
+  decision,
+}: TimeOffFooterProps): ReactNode {
+  const hasActs = acts.canApprove || acts.canDecline || acts.canCancel;
   const isRequest = item.staff.id === viewer.id && item.status === "pending";
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -180,16 +222,37 @@ function TimeOffFooter({ item, viewer, details }: TimeOffFooterProps): ReactNode
           {details.actError}
         </p>
       )}
-      {isCancellable && (
+      {hasActs && (
         <div className="flex flex-col gap-2 @md:flex-row">
-          {/* Approve and Decline (ticket 06) go here, before Cancel. */}
-          <Button
-            variant="danger-outline"
-            onClick={details.openCancel}
-            className="@md:flex-1"
-          >
-            {isRequest ? "Cancel request" : "Cancel time off"}
-          </Button>
+          {acts.canApprove && (
+            <Button
+              variant="primary"
+              icon={Check}
+              onClick={() => decision.decide("approved")}
+              className="@md:flex-1"
+            >
+              Approve
+            </Button>
+          )}
+          {acts.canDecline && (
+            <Button
+              variant="outline"
+              icon={X}
+              onClick={() => decision.decide("rejected")}
+              className="@md:flex-1"
+            >
+              Decline
+            </Button>
+          )}
+          {acts.canCancel && (
+            <Button
+              variant="danger-outline"
+              onClick={details.openCancel}
+              className="@md:flex-1"
+            >
+              {isRequest ? "Cancel request" : "Cancel time off"}
+            </Button>
+          )}
         </div>
       )}
     </div>

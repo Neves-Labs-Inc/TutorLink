@@ -75,7 +75,7 @@ const STAFF: NavItem = {
   id: "staff",
   label: "Staff",
   icon: Users,
-  path: "/tutors",
+  path: "/staff",
 };
 const TIME_OFF: NavItem = {
   id: "time-off",
@@ -118,6 +118,7 @@ const NAV_ID_BY_SEGMENT: Record<string, NavId> = {
   // Old URLs that redirect into Families.
   children: "accounts",
   guardians: "accounts",
+  staff: "staff",
   tutors: "staff",
   users: "staff",
   settings: "settings",

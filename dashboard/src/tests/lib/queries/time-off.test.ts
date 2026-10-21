@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTimeOff,
   decideTimeOff,
+  replaceCachedTimeOff,
+  sendTimeOffDecision,
   timeOffMutations,
   timeOffQueries,
 } from "@/lib/queries/time-off";
@@ -131,6 +133,68 @@ describe("decideTimeOff", () => {
     await expect(decideTimeOff("to-1", "rejected", false)).rejects.toBe(
       conflict,
     );
+  });
+});
+
+describe("sendTimeOffDecision", () => {
+  it("approves with the clashes confirmed", async () => {
+    network.patch.mockResolvedValue({ status: 200, data: ROW });
+
+    const item = await sendTimeOffDecision("to-1", "approved", false);
+
+    expect(item).toEqual(ROW);
+    expect(network.patch).toHaveBeenCalledWith(
+      "/api/exceptions/to-1",
+      { status: "approved", confirm_warnings: ["booking_clash"] },
+      {},
+    );
+  });
+
+  it("declines with the status alone, over keepalive when asked", async () => {
+    network.patch.mockResolvedValue({ status: 200, data: ROW });
+
+    await sendTimeOffDecision("to-1", "rejected", true);
+
+    expect(network.patch).toHaveBeenCalledWith(
+      "/api/exceptions/to-1",
+      { status: "rejected" },
+      { adapter: "fetch", fetchOptions: { keepalive: true } },
+    );
+  });
+
+  it("throws any refusal, a clash warning included", async () => {
+    const conflict = apiError(409, { detail: "Confirm", warnings: [CLASH] });
+    network.patch.mockRejectedValue(conflict);
+
+    await expect(sendTimeOffDecision("to-1", "rejected", false)).rejects.toBe(
+      conflict,
+    );
+  });
+});
+
+describe("replaceCachedTimeOff", () => {
+  it("swaps the row in its detail and in every list holding it", () => {
+    const client = new QueryClient();
+    const other = { ...ROW, id: "to-2" };
+    const page = (items: ExceptionRead[]) => ({
+      items,
+      total: items.length,
+      page: 1,
+      page_size: 20,
+    });
+    const listKey = timeOffQueries.list({ status: ["pending"] }).queryKey;
+    const userKey = timeOffQueries.forUser("u-tutor").queryKey;
+    const detailKey = timeOffQueries.detail("to-1").queryKey;
+    client.setQueryData(listKey, page([ROW, other]));
+    client.setQueryData(userKey, page([other]));
+    client.setQueryData(detailKey, ROW);
+    const declined = { ...ROW, status: "rejected" as const };
+
+    replaceCachedTimeOff(client, declined);
+
+    expect(client.getQueryData(detailKey)).toEqual(declined);
+    expect(client.getQueryData(listKey)?.items).toEqual([declined, other]);
+    expect(client.getQueryData(userKey)?.items).toEqual([other]);
   });
 });
 

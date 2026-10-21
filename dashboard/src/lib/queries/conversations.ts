@@ -38,7 +38,7 @@ export type Conversation = {
   status: ConversationStatus
   taken_over_by: ConversationAdminRef | null
   last_message_at: string
-  last_message_preview: string
+  last_message_preview: string | null
   unread: boolean
   flag_reason: FlagReason | null
   intake_in_progress: boolean
@@ -90,7 +90,7 @@ export type ConversationMessageListParams = {
 
 export const approveReactivation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/reactivation/approve`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/reactivation/approve`,
   )
 
   return response.data
@@ -98,7 +98,7 @@ export const approveReactivation = async (conversationId: string): Promise<Conve
 
 export const denyReactivation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/reactivation/deny`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/reactivation/deny`,
   )
 
   return response.data
@@ -106,7 +106,7 @@ export const denyReactivation = async (conversationId: string): Promise<Conversa
 
 export const transferConversation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/transfer`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/transfer`,
   )
 
   return response.data
@@ -116,7 +116,7 @@ export const updateConversationLanguage = async (
   conversationId: string,
   language: Language | null,
 ): Promise<ConversationDetail> => {
-  const response = await api.patch<ConversationDetail>(`/api/conversations/${conversationId}`, {
+  const response = await api.patch<ConversationDetail>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
     language,
   })
 
@@ -125,7 +125,7 @@ export const updateConversationLanguage = async (
 
 export const retryNotice = async (conversationId: string, messageId: string): Promise<Message> => {
   const response = await api.post<Message>(
-    `/api/conversations/${conversationId}/messages/${messageId}/retry`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/retry`,
   )
 
   return response.data
@@ -152,7 +152,7 @@ export const conversationQueries = {
       queryKey: ['conversations', 'detail', conversationId],
       queryFn: async () => {
         const response = await api.get<ConversationDetail>(
-          `/api/conversations/${conversationId}`,
+          `/api/conversations/${encodeURIComponent(conversationId)}`,
         )
 
         return response.data
@@ -164,7 +164,7 @@ export const conversationQueries = {
       queryKey: ['conversations', 'detail', conversationId, 'messages', params],
       queryFn: async () => {
         const response = await api.get<Page<Message>>(
-          `/api/conversations/${conversationId}/messages`,
+          `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
           { params: { page_size: DEFAULT_PAGE_SIZE, ...params } },
         )
 

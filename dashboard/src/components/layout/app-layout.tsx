@@ -1,14 +1,17 @@
 // The signed-in frame for every guarded route (a layout route): one
-// KitRoot on the chosen theme, the kit AppShell with the role's nav, and
-// the old Toaster for screens not yet rebuilt.
+// KitRoot on the chosen theme, the kit AppShell with the role's nav, the
+// leave guard every nav goes through, and the old Toaster for screens
+// not yet rebuilt.
 import { useEffect } from "react";
 import type { ReactNode } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import KitRoot from "@/components/kit/kit-root";
 import { AppShell } from "@/components/kit/shell/app-shell";
 import type { NavId } from "@/components/kit/shell/nav";
+import LeaveGuardProvider from "@/components/layout/leave-guard-provider";
 import Toaster from "@/components/shared/Toaster";
 import { useAppShell } from "@/hooks/use-app-shell";
+import { useGuardedNavigate } from "@/hooks/use-leave-guard";
 import { useTheme } from "@/hooks/use-theme";
 import type { Role } from "@/lib/auth/auth";
 import { useAuthStore } from "@/stores/authStore";
@@ -24,7 +27,9 @@ export default function AppLayout(): ReactNode {
   return (
     <>
       <KitRoot theme={theme}>
-        <SignedInShell role={role} />
+        <LeaveGuardProvider>
+          <SignedInShell role={role} />
+        </LeaveGuardProvider>
       </KitRoot>
       <Toaster aboveTabBar />
     </>
@@ -34,7 +39,8 @@ export default function AppLayout(): ReactNode {
 type SignedInShellProps = { role: Role };
 
 function SignedInShell({ role }: SignedInShellProps): ReactNode {
-  const navigate = useNavigate();
+  // Asks first while a page holds unsaved changes.
+  const navigate = useGuardedNavigate();
   const { pathname } = useLocation();
   const { items, activeId, name, isPersonError, roleLabel } =
     useAppShell(role);

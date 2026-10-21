@@ -19,7 +19,8 @@ import { Button } from "@/components/kit/components/button";
 type EmptyStateProps = {
   icon: LucideIcon;
   title: string;
-  body: string;
+  // At most one sentence (DESIGN §12.2); some empty states are a title alone.
+  body?: string;
   action?: ReactNode;
   tone?: "primary" | "pink" | "yellow" | "green";
   isBare?: boolean;
@@ -58,9 +59,11 @@ export function EmptyState({
       <h2 className="kit-display mt-5 text-[22px] leading-[30px] font-light">
         {title}
       </h2>
-      <p className="mt-1.5 max-w-[42ch] text-[15px] leading-6 text-(--tl-muted)">
-        {body}
-      </p>
+      {body && (
+        <p className="mt-1.5 max-w-[42ch] text-[15px] leading-6 text-(--tl-muted)">
+          {body}
+        </p>
+      )}
       {action && <div className="mt-6">{action}</div>}
     </div>
   );

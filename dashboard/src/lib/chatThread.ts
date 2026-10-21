@@ -16,7 +16,7 @@ export type ThreadAlignment = 'start' | 'end'
 
 export const takeoverConversation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/takeover`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/takeover`,
   )
 
   return response.data
@@ -24,14 +24,14 @@ export const takeoverConversation = async (conversationId: string): Promise<Conv
 
 export const releaseConversation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.delete<ConversationDetail>(
-    `/api/conversations/${conversationId}/takeover`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/takeover`,
   )
 
   return response.data
 }
 
 export const markConversationRead = async (conversationId: string): Promise<ConversationDetail> => {
-  const response = await api.post<ConversationDetail>(`/api/conversations/${conversationId}/read`)
+  const response = await api.post<ConversationDetail>(`/api/conversations/${encodeURIComponent(conversationId)}/read`)
 
   return response.data
 }
@@ -44,7 +44,7 @@ export const markConversationHandled = async (
   flaggedAt: string,
 ): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/handled`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/handled`,
     { flagged_at: flaggedAt },
   )
 

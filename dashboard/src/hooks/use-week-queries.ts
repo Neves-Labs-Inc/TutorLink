@@ -15,16 +15,17 @@ const WEEK_GC_TIME = Infinity;
 // doesn't refetch the one just left.
 const WEEK_STALE_TIME_MS = 30_000;
 
-type WeekQueryOptions<T> = UseQueryOptions<T, Error, T, QueryKey>;
+// Generic over the key so typed `queryOptions(...)` results fit as they are.
+type WeekQueryOptions<T, K extends QueryKey> = UseQueryOptions<T, Error, T, K>;
 
 // Loads `weekStart` first, then prefetches the weeks either side once it has
 // loaded. Returns the current week's query result.
-export function useWeekQueries<T>(
+export function useWeekQueries<T, K extends QueryKey = QueryKey>(
   weekStart: string,
-  queryForWeek: (weekStart: string) => WeekQueryOptions<T>,
+  queryForWeek: (weekStart: string) => WeekQueryOptions<T, K>,
 ): UseQueryResult<T, Error> {
   const queryClient = useQueryClient();
-  const getOptions = (week: string): WeekQueryOptions<T> => ({
+  const getOptions = (week: string): WeekQueryOptions<T, K> => ({
     staleTime: WEEK_STALE_TIME_MS,
     ...queryForWeek(week),
     gcTime: WEEK_GC_TIME,

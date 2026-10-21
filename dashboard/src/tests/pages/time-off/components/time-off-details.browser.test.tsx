@@ -1,22 +1,29 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { queryOptions } from "@tanstack/react-query";
+import { notifyManager, queryOptions } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import type { AxiosResponse } from "axios";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { page, userEvent } from "vitest/browser";
 import KitRoot from "@/components/kit/kit-root";
+import { UNDO_WINDOW_MS } from "@/components/kit/overlays/use-deferred-action";
 import type { ExceptionRead } from "@/lib/queries/time-off";
 import TimeOffDetails from "@/pages/time-off/components/time-off-details";
 import type { Viewer } from "@/pages/time-off/lib/time-off-rules";
+import { useTimeOffDecisionStore } from "@/stores/time-off-decision-store";
 import { renderWithProviders } from "@/test/render-with-providers";
 
-const network = vi.hoisted(() => ({ detail: vi.fn(), cancel: vi.fn() }));
+const network = vi.hoisted(() => ({
+  detail: vi.fn(),
+  cancel: vi.fn(),
+  decide: vi.fn(),
+}));
 
 vi.mock("@/lib/queries/time-off", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/queries/time-off")>();
   return {
     ...actual,
+    sendTimeOffDecision: network.decide,
     timeOffQueries: {
       ...actual.timeOffQueries,
       detail: (id: string) =>
@@ -190,6 +197,8 @@ beforeEach(async () => {
   await page.viewport(DESKTOP, HEIGHT);
   network.detail.mockReset();
   network.cancel.mockReset();
+  network.decide.mockReset();
+  useTimeOffDecisionStore.setState({ queuedIds: new Set() });
 });
 
 describe.each([DESKTOP, PHONE])("content at %ipx", (width) => {
@@ -590,6 +599,293 @@ describe("layout", () => {
     for (const button of overlay().getByRole("button").elements()) {
       if (button.getBoundingClientRect().height === 0) continue;
       expect(button.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+    }
+  });
+});
+
+describe.each([DESKTOP, PHONE])("Approve and Decline at %ipx", (width) => {
+  const LONG_AFTER_WINDOW_MS = UNDO_WINDOW_MS * 3;
+  const SEND_TODO = "Approved Marco’s time off. 2 Bookings to change, now in To do.";
+  const approve = () => overlay().getByRole("button", { name: "Approve" });
+  const decline = () => overlay().getByRole("button", { name: "Decline" });
+  const undo = () => page.getByRole("button", { name: "Undo" });
+  const footerButtons = () =>
+    overlay()
+      .getByRole("button", { name: /Approve|Decline|Cancel/ })
+      .elements();
+
+  beforeEach(async () => {
+    await page.viewport(width, HEIGHT);
+    // Query updates are batched on setTimeout, which the fake clock holds.
+    notifyManager.setScheduler(queueMicrotask);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    Reflect.deleteProperty(document, "visibilityState");
+  });
+
+  it("offers an Admin Approve and Decline on a pending request", async () => {
+    await openAs(ADMIN, PENDING);
+
+    await expect.element(approve()).toBeVisible();
+    await expect.element(decline()).toBeVisible();
+    expect(footerButtons()).toEqual([approve().element(), decline().element()]);
+  });
+
+  it("offers a Developer the same acts", async () => {
+    await openAs({ id: "u-dev", role: "developer" }, PENDING);
+    await expect.element(approve()).toBeVisible();
+    await expect.element(decline()).toBeVisible();
+  });
+
+  it("offers only Approve on a declined request that hasn’t ended", async () => {
+    await openAs(ADMIN, DECLINED);
+
+    await expect.element(approve()).toBeVisible();
+    expect(footerButtons()).toHaveLength(1);
+  });
+
+  it.each([
+    ["expired", EXPIRED],
+    ["cancelled", CANCELLED],
+    ["ended", { ...DECLINED, start_date: "2025-10-06", end_date: "2025-10-06" }],
+  ])("offers no decision on %s time off", async (_name, item) => {
+    await openAs(ADMIN, item);
+
+    await expect.element(page.getByRole("heading", { level: 2 }).first()).toBeVisible();
+    expect(overlay().getByRole("button", { name: /Approve|Decline/ }).elements()).toHaveLength(0);
+  });
+
+  it.each([
+    ["Tutor", TUTOR],
+    ["Manager", MANAGER],
+  ])("never offers a %s Approve or Decline", async (_name, viewer) => {
+    await openAs(viewer, PENDING);
+
+    await expect.element(page.getByText(/^2 (Bookings|sessions) in these dates$/)).toBeVisible();
+    expect(overlay().getByRole("button", { name: /Approve|Decline/ }).elements()).toHaveLength(0);
+  });
+
+  it("approves at once on screen and sends one PATCH when the window ends", async () => {
+    network.decide.mockResolvedValue(APPROVED);
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(approve());
+
+    expect(page.getByRole("alertdialog").elements()).toHaveLength(0);
+    await expect.element(page.getByText("Approved", { exact: true })).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          /^Approved by you, .+\. They can’t be booked in these times\.$/,
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(page.getByText("They wait in To do for the office to change or keep."))
+      .toBeVisible();
+    await expect.element(page.getByText(SEND_TODO)).toBeVisible();
+    await expect.element(undo()).toBeVisible();
+    expect(footerButtons()).toHaveLength(0);
+    expect(document.activeElement).toBe(well());
+    await expect.element(overlay()).toBeVisible();
+
+    vi.advanceTimersByTime(UNDO_WINDOW_MS - 1);
+    expect(network.decide).not.toHaveBeenCalled();
+    network.detail.mockResolvedValue(APPROVED);
+    vi.advanceTimersByTime(1);
+    expect(network.decide).toHaveBeenCalledExactlyOnceWith("to-1", "approved", false);
+
+    // The refetch shows the server's stamp, and Cancel comes back.
+    await expect
+      .element(
+        page.getByText(
+          "Approved by you, Oct 15, 9:00 AM. They can’t be booked in these times.",
+        ),
+      )
+      .toBeVisible();
+    await expect.element(overlay().getByRole("button", { name: "Cancel time off" })).toBeVisible();
+    expect(network.detail).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(LONG_AFTER_WINDOW_MS);
+    expect(network.decide).toHaveBeenCalledOnce();
+  });
+
+  it("puts everything back on Undo and sends nothing", async () => {
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(approve());
+    await expect.element(page.getByText("Approved", { exact: true })).toBeVisible();
+    // Undo re-enables the detail query, which refetches the server row.
+    network.detail.mockClear();
+    network.detail.mockResolvedValue(PENDING);
+
+    await userEvent.click(undo());
+
+    await expect.element(page.getByText("Pending", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText("Waiting for an Admin to approve or decline."))
+      .toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Approving keeps them and puts them in To do, to change or keep.",
+        ),
+      )
+      .toBeVisible();
+    await expect.element(approve()).toBeVisible();
+    await expect.element(decline()).toBeVisible();
+    await expect.poll(() => network.detail).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(LONG_AFTER_WINDOW_MS);
+    expect(network.decide).not.toHaveBeenCalled();
+  });
+
+  it("sends at once with keepalive when the page hides", async () => {
+    network.decide.mockResolvedValue(APPROVED);
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(approve());
+    await expect.element(undo()).toBeVisible();
+
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+
+    expect(network.decide).toHaveBeenCalledExactlyOnceWith("to-1", "approved", true);
+    vi.advanceTimersByTime(LONG_AFTER_WINDOW_MS);
+    expect(network.decide).toHaveBeenCalledOnce();
+    await expect.poll(() => network.detail).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends at once with keepalive when the tab turns hidden", async () => {
+    network.decide.mockResolvedValue(DECLINED);
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(decline());
+    await expect.element(undo()).toBeVisible();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(network.decide).toHaveBeenCalledExactlyOnceWith("to-1", "rejected", true);
+    await expect.poll(() => network.detail).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the act queued, acts hidden, after closing and reopening", async () => {
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(approve());
+    await expect.element(undo()).toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: /^(Close|Time off)$/ }));
+    await expect.element(overlay()).not.toBeInTheDocument();
+    await userEvent.click(page.getByRole("button", { name: "Reopen" }));
+
+    await expect.element(page.getByText("Approved", { exact: true })).toBeVisible();
+    expect(footerButtons()).toHaveLength(0);
+    expect(network.decide).not.toHaveBeenCalled();
+    await userEvent.click(undo());
+    await expect.element(approve()).toBeVisible();
+  });
+
+  it("shows the error toast and refetches the true state when the send fails", async () => {
+    network.decide.mockRejectedValue(apiError(409));
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(approve());
+    await expect.element(undo()).toBeVisible();
+    network.detail.mockResolvedValue({ ...DECLINED, decided_by: { id: "u-other", name: "Ana Lima" } });
+
+    vi.advanceTimersByTime(UNDO_WINDOW_MS);
+
+    await expect
+      .element(page.getByRole("alert").filter({ hasText: "Couldn’t approve" }))
+      .toHaveTextContent("Couldn’t approve Marco’s time off. Open it and try again.");
+    await expect
+      .element(page.getByText("Declined by Ana, Oct 15, 9:00 AM. They can still be booked."))
+      .toBeVisible();
+    await expect.element(approve()).toBeVisible();
+  });
+
+  it("declines the same way, with its own words", async () => {
+    network.decide.mockResolvedValue(DECLINED);
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(decline());
+
+    await expect.element(page.getByText("Declined", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText(/^Declined by you, .+\. They can still be booked\.$/))
+      .toBeVisible();
+    await expect.element(page.getByText("Declined Marco’s time off.")).toBeVisible();
+    expect(footerButtons()).toHaveLength(0);
+    expect(document.activeElement).toBe(well());
+
+    vi.advanceTimersByTime(UNDO_WINDOW_MS);
+    expect(network.decide).toHaveBeenCalledExactlyOnceWith("to-1", "rejected", false);
+    await expect.poll(() => network.detail).toHaveBeenCalledTimes(2);
+  });
+
+  it("names a failed decline", async () => {
+    network.decide.mockRejectedValue(apiError(500));
+    await openAs(ADMIN, PENDING);
+    await userEvent.click(decline());
+    await expect.element(undo()).toBeVisible();
+
+    vi.advanceTimersByTime(UNDO_WINDOW_MS);
+
+    await expect
+      .element(page.getByText("Couldn’t decline Marco’s time off. Open it and try again."))
+      .toBeVisible();
+  });
+
+  it("leaves out the clash count when there are no clashes", async () => {
+    await openAs(ADMIN, { ...PENDING, ...NO_CLASHES });
+    await userEvent.click(approve());
+
+    await expect.element(page.getByText("Approved Marco’s time off.", { exact: true })).toBeVisible();
+  });
+
+  it("counts one clash in the singular", async () => {
+    await openAs(ADMIN, {
+      ...PENDING,
+      clashing_bookings: PENDING.clashing_bookings.slice(0, 1),
+      clashing_bookings_count: 1,
+    });
+    await userEvent.click(approve());
+
+    await expect
+      .element(page.getByText("Approved Marco’s time off. 1 Booking to change, now in To do."))
+      .toBeVisible();
+  });
+
+  it.each([
+    ["pending", "pending" as const, "Cancel request"],
+    ["declined", "rejected" as const, null],
+  ])("never offers an Admin a decision on their own %s request", async (_name, status, cancel) => {
+    const own: ExceptionRead = {
+      ...PENDING,
+      ...NO_CLASHES,
+      staff: { ...RITA, role: "admin" },
+      status,
+      entered_by: null,
+    };
+    await openAs(ADMIN, own);
+
+    await expect.element(page.getByText("No Bookings in these dates").or(page.getByText(/^Declined by/))).toBeVisible();
+    expect(overlay().getByRole("button", { name: /Approve|Decline/ }).elements()).toHaveLength(0);
+    expect(footerButtons()).toHaveLength(cancel ? 1 : 0);
+  });
+
+  it("lays Approve over Decline on a phone, side by side when wide", async () => {
+    await openAs(ADMIN, PENDING);
+    await expect.element(approve()).toBeVisible();
+
+    const top = approve().element().getBoundingClientRect();
+    const bottom = decline().element().getBoundingClientRect();
+    if (width === PHONE) {
+      expect(top.bottom).toBeLessThanOrEqual(bottom.top);
+      expect(top.width).toBe(bottom.width);
+      expect(top.left).toBe(bottom.left);
+    } else {
+      expect(top.top).toBe(bottom.top);
+      expect(top.right).toBeLessThanOrEqual(bottom.left);
     }
   });
 });

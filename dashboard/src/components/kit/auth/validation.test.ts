@@ -65,6 +65,12 @@ describe("getNewPasswordError", () => {
     expect(getNewPasswordError("éééééé")).toBe("Use at least 8 characters.");
   });
 
+  it("counts emoji as one character each, as the server does", () => {
+    // 4 code points but 8 UTF-16 units: the server refuses it as too short.
+    expect(getNewPasswordError("😀😀😀😀")).toBe("Use at least 8 characters.");
+    expect(getNewPasswordError("😀".repeat(8))).toBeUndefined();
+  });
+
   it("exposes the help text shown under the field", () => {
     expect(PASSWORD_HELP).toBe("At least 8 characters.");
   });

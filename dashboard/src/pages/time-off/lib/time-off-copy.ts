@@ -6,7 +6,11 @@ import {
   formatDay,
   pluralize,
 } from "@/components/kit/format";
-import type { ExceptionRead, NamedRef } from "@/lib/queries/time-off";
+import type {
+  ExceptionRead,
+  NamedRef,
+  TimeOffDecision,
+} from "@/lib/queries/time-off";
 
 type Window = Pick<
   ExceptionRead,
@@ -134,4 +138,27 @@ export function getStatusSentence(item: ExceptionRead, viewerId: string): string
     expired: () => "Nobody decided before it started, so it never took effect.",
   };
   return sentences[item.status]();
+}
+
+type DecisionCopy = { message: string; errorMessage: string };
+
+// The Undo toast and its failure for Approve or Decline. Never the
+// viewer's own: nobody decides their own request. An approval with
+// clashes says where those Bookings went.
+export function getDecisionCopy(
+  item: ExceptionRead,
+  decision: TimeOffDecision,
+): DecisionCopy {
+  const whose = `${getFirstName(item.staff.name)}’s`;
+  const [done, verb] =
+    decision === "approved" ? ["Approved", "approve"] : ["Declined", "decline"];
+  const count = item.clashing_bookings_count;
+  const clashNote =
+    decision === "approved" && count > 0
+      ? ` ${pluralize(count, "Booking", "Bookings")} to change, now in To do.`
+      : "";
+  return {
+    message: `${done} ${whose} time off.${clashNote}`,
+    errorMessage: `Couldn’t ${verb} ${whose} time off. Open it and try again.`,
+  };
 }

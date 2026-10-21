@@ -55,7 +55,7 @@ export default function ChatsPage({ tab }: ChatsPageProps): ReactNode {
 
   let description: ReactNode;
   if (counts.isPending) {
-    description = <Skeleton className="h-4 w-48 rounded-full" />;
+    description = <Skeleton className="my-1 h-4 w-48 rounded-full" />;
   } else if (counts.data) {
     description = (
       <>
@@ -65,7 +65,7 @@ export default function ChatsPage({ tab }: ChatsPageProps): ReactNode {
     );
   }
 
-  const thread = openId && (
+  const thread = openId && isSplit !== null && (
     <ChatThread
       key={openId}
       conversationId={openId}
@@ -102,14 +102,28 @@ export default function ChatsPage({ tab }: ChatsPageProps): ReactNode {
         <RemindersPanel />
       ) : (
         <>
+          {/* One tree in both modes, so the list keeps its state when the
+              width crosses the split. Alone, the list draws its own card. */}
           <div
             className={cn(
-              CARD,
-              "overflow-hidden @6xl:grid @6xl:h-[max(560px,calc(var(--kit-h)-290px))] @6xl:grid-cols-[minmax(300px,380px)_1fr]",
+              isSplit &&
+                cn(
+                  CARD,
+                  "grid h-[max(560px,calc(var(--kit-h)-290px))] grid-cols-[minmax(300px,380px)_1fr] overflow-hidden",
+                ),
             )}
           >
-            <div className="min-h-0 border-(--tl-border) @6xl:overflow-y-auto @6xl:border-r">
-              <ConversationList openId={openId} onOpen={handleOpen} />
+            <div
+              className={cn(
+                isSplit &&
+                  "min-h-0 overflow-y-auto border-r border-(--tl-border)",
+              )}
+            >
+              <ConversationList
+                openId={openId}
+                onOpen={handleOpen}
+                isSplit={isSplit === true}
+              />
             </div>
             {isSplit && (
               <div className="min-h-0 overflow-y-auto bg-(--tl-canvas)/40">
@@ -130,7 +144,7 @@ export default function ChatsPage({ tab }: ChatsPageProps): ReactNode {
               </div>
             )}
           </div>
-          {!isSplit && thread}
+          {isSplit === false && thread}
         </>
       )}
     </div>

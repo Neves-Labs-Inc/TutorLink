@@ -26,7 +26,8 @@ export function getNewPasswordError(password: string): string | undefined {
   let error: string | undefined;
   if (!password) {
     error = "Choose a password.";
-  } else if (password.length < MIN_PASSWORD_CHARS) {
+  } else if ([...password].length < MIN_PASSWORD_CHARS) {
+    // Code points, as the server's len() counts them: an emoji is one character.
     error = "Use at least 8 characters.";
   } else if (byteCount > MAX_PASSWORD_BYTES) {
     error = "That password is too long. Try a shorter one.";

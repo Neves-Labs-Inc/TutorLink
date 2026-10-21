@@ -11,8 +11,11 @@ function measureIsSplit(element: HTMLElement): boolean {
 
 // Which thread container mounts (pane or overlay) can't be chosen in CSS,
 // so this reads the kit root width, like isKitWide in the kit overlays.
-export function useIsSplit(ref: RefObject<HTMLElement | null>): boolean {
-  const [isSplit, setIsSplit] = useState(false);
+// It is null until measured (before the first paint), so a deep link on a
+// wide screen never mounts a throwaway overlay with its focus and scroll
+// lock first.
+export function useIsSplit(ref: RefObject<HTMLElement | null>): boolean | null {
+  const [isSplit, setIsSplit] = useState<boolean | null>(null);
 
   useLayoutEffect(() => {
     const element = ref.current;

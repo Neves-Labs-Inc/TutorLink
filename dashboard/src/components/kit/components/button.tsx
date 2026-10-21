@@ -3,6 +3,7 @@
 import type {
   AnchorHTMLAttributes,
   ButtonHTMLAttributes,
+  MouseEvent,
   ReactNode,
 } from "react";
 import { LoaderCircle } from "lucide-react";
@@ -18,19 +19,19 @@ export type ButtonVariant =
   | "danger-outline";
 
 const BASE =
-  "inline-flex h-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-full px-5 text-[14px] font-medium whitespace-nowrap transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex h-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-full px-5 text-[14px] font-medium whitespace-nowrap transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   primary:
-    "kit-shadow-soft bg-(--tl-primary) text-(--tl-on-primary) hover:enabled:bg-(--tl-primary-hover) enabled:active:bg-(--tl-primary-hover)",
-  soft: "bg-(--tl-tint) text-(--tl-primary-ink) hover:enabled:bg-(--tl-tint-strong) enabled:active:bg-(--tl-tint-strong)",
+    "kit-shadow-soft bg-(--tl-primary) text-(--tl-on-primary) not-aria-disabled:hover:enabled:bg-(--tl-primary-hover) not-aria-disabled:enabled:active:bg-(--tl-primary-hover)",
+  soft: "bg-(--tl-tint) text-(--tl-primary-ink) not-aria-disabled:hover:enabled:bg-(--tl-tint-strong) not-aria-disabled:enabled:active:bg-(--tl-tint-strong)",
   outline:
-    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-ink) hover:enabled:bg-(--tl-tint) enabled:active:bg-(--tl-tint-strong)",
-  ghost: "text-(--tl-link) hover:enabled:bg-(--tl-tint) enabled:active:bg-(--tl-tint-strong)",
+    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-ink) not-aria-disabled:hover:enabled:bg-(--tl-tint) not-aria-disabled:enabled:active:bg-(--tl-tint-strong)",
+  ghost: "text-(--tl-link) not-aria-disabled:hover:enabled:bg-(--tl-tint) not-aria-disabled:enabled:active:bg-(--tl-tint-strong)",
   danger:
-    "bg-(--tl-danger) text-(--tl-on-danger) hover:enabled:bg-(--tl-danger-hover) enabled:active:bg-(--tl-danger-hover)",
+    "bg-(--tl-danger) text-(--tl-on-danger) not-aria-disabled:hover:enabled:bg-(--tl-danger-hover) not-aria-disabled:enabled:active:bg-(--tl-danger-hover)",
   "danger-outline":
-    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-danger) hover:enabled:bg-(--tl-danger-tint) enabled:active:bg-(--tl-danger-tint) enabled:active:border-(--tl-danger)",
+    "border border-(--tl-border) bg-(--tl-surface) text-(--tl-danger) not-aria-disabled:hover:enabled:bg-(--tl-danger-tint) not-aria-disabled:enabled:active:bg-(--tl-danger-tint) not-aria-disabled:enabled:active:border-(--tl-danger)",
 };
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -49,14 +50,28 @@ export function Button({
   children,
   disabled,
   type = "button",
+  onClick,
   ...rest
 }: ButtonProps): ReactNode {
   const LeadingIcon = isLoading ? LoaderCircle : Icon;
+
+  // Loading stays focusable (a native `disabled` would drop focus to <body>),
+  // so the click, and the form submit it triggers, is swallowed instead.
+  function handleClick(event: MouseEvent<HTMLButtonElement>): void {
+    if (isLoading) {
+      event.preventDefault();
+      return;
+    }
+    onClick?.(event);
+  }
+
   return (
     <button
       type={type}
-      disabled={disabled || isLoading}
+      disabled={disabled}
+      aria-disabled={isLoading || undefined}
       aria-busy={isLoading || undefined}
+      onClick={handleClick}
       className={cn(
         BASE,
         VARIANT_CLASSES[variant],

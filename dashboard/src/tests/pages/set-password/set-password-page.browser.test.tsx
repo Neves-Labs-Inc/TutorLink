@@ -78,6 +78,10 @@ describe("link check", () => {
   });
 });
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 const heading = (name: string) => page.getByRole("heading", { level: 1, name });
 
 function failure(status: number | null, headers: Record<string, string> = {}): AxiosError {
@@ -212,6 +216,9 @@ describe("link check outcomes", () => {
     await expect.element(retrying).toBeVisible();
     await expect.element(heading("Couldn’t check your link")).toBeVisible();
     expect(page.getByRole("status", { name: "Checking your link" }).elements()).toHaveLength(0);
+    // Chromium moves focus off a newly disabled control on the next frames, so wait them out.
+    await nextFrame();
+    await nextFrame();
     expect(document.activeElement).toBe(retrying.element());
 
     finishRetry(checked(VALID_RESET));

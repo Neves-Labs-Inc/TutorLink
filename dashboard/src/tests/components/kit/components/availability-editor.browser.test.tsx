@@ -242,7 +242,7 @@ describe("async save", () => {
     await saveButton().click();
 
     await expect.element(saveButton()).toHaveAttribute("aria-busy", "true");
-    await expect.element(saveButton()).toBeDisabled();
+    await expect.element(saveButton()).toHaveAttribute("aria-disabled", "true");
     await expect.element(cancelButton()).toBeDisabled();
     await expect.element(page.getByLabelText("Monday range 1 starts")).toBeDisabled();
     await expect

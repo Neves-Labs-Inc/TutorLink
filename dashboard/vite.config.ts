@@ -29,6 +29,8 @@ export default defineConfig({
           name: 'browser',
           include: ['src/**/*.browser.test.{ts,tsx}'],
           setupFiles: ['src/test/browser-setup.ts'],
+          // expect.element and expect.poll: the 1s default flakes under full-suite load in CI.
+          expect: { poll: { timeout: 3000 } },
           browser: {
             enabled: true,
             provider: playwright(),

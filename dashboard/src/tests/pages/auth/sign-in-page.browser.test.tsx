@@ -182,7 +182,7 @@ describe("sign-in page", () => {
     await renderSignIn();
 
     await fillAndSubmit();
-    await expect.element(page.getByRole("button", { name: "Signing in…" })).toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "Signing in…" })).toHaveAttribute("aria-disabled", "true");
     expect(network.login).toHaveBeenCalledWith(EMAIL, PASSWORD);
 
     resolveLogin({ data: { access_token: encodeToken({ sub: "u-1", role: "tutor", tutor_id: "t-1", exp: 4_102_444_800 }) } });

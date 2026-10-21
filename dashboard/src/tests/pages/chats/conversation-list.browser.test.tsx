@@ -696,9 +696,9 @@ describe("Conversations states", () => {
     await renderAt("/chats?q=ana&unread=1&with=bot");
     await userEvent.click(page.getByRole("button", { name: "Clear all" }));
     await vi.waitFor(() => expect(window.location.search).toBe("?q=ana"));
-    expect(
-      page.getByRole("button", { name: "Clear all" }).elements(),
-    ).toHaveLength(0);
+    await expect
+      .element(page.getByRole("button", { name: "Clear all" }))
+      .not.toBeInTheDocument();
   });
 });
 

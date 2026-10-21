@@ -10,11 +10,16 @@ export const assignSubject = async (
   tutorId: string,
   body: TutorSubjectCreate,
 ): Promise<TutorSubject> => {
-  const response = await api.post<TutorSubject>(`/api/tutors/${tutorId}/subjects`, body)
+  const response = await api.post<TutorSubject>(
+    `/api/tutors/${encodeURIComponent(tutorId)}/subjects`,
+    body,
+  )
 
   return response.data
 }
 
 export const removeSubject = async (tutorId: string, subjectId: string): Promise<void> => {
-  await api.delete(`/api/tutors/${tutorId}/subjects/${subjectId}`)
+  await api.delete(
+    `/api/tutors/${encodeURIComponent(tutorId)}/subjects/${encodeURIComponent(subjectId)}`,
+  )
 }

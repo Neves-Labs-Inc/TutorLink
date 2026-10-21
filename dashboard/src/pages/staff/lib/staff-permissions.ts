@@ -22,8 +22,8 @@ export type StaffPermissions = {
   lockReason: string | null;
 };
 
-const PEER_ADMIN_LOCK = "Only a developer can change another Admin’s account.";
-const SELF_LOCK = "You can’t archive yourself.";
+export const PEER_ADMIN_LOCK = "Only a developer can change another Admin’s account.";
+export const SELF_LOCK = "You can’t archive yourself.";
 
 function getLockReason(isPeerAdmin: boolean, isSelfAdmin: boolean): string | null {
   if (isPeerAdmin) return PEER_ADMIN_LOCK;

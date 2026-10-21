@@ -58,7 +58,6 @@ function makeDetail(overrides: Partial<ConversationDetail> = {}): ConversationDe
     taken_over_at: null,
     last_read_at: new Date().toISOString(),
     message_count: 0,
-    unread_count: 0,
     created_at: new Date().toISOString(),
     reactivation_request: null,
     flagged_at: FLAGGED_AT,
@@ -77,7 +76,7 @@ function makeConflict(): Error {
 }
 
 const REACTIVATION = {
-  child: { id: "ch1", name: "Emma Gómez", is_active: false, archived: true },
+  child: { id: "ch1", name: "Emma Gómez", archived: true },
 };
 
 let current: ConversationDetail;

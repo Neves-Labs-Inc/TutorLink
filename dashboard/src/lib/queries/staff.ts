@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
+import type { QueryClient } from '@tanstack/react-query'
 import { api, errorStatus } from '@/lib/api'
+import { BOOKING_QUERY_KEY, bookingSearchParams } from '@/lib/queries/bookings'
 import type { Page } from '@/lib/queries/page'
 
 // A Booking's Staff member is one of these; a Developer is never bookable.
@@ -135,4 +137,88 @@ export const staffDirectoryQueries = {
       // A missing member won't appear on a second ask; anything else gets the app's one retry.
       retry: (failureCount, error) => !isStaffMissing(error) && failureCount < DETAIL_RETRIES,
     }),
+
+  // How many live Bookings (Pending, Confirmed) they have from today on: what an archive leaves
+  // waiting for the office. Under ['bookings', 'list'], so Booking writes refresh it.
+  upcomingBookingCount: (userId: string, today: string) =>
+    queryOptions({
+      queryKey: [...BOOKING_QUERY_KEY, 'list', 'staff-upcoming-count', userId, today],
+      queryFn: async () => {
+        const search = bookingSearchParams({
+          user_id: userId,
+          status: ['pending', 'confirmed'],
+          from: today,
+          page_size: 1,
+        })
+        const response = await api.get<Page<unknown>>(`/api/bookings?${search}`)
+
+        return response.data.total
+      },
+    }),
 }
+
+// Staff writes (Admins only; the API refuses the rest). `POST /api/users` and every account write
+// answer with the Staff row.
+export type StaffCreate = {
+  email: string
+  name: string
+  role: StaffRole
+  send_invite: boolean
+  // A Tutor's or Manager's teaching profile; an Admin has none.
+  tutor?: { phone_number: string }
+}
+
+export type StaffAccountUpdate = { name?: string; email?: string; role?: StaffRole }
+
+export type TeachingProfileUpdate = { phone_number?: string; bio?: string | null }
+
+// The one warning a Staff archive raises; sending it says the Admin saw the count.
+const STAFF_BOOKINGS_WARNING = 'archived_staff_bookings'
+
+export const createStaff = async (data: StaffCreate): Promise<StaffRead> => {
+  const response = await api.post<StaffRead>('/api/users', data)
+
+  return response.data
+}
+
+export const updateStaffAccount = async (
+  userId: string,
+  data: StaffAccountUpdate,
+): Promise<StaffRead> => {
+  const response = await api.patch<StaffRead>(`/api/users/${encodeURIComponent(userId)}`, data)
+
+  return response.data
+}
+
+export const updateTeachingProfile = async (
+  tutorId: string,
+  data: TeachingProfileUpdate,
+): Promise<void> => {
+  await api.patch(`/api/tutors/${encodeURIComponent(tutorId)}`, data)
+}
+
+export const sendStaffInvite = async (userId: string): Promise<void> => {
+  await api.post(`/api/users/${encodeURIComponent(userId)}/invite`)
+}
+
+export const sendStaffPasswordReset = async (userId: string): Promise<void> => {
+  await api.post(`/api/users/${encodeURIComponent(userId)}/password-reset`)
+}
+
+export const archiveStaff = async (userId: string): Promise<void> => {
+  await api.post('/api/archive', {
+    type: 'staff',
+    id: userId,
+    confirm_warnings: [STAFF_BOOKINGS_WARNING],
+  })
+}
+
+export const restoreStaff = async (userId: string): Promise<void> => {
+  await api.post('/api/restore', { type: 'staff', id: userId })
+}
+
+// After any Staff write: the list, both tab counts, details, and the app's counts.
+export const refreshStaff = (client: QueryClient): Promise<unknown[]> =>
+  Promise.all(
+    [['staff'], ['counts']].map((queryKey) => client.invalidateQueries({ queryKey })),
+  )

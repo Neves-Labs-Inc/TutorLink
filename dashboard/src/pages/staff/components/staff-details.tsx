@@ -4,7 +4,7 @@
 // the tabs. Each tab body is its own module.
 import { useEffect, useRef, useState } from "react";
 import type { FocusEvent, ReactNode } from "react";
-import { ArrowLeft, Eye, Lock, SearchX } from "lucide-react";
+import { ArrowLeft, Eye, Lock, Pencil, SearchX } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArchivedBadge,
@@ -22,13 +22,23 @@ import {
 import type { Role } from "@/lib/auth/auth";
 import type { StaffRead } from "@/lib/queries/staff";
 import { roleLabel } from "@/lib/users/users";
+import SetupChecklist from "@/pages/staff/components/setup-checklist";
+import {
+  StaffAccountOverlays,
+  StaffHeaderActions,
+} from "@/pages/staff/components/staff-account-acts";
 import StaffChildrenTab from "@/pages/staff/components/staff-children-tab";
 import StaffDetailsSkeleton from "@/pages/staff/components/staff-details-skeleton";
 import StaffAvailabilityTab from "@/pages/staff/components/staff-availability-tab";
 import StaffBookingsTab from "@/pages/staff/components/staff-bookings-tab";
 import StaffOverviewTab from "@/pages/staff/components/staff-overview-tab";
 import StaffTimeOffTab from "@/pages/staff/components/staff-time-off-tab";
+import { useStaffAccountActs } from "@/pages/staff/hooks/use-staff-account-acts";
+import type { StaffAccountActs } from "@/pages/staff/hooks/use-staff-account-acts";
+import { useSlotCount } from "@/pages/staff/hooks/use-slot-count";
 import { useStaffDetails } from "@/pages/staff/hooks/use-staff-details";
+import { getSetupChecklist } from "@/pages/staff/lib/setup-checklist";
+import type { SetupChecklist as Checklist } from "@/pages/staff/lib/setup-checklist";
 import { getSignInLabel } from "@/pages/staff/lib/staff-labels";
 import type { StaffTab } from "@/pages/staff/lib/staff-labels";
 import type { Viewer } from "@/pages/time-off/lib/time-off-rules";
@@ -76,13 +86,47 @@ function StaffDetailsHeader({
   );
 }
 
+type OverviewActs = {
+  checklist: Checklist | null;
+  // Null for a viewer with no account acts (Managers).
+  acts: StaffAccountActs | null;
+  onOpenAvailability: () => void;
+};
+
+function getOverview(
+  staff: StaffRead,
+  can: StaffPermissions,
+  { checklist, acts, onOpenAvailability }: OverviewActs,
+): ReactNode {
+  const top = checklist && acts && (
+    <SetupChecklist
+      checklist={checklist}
+      isInviting={acts.isInviting}
+      onAct={(step) => {
+        if (step === "subjects") acts.subjects.open();
+        else if (step === "availability") onOpenAvailability();
+        else acts.invite();
+      }}
+    />
+  );
+  const subjectsAction = can.canEditTeaching && acts && (
+    <Button variant="soft" icon={Pencil} onClick={acts.subjects.open}>
+      Edit subjects
+    </Button>
+  );
+  return (
+    <StaffOverviewTab staff={staff} top={top} subjectsAction={subjectsAction} />
+  );
+}
+
 function getTabBodies(
   staff: StaffRead,
   can: StaffPermissions,
   viewer: Viewer,
+  overview: ReactNode,
 ): Record<StaffTab, ReactNode> {
   return {
-    overview: <StaffOverviewTab staff={staff} />,
+    overview,
     availability: (
       <StaffAvailabilityTab staff={staff} canEdit={can.canEditTeaching} />
     ),
@@ -114,6 +158,11 @@ export default function StaffDetails({
 }: StaffDetailsProps): ReactNode {
   const details = useStaffDetails(staffId);
   const { staff } = details;
+  const isAdminViewer = viewerRole === "admin" || viewerRole === "developer";
+  const acts = useStaffAccountActs(staff);
+  const isSettingUp =
+    isAdminViewer && staff !== undefined && !staff.archived && staff.role !== "admin";
+  const slotCount = useSlotCount(staff?.tutor_id ?? null, isSettingUp);
   const tabsRef = useRef<HTMLDivElement>(null);
   const staffShownId = staff?.id;
 
@@ -150,6 +199,7 @@ export default function StaffDetails({
 
   let header: ReactNode = null;
   let body: ReactNode = null;
+  let overlays: ReactNode = null;
   if (details.isLoading) {
     header = <Skeleton className="h-7 w-24 rounded-full" />;
     body = <StaffDetailsSkeleton />;
@@ -178,7 +228,21 @@ export default function StaffDetails({
   } else if (staff) {
     const can = getStaffPermissions(viewerRole, viewerId, staff);
     const notice = getNotice(viewerRole, can);
-    header = <StaffDetailsHeader staff={staff} />;
+    const accountActs = isAdminViewer ? acts : null;
+    const overview = getOverview(staff, can, {
+      checklist: getSetupChecklist(staff, viewerRole, can, slotCount),
+      acts: accountActs,
+      onOpenAvailability: () => details.changeTab("availability"),
+    });
+    header = (
+      <StaffDetailsHeader
+        staff={staff}
+        actions={accountActs && <StaffHeaderActions can={can} acts={accountActs} />}
+      />
+    );
+    overlays = accountActs && (
+      <StaffAccountOverlays staff={staff} can={can} acts={accountActs} />
+    );
     body = (
       <>
         <div className="flex items-center gap-4">
@@ -216,22 +280,34 @@ export default function StaffDetails({
             items={details.tabs}
           />
         </div>
-        <div className="pt-5">{getTabBodies(staff, can, { id: viewerId, role: viewerRole })[details.tab]}</div>
+        <div className="pt-5">
+          {
+            getTabBodies(
+              staff,
+              can,
+              { id: viewerId, role: viewerRole },
+              overview,
+            )[details.tab]
+          }
+        </div>
       </>
     );
   }
 
   return (
-    <DetailOverlay
-      isOpen={staffId !== undefined}
-      onClose={onClose}
-      title={staff ? `Staff: ${staff.name}` : "Staff details"}
-      backLabel={backLabel}
-      phoneMode="page"
-      isHeaderPinned
-      header={header}
-    >
-      {body}
-    </DetailOverlay>
+    <>
+      <DetailOverlay
+        isOpen={staffId !== undefined}
+        onClose={onClose}
+        title={staff ? `Staff: ${staff.name}` : "Staff details"}
+        backLabel={backLabel}
+        phoneMode="page"
+        isHeaderPinned
+        header={header}
+      >
+        {body}
+      </DetailOverlay>
+      {overlays}
+    </>
   );
 }

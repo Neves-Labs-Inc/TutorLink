@@ -76,7 +76,6 @@ function makeDetail(overrides: Partial<ConversationDetail> = {}): ConversationDe
     taken_over_at: null,
     last_read_at: hoursAgo(1),
     message_count: 0,
-    unread_count: 0,
     created_at: hoursAgo(48),
     reactivation_request: null,
     flagged_at: null,

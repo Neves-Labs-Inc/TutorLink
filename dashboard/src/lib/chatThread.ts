@@ -2,28 +2,11 @@ import axios from 'axios'
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
 
 import { api } from '@/lib/api'
-import type {
-  Conversation,
-  ConversationDetail,
-  FlagReason,
-  Message,
-  MessageAuthorKind,
-  MessageStatus,
-} from '@/lib/queries/conversations'
+import type { ConversationDetail, Message } from '@/lib/queries/conversations'
 import type { Page } from '@/lib/queries/page'
-
-export type ThreadAlignment = 'start' | 'end'
 
 export const takeoverConversation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${encodeURIComponent(conversationId)}/takeover`,
-  )
-
-  return response.data
-}
-
-export const releaseConversation = async (conversationId: string): Promise<ConversationDetail> => {
-  const response = await api.delete<ConversationDetail>(
     `/api/conversations/${encodeURIComponent(conversationId)}/takeover`,
   )
 
@@ -59,47 +42,8 @@ export const undoConversationHandled = async (conversationId: string): Promise<C
   return response.data
 }
 
-const HANDLEABLE_FLAG_REASONS: readonly FlagReason[] = [
-  'stuck',
-  'didnt_understand',
-  'guardian_link_request',
-  'booking_request',
-  'question',
-]
-
-export const canMarkHandled = (
-  conversation: Pick<ConversationDetail, 'flag_reason' | 'flagged_at'>,
-): boolean =>
-  conversation.flag_reason !== null &&
-  conversation.flagged_at !== null &&
-  HANDLEABLE_FLAG_REASONS.includes(conversation.flag_reason)
-
 export const isFlagChangedError = (error: unknown): boolean =>
   axios.isAxiosError(error) && error.response?.status === 409
-
-export const messageAlignment = (authorKind: MessageAuthorKind): ThreadAlignment =>
-  authorKind === 'client' ? 'start' : 'end'
-
-const BOT_FAILED_LABEL = 'Failed to send'
-
-const ADMIN_STATUS_LABELS: Partial<Record<Message['status'], string>> = {
-  queued: 'Sending…',
-  sent: 'Sent',
-  delivered: 'Delivered',
-  failed: 'Failed to send',
-}
-
-// Admin replies show the whole delivery lifecycle. Bot replies also go queued → sent →
-// delivered/failed, but only a failure needs the office's attention, so that's all they show.
-// A client message carries no delivery state at all.
-export const messageStatusLabel = (
-  message: Pick<Message, 'author_kind' | 'status'>,
-): string | null => {
-  if (message.author_kind === 'bot') return message.status === 'failed' ? BOT_FAILED_LABEL : null
-  if (message.author_kind !== 'admin') return null
-
-  return ADMIN_STATUS_LABELS[message.status] ?? null
-}
 
 // A `message.updated` frame only ever changes a message already on screen; an id that isn't
 // there belongs to a page not loaded yet, and the refetch will carry it. Returning the same
@@ -190,45 +134,6 @@ export const assembleThread = (paged: Message[], pending: Message[]): Message[] 
     .reduce((thread, message) => reconcileLiveMessage(thread, message), paged)
 }
 
-const FAILED_ANNOUNCEMENT = 'A message failed to send.'
-const NO_BREAK_SPACE = '\u00A0'
-
-// Only a message already on screen moving to `failed` counts: one loaded failed, or an echo
-// replacing an optimistic bubble (a new id), is not a live change and the composer already says so.
-export const countNewlyFailed = (previous: Message[], next: Message[]): number => {
-  const previousStatuses = new Map(previous.map((message) => [message.id, message.status]))
-
-  return next.filter((message) => {
-    const before = previousStatuses.get(message.id)
-
-    return message.status === 'failed' && before !== undefined && before !== 'failed'
-  }).length
-}
-
-// Screen readers only speak a live region when its text changes, so every other batch carries a
-// trailing no-break space: two same-size batches in a row are both announced, with the same words.
-export const failedAnnouncement = (failedCount: number, batch: number): string => {
-  if (failedCount === 0) return ''
-
-  const words = failedCount === 1 ? FAILED_ANNOUNCEMENT : `${failedCount} messages failed to send.`
-
-  return batch % 2 === 0 ? `${words}${NO_BREAK_SPACE}` : words
-}
-
-// The send the socket refused stays on screen as "Failed to send", so the unsent text can still
-// be read and copied.
-export const markMessagesFailed = (thread: Message[], messageIds: ReadonlySet<string>): Message[] =>
-  thread.map((message) => (messageIds.has(message.id) ? { ...message, status: 'failed' } : message))
-
-// The socket refusing a send as window_closed only holds while the Guardian's last message is the
-// one it was refused against: a newer message reopens the window by itself.
-export type SocketClosedFlag = { lastClientMessageAt: string | null }
-
-export const socketSaysClosed = (
-  flag: SocketClosedFlag | null,
-  detail: Pick<ConversationDetail, 'last_client_message_at'>,
-): boolean => flag !== null && flag.lastClientMessageAt === detail.last_client_message_at
-
 // Long enough for a target that mounts a render or two later; short enough that a target which
 // never appears can't pull focus away from whatever the user moved on to.
 const FOCUS_REQUEST_TTL_MS = 1_000
@@ -240,36 +145,6 @@ export const focusRequest = (targets: string[], now: number): FocusRequest => ({
   targets,
   expiresAt: now + FOCUS_REQUEST_TTL_MS,
 })
-
-// Where focus sits: on <body>, inside a dialog (`state` is Radix's data-state, null for a
-// hand-rolled one like the mobile nav), or on a control in the page.
-export type FocusPlace = { kind: 'body' } | { kind: 'dialog'; state: string | null } | { kind: 'page' }
-
-// Focus on <body> was lost; focus in a closing dialog is about to be. An open dialog or sheet keeps it.
-export const isFocusAdrift = (place: FocusPlace): boolean =>
-  place.kind === 'body' || (place.kind === 'dialog' && place.state === 'closed')
-
-// A Take over, Transfer or Retry the API refused. Its detail refetch may swap the refused control
-// for another, so focus follows whichever control the fresh page offers.
-export type RefusedAction = { kind: 'takeover' } | { kind: 'transfer' } | { kind: 'retry'; messageId: string }
-
-// The closed-window line first: it is what a stale page most often refetches into.
-const REFUSAL_FOCUS_TARGETS = [
-  '[data-takeover-closed]',
-  '[data-transfer]',
-  '[data-takeover]:not([disabled])',
-  '[data-hand-back]',
-]
-
-// A refused Retry that is still offered keeps focus, so the user can try it again.
-export const refusalFocusTarget = <T>(
-  refused: RefusedAction,
-  find: (selector: string) => T | null,
-): T | null => {
-  const ownTargets = refused.kind === 'retry' ? [`[data-retry="${refused.messageId}"]:not([disabled])`] : []
-
-  return [...ownTargets, ...REFUSAL_FOCUS_TARGETS].map(find).find((found) => found !== null) ?? null
-}
 
 export const isFocusRequestLive = (request: FocusRequest | null, now: number): boolean =>
   request !== null && now < request.expiresAt
@@ -291,46 +166,10 @@ export const optimisticMessage = (
   reminder_child_names: null,
 })
 
-export const isHeldByAdmin = (
-  conversation: Pick<Conversation, 'status' | 'taken_over_by'>,
-  userId: string,
-): boolean => conversation.status === 'human' && conversation.taken_over_by?.id === userId
-
-export const isHeldByOtherAdmin = (
-  conversation: Pick<Conversation, 'status' | 'taken_over_by'>,
-  userId: string,
-): boolean =>
-  conversation.status === 'human' &&
-  conversation.taken_over_by !== null &&
-  conversation.taken_over_by.id !== userId
-
 // The oldest message on screen is the `before` marker paging back needs
 // (`api-design.md:1531-1537`); an empty thread has nothing to page back from.
 export const oldestCreatedAt = (thread: Message[]): string | null =>
   thread.length === 0 ? null : thread[0].created_at
-
-export const formatMessageTimestamp = (iso: string): string =>
-  new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(iso))
-
-export const canTransfer = isHeldByOtherAdmin
-
-export const TAKEOVER_CLOSED_NOTICE =
-  "Window closed: take over is only possible within 24 hours of the Guardian's last message."
-
-type WindowState = Pick<ConversationDetail, 'is_window_open'>
-
-// The API refuses a takeover or transfer outside the Guardian's 24-hour window.
-export const isTakeoverOffered = (detail: WindowState): boolean => detail.is_window_open
-
-export const isTransferOffered = (detail: WindowState): boolean => detail.is_window_open
-
-export const takeoverClosedNotice = (detail: WindowState): string | null =>
-  detail.is_window_open ? null : TAKEOVER_CLOSED_NOTICE
 
 export const joinNames = (names: string[]): string => {
   let joined: string
@@ -341,129 +180,6 @@ export const joinNames = (names: string[]): string => {
     joined = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
   }
   return joined
-}
-
-const MS_PER_HOUR = 3_600_000
-const HOURS_PER_DAY = 24
-const DAYS_SWITCH_HOURS = 48
-
-export const lastWroteAgo = (iso: string, now: Date): string => {
-  const hours = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / MS_PER_HOUR))
-
-  if (hours < DAYS_SWITCH_HOURS) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`
-
-  return `${Math.floor(hours / HOURS_PER_DAY)} days ago`
-}
-
-const WINDOW_RULE = 'WhatsApp only allows replies within 24 hours of their last message.'
-
-export const composerClosedNotice = (
-  detail: Pick<
-    ConversationDetail,
-    'is_window_open' | 'last_client_message_at' | 'guardian' | 'phone_number'
-  >,
-  now: Date,
-  socketSaidClosed: boolean,
-): string | null => {
-  if (detail.is_window_open && !socketSaidClosed) return null
-
-  const guardian = detail.guardian?.name ?? detail.phone_number
-  const lastWrote =
-    detail.last_client_message_at === null
-      ? `${guardian} hasn't written yet.`
-      : `${guardian} last wrote ${lastWroteAgo(detail.last_client_message_at, now)}.`
-
-  return `${lastWrote} ${WINDOW_RULE}`
-}
-
-export const OTHER_HOLDER_FALLBACK = 'another Staff member'
-const OTHER_HOLDER_FALLBACK_OPENING = 'Another Staff member'
-
-// A null holder is one whose name we don't have. Names stay exactly as written; only the
-// fallback gets a capital to open the sentence.
-export const transferConfirmBody = (holder: string | null, me: string | null): string => {
-  const opening = holder ?? OTHER_HOLDER_FALLBACK_OPENING
-  const mention = holder ?? OTHER_HOLDER_FALLBACK
-
-  return `${opening} is holding this chat. Take it over${me === null ? '' : ` as ${me}`}? ${mention} can no longer reply here.`
-}
-
-export const handBackConfirmBody = (guardian: string): string =>
-  `The bot starts a fresh flow, not from where this conversation left off. ${guardian} is told the booking assistant is back if they wrote in the last 24 hours.`
-
-export type SystemLineLabel = { text: string; isFailed: boolean; canRetry: boolean }
-
-const PROGRESS_WORDS: Partial<Record<MessageStatus, string>> = {
-  queued: 'sending',
-  sent: 'sent',
-  delivered: 'delivered',
-  read: 'read',
-}
-
-const FAILURE_REASONS: Record<string, string> = {
-  template_not_approved: 'template not approved',
-  window_closed: 'window closed',
-}
-
-const failureReason = (errorCode: string | null): string =>
-  errorCode === null ? '' : ` (${FAILURE_REASONS[errorCode] ?? `error ${errorCode}`})`
-
-const NOTICE_NAME_FALLBACK = 'Staff'
-
-const NOTICE_PROGRESS: Partial<Record<MessageStatus, string>> = {
-  queued: 'sending notice',
-  sent: 'notice sent',
-  delivered: 'delivered',
-  read: 'read',
-}
-
-const noticeProgress = (status: MessageStatus): string => NOTICE_PROGRESS[status] ?? 'notice sent'
-
-export const systemLineLabel = (
-  message: Pick<Message, 'system_kind' | 'status' | 'error_code' | 'reminder_child_names' | 'author' | 'body'>,
-  isWindowOpen: boolean,
-): SystemLineLabel => {
-  // Number-change and handoff notes are Staff-only and never sent, so they can't fail or retry.
-  const isStaffOnly =
-    message.system_kind === 'number_change_note' || message.system_kind === 'handoff_note'
-  const isFailed = message.status === 'failed' && !isStaffOnly
-  const reason = failureReason(message.error_code)
-  const progress = PROGRESS_WORDS[message.status] ?? 'sent'
-  const names = joinNames(message.reminder_child_names ?? [])
-  const name = message.author === null ? NOTICE_NAME_FALLBACK : message.author.name
-  let text = message.body
-  let canRetry = false
-
-  if (message.system_kind === 'takeover_notice' || message.system_kind === 'transfer_notice') {
-    const failedLabel =
-      message.system_kind === 'takeover_notice' ? 'Takeover notice' : 'Transfer notice'
-
-    text = isFailed
-      ? `${failedLabel} not delivered${reason}`
-      : `${name} joined the chat · ${noticeProgress(message.status)}`
-    // The API refuses a retry outside the window too.
-    canRetry = isFailed && isWindowOpen
-  } else if (message.system_kind === 'handback_notice') {
-    if (!isFailed) {
-      text = `Hand-back notice ${progress}`
-    } else if (message.error_code === 'window_closed') {
-      text = 'Hand-back notice not sent (window closed)'
-    } else {
-      text = `Hand-back notice not delivered${reason}`
-    }
-  } else if (message.system_kind === 'booking_reminder') {
-    text = isFailed
-      ? `Weekly reminder not delivered${names === '' ? '' : `: ${names}`}${reason}`
-      : `Weekly reminder sent${names === '' ? '' : `: ${names}`} · ${progress}`
-  } else if (message.system_kind === 'handoff_note') {
-    text = `Bot’s handoff note: ${message.body}`
-  } else if (message.system_kind === 'consent_notice') {
-    text = isFailed
-      ? `Reminder setting confirmation not delivered${reason}`
-      : `Reminder setting confirmed to Guardian · ${progress}`
-  }
-
-  return { text, isFailed, canRetry }
 }
 
 export type MessageAreaState = 'loading' | 'error' | 'empty' | 'ready'

@@ -152,6 +152,9 @@ function serve({
 }
 
 const panel = () => page.getByRole("dialog", { name: /^Staff: / });
+// The Availability editor's own Edit (the header has the account's Edit too).
+const availabilityEdit = () =>
+  panel().element().querySelector<HTMLElement>("[data-edit-button]");
 const stacked = () => page.getByRole("dialog", { name: /^Time off for / });
 const rowButtons = () =>
   panel().getByRole("button").elements().filter((el) => el.closest("li") && !el.closest("nav"));
@@ -194,7 +197,7 @@ describe.each(SIZES)("Staff tabs at %s", (_label, size) => {
       network.put.mockResolvedValue({ data: pageOf([{ ...slot, end_time: "19:00:00" }]) });
       await renderApp("/staff/u-ana?tab=availability");
       await expect.element(panel().getByText("3:00 PM – 6:00 PM")).toBeVisible();
-      await panel().getByRole("button", { name: "Edit" }).click();
+      await userEvent.click(availabilityEdit() as HTMLElement);
       await page.getByLabelText("Monday range 1 ends").fill("19:00");
       await page.getByRole("button", { name: "Save" }).click();
       await expect.element(page.getByText("Ana’s Availability saved.")).toBeVisible();
@@ -210,14 +213,12 @@ describe.each(SIZES)("Staff tabs at %s", (_label, size) => {
       await expect
         .element(panel().getByText("No time ranges yet"))
         .toBeVisible();
-      expect(panel().getByRole("button", { name: "Edit" }).elements()).toHaveLength(0);
+      expect(availabilityEdit()).toBeNull();
     });
 
     it("is editable on a Manager target", async () => {
       await renderApp("/staff/u-mo?tab=availability");
-      await expect
-        .element(panel().getByRole("button", { name: "Edit" }))
-        .toBeVisible();
+      await expect.poll(availabilityEdit).not.toBeNull();
     });
 
     it("is absent on an Admin target", async () => {

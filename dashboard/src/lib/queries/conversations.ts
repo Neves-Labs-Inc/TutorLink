@@ -28,7 +28,7 @@ export type ConversationGuardianRef = { id: string; name: string }
 export type ConversationAdminRef = { id: string; name: string }
 
 export type ReactivationRequest = {
-  child: { id: string; name: string; is_active: boolean; archived: boolean }
+  child: { id: string; name: string; archived: boolean }
 }
 
 export type Conversation = {
@@ -51,7 +51,6 @@ export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'un
   taken_over_at: string | null
   last_read_at: string
   message_count: number
-  unread_count: number
   created_at: string
   reactivation_request: ReactivationRequest | null
   flagged_at: string | null

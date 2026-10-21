@@ -52,7 +52,6 @@ const CHAT = {
   taken_over_at: null,
   last_read_at: "2026-10-20T12:00:00Z",
   message_count: 0,
-  unread_count: 0,
   created_at: "2026-10-01T12:00:00Z",
   reactivation_request: null,
   flagged_at: null,

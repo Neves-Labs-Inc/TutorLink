@@ -2,6 +2,7 @@
 // Archived tabs, search, Role and Sign-in state filters, and details
 // over the list. Admins add Staff; Managers only view. Developers are
 // never listed.
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { Archive, Eye, SearchX, UserPlus } from "lucide-react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
@@ -14,6 +15,7 @@ import {
   ErrorState,
   TableSkeleton,
 } from "@/components/kit/states/states";
+import AddStaffSheet from "@/pages/staff/components/add-staff-sheet";
 import StaffDetails from "@/pages/staff/components/staff-details";
 import StaffTable from "@/pages/staff/components/staff-table";
 import {
@@ -31,13 +33,9 @@ const STAFF_PATH = "/staff";
 type DetailsState = { isFromList?: boolean } | null;
 const TABLE_COLUMNS = 4;
 
-type StaffPageProps = {
-  // Opens Add staff (the account acts wire it).
-  onAddStaff?: () => void;
-};
-
-export default function StaffPage({ onAddStaff }: StaffPageProps): ReactNode {
+export default function StaffPage(): ReactNode {
   const navigate = useNavigate();
+  const [isAddOpen, setIsAddOpen] = useState(false);
   const { id: staffId } = useParams();
   // Router state is whatever the last navigation set; ours is DetailsState.
   const locationState = useLocation().state as DetailsState;
@@ -112,7 +110,7 @@ export default function StaffPage({ onAddStaff }: StaffPageProps): ReactNode {
             ? {
                 label: "Add staff",
                 icon: UserPlus,
-                onClick: () => onAddStaff?.(),
+                onClick: () => setIsAddOpen(true),
               }
             : undefined
         }
@@ -166,6 +164,9 @@ export default function StaffPage({ onAddStaff }: StaffPageProps): ReactNode {
         viewerId={viewerId ?? ""}
         onClose={handleCloseDetails}
       />
+      {isAdmin && (
+        <AddStaffSheet isOpen={isAddOpen} onClose={() => setIsAddOpen(false)} />
+      )}
     </>
   );
 }

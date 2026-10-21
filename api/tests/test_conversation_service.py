@@ -244,6 +244,8 @@ def test_a_conversation_is_unread_until_the_watermark_passes_its_last_message(
     read.last_read_at = NOON + _minutes(1)
     caught_up = _make_conversation(db, marker=marker, last_message_at=NOON + _minutes(2))
     caught_up.last_read_at = NOON + _minutes(1)
+    for conversation in (never_read, read, caught_up):
+        _make_message(db, conversation, body="hi", at=conversation.last_message_at)
     db.flush()
 
     unread, unread_total = _page(db, q=marker, unread=True)
@@ -284,7 +286,7 @@ def test_the_filters_compose_and_the_total_follows_them(db: Session) -> None:
     for _ in range(3):
         _make_conversation(db, marker=marker)
     wanted = _make_conversation(db, marker=marker)
-    flag(db, conversation=wanted, reason=FlagReason.PARSE_ERROR)
+    flag(db, conversation=wanted, reason=FlagReason.DIDNT_UNDERSTAND)
     _open_window(db, wanted)
     claim(db, conversation_id=wanted.id, user_id=admin.id)
 
@@ -374,6 +376,23 @@ def test_any_admin_may_release_not_only_the_holder(db: Session) -> None:
     assert detail.holder is None
 
 
+def test_hand_back_drops_the_pending_proposal(db: Session) -> None:
+    """A yes typed to Staff must never commit a Booking once the bot has the chat again."""
+    holder = _make_user(db)
+    conversation = _make_conversation(db)
+    _open_window(db, conversation)
+    conversation.proposal_actions = [{"kind": "book"}]
+    conversation.proposed_at = NOON
+    db.flush()
+    claim(db, conversation_id=conversation.id, user_id=holder.id)
+    assert _row(db, conversation.id).proposed_at == NOON
+
+    release(db, conversation_id=conversation.id)
+
+    row = _row(db, conversation.id)
+    assert (row.proposal_actions, row.proposed_at) == (None, None)
+
+
 def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_success(db: Session) -> None:
     conversation = _make_conversation(db)
 
@@ -442,33 +461,17 @@ def test_a_concurrent_claim_is_serialized_by_the_row_lock(
         _delete_committed_conversation(committed_sessions, committed)
 
 
-def test_marking_read_clears_the_unread_count_without_touching_the_messages(
+def test_marking_read_stamps_the_watermark_without_touching_the_messages(
     db: Session,
 ) -> None:
     conversation = _make_conversation(db, last_message_at=NOON)
     _make_message(db, conversation, body="one", at=NOON - _minutes(2))
     _make_message(db, conversation, body="two", at=NOON)
 
-    before = get_detail(db, conversation_id=conversation.id)
     after = mark_read(db, conversation_id=conversation.id)
 
-    assert before.unread_count == 2
-    assert after.unread_count == 0
     assert after.message_count == 2
     assert after.conversation.last_read_at is not None
-
-
-def test_the_unread_count_is_the_messages_newer_than_the_watermark(db: Session) -> None:
-    conversation = _make_conversation(db, last_message_at=NOON + _minutes(5))
-    _make_message(db, conversation, body="read", at=NOON)
-    _make_message(db, conversation, body="unread", at=NOON + _minutes(5))
-    conversation.last_read_at = NOON + _minutes(1)
-    db.flush()
-
-    detail = get_detail(db, conversation_id=conversation.id)
-
-    assert detail.message_count == 2
-    assert detail.unread_count == 1
 
 
 def test_linking_a_guardian_attaches_intake_to_the_thread(db: Session) -> None:
@@ -488,7 +491,7 @@ def test_a_second_flag_overwrites_the_first(db: Session) -> None:
     and later got stuck has to show the state it is actually in."""
     conversation = _make_conversation(db)
 
-    flag(db, conversation=conversation, reason=FlagReason.PARSE_ERROR)
+    flag(db, conversation=conversation, reason=FlagReason.DIDNT_UNDERSTAND)
     first_flagged_at = conversation.flagged_at
     flag(db, conversation=conversation, reason=FlagReason.STUCK)
 
@@ -576,7 +579,7 @@ def test_resolving_a_request_ends_it_and_clears_its_flag(
     assert row.reactivation_child_id is None
     assert row.flag_reason is None
     assert row.flagged_at is None
-    assert db.get_one(Child, child.id).is_active is active_after
+    assert db.get_one(Child, child.id).is_archived is (not active_after)
 
 
 @pytest.mark.parametrize(("approve", "active_after"), [(True, True), (False, False)])
@@ -597,20 +600,20 @@ def test_resolving_a_request_keeps_a_flag_that_came_after_it(
     assert row.reactivation_child_id is None
     assert row.flag_reason is FlagReason.STUCK
     assert row.flagged_at == stuck_at
-    assert db.get_one(Child, child.id).is_active is active_after
+    assert db.get_one(Child, child.id).is_archived is (not active_after)
 
 
 def test_approving_a_child_that_is_already_active_still_ends_the_request(db: Session) -> None:
     child = _make_child(db)
     conversation = _make_conversation(db)
     request_reactivation(db, conversation=conversation, child_id=child.id)
-    child.is_active = True
+    child.is_archived = False
     db.flush()
 
     resolve_reactivation(db, conversation_id=conversation.id, approve=True)
 
     assert _row(db, conversation.id).reactivation_child_id is None
-    assert db.get_one(Child, child.id).is_active is True
+    assert db.get_one(Child, child.id).is_archived is False
 
 
 @pytest.mark.parametrize("approve", [True, False])
@@ -701,14 +704,14 @@ def test_a_guardians_turn_waits_behind_an_approval_and_neither_deadlocks(
     approval_locked = threading.Event()
     errors: list[Exception] = []
     seen_active: list[bool] = []
-    update_child = child_service.update_child
+    set_child_archived = child_service.set_child_archived
 
-    def update_child_after_a_pause(db: Session, **fields: Any) -> Child:
+    def set_child_archived_after_a_pause(db: Session, **fields: Any) -> list[uuid.UUID]:
         approval_locked.set()
         time.sleep(0.4)
-        return update_child(db, **fields)
+        return set_child_archived(db, **fields)
 
-    monkeypatch.setattr(child_service, "update_child", update_child_after_a_pause)
+    monkeypatch.setattr(child_service, "set_child_archived", set_child_archived_after_a_pause)
 
     def approval() -> None:
         try:
@@ -837,7 +840,7 @@ def _touch_conversation(session: Session, conversation_id: uuid.UUID) -> None:
 def _read_child_for_share(session: Session, child_id: uuid.UUID) -> bool:
     """The turn's read of a child, locked the way `booking_write_service._resolve` locks it."""
     return session.execute(
-        text("SELECT is_active FROM children WHERE id = :id FOR SHARE"), {"id": child_id}
+        text("SELECT NOT is_archived FROM children WHERE id = :id FOR SHARE"), {"id": child_id}
     ).scalar_one()
 
 
@@ -858,7 +861,7 @@ def _assert_approved(sessions: sessionmaker[Session], row: _CommittedRequest) ->
 
         assert conversation.reactivation_child_id is None
         assert conversation.flag_reason is None
-        assert child.is_active is True
+        assert child.is_archived is False
 
 
 def _blind_once() -> Callable[..., Conversation | None]:
@@ -952,7 +955,7 @@ def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:
     guardian = Guardian(
         name=name or f"Guardian {uuid.uuid4().hex[:8]}",
         phone_number=_phone_number(),
-        is_active=True,
+        is_archived=False,
     )
     db.add(guardian)
     db.flush()
@@ -964,7 +967,7 @@ def _make_child(db: Session) -> Child:
         name=f"Child {uuid.uuid4().hex[:8]}",
         grade_level=3,
         school_name="Elm Primary",
-        is_active=False,
+        is_archived=True,
     )
     db.add(child)
     db.flush()

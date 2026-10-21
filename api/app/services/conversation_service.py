@@ -31,8 +31,8 @@ leaves the `Session` usable when it fires. The predicate is a named seam rather 
 query so the constraint path is reachable by a test (**D-I**).
 
 **Every timestamp this module writes comes from Python's clock**, as `auth_service` writes
-`revoked_at`. One clock matters here: `unread` compares `messages.created_at` against
-`conversations.last_read_at`, and a server-side `now()` on one side of that comparison with a
+`revoked_at`. One clock matters here: `unread` compares an inbound `messages.created_at`
+against `conversations.last_read_at`, and a server-side `now()` on one side of that comparison with a
 process-side `datetime` on the other would make the watermark wrong by whatever the two clocks
 disagree by. `resolve_or_create` therefore sets `last_message_at` explicitly rather than letting
 the column's `now()` default fire.
@@ -49,7 +49,7 @@ the guardian (OQ-72).
 **Lock order is conversation → child** (P7D-E, the order `child_service` documents as P7C-S).
 The webhook's inbound insert flushes `last_message_at`, which locks the conversation row before
 the bot reads any child; `resolve_reactivation` locks the conversation first and only then the
-child, through `child_service.update_child`. Taken the other way round, an approval racing a
+child, through `child_service.set_child_archived`. Taken the other way round, an approval racing a
 guardian's turn on the same conversation could deadlock.
 
 **WhatsApp's 24-hour window is measured from the Guardian's latest `client` message only**
@@ -62,12 +62,25 @@ the Guardian is reached outside the bot, so there is nothing for Staff to take o
 """
 
 import datetime
+import enum
 import uuid
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, ScalarSelect, Select, delete, func, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    ScalarSelect,
+    Select,
+    and_,
+    case,
+    delete,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models.child import Child
 from app.models.conversation import Conversation
@@ -81,7 +94,7 @@ from app.models.enums import (
 from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
-from app.services import child_service
+from app.services import bot_worker, child_service, intake_progress
 from app.services.phone_service import InvalidPhoneNumber, normalize_phone_number
 
 # WhatsApp's customer-service window: free-form messages only within this of the last inbound.
@@ -94,6 +107,14 @@ LATEST_CONVERSATION_FIRST = (Conversation.last_message_at.desc(), Conversation.i
 
 _LIKE_ESCAPE = "\\"
 _LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+
+
+class HolderFilter(enum.StrEnum):
+    """The list's **With** filter: who has the conversation, from the calling admin's side."""
+
+    BOT = "bot"
+    MINE = "mine"
+    OTHERS = "others"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +132,9 @@ class ConversationListItem:
     holder: User | None
     last_message_preview: str | None
     unread: bool
+    last_client_message_at: datetime.datetime | None
+    is_window_open: bool
+    intake_in_progress: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,10 +146,10 @@ class ConversationDetail:
     guardian: Guardian | None
     holder: User | None
     message_count: int
-    unread_count: int
     reactivation_child: Child | None
     last_client_message_at: datetime.datetime | None
     is_window_open: bool
+    intake_in_progress: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +231,10 @@ class FlagChanged(ConversationServiceError):
     """Mark handled with a `flagged_at` that is no longer the stored one (SA-38)."""
 
 
+class NothingToUndo(ConversationServiceError):
+    """Undo with no Mark done to reverse, or one the chat has moved on from."""
+
+
 class FlagNeedsReactivationDecision(ConversationServiceError):
     """Mark handled on a `reactivation_request` flag, which only Approve or Deny ends (OQ-89)."""
 
@@ -254,10 +282,19 @@ def resolve_or_create(db: Session, *, phone_number: str) -> Conversation:
 def lock_thread_at(db: Session, *, phone_number: str) -> Conversation | None:
     """The thread at `phone_number`, locked for the rest of the transaction; `None` if none.
 
-    For a caller about to write a Guardian at that number: taken first, the lock keeps the
-    order conversation first, so a turn at the number running Intake finishes (and wins the
-    number) instead of deadlocking on the Guardian row.
+    For a Staff write about to create a Guardian at that number. A bot turn running on the
+    thread is waited for first (`bot_worker.hold_turns`), and no new one starts until the
+    write commits: a turn's Intake creates its Guardian without the row lock and takes it only
+    at its end, so a Staff write holding the row while it waits on the turn's Guardian would
+    deadlock with it. Waiting instead, the turn finishes and wins the number, and the Staff
+    write is the 409. Never call it inside a turn: see `hold_turns`.
     """
+    bot_worker.hold_turns(
+        db,
+        conversation_ids=db.scalars(
+            select(Conversation.id).where(Conversation.phone_number == phone_number)
+        ).all(),
+    )
     return _conversation_for(db, phone_number=phone_number)
 
 
@@ -271,7 +308,20 @@ def lock_number_change(
     Guardian's new number, so the lock order stays conversation first. Holding the thread at
     the new number before the Guardian row means a turn there finishes first: an Intake that
     ends by writing a Guardian at that number wins it, and the change is the 409.
+
+    A bot turn running on either thread is waited for first (`bot_worker.hold_turns`), and no
+    new one starts until the change commits. A turn holds the row lock only at its start and
+    end, so without this a merge would wait on the turn's open transaction and then fail on a
+    message the turn wrote into the thread it deletes, or deadlock with the turn's end lock.
     """
+    bot_worker.hold_turns(
+        db,
+        conversation_ids=db.scalars(
+            select(Conversation.id).where(
+                Conversation.phone_number.in_((previous_number, phone_number))
+            )
+        ).all(),
+    )
     found: dict[str, Conversation | None] = {}
     # One order for every change, so two changes over the same pair of numbers cannot deadlock.
     for number in sorted({previous_number, phone_number}):
@@ -301,12 +351,19 @@ def follow_number_change(db: Session, *, change: NumberChange) -> Conversation |
     The savepoint covers a first message from the new number that opened a thread there after
     the lock: `UNIQUE (phone_number)` refuses the move, the savepoint unwinds it, and the
     number change goes on without it rather than as a 500.
+
+    The bot's pending proposal on both threads is dropped: an offer made at either number
+    belongs to whoever was there before, so a yes after the change never commits it.
     """
     guardian_thread = change.guardian_thread
     at_new_number = change.thread_at_new_number
 
     if change.is_new_number_thread_anothers:
         return None
+
+    for thread in (guardian_thread, at_new_number):
+        if thread is not None:
+            _drop_proposal(thread)
 
     followed: Conversation | None = None
     if guardian_thread is not None and at_new_number is not None:
@@ -342,12 +399,55 @@ def owner_id(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     return guardian.id if is_holding else None
 
 
+def owner_ids(
+    db: Session, *, conversation_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """`owner_id` for many threads in one query. Same rule, so the two cannot disagree.
+
+    A Guardian whose stored number equals the thread's holds it outright. Only a mismatch needs
+    `_spellings` (which reads a setting), so the ordinary page costs no per-row query.
+    """
+    rows = db.execute(
+        select(Conversation.id, Conversation.phone_number, Guardian.id, Guardian.phone_number)
+        .outerjoin(Guardian, Guardian.id == Conversation.guardian_id)
+        .where(Conversation.id.in_(conversation_ids))
+    ).all()
+
+    return {
+        conversation_id: _holder_id(
+            db,
+            thread_number=thread_number,
+            guardian_id=guardian_id,
+            guardian_number=guardian_number,
+        )
+        for conversation_id, thread_number, guardian_id, guardian_number in rows
+    }
+
+
+def _holder_id(
+    db: Session,
+    *,
+    thread_number: str,
+    guardian_id: uuid.UUID | None,
+    guardian_number: str | None,
+) -> uuid.UUID | None:
+    if guardian_id is None or guardian_number is None:
+        return None
+
+    is_holding = guardian_number == thread_number or guardian_number in _spellings(
+        db, phone_number=thread_number
+    )
+
+    return guardian_id if is_holding else None
+
+
 def link_to_holder(db: Session, *, conversation: Conversation) -> uuid.UUID | None:
     """The Guardian holding the thread's number, linking the thread to them when it names
     someone else or no one; `None` when nobody holds it.
 
-    For a turn the bot does not take (a thread under Takeover), which would otherwise leave a
-    thread left behind at a number showing, and recording consent for, its old Guardian.
+    The webhook asks this for every inbound message, and the agent's tools before they write:
+    otherwise a thread left behind at a number would show, and record consent for, its old
+    Guardian.
     """
     owner = owner_id(db, conversation=conversation)
 
@@ -390,13 +490,18 @@ def list_conversations(
     q: str | None,
     limit: int,
     offset: int,
+    holders: Collection[HolderFilter] = (),
+    caller_id: uuid.UUID | None = None,
 ) -> tuple[list[ConversationListItem], int]:
     """One page of the inbox, newest activity first, plus the total matching before paging.
 
-    Ordered `last_message_at DESC` because the list is an inbox and nothing reads it the other
-    way (`api-design.md:1434-1435`); `id` is the tiebreaker so that two conversations sharing a
-    timestamp cannot be ordered differently by two executions and make page two repeat or skip
-    a row page one already showed.
+    Ordered `last_message_at DESC` because the list is an inbox (`api-design.md:1434-1435`);
+    `id` is the tiebreaker so that two conversations sharing a timestamp cannot be ordered
+    differently by two executions and make page two repeat or skip a row page one already
+    showed. `flagged=True` is the Needs attention queue and flips to `flagged_at ASC`, oldest
+    flag first, because the longest-waiting chat is the one to open next. Within it, chats whose
+    Takeover window is open come first, closing soonest first (oldest Guardian message), since
+    those are about to lose Takeover; the rest follow by flag age.
 
     `q` is a case-insensitive substring of the stored phone number **or** the linked guardian's
     name (`api-design.md:1437`), and is deliberately **not** phone-normalised (**P5-C**): a
@@ -404,19 +509,44 @@ def list_conversations(
     400. A conversation with no guardian is still matched on its number, which is the whole
     point of the outer join — those are the threads an admin most wants to find.
 
-    `unread` is computed against `last_read_at`, one watermark shared by every admin
-    (`erd.md:281-284`). The same predicate decides the filter and the flag on each row, so the
-    two can never disagree.
+    `unread` is a Guardian message newer than `last_read_at`, one watermark shared by every
+    admin (`erd.md:281-284`); bot, office and system messages never make a chat Unread. The
+    same predicate decides the filter and the flag on each row, so the two can never disagree.
+
+    `holders` is the **With** filter, OR-ed within itself and AND-ed with everything else: `bot`
+    is the assistant's, `mine` is taken over by `caller_id`, `others` is taken over by anyone
+    else. Empty, or all three, is no filter. `mine` and `others` need `caller_id`.
     """
-    matching = _matching_conversations(status=status, unread=unread, flagged=flagged, q=q)
-    total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
+    matching = _matching_conversations(
+        status=status,
+        unread=unread,
+        flagged=flagged,
+        q=q,
+        holders=holders,
+        caller_id=caller_id,
+    )
+    # One clock reading, so the SQL order and each row's flag agree on which windows are open.
+    now = datetime.datetime.now(tz=datetime.UTC)
+    last_client_message_at = _last_client_message_at_column()
+    order = (
+        _needs_attention_order(last_client_message_at, now=now)
+        if flagged
+        else LATEST_CONVERSATION_FIRST
+    )
+    total = _count(db, matching)
     rows = db.execute(
-        matching.add_columns(Guardian, User, _last_message_preview(), _unread())
+        matching.add_columns(
+            Guardian, User, _last_message_preview(), _unread(), last_client_message_at
+        )
         .outerjoin(User, User.id == Conversation.taken_over_by_user_id)
-        .order_by(Conversation.last_message_at.desc(), Conversation.id.desc())
+        .order_by(*order)
         .limit(limit)
         .offset(offset)
     ).all()
+    # One batched read for the page, so the badge adds a fixed number of queries, not one a row.
+    in_progress = intake_progress.intake_in_progress_for(
+        db, [conversation.id for conversation, *_ in rows]
+    )
     items = [
         ConversationListItem(
             conversation=conversation,
@@ -424,11 +554,23 @@ def list_conversations(
             holder=holder,
             last_message_preview=preview,
             unread=unread_row,
+            last_client_message_at=last_client,
+            is_window_open=is_window_open(last_client, now=now),
+            # A thread merged away between the page query and the batch has no entry; it still
+            # shows, so default to the badge rather than failing the whole inbox.
+            intake_in_progress=in_progress.get(conversation.id, True),
         )
-        for conversation, guardian, holder, preview, unread_row in rows
+        for conversation, guardian, holder, preview, unread_row, last_client in rows
     ]
 
     return items, total
+
+
+def count_conversations(
+    db: Session, *, unread: bool | None = None, flagged: bool | None = None
+) -> int:
+    """What `list_conversations` totals for these filters (no status, no search), without rows."""
+    return _count(db, _matching_conversations(status=None, unread=unread, flagged=flagged, q=None))
 
 
 def claim(db: Session, *, conversation_id: uuid.UUID, user_id: uuid.UUID) -> OwnershipChange:
@@ -506,7 +648,9 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     which is why nothing automatic is needed there.
 
     Releasing a conversation that is already `bot` is a no-op success, for the same reason a
-    re-claim by the holder is.
+    re-claim by the holder is. A real release also clears the Needs attention flag (the admin
+    dealt with the chat), forgets the last Mark done, so Undo cannot follow a Hand back, and
+    drops the bot's pending proposal, so a yes typed to Staff never commits a Booking.
     """
     conversation = _locked(db, conversation_id=conversation_id)
 
@@ -516,6 +660,9 @@ def release(db: Session, *, conversation_id: uuid.UUID) -> OwnershipChange:
     conversation.status = ConversationStatus.BOT
     conversation.taken_over_by_user_id = None
     conversation.taken_over_at = None
+    _clear_flag_on_hand_back(db, conversation)
+    _clear_handled(conversation)
+    _drop_proposal(conversation)
     db.flush()
 
     return OwnershipChange(detail=_detail(db, conversation), is_changed=True)
@@ -531,6 +678,70 @@ def is_window_open(
 def window_is_open(db: Session, *, conversation_id: uuid.UUID) -> bool:
     """The window rule for one thread, read now. Checked before every send."""
     return _is_window_open(db, conversation_id=conversation_id)
+
+
+def flag_closed_reply_windows(db: Session, *, now: datetime.datetime) -> list[uuid.UUID]:
+    """Flag `reply_window_closed` on every Taken-over thread whose reply window closed at
+    `now`, once per window; return the ids flagged.
+
+    A window counts once: `reply_window_flagged_for` records the last client message whose
+    closed window was flagged, so neither a second run nor a Mark done brings it back until the
+    Guardian writes again. A thread already flagged for another reason is left alone and is
+    picked up by the first run after that flag is cleared.
+
+    Candidates are found unlocked, then each is locked (conversation row first, the order every
+    writer here takes) and judged again on a fresh read. `SKIP LOCKED` means a thread busy in a
+    webhook turn or a takeover is left to the next run rather than waited on: the scheduler
+    holds every row it flags until its one commit, so waiting could join a cycle with a number
+    change, which locks two threads in phone order. Nothing here commits.
+    """
+    last_client_message_at = _last_client_message_at_column()
+    candidate_ids = db.scalars(
+        select(Conversation.id)
+        .where(
+            Conversation.status == ConversationStatus.HUMAN,
+            Conversation.flag_reason.is_(None),
+            last_client_message_at <= now - WHATSAPP_WINDOW,
+            Conversation.reply_window_flagged_for.is_distinct_from(last_client_message_at),
+        )
+        .order_by(Conversation.id)
+    ).all()
+
+    flagged: list[uuid.UUID] = []
+    for conversation_id in candidate_ids:
+        conversation = db.execute(
+            select(Conversation)
+            .where(Conversation.id == conversation_id)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if conversation is None:
+            continue
+
+        window_opened_at = _last_client_message_at(db, conversation_id)
+        if _is_reply_window_unflagged_and_closed(conversation, window_opened_at, now=now):
+            flag(db, conversation=conversation, reason=FlagReason.REPLY_WINDOW_CLOSED)
+            conversation.reply_window_flagged_for = window_opened_at
+            db.flush()
+            flagged.append(conversation_id)
+
+    return flagged
+
+
+def _is_reply_window_unflagged_and_closed(
+    conversation: Conversation,
+    last_client_message_at: datetime.datetime | None,
+    *,
+    now: datetime.datetime,
+) -> bool:
+    # The candidate query's predicate, re-judged under the lock on the row as it now stands.
+    return (
+        conversation.status is ConversationStatus.HUMAN
+        and conversation.flag_reason is None
+        and last_client_message_at is not None
+        and not is_window_open(last_client_message_at, now=now)
+        and conversation.reply_window_flagged_for != last_client_message_at
+    )
 
 
 def mark_read(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
@@ -554,10 +765,20 @@ def touch_last_message(
 
     Called by `message_service` on every insert rather than by each of its callers, so the
     inbox's ordering key and the newest message's `created_at` are the same instant by
-    construction. That equality is what lets `unread` be decided from the conversation row
-    alone, without a correlated read of `messages`.
+    construction. `unread` does not read it: that is decided from the inbound messages.
     """
     conversation.last_message_at = at
+    db.flush()
+
+    return conversation
+
+
+def mark_turn_due(
+    db: Session, *, conversation: Conversation, at: datetime.datetime
+) -> Conversation:
+    """Schedule the bot's debounced turn for `at`, replacing any earlier time: each new message
+    pushes it on. `bot_worker` runs the turn and clears the marker."""
+    conversation.turn_due_at = at
     db.flush()
 
     return conversation
@@ -566,12 +787,8 @@ def touch_last_message(
 def link_guardian(
     db: Session, *, conversation: Conversation, guardian_id: uuid.UUID
 ) -> Conversation:
-    """Attach the guardian intake has just created to the thread that asked for it.
-
-    One of the two mutations the webhook applies from a `BotTurn` (**P7-C**): the bot returns
-    what it decided and this module writes it, so the flow machine stays testable without a
-    `conversations` row.
-    """
+    """Attach a Guardian to the thread at their number: the one Intake has just created, or the
+    number's current holder."""
     conversation.guardian_id = guardian_id
     db.flush()
 
@@ -581,9 +798,9 @@ def link_guardian(
 def set_language(
     db: Session, *, conversation: Conversation, language: Language | None
 ) -> Conversation:
-    """Store the Guardian language on this thread: what the bot detected (P7-C: the webhook
-    writes what `bot_service` decided), or what Staff chose. `None` is "not detected", so
-    English is used until the bot detects one again."""
+    """Store the Guardian language on this thread: what the bot detected (a Spanish keyword, or
+    the agent's reply), or what Staff chose. `None` is "not detected", so English is used until
+    the bot detects one again."""
     conversation.language = language
     db.flush()
 
@@ -659,12 +876,12 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
     """End the pending reactivation request: `approve` reactivates the child, deny does not.
 
     The conversation row is locked first and the child only afterwards, inside
-    `child_service.update_child` — the webhook's order, so an approval racing a guardian's turn
-    waits rather than deadlocks (P7D-E). Approving a child that is already active is a no-op on
+    `child_service.set_child_archived` — the webhook's order, so an approval racing a guardian's
+    turn waits rather than deadlocks (P7D-E). Approving a child that is already active is a no-op on
     the child and still ends the request.
 
     The flag is cleared only while it is still `reactivation_request` (REQ-131.2): a later
-    `stuck` or `parse_error` overwrote it and is a separate reason for an admin to look, which
+    `stuck` or `didnt_understand` overwrote it and is a separate reason for an admin to look, which
     ending the request does not answer. No message is written and nothing is sent (OQ-72).
     """
     conversation = _locked(db, conversation_id=conversation_id)
@@ -674,18 +891,8 @@ def resolve_reactivation(db: Session, *, conversation_id: uuid.UUID, approve: bo
         raise NoReactivationPending(f"conversation {conversation_id} has no request pending")
 
     if approve:
-        child_service.update_child(
-            db,
-            child_id=child_id,
-            guardian_ids=None,
-            home_ids=None,
-            name=None,
-            date_of_birth=None,
-            grade_level=None,
-            school_name=None,
-            notes=None,
-            is_active=True,
-            expected_cancellations=None,
+        child_service.set_child_archived(
+            db, child_id=child_id, is_archived=False, expected_cancellations=None
         )
 
     conversation.reactivation_child_id = None
@@ -740,14 +947,67 @@ def mark_handled(
                 f"conversation {conversation_id} has a reactivation request to decide"
             )
 
-        if conversation.reactivation_child_id is not None:
-            flag(db, conversation=conversation, reason=FlagReason.REACTIVATION_REQUEST)
-        else:
-            conversation.flag_reason = None
-            conversation.flagged_at = None
+        handled_at = datetime.datetime.now(tz=datetime.UTC)
+        conversation.handled_flag_reason = conversation.flag_reason
+        conversation.handled_flagged_at = conversation.flagged_at
+        conversation.handled_at = handled_at
+        _clear_or_resurface_flag(db, conversation)
+
+        # Undo recognises the resurfaced request by this equality.
+        if conversation.flag_reason is FlagReason.REACTIVATION_REQUEST:
+            conversation.flagged_at = handled_at
             db.flush()
 
     return _detail(db, conversation)
+
+
+def undo_handled(db: Session, *, conversation_id: uuid.UUID) -> ConversationDetail:
+    """Put back the flag the last Mark done cleared. One Undo per Mark done, with no time limit.
+
+    Allowed only while the chat still looks the way Mark done left it: unflagged, or flagged
+    `reactivation_request` with `flagged_at == handled_at`, which is the pending request Mark
+    done resurfaced (the restored flag overwrites it; the request column is untouched). Any other
+    flag means the bot flagged the chat again since, and Undo must not bury that.
+    """
+    conversation = _locked(db, conversation_id=conversation_id)
+    is_resurfaced_request = (
+        conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
+        and conversation.flagged_at == conversation.handled_at
+    )
+    can_undo = conversation.handled_flag_reason is not None and (
+        conversation.flag_reason is None or is_resurfaced_request
+    )
+    if not can_undo:
+        raise NothingToUndo(f"conversation {conversation_id} has no Mark done to undo")
+
+    conversation.flag_reason = conversation.handled_flag_reason
+    conversation.flagged_at = conversation.handled_flagged_at
+    _clear_handled(conversation)
+    db.flush()
+
+    return _detail(db, conversation)
+
+
+def _clear_or_resurface_flag(db: Session, conversation: Conversation) -> None:
+    """Drop the flag, or bring a pending reactivation request back through `flag()`."""
+    if conversation.reactivation_child_id is not None:
+        flag(db, conversation=conversation, reason=FlagReason.REACTIVATION_REQUEST)
+    else:
+        conversation.flag_reason = None
+        conversation.flagged_at = None
+        db.flush()
+
+
+def _clear_flag_on_hand_back(db: Session, conversation: Conversation) -> None:
+    # Only a request's own flag survives: Approve or Deny is what ends it.
+    if conversation.flag_reason not in (None, FlagReason.REACTIVATION_REQUEST):
+        _clear_or_resurface_flag(db, conversation)
+
+
+def _clear_handled(conversation: Conversation) -> None:
+    conversation.handled_flag_reason = None
+    conversation.handled_flagged_at = None
+    conversation.handled_at = None
 
 
 def _matching_conversations(
@@ -756,6 +1016,8 @@ def _matching_conversations(
     unread: bool | None,
     flagged: bool | None,
     q: str | None,
+    holders: Collection[HolderFilter] = (),
+    caller_id: uuid.UUID | None = None,
 ) -> Select[tuple[Conversation]]:
     # The guardian is outer-joined for every query, not only for `q`: it is a nullable FK to a
     # primary key, so the join cannot multiply a row and `total` stays a count of conversations
@@ -774,6 +1036,9 @@ def _matching_conversations(
             Conversation.flag_reason.is_not(None) if flagged else Conversation.flag_reason.is_(None)
         )
 
+    if 0 < len(set(holders)) < len(HolderFilter):
+        statement = statement.where(or_(*(_held_by(holder, caller_id) for holder in set(holders))))
+
     if pattern is not None:
         statement = statement.where(
             or_(
@@ -785,17 +1050,79 @@ def _matching_conversations(
     return statement
 
 
-def _unread() -> ColumnElement[bool]:
-    """Messages have arrived since the shared watermark — or nobody has read the thread yet.
+def _held_by(holder: HolderFilter, caller_id: uuid.UUID | None) -> ColumnElement[bool]:
+    if holder is HolderFilter.BOT:
+        return Conversation.status == ConversationStatus.BOT
 
-    `last_message_at` is the newest message's `created_at` exactly (`touch_last_message`), so
-    this answers the same question a correlated `EXISTS` over `messages` would, off the one row
-    the list already has. Never NULL: the `IS NULL` branch decides the case where `last_read_at`
-    is missing, so the comparison is only reached with both sides present.
+    if holder is HolderFilter.MINE:
+        return Conversation.taken_over_by_user_id == caller_id
+
+    # `is_distinct_from` so a human thread with no recorded holder still counts as someone else's.
+    return and_(
+        Conversation.status == ConversationStatus.HUMAN,
+        Conversation.taken_over_by_user_id.is_distinct_from(caller_id),
+    )
+
+
+def _count(db: Session, matching: Select[tuple[Conversation]]) -> int:
+    return db.scalar(select(func.count()).select_from(matching.subquery())) or 0
+
+
+def _unread() -> ColumnElement[bool]:
+    """A Guardian message has arrived since the shared watermark, or the thread was never read.
+
+    Only `MessageAuthor.CLIENT` counts: bot, office and system messages are ours. Every inbound
+    message counts, including those before a number-change note (that cut is for the WhatsApp
+    window only). `ix_messages_conversation_id_created_at` serves the correlated `EXISTS`.
     """
-    return or_(
-        Conversation.last_read_at.is_(None),
-        Conversation.last_message_at > Conversation.last_read_at,
+    return (
+        select(Message.id)
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.author_kind == MessageAuthor.CLIENT,
+            or_(
+                Conversation.last_read_at.is_(None),
+                Message.created_at > Conversation.last_read_at,
+            ),
+        )
+        .exists()
+    )
+
+
+def _last_client_message_at_column() -> ScalarSelect[datetime.datetime]:
+    """`_last_client_message_at` as a correlated column, for the list; same number-change cut."""
+    # Aliased so the inner subquery's `Message` is not auto-correlated to the outer one.
+    note = aliased(Message)
+    number_changed_at = (
+        select(func.max(note.created_at))
+        .where(
+            note.conversation_id == Conversation.id,
+            note.system_kind == SystemMessageKind.NUMBER_CHANGE_NOTE,
+        )
+        .scalar_subquery()
+    )
+
+    return (
+        select(func.max(Message.created_at))
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.author_kind == MessageAuthor.CLIENT,
+            or_(number_changed_at.is_(None), Message.created_at > number_changed_at),
+        )
+        .scalar_subquery()
+    )
+
+
+def _needs_attention_order(
+    last_client_message_at: ScalarSelect[datetime.datetime], *, now: datetime.datetime
+) -> tuple[ColumnElement, ...]:
+    # The same strict `<` as `is_window_open`, written as a cutoff the column compares against.
+    is_open = last_client_message_at > now - WHATSAPP_WINDOW
+
+    return (
+        case((is_open, 0), else_=1).asc(),
+        case((is_open, last_client_message_at), else_=Conversation.flagged_at).asc(),
+        Conversation.id.asc(),
     )
 
 
@@ -830,9 +1157,14 @@ def _conversation_for(db: Session, *, phone_number: str) -> Conversation | None:
     return db.execute(
         select(Conversation)
         .where(Conversation.phone_number == phone_number)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
+
+
+def _drop_proposal(conversation: Conversation) -> None:
+    conversation.proposal_actions = None
+    conversation.proposed_at = None
 
 
 def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:
@@ -841,7 +1173,14 @@ def _merge(db: Session, *, into: Conversation, merged: Conversation) -> None:
     `messages` is the only table that references a conversation. Both rows are locked by the
     caller. The delete is a statement rather than `Session.delete`, which would try to null
     the foreign key on any message the session still has loaded under `merged`.
+
+    A bot turn still due on `merged` moves to `into`, at the earlier of the two times: its
+    message moves too, and would otherwise never be answered. The worker clears it if `into`
+    is Taken over.
     """
+    due_times = [at for at in (into.turn_due_at, merged.turn_due_at) if at is not None]
+    if due_times:
+        into.turn_due_at = min(due_times)
     db.flush()
     db.execute(
         update(Message)
@@ -902,10 +1241,13 @@ def _locked(db: Session, *, conversation_id: uuid.UUID) -> Conversation:
     enforce on its callers. Every writer here flushes, so there is no pending in-memory change
     for the refresh to discard.
     """
+    # FOR NO KEY UPDATE, not FOR UPDATE: it serialises every writer of the row just the same,
+    # but doesn't wait on the key-share lock a message insert takes on its conversation. A bot
+    # turn recording a message mid-turn would otherwise hold up the webhook and Takeover.
     conversation = db.execute(
         select(Conversation)
         .where(Conversation.id == conversation_id)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 
@@ -922,13 +1264,15 @@ def _detail(db: Session, conversation: Conversation) -> ConversationDetail:
         conversation=conversation,
         guardian=_guardian(db, conversation),
         holder=_holder_or_none(db, conversation),
-        message_count=_message_count(db, conversation, unread_only=False),
-        unread_count=_message_count(db, conversation, unread_only=True),
+        message_count=_message_count(db, conversation),
         reactivation_child=_reactivation_child(db, conversation),
         last_client_message_at=last_client_message_at,
         is_window_open=is_window_open(
             last_client_message_at, now=datetime.datetime.now(tz=datetime.UTC)
         ),
+        intake_in_progress=intake_progress.intake_progress(
+            db, conversation=conversation
+        ).in_progress,
     )
 
 
@@ -969,13 +1313,10 @@ def _last_client_message_at(db: Session, conversation_id: uuid.UUID) -> datetime
     )
 
 
-def _message_count(db: Session, conversation: Conversation, *, unread_only: bool) -> int:
+def _message_count(db: Session, conversation: Conversation) -> int:
     statement = (
         select(func.count()).select_from(Message).where(Message.conversation_id == conversation.id)
     )
-
-    if unread_only and conversation.last_read_at is not None:
-        statement = statement.where(Message.created_at > conversation.last_read_at)
 
     return db.scalar(statement) or 0
 

@@ -27,7 +27,9 @@ INVITE_SUBJECT = "email_invite_subject"
 INVITE_BODY = "email_invite_body"
 RESET_SUBJECT = "email_reset_subject"
 RESET_BODY = "email_reset_body"
-BRAND_COLOR = "email_brand_color"
+INVITE_COLOR = "email_invite_brand_color"
+RESET_COLOR = "email_reset_brand_color"
+COLOR_KEYS = [INVITE_COLOR, RESET_COLOR]
 
 BRAND_COLOR_ERROR = "Enter a colour like #74C8C9."
 WHITE_LABEL = "color:#FFFFFF;"
@@ -184,39 +186,54 @@ def test_a_subject_only_edit_is_checked_on_its_own(api: TestClient, db: Session)
 # --- the brand colour ----------------------------------------------------------------------------
 
 
-def test_an_admin_reads_the_brand_colour_with_its_default(api: TestClient, db: Session) -> None:
+@pytest.mark.parametrize("key", COLOR_KEYS)
+def test_an_admin_reads_each_emails_colour_with_its_default(
+    api: TestClient, db: Session, key: str
+) -> None:
     admin = _make_user(db)
 
     body = api.get(SETTINGS_URL, headers=_auth(admin)).json()
 
-    [item] = [item for item in body["items"] if item["key"] == BRAND_COLOR]
+    [item] = [item for item in body["items"] if item["key"] == key]
     assert item == {
-        "key": BRAND_COLOR,
+        "key": key,
         "value": "#74C8C9",
         "value_type": "string",
         "is_developer_only": False,
     }
 
 
-def test_a_brand_colour_is_saved_uppercase(api: TestClient, db: Session) -> None:
+def test_the_shared_brand_colour_is_gone(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
-    response = api.patch(
-        SETTINGS_URL, headers=_auth(admin), json=_payload({BRAND_COLOR: "#ffe066"})
-    )
+    body = api.get(SETTINGS_URL, headers=_auth(admin)).json()
+
+    assert "email_brand_color" not in {item["key"] for item in body["items"]}
+
+
+@pytest.mark.parametrize("key", COLOR_KEYS)
+def test_a_colour_is_saved_uppercase_on_that_email_only(
+    api: TestClient, db: Session, key: str
+) -> None:
+    admin = _make_user(db)
+    [other_key] = [color_key for color_key in COLOR_KEYS if color_key != key]
+
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_payload({key: "#ffe066"}))
 
     assert response.status_code == 200
     values = {item["key"]: item["value"] for item in response.json()["items"]}
-    assert values[BRAND_COLOR] == "#FFE066"
+    assert values[key] == "#FFE066"
+    assert values[other_key] == "#74C8C9"
 
 
+@pytest.mark.parametrize("key", COLOR_KEYS)
 @pytest.mark.parametrize("value", ["red", "#FFF", "#GGGGGG", "", "#74C8C9 "])
-def test_an_invalid_brand_colour_is_refused_with_the_colour_message(
-    api: TestClient, db: Session, value: str
+def test_an_invalid_colour_is_refused_with_the_colour_message(
+    api: TestClient, db: Session, key: str, value: str
 ) -> None:
     admin = _make_user(db)
 
-    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_payload({BRAND_COLOR: value}))
+    response = api.patch(SETTINGS_URL, headers=_auth(admin), json=_payload({key: value}))
 
     assert response.status_code == 400
     assert response.json() == {"detail": BRAND_COLOR_ERROR}
@@ -224,15 +241,15 @@ def test_an_invalid_brand_colour_is_refused_with_the_colour_message(
         item["key"]: item["value"]
         for item in api.get(SETTINGS_URL, headers=_auth(admin)).json()["items"]
     }
-    assert values[BRAND_COLOR] == "#74C8C9"
+    assert values[key] == "#74C8C9"
 
 
-def test_the_invite_uses_the_saved_brand_colour(
+def test_the_invite_uses_its_own_saved_colour(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
     invitee = _make_user(db, password=None)
-    _save(api, admin, {BRAND_COLOR: "#ffe066"})
+    _save(api, admin, {INVITE_COLOR: "#ffe066", RESET_COLOR: "#0B6E4F"})
 
     api.post(f"/api/users/{invitee.id}/invite", headers=_auth(admin))
 
@@ -247,17 +264,22 @@ def test_the_invite_uses_the_saved_brand_colour(
     assert f'font-weight:bold;color:{shade};">TutorLink</p>' in email.html
     assert f'style="color:{shade};word-break:break-all;"' in email.html
     assert "#74C8C9" not in email.html
+    assert "#0B6E4F" not in email.html
     # A light colour gets the dark label.
     assert f"{DARK_LABEL}font-size:16px;font-weight:bold;" in email.html
     assert f"{WHITE_LABEL}font-size:16px;font-weight:bold;" not in email.html
 
 
-def test_the_reset_email_uses_the_saved_brand_colour(
+def test_the_reset_email_uses_its_own_saved_colour(
     api: TestClient, db: Session, fake_mail: FakeMail
 ) -> None:
     admin = _make_user(db)
     user = _make_user(db)
-    _save(api, admin, {BRAND_COLOR: "#0B6E4F", RESET_BODY: "{link}\n\nOr open {link}"})
+    _save(
+        api,
+        admin,
+        {INVITE_COLOR: "#ffe066", RESET_COLOR: "#0B6E4F", RESET_BODY: "{link}\n\nOr open {link}"},
+    )
 
     api.post(FORGOT_URL, json={"email": user.email})
 
@@ -268,6 +290,7 @@ def test_the_reset_email_uses_the_saved_brand_colour(
     assert 'style="color:#0B6E4F;word-break:break-all;"' in email.html
     assert 'style="color:#0B6E4F;">' in email.html
     assert "#74C8C9" not in email.html
+    assert "#FFE066" not in email.html
     # A dark colour gets the white label.
     assert f"{WHITE_LABEL}font-size:16px;font-weight:bold;" in email.html
 
@@ -287,7 +310,7 @@ def test_the_invite_applies_each_brand_preset_and_its_text_shade(
 ) -> None:
     admin = _make_user(db)
     invitee = _make_user(db, password=None)
-    _save(api, admin, {BRAND_COLOR: preset})
+    _save(api, admin, {INVITE_COLOR: preset})
 
     api.post(f"/api/users/{invitee.id}/invite", headers=_auth(admin))
 
@@ -302,7 +325,7 @@ def test_the_reset_email_applies_each_brand_preset_and_its_text_shade(
 ) -> None:
     admin = _make_user(db)
     user = _make_user(db)
-    _save(api, admin, {BRAND_COLOR: preset, RESET_BODY: "{link}\n\nOr open {link}"})
+    _save(api, admin, {RESET_COLOR: preset, RESET_BODY: "{link}\n\nOr open {link}"})
 
     api.post(FORGOT_URL, json={"email": user.email})
 

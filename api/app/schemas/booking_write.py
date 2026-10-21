@@ -2,10 +2,11 @@
 
 **`home_id` is required when `location` is `home`, and `booked_by_guardian_id` is accepted**,
 even though neither appears in the documented example body at `docs/api-design.md:1189-1201`.
-The prose rules above that example are the contract — rule 6 validates `home_id` against
-`child_homes` and rule 7 validates `booked_by_guardian_id` against `child_guardians`. The
-example is the half that is stale. Per `CONSTITUTION.md` §1 that divergence is reported and not
-patched; it is recorded as amendment P4-1.
+The prose rules above that example are the contract — rule 6 validates `home_id` against the
+child's bookable homes (its guardians' homes, `home_set`) and rule 7 validates
+`booked_by_guardian_id` against `child_guardians`. The example is the half that is stale. Per
+`CONSTITUTION.md` §1 that divergence is reported and not patched; it is recorded as amendment
+P4-1.
 
 `BookingWarning` is one entry of the 409's `warnings[]` (#151): the code the client resubmits in
 `confirm_warnings`, and the message it shows. The body is `{"detail": ..., "warnings": [...]}`,
@@ -23,7 +24,7 @@ import datetime
 import uuid
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from app.models.booking import NOTES_MAX_LENGTH
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
@@ -90,6 +91,8 @@ class BookingReplace(_BookingWrite):
 
     kind: BookingKind | None = None
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
+    # The `updated_at` the caller last read; when sent, a changed row is refused. Absent skips it.
+    expected_updated_at: AwareDatetime | None = None
 
     @property
     def notes_given(self) -> bool:

@@ -1,4 +1,5 @@
 import datetime
+from collections.abc import Callable
 import uuid
 from dataclasses import dataclass
 
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import Home
@@ -27,6 +29,7 @@ NINE = datetime.time(9, 0)
 TEN = datetime.time(10, 0)
 ELEVEN = datetime.time(11, 0)
 TWELVE = datetime.time(12, 0)
+ACKNOWLEDGED_AT = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=datetime.UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,13 +293,26 @@ def test_paging_over_a_tied_group_repeats_and_drops_nothing(
     assert len(seen) == len(bookings)
 
 
-def test_an_item_is_the_twelve_field_booking_summary(
-    api: TestClient, db: Session, family: Family
+def test_an_item_is_the_booking_summary(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
 ) -> None:
     """`start_time` renders as `09:00:00`, matching `ExceptionRead`, where `docs/api-design.md`
     shows `09:00` — a reported divergence, not an accident."""
+    freeze_business_clock(datetime.datetime(2026, 9, 8, 9, 0))
     admin = _make_user(db)
+    db.add(
+        ChildSubjectLevel(
+            child_id=family.child.id, subject_id=family.subject.id, level=6, set_by_user_id=admin.id
+        )
+    )
+    db.flush()
     booking = _book(db, family, start=NINE, end=TEN, status=BookingStatus.CONFIRMED)
+    booking.clash_acknowledged_by = admin.id
+    booking.clash_acknowledged_at = ACKNOWLEDGED_AT
+    db.flush()
 
     item = api.get(f"/api/clients/{family.client.id}/bookings", headers=_auth(admin)).json()[
         "items"
@@ -308,15 +324,26 @@ def test_an_item_is_the_twelve_field_booking_summary(
         "staff",
         "kind",
         "location",
+        "office_address",
         "subject",
+        "subject_level",
         "scheduled_date",
         "start_time",
         "end_time",
         "status",
         "notes",
+        "home",
+        "guardians",
+        "sort_out_reasons",
+        "clash_acknowledged_by",
+        "clash_acknowledged_at",
         "updated_at",
     }
-    assert item["child"] == {"id": str(family.child.id), "name": family.child.name}
+    assert item["child"] == {
+        "id": str(family.child.id),
+        "name": family.child.name,
+        "notes": family.child.notes,
+    }
     assert item["staff"] == {
         "id": str(family.tutor.user_id),
         "name": family.tutor.user.name,
@@ -326,12 +353,23 @@ def test_an_item_is_the_twelve_field_booking_summary(
     assert item["location"] == "home"
     assert item["updated_at"] is not None
     assert item["subject"] == {"id": str(family.subject.id), "name": family.subject.name}
+    assert item["subject_level"] == 6
+    assert item["home"] == {
+        "id": str(family.home.id),
+        "label": None,
+        "address": "1 Test Street",
+        "directions": "0000",
+    }
     assert item["id"] == str(booking.id)
     assert item["scheduled_date"] == "2026-09-07"
     assert item["start_time"] == "09:00:00"
     assert item["end_time"] == "10:00:00"
     assert item["status"] == "confirmed"
     assert item["notes"] is None
+    # The day after its date, still confirmed.
+    assert item["sort_out_reasons"] == ["not_completed"]
+    assert item["clash_acknowledged_by"] == {"id": str(admin.id), "name": admin.name}
+    assert datetime.datetime.fromisoformat(item["clash_acknowledged_at"]) == ACKNOWLEDGED_AT
 
 
 def test_an_unknown_client_id_is_404(api: TestClient, db: Session) -> None:
@@ -394,7 +432,7 @@ def _make_family(db: Session) -> Family:
     tutor = _make_tutor(db)
     other_tutor = _make_tutor(db)
     subject = Subject(name=f"Subject {suffix}")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     db.add_all([subject, home])
     db.flush()
 
@@ -500,7 +538,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -508,7 +546,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

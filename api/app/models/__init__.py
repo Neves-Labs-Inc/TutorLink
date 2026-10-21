@@ -3,8 +3,8 @@ from app.models.availability import TutorAvailability, TutorAvailabilityExceptio
 from app.models.booking import Booking
 from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
-from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import (
@@ -37,7 +37,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.login_attempt import LoginAttempt
 from app.models.message import Message
 from app.models.password_link import PasswordLink, PasswordLinkPurpose
@@ -73,10 +73,9 @@ __all__ = [
     "USER_ROLE_VALUES",
     "Booking",
     "BookingStatus",
-    "BotFlowState",
     "Child",
+    "ChildAssignedTutor",
     "ChildGuardian",
-    "ChildHome",
     "Conversation",
     "ConversationStatus",
     "ExceptionStatus",

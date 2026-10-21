@@ -2,8 +2,8 @@
 
 Every negative case asserts the exact status **and** that the body is `{"detail": "<string>"}`:
 `status_code != 200` would pass on an accidental 404 or 500. The transition table is the
-authority under test — every legal cell lands, and `cancelled`/`completed` are proven terminal
-in both directions, including the no-op restatement of the current status.
+authority under test — every legal cell lands, and every other move out of `cancelled` and
+`completed` is refused, including the no-op restatement of the current status.
 """
 
 import datetime
@@ -39,6 +39,7 @@ from app.routers.booking_status import (
     LIVE_EVALUATION_EXISTS_ERROR,
     OFFICE_ONLY_TRANSITION_ERROR,
     REVERT_OVERLAPS_ERROR,
+    TOO_EARLY_FOR_DIDNT_HAPPEN_ERROR,
     TOO_EARLY_TO_COMPLETE_ERROR,
 )
 from tests.support import profile_id_of
@@ -66,10 +67,13 @@ LEGAL_TRANSITIONS = [
     (BookingStatus.CONFIRMED, BookingStatus.CANCELLED),
     (BookingStatus.CONFIRMED, BookingStatus.COMPLETED),
     (BookingStatus.COMPLETED, BookingStatus.CONFIRMED),
+    (BookingStatus.PENDING, BookingStatus.DIDNT_HAPPEN),
+    (BookingStatus.CONFIRMED, BookingStatus.DIDNT_HAPPEN),
+    (BookingStatus.DIDNT_HAPPEN, BookingStatus.CONFIRMED),
 ]
 
+# `cancelled` -> `confirmed` is the Office's restore, covered by `test_booking_restore_routes`.
 ILLEGAL_TRANSITIONS = [
-    (BookingStatus.CANCELLED, BookingStatus.CONFIRMED),
     (BookingStatus.CANCELLED, BookingStatus.PENDING),
     (BookingStatus.CANCELLED, BookingStatus.CANCELLED),
     (BookingStatus.COMPLETED, BookingStatus.CANCELLED),
@@ -78,6 +82,12 @@ ILLEGAL_TRANSITIONS = [
     (BookingStatus.CONFIRMED, BookingStatus.PENDING),
     (BookingStatus.PENDING, BookingStatus.PENDING),
     (BookingStatus.PENDING, BookingStatus.COMPLETED),
+    (BookingStatus.COMPLETED, BookingStatus.DIDNT_HAPPEN),
+    (BookingStatus.DIDNT_HAPPEN, BookingStatus.COMPLETED),
+    (BookingStatus.DIDNT_HAPPEN, BookingStatus.CANCELLED),
+    (BookingStatus.DIDNT_HAPPEN, BookingStatus.PENDING),
+    (BookingStatus.DIDNT_HAPPEN, BookingStatus.DIDNT_HAPPEN),
+    (BookingStatus.CANCELLED, BookingStatus.DIDNT_HAPPEN),
 ]
 
 
@@ -601,6 +611,9 @@ def test_a_tutor_cannot_complete_another_tutors_booking(
         (BookingStatus.PENDING, BookingStatus.CANCELLED),
         (BookingStatus.CONFIRMED, BookingStatus.CANCELLED),
         (BookingStatus.COMPLETED, BookingStatus.CONFIRMED),
+        (BookingStatus.CONFIRMED, BookingStatus.DIDNT_HAPPEN),
+        (BookingStatus.PENDING, BookingStatus.DIDNT_HAPPEN),
+        (BookingStatus.DIDNT_HAPPEN, BookingStatus.CONFIRMED),
     ],
 )
 def test_a_tutor_may_not_make_an_office_only_move(
@@ -624,6 +637,128 @@ def test_unauthenticated_is_401(api: TestClient, db: Session) -> None:
 
     _assert_detail(response, 401, CREDENTIALS_ERROR)
     assert _row(db, booking.id).status is BookingStatus.PENDING
+
+
+# --- Didn't happen -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("current", [BookingStatus.PENDING, BookingStatus.CONFIRMED])
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.MANAGER])
+def test_didnt_happen_is_409_before_the_booking_starts(
+    api: TestClient,
+    db: Session,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+    role: UserRole,
+    current: BookingStatus,
+) -> None:
+    booking = _make_booking(db, status=current)
+    user = _make_user(db, role=role)
+    freeze_business_clock(datetime.datetime.combine(DATE, NINE) - datetime.timedelta(minutes=1))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "didnt_happen"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, TOO_EARLY_FOR_DIDNT_HAPPEN_ERROR)
+    assert _row(db, booking.id).status is current
+
+
+def test_didnt_happen_lands_once_the_booking_has_started(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.CONFIRMED)
+    user = _make_user(db, role=UserRole.MANAGER)
+    freeze_business_clock(datetime.datetime.combine(DATE, NINE))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "didnt_happen"}, headers=_bearer(user)
+    )
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).status is BookingStatus.DIDNT_HAPPEN
+
+
+def test_a_tutor_cannot_mark_their_own_started_booking_didnt_happen(
+    api: TestClient, db: Session, freeze_business_clock: Callable[[datetime.datetime], None]
+) -> None:
+    booking = _make_booking(db, status=BookingStatus.CONFIRMED)
+    user = _make_user(db, role=UserRole.TUTOR, tutor_id=profile_id_of(db, booking.user_id))
+    freeze_business_clock(datetime.datetime.combine(DATE, TWELVE))
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "didnt_happen"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 403, OFFICE_ONLY_TRANSITION_ERROR)
+    assert _row(db, booking.id).status is BookingStatus.CONFIRMED
+
+
+def test_a_reopened_didnt_happen_booking_is_live_again(api: TestClient, db: Session) -> None:
+    booking = _make_booking(db, status=BookingStatus.DIDNT_HAPPEN)
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+    assert response.status_code == 200
+
+    with pytest.raises(IntegrityError):
+        with db.begin_nested():
+            db.add(_overlapping(booking))
+            db.flush()
+
+
+def test_reopening_didnt_happen_into_an_overlap_is_409(api: TestClient, db: Session) -> None:
+    booking = _make_booking(db, status=BookingStatus.DIDNT_HAPPEN)
+    db.add(_overlapping(booking))
+    db.flush()
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{booking.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, REVERT_OVERLAPS_ERROR)
+    assert _row(db, booking.id).status is BookingStatus.DIDNT_HAPPEN
+
+
+def test_reopening_a_didnt_happen_evaluation_is_409_when_the_child_is_now_evaluated(
+    api: TestClient, db: Session
+) -> None:
+    evaluation = _make_evaluation(db, status=BookingStatus.DIDNT_HAPPEN)
+    user = _make_user(db, role=UserRole.ADMIN)
+    child = db.get_one(Child, evaluation.child_id)
+    child.evaluated_at = datetime.datetime(2026, 9, 8, 12, 0, tzinfo=datetime.UTC)
+    child.evaluated_by_user_id = user.id
+    db.flush()
+
+    response = api.patch(
+        f"/api/bookings/{evaluation.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, CHILD_ALREADY_EVALUATED_ERROR)
+    assert _row(db, evaluation.id).status is BookingStatus.DIDNT_HAPPEN
+
+
+def test_reopening_a_didnt_happen_evaluation_is_409_when_another_live_evaluation_exists(
+    api: TestClient, db: Session
+) -> None:
+    evaluation = _make_evaluation(db, status=BookingStatus.DIDNT_HAPPEN)
+    _make_evaluation(
+        db,
+        status=BookingStatus.CONFIRMED,
+        child_id=evaluation.child_id,
+        start_time=ELEVEN,
+        end_time=TWELVE,
+    )
+    user = _make_user(db, role=UserRole.ADMIN)
+
+    response = api.patch(
+        f"/api/bookings/{evaluation.id}", json={"status": "confirmed"}, headers=_bearer(user)
+    )
+
+    _assert_detail(response, 409, LIVE_EVALUATION_EXISTS_ERROR)
+    assert _row(db, evaluation.id).status is BookingStatus.DIDNT_HAPPEN
 
 
 # --- helpers -------------------------------------------------------------------------------
@@ -711,7 +846,7 @@ def _make_booking(db: Session, *, status: BookingStatus) -> Booking:
     suffix = uuid.uuid4().hex[:12]
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
     subject = Subject(name=f"Subject {suffix}")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     tutor = _make_tutor(db)
     db.add_all([child, subject, home])
     db.flush()

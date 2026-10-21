@@ -37,7 +37,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app.models.bot_flow_state import BotFlowState
+from app.models.login_attempt import LoginAttempt
 from app.models.system_setting import SETTING_VALUE_TYPE_INTEGER, SystemSetting
 from app.services import retention_scheduler
 from app.services.retention_scheduler import (
@@ -56,13 +56,15 @@ UTC = datetime.UTC
 SKIPPED_LINE = "retention purge: skipped, another instance holds the lock"
 FAILED_LINE = "retention purge: failed"
 UNREACHABLE_DATABASE_URL = "postgresql+psycopg://nobody:nothing@127.0.0.1:1/nothing"
+# Past the largest login and forgot-password window.
+STALE_LOGIN_ATTEMPT_AGE = datetime.timedelta(days=2)
 
 
 def test_run_scheduled_purge_returns_none_and_touches_nothing_outside_the_hour(
     db: Session, caplog: pytest.LogCaptureFixture
 ) -> None:
     _seed_purge_hour(db, 3)
-    phone_number = _add_flow_state(db, expires_at=_an_hour_ago())
+    attempt_id = _add_stale_login_attempt(db)
     # A savepoint release under the `db` fixture, so closing the hour-read session cannot
     # roll the setup back and make "nothing was deleted" pass for the wrong reason.
     db.commit()
@@ -73,25 +75,25 @@ def test_run_scheduled_purge_returns_none_and_touches_nothing_outside_the_hour(
         )
 
     assert run is None
-    assert db.get(BotFlowState, phone_number) is not None
+    assert _login_attempt_exists(db, attempt_id) is True
     assert caplog.records == []
 
 
 def test_run_scheduled_purge_runs_the_guarded_purge_inside_the_hour(db: Session) -> None:
     _seed_purge_hour(db, 3)
-    phone_number = _add_flow_state(db, expires_at=_an_hour_ago())
+    attempt_id = _add_stale_login_attempt(db)
     db.commit()
 
     run = run_scheduled_purge(lambda: db, now=datetime.datetime(2026, 9, 24, 3, 0, 17, tzinfo=UTC))
 
     assert run is not None and run.ran is True
-    assert db.get(BotFlowState, phone_number) is None
+    assert _login_attempt_exists(db, attempt_id) is False
 
 
 def test_run_guarded_purge_skips_while_another_transaction_holds_the_lock_and_runs_after(
     committed_sessions: sessionmaker[Session], caplog: pytest.LogCaptureFixture
 ) -> None:
-    phone_number = _add_committed_flow_state(committed_sessions, expires_at=_an_hour_ago())
+    attempt_id = _add_committed_stale_login_attempt(committed_sessions)
     try:
         with committed_sessions() as holder:
             holder.execute(
@@ -100,7 +102,7 @@ def test_run_guarded_purge_skips_while_another_transaction_holds_the_lock_and_ru
             with caplog.at_level(logging.INFO, logger=retention_scheduler.__name__):
                 skipped = run_guarded_purge(committed_sessions)
             skip_messages = [record.getMessage() for record in caplog.records]
-            survived_the_skip = _committed_flow_state_exists(committed_sessions, phone_number)
+            survived_the_skip = _committed_login_attempt_exists(committed_sessions, attempt_id)
             holder.rollback()
 
         ran = run_guarded_purge(committed_sessions)
@@ -110,10 +112,10 @@ def test_run_guarded_purge_skips_while_another_transaction_holds_the_lock_and_ru
         assert skip_messages == [SKIPPED_LINE]
         assert survived_the_skip is True
         assert ran.ran is True
-        assert ran.flow_states_deleted >= 1
-        assert _committed_flow_state_exists(committed_sessions, phone_number) is False
+        assert ran.login_attempts_deleted >= 1
+        assert _committed_login_attempt_exists(committed_sessions, attempt_id) is False
     finally:
-        _delete_committed_flow_state(committed_sessions, phone_number)
+        _delete_committed_login_attempt(committed_sessions, attempt_id)
 
 
 def test_run_guarded_purge_logs_the_ran_line_with_its_counts(
@@ -126,7 +128,6 @@ def test_run_guarded_purge_logs_the_ran_line_with_its_counts(
     assert [record.getMessage() for record in caplog.records] == [
         f"retention purge: ran messages={run.purge.messages_deleted}"
         f" conversations={run.purge.conversations_deleted}"
-        f" flow_states={run.flow_states_deleted}"
         f" login_attempts={run.login_attempts_deleted}"
     ]
     assert _retention_lock_is_held(committed_sessions) is False
@@ -137,13 +138,16 @@ def test_run_guarded_purge_rolls_back_releases_the_lock_and_logs_failed_on_an_er
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # The failure lands after the flow-state reap has already deleted its row, so the row
-    # surviving is what proves the three steps are one transaction rather than three.
+    # The failure lands after the reap has already deleted its row, so the row surviving is what
+    # proves the steps are one transaction rather than several.
+    reap = retention_scheduler.reap_expired_login_attempts
+
     def fail(db: Session) -> int:
+        reap(db)
         raise RuntimeError("login attempts unavailable")
 
     monkeypatch.setattr(retention_scheduler, "reap_expired_login_attempts", fail)
-    phone_number = _add_committed_flow_state(committed_sessions, expires_at=_an_hour_ago())
+    attempt_id = _add_committed_stale_login_attempt(committed_sessions)
     try:
         with caplog.at_level(logging.INFO, logger=retention_scheduler.__name__):
             with pytest.raises(RuntimeError, match="login attempts unavailable"):
@@ -151,10 +155,10 @@ def test_run_guarded_purge_rolls_back_releases_the_lock_and_logs_failed_on_an_er
 
         assert [record.getMessage() for record in caplog.records] == [FAILED_LINE]
         assert caplog.records[0].exc_info is not None
-        assert _committed_flow_state_exists(committed_sessions, phone_number) is True
+        assert _committed_login_attempt_exists(committed_sessions, attempt_id) is True
         assert _retention_lock_is_held(committed_sessions) is False
     finally:
-        _delete_committed_flow_state(committed_sessions, phone_number)
+        _delete_committed_login_attempt(committed_sessions, attempt_id)
 
 
 def test_run_scheduled_purge_logs_failed_and_raises_when_the_database_is_unreachable(
@@ -326,35 +330,37 @@ def _seed_purge_hour(db: Session, hour: int) -> None:
     db.flush()
 
 
-def _add_flow_state(db: Session, *, expires_at: datetime.datetime) -> str:
-    flow_state = _flow_state(expires_at=expires_at)
-    db.add(flow_state)
+def _add_stale_login_attempt(db: Session) -> uuid.UUID:
+    attempt = _stale_login_attempt()
+    db.add(attempt)
     db.flush()
 
-    return flow_state.phone_number
+    return attempt.attempt_id
 
 
-def _add_committed_flow_state(
-    sessions: sessionmaker[Session], *, expires_at: datetime.datetime
-) -> str:
+def _login_attempt_exists(db: Session, attempt_id: uuid.UUID) -> bool:
+    return db.scalar(select(LoginAttempt).where(LoginAttempt.attempt_id == attempt_id)) is not None
+
+
+def _add_committed_stale_login_attempt(sessions: sessionmaker[Session]) -> uuid.UUID:
     with sessions() as session:
-        flow_state = _flow_state(expires_at=expires_at)
-        session.add(flow_state)
+        attempt = _stale_login_attempt()
+        session.add(attempt)
         session.commit()
 
-    return flow_state.phone_number
+    return attempt.attempt_id
 
 
-def _committed_flow_state_exists(sessions: sessionmaker[Session], phone_number: str) -> bool:
+def _committed_login_attempt_exists(sessions: sessionmaker[Session], attempt_id: uuid.UUID) -> bool:
     with sessions() as session:
-        exists = session.get(BotFlowState, phone_number) is not None
+        exists = _login_attempt_exists(session, attempt_id)
 
     return exists
 
 
-def _delete_committed_flow_state(sessions: sessionmaker[Session], phone_number: str) -> None:
+def _delete_committed_login_attempt(sessions: sessionmaker[Session], attempt_id: uuid.UUID) -> None:
     with sessions() as session:
-        session.execute(delete(BotFlowState).where(BotFlowState.phone_number == phone_number))
+        session.execute(delete(LoginAttempt).where(LoginAttempt.attempt_id == attempt_id))
         session.commit()
 
 
@@ -373,16 +379,11 @@ def _retention_lock_is_held(sessions: sessionmaker[Session]) -> bool:
     return held > 0
 
 
-def _flow_state(*, expires_at: datetime.datetime) -> BotFlowState:
-    return BotFlowState(
-        phone_number=f"+1{uuid.uuid4().int % 10**10:010d}",
-        step="awaiting_name",
-        collected_data={},
-        misses=0,
-        prompt="What is your name?",
-        expires_at=expires_at,
+def _stale_login_attempt() -> LoginAttempt:
+    """An attempt older than every rate-limit window, so the reap deletes it."""
+    attempt_id = uuid.uuid4()
+    return LoginAttempt(
+        bucket_key=f"ratelimit:login:email:{attempt_id}@example.com",
+        attempt_id=attempt_id,
+        attempted_at=datetime.datetime.now(UTC) - STALE_LOGIN_ATTEMPT_AGE,
     )
-
-
-def _an_hour_ago() -> datetime.datetime:
-    return datetime.datetime.now(UTC) - datetime.timedelta(hours=1)

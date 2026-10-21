@@ -5,9 +5,9 @@ wrong implementation**, not merely green against the right one (**P7-X**).
 
 **REQ-071 is an ordering property, not a validation property.** It is not enough that a forged
 signature is refused: nothing may have happened before the refusal. Every 403 case therefore
-asserts the absence of the `conversations` row, of the `messages` row, of any published event,
-and of the call into `bot_service` — a handler that inserted the message first and validated
-second would pass a status-code-only test and would be a security regression.
+asserts the absence of the `conversations` row, of the `messages` row and of any published
+event — a handler that inserted the message first and validated second would pass a
+status-code-only test and would be a security regression.
 
 **The signature is computed over the full URL, scheme included.**
 `test_the_forwarded_scheme_is_what_the_signature_validates_against` drives a request through a
@@ -16,17 +16,15 @@ An implementation that rebuilt the URL from `Host` plus a literal `http://` — 
 deployment behind a TLS terminator makes — fails that test and only that test, which is the
 whole reason `signed_request_url` exists as one named function.
 
-**A flag does not suppress the reply, and a paused conversation is still recorded.** Both are
-features that fail silently: the client still gets an answer and the admin still sees what was
-said while the bot was quiet, and asserting only the response body would miss either.
-
-`bot_service.reply_for` is monkeypatched in every test in this module (**P7-I**). Nothing here
-calls Anthropic; this file tests the webhook's ordering, idempotency, branching and TwiML.
+**The bot answers later, from the worker** (docs/specs/whatsapp-bot-agent.md §7). The webhook
+records the message, stamps the chat's turn four seconds ahead and answers empty TwiML. The end
+to end case runs the worker's tick with a scripted model: nothing here calls Anthropic.
 """
 
 import datetime
 import threading
 import uuid
+from dataclasses import replace
 from collections.abc import Generator, Iterator
 from typing import Any
 
@@ -37,6 +35,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.requests import Request
 from twilio.request_validator import RequestValidator
@@ -45,17 +44,14 @@ from app.config import get_settings
 from app.db import get_db
 from app.dependencies import get_current_user, get_tutor_scope, require_admin
 from app.main import app, create_app
-from app.models.child import Child
 from app.models.conversation import Conversation
 from app.models.enums import (
     ConversationStatus,
     FlagReason,
-    Language,
     MessageAuthor,
     MessageStatus,
     UserRole,
 )
-from app.models.guardian import Guardian
 from app.models.message import Message
 from app.models.user import User
 from app.routers import webhook
@@ -65,11 +61,18 @@ from app.routers.webhook import (
     get_twilio_form,
     signed_request_url,
 )
-from app.schemas.bot import BotTurn, GuardianLanguage, ReminderButton
 from app.security import hash_password
-from app.services import bot_service, conversation_service, message_service
-from app.services.bot_messages import render
+from app.services import (
+    bot_agent,
+    bot_worker,
+    conversation_service,
+    message_service,
+)
+from app.services.bot_worker import run_due_turns
 from app.services.broadcast_service import BroadcastEvent, MessageCreated, MessageUpdated
+from tests.fake_twilio import FakeTwilio
+from tests.test_bot_turn import FakeModel
+from tests.test_bot_turn import reply as reply_step
 
 AUTH_TOKEN = "an-auth-token-only-twilio-and-this-process-know"
 AUTH_TOKEN_ENV = "TWILIO_AUTH_TOKEN"
@@ -94,31 +97,6 @@ BOT_REPLY = "Which subject?"
 EMPTY_TWIML = "<Response></Response>"
 
 
-def test_a_bot_conversation_gets_the_reply_back_as_twiml(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    response = _post_inbound(webhook_client)
-
-    assert response.status_code == 200
-    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
-    assert bot.calls == [
-        {
-            "phone_number": PHONE_NUMBER,
-            "body": INBOUND_BODY,
-            "guardian_id": None,
-            "reactivation_pending": False,
-            "language": None,
-            "button": None,
-        }
-    ]
-
-    reply = _messages(db, author_kind=MessageAuthor.BOT)[0]
-
-    assert reply.status is MessageStatus.SENT
-    assert reply.twilio_sid is None
-    assert reply.body == BOT_REPLY
-
-
 def test_the_whatsapp_prefix_is_stripped_and_the_number_is_stored_verbatim(
     webhook_client: TestClient, db: Session
 ) -> None:
@@ -140,7 +118,6 @@ def test_a_bad_signature_is_403_and_nothing_at_all_is_written(
     webhook_client: TestClient,
     db: Session,
     published: list[BroadcastEvent],
-    bot: "BotDouble",
     case: str,
 ) -> None:
     """REQ-071 in its exact form: the check precedes every side effect, the insert included."""
@@ -157,7 +134,6 @@ def test_a_bad_signature_is_403_and_nothing_at_all_is_written(
     assert response.status_code == 403
     assert response.json() == {"detail": INVALID_SIGNATURE_ERROR}
     assert published == []
-    assert bot.calls == []
     assert _conversation(db, phone_number=PHONE_NUMBER) is None
     assert db.scalar(select(func.count()).select_from(Message)) == 0
 
@@ -241,30 +217,34 @@ def test_signed_request_url_takes_the_scheme_from_the_scope(scheme: str, expecte
 
 
 def test_a_redelivered_sid_answers_empty_twiml_and_repeats_no_side_effect(
-    webhook_client: TestClient, db: Session, published: list[BroadcastEvent], bot: "BotDouble"
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
 ) -> None:
     """The unique index on `messages.twilio_sid` is the only redelivery guard (REQ-144).
 
     A second POST with the same `MessageSid` conflicts on that insert, `record_inbound` returns
-    `None`, and `_turn` stops there: no row, no bot call, nothing published.
+    `None`, and `handle_inbound` stops there: no row, no marker change, nothing published.
     """
     first = _post_inbound(webhook_client)
     published_once = len(published)
+    conversation = _conversation(db, phone_number=PHONE_NUMBER)
+    assert conversation is not None
+    marked_at = conversation.turn_due_at
 
     second = _post_inbound(webhook_client)
+    db.refresh(conversation)
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.text == EMPTY_TWIML
-    assert len(bot.calls) == 1
-    assert db.scalar(select(func.count()).select_from(Message)) == 2
+    assert db.scalar(select(func.count()).select_from(Message)) == 1
     assert len(published) == published_once
+    assert marked_at is not None
+    assert conversation.turn_due_at == marked_at
 
 
-def test_a_concurrent_redelivery_still_runs_the_bot_exactly_once(
+def test_a_concurrent_redelivery_still_records_exactly_once(
     session_per_request_client: TestClient,
     committed_sessions: sessionmaker[Session],
-    bot: "BotDouble",
     published: list[BroadcastEvent],
 ) -> None:
     """REQ-144.3: the same guard, proved against two connections actually contending for it.
@@ -294,11 +274,8 @@ def test_a_concurrent_redelivery_still_runs_the_bot_exactly_once(
             thread.join(timeout=10)
 
         assert [response.status_code for response in responses] == [200, 200]
-        assert len(bot.calls) == 1
-        assert _published(published) == [
-            ("message.created", INBOUND_BODY, "client"),
-            ("message.created", BOT_REPLY, "bot"),
-        ]
+        assert [response.text for response in responses] == [EMPTY_TWIML, EMPTY_TWIML]
+        assert _published(published) == [("message.created", INBOUND_BODY, "client")]
         with committed_sessions() as session:
             rows = session.scalars(select(Message).where(Message.twilio_sid == INBOUND_SID)).all()
         assert len(rows) == 1
@@ -313,31 +290,21 @@ def test_a_concurrent_redelivery_still_runs_the_bot_exactly_once(
 
 
 def test_a_human_conversation_answers_empty_twiml_and_still_records_and_broadcasts(
-    webhook_client: TestClient, db: Session, published: list[BroadcastEvent], bot: "BotDouble"
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
 ) -> None:
     """The takeover feature's whole point. Asserting only the empty body would miss it."""
-    _taken_over_conversation(db)
+    conversation = _taken_over_conversation(db)
 
     response = _post_inbound(webhook_client)
     recorded = _messages(db, author_kind=MessageAuthor.CLIENT)
+    db.refresh(conversation)
 
     assert response.text == EMPTY_TWIML
-    assert bot.calls == []
+    assert conversation.turn_due_at is None
     assert [row.body for row in recorded] == [INBOUND_BODY]
     assert recorded[0].status is MessageStatus.RECEIVED
     assert _messages(db, author_kind=MessageAuthor.BOT) == []
     assert _published(published) == [("message.created", INBOUND_BODY, "client")]
-
-
-def test_a_bot_conversation_broadcasts_the_client_message_and_the_reply(
-    webhook_client: TestClient, published: list[BroadcastEvent]
-) -> None:
-    _post_inbound(webhook_client)
-
-    assert _published(published) == [
-        ("message.created", INBOUND_BODY, "client"),
-        ("message.created", BOT_REPLY, "bot"),
-    ]
 
 
 @pytest.mark.parametrize("status", [ConversationStatus.BOT, ConversationStatus.HUMAN])
@@ -359,240 +326,6 @@ def test_last_message_at_moves_in_both_branches(
     db.refresh(conversation)
 
     assert conversation.last_message_at > stale
-
-
-def test_a_flagged_turn_writes_the_flag_and_still_returns_the_reply(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    """REQ-078.5 / REQ-078.6. A flag brings an admin to look; it does not replace the answer."""
-    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.STUCK)
-
-    response = _post_inbound(webhook_client)
-    conversation = _conversation(db, phone_number=PHONE_NUMBER)
-
-    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
-    assert conversation is not None
-    assert conversation.flag_reason is FlagReason.STUCK
-    assert conversation.flagged_at is not None
-    assert conversation.status is ConversationStatus.BOT
-    assert [row.body for row in _messages(db, author_kind=MessageAuthor.BOT)] == [BOT_REPLY]
-
-
-@pytest.mark.parametrize("reason", [FlagReason.BOOKING_REQUEST, FlagReason.QUESTION])
-def test_a_routine_handoff_turn_flags_the_conversation_and_returns_the_reply(
-    webhook_client: TestClient, db: Session, bot: "BotDouble", reason: FlagReason
-) -> None:
-    """A booking request or a question is a handoff, not a failure: it flags like any reason."""
-    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=reason)
-
-    response = _post_inbound(webhook_client)
-    conversation = _conversation(db, phone_number=PHONE_NUMBER)
-
-    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
-    assert conversation is not None
-    assert conversation.flag_reason is reason
-    assert conversation.flagged_at is not None
-
-
-@pytest.mark.parametrize(
-    "pending",
-    [
-        FlagReason.BOOKING_REQUEST,
-        FlagReason.GUARDIAN_LINK_REQUEST,
-        FlagReason.STUCK,
-        FlagReason.PARSE_ERROR,
-    ],
-)
-def test_a_question_does_not_replace_an_existing_flag_but_is_still_answered(
-    webhook_client: TestClient, db: Session, bot: "BotDouble", pending: FlagReason
-) -> None:
-    """Marking the question handled would otherwise drop the request or the failed handoff
-    from every queue."""
-    conversation = _bot_conversation(db)
-    conversation_service.flag(db, conversation=conversation, reason=pending)
-    flagged_at = conversation.flagged_at
-    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.QUESTION)
-
-    response = _post_inbound(webhook_client)
-    db.refresh(conversation)
-
-    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
-    assert conversation.flag_reason is pending
-    assert conversation.flagged_at == flagged_at
-
-
-def test_a_question_does_not_replace_a_pending_reactivation_request(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    conversation = _bot_conversation(db)
-    conversation_service.request_reactivation(
-        db, conversation=conversation, child_id=_inactive_child_id(db)
-    )
-    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.QUESTION)
-
-    _post_inbound(webhook_client)
-    db.refresh(conversation)
-
-    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
-
-
-def test_a_second_question_leaves_the_conversation_flagged_question(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.QUESTION)
-
-    _post_inbound(webhook_client)
-    _post_inbound(webhook_client, form=_form(MessageSid=SECOND_INBOUND_SID))
-    conversation = _conversation(db, phone_number=PHONE_NUMBER)
-
-    assert len(bot.calls) == 2
-    assert conversation is not None
-    assert conversation.flag_reason is FlagReason.QUESTION
-
-
-def test_a_stuck_turn_still_replaces_a_pending_office_request(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    """Only a question defers to a request; a failure flag keeps last-write-wins."""
-    conversation = _bot_conversation(db)
-    conversation_service.flag(db, conversation=conversation, reason=FlagReason.BOOKING_REQUEST)
-    bot.turn = BotTurn(reply=BOT_REPLY, flag_reason=FlagReason.STUCK)
-
-    _post_inbound(webhook_client)
-    db.refresh(conversation)
-
-    assert conversation.flag_reason is FlagReason.STUCK
-
-
-def test_a_turn_carrying_a_guardian_backfills_the_conversation(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    guardian_id = _guardian_id(db)
-    bot.turn = BotTurn(reply=BOT_REPLY, link_guardian_id=guardian_id)
-
-    _post_inbound(webhook_client)
-    conversation = _conversation(db, phone_number=PHONE_NUMBER)
-
-    assert conversation is not None
-    assert conversation.guardian_id == guardian_id
-
-
-def test_a_turn_carrying_a_reactivation_request_records_and_flags_it(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    """REQ-132.3 through the webhook (P7-C): the bot reports the child, `_apply` records the
-    request, and the reply is recorded as usual."""
-    child_id = _inactive_child_id(db)
-    bot.turn = BotTurn(reply=BOT_REPLY, reactivation_child_id=child_id)
-
-    response = _post_inbound(webhook_client)
-    conversation = _conversation(db, phone_number=PHONE_NUMBER)
-
-    assert response.text == f"<Response><Message>{BOT_REPLY}</Message></Response>"
-    assert conversation is not None
-    assert conversation.reactivation_child_id == child_id
-    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
-    assert conversation.flagged_at is not None
-    assert [row.body for row in _messages(db, author_kind=MessageAuthor.BOT)] == [BOT_REPLY]
-    assert bot.calls[0]["reactivation_pending"] is False
-
-
-def test_a_pending_request_is_passed_to_the_bot(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    conversation = _bot_conversation(db)
-    conversation.reactivation_child_id = _inactive_child_id(db)
-    db.flush()
-
-    _post_inbound(webhook_client)
-
-    assert bot.calls[0]["reactivation_pending"] is True
-
-
-def test_the_pending_request_is_read_from_the_row_not_the_identity_map(
-    webhook_client: TestClient, db: Session, bot: "BotDouble", monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """REQ-130.4, P7D-I. A request recorded by an overlapping turn — here a Core `UPDATE` the
-    ORM cannot see, issued once the conversation is loaded — must still reach the bot as
-    pending. Fails when the `db.refresh` in `_turn` is removed."""
-    _bot_conversation(db)
-    child_id = _inactive_child_id(db)
-    real = conversation_service.resolve_or_create
-
-    def resolved_then_requested_elsewhere(session: Session, *, phone_number: str) -> Conversation:
-        conversation = real(session, phone_number=phone_number)
-        session.execute(
-            text("UPDATE conversations SET reactivation_child_id = :child WHERE id = :id"),
-            {"child": child_id, "id": conversation.id},
-        )
-
-        return conversation
-
-    monkeypatch.setattr(
-        conversation_service, "resolve_or_create", resolved_then_requested_elsewhere
-    )
-
-    _post_inbound(webhook_client)
-
-    assert bot.calls[0]["reactivation_pending"] is True
-
-
-def test_a_refused_second_request_leaves_the_pending_one_untouched(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    """REQ-132.6, OQ-74 — criterion 7, webhook level. The refusal carries nothing to apply, so
-    the first request, its flag and its flag time are exactly what they were."""
-    child_id = _inactive_child_id(db)
-    conversation = _bot_conversation(db)
-    conversation_service.request_reactivation(db, conversation=conversation, child_id=child_id)
-    db.refresh(conversation)
-    flagged_at = conversation.flagged_at
-    bot.turn = BotTurn(reply=f"{render('REACTIVATION_PENDING', 'en')} {render('ASK_MENU', 'en')}")
-
-    _post_inbound(webhook_client)
-    db.refresh(conversation)
-
-    assert bot.calls[0]["reactivation_pending"] is True
-    assert conversation.reactivation_child_id == child_id
-    assert conversation.flag_reason is FlagReason.REACTIVATION_REQUEST
-    assert conversation.flagged_at == flagged_at
-
-
-def test_the_stored_language_is_passed_to_the_bot(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    conversation = _bot_conversation(db)
-    conversation.language = Language.ES
-    db.flush()
-
-    _post_inbound(webhook_client)
-
-    assert bot.calls[0]["language"] == "es"
-
-
-def test_a_language_the_turn_adopted_is_stored_on_the_conversation(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    conversation = _bot_conversation(db)
-    conversation.language = Language.ES
-    db.flush()
-    bot.turn = BotTurn(reply=BOT_REPLY, language="en")
-
-    _post_inbound(webhook_client)
-
-    assert _conversation(db, phone_number=PHONE_NUMBER).language is Language.EN
-
-
-def test_a_turn_that_adopted_no_language_leaves_the_stored_one(
-    webhook_client: TestClient, db: Session, bot: "BotDouble"
-) -> None:
-    conversation = _bot_conversation(db)
-    conversation.language = Language.ES
-    db.flush()
-
-    _post_inbound(webhook_client)
-
-    assert _conversation(db, phone_number=PHONE_NUMBER).language is Language.ES
 
 
 @pytest.mark.parametrize("field", ["From", "MessageSid"])
@@ -728,25 +461,6 @@ def test_a_bad_signature_on_the_status_callback_is_403_and_changes_nothing(
     assert published == []
 
 
-def test_a_bot_reply_never_reaches_the_status_callback(
-    webhook_client: TestClient, db: Session
-) -> None:
-    """Amendment P7-3: the TwiML and REST lifecycles are separate and stay separate.
-
-    A TwiML reply is recorded `sent` with a NULL `twilio_sid`, so there is nothing for the
-    callback to match — and that is what stops every bot reply sitting at `queued` forever.
-    """
-    _post_inbound(webhook_client)
-    reply = _messages(db, author_kind=MessageAuthor.BOT)[0]
-
-    response = _post_status(webhook_client, message_status="delivered")
-    db.refresh(reply)
-
-    assert response.status_code == 204
-    assert reply.twilio_sid is None
-    assert reply.status is MessageStatus.SENT
-
-
 @pytest.mark.parametrize("path", [INBOUND_PATH, STATUS_PATH])
 def test_neither_route_resolves_an_auth_dependency(path: str) -> None:
     """§13 does not reach `/webhook/*`, and `TutorScope` here would 500 every query (§15)."""
@@ -766,38 +480,6 @@ def test_an_unauthenticated_request_succeeds(webhook_client: TestClient) -> None
     assert response.status_code == 200
 
 
-class BotDouble:
-    """`bot_service.reply_for` with its call log — no LLM ever runs in pytest (**P7-I**)."""
-
-    def __init__(self) -> None:
-        self.turn = BotTurn(reply=BOT_REPLY)
-        self.calls: list[dict[str, object]] = []
-
-    def __call__(
-        self,
-        db: Session,
-        *,
-        phone_number: str,
-        body: str,
-        guardian_id: uuid.UUID | None,
-        reactivation_pending: bool = False,
-        language: GuardianLanguage | None = None,
-        button: ReminderButton | None = None,
-    ) -> BotTurn:
-        self.calls.append(
-            {
-                "phone_number": phone_number,
-                "body": body,
-                "guardian_id": guardian_id,
-                "reactivation_pending": reactivation_pending,
-                "language": language,
-                "button": button,
-            }
-        )
-
-        return self.turn
-
-
 @pytest.fixture
 def published(monkeypatch: pytest.MonkeyPatch) -> list[BroadcastEvent]:
     """Captures every event handed to `broadcast_service.publish`, patched on the router.
@@ -810,14 +492,6 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[BroadcastEvent]:
     monkeypatch.setattr(webhook, "publish", recorded.append)
 
     return recorded
-
-
-@pytest.fixture
-def bot(monkeypatch: pytest.MonkeyPatch) -> BotDouble:
-    double = BotDouble()
-    monkeypatch.setattr(bot_service, "reply_for", double)
-
-    return double
 
 
 @pytest.fixture
@@ -842,13 +516,12 @@ def committed_sessions(_test_engine: Engine) -> sessionmaker[Session]:
 
 @pytest.fixture
 def session_per_request_client(
-    committed_sessions: sessionmaker[Session], bot: BotDouble, twilio_auth_token: None
+    committed_sessions: sessionmaker[Session], twilio_auth_token: None
 ) -> Generator[TestClient, None, None]:
     """One committed session per request, in place of the shared, rolled-back `db` fixture.
 
-    Only `test_a_concurrent_redelivery_still_runs_the_bot_exactly_once` needs this: it is the
-    one test in this module where two requests must genuinely contend for a row lock, which a
-    single rolled-back transaction can never do.
+    For `test_a_concurrent_redelivery_still_records_exactly_once`, where two requests must
+    genuinely contend for a row lock, which a single rolled-back transaction can never do.
     """
 
     def open_and_close_one_session_per_request() -> Generator[Session, None, None]:
@@ -866,16 +539,13 @@ def session_per_request_client(
 
 
 @pytest.fixture
-def webhook_client(
-    db: Session, bot: BotDouble, twilio_auth_token: None
-) -> Generator[TestClient, None, None]:
+def webhook_client(db: Session, twilio_auth_token: None) -> Generator[TestClient, None, None]:
     yield from _wired(app, db)
 
 
 @pytest.fixture
 def proxied_client(
     db: Session,
-    bot: BotDouble,
     twilio_auth_token: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[TestClient, None, None]:
@@ -952,23 +622,6 @@ def _post(
         sent["X-Twilio-Signature"] = signature
 
     return client.post(path, data=form, headers=sent)
-
-
-@pytest.mark.parametrize(
-    ("payload", "button"),
-    [
-        ("book_session", ReminderButton.BOOK_SESSION),
-        ("stop_reminders", ReminderButton.STOP_REMINDERS),
-        ("some_other_button", None),
-    ],
-)
-def test_a_reminder_button_payload_reaches_the_bot_and_any_other_is_dropped(
-    webhook_client: TestClient, bot: "BotDouble", payload: str, button: ReminderButton | None
-) -> None:
-    response = _post_inbound(webhook_client, form={**_form(), "ButtonPayload": payload})
-
-    assert response.status_code == 200
-    assert bot.calls[0]["button"] is button
 
 
 def _post_inbound(client: TestClient, *, form: dict[str, str] | None = None) -> Response:
@@ -1051,39 +704,6 @@ def _admin_message(db: Session) -> Message:
     )
 
 
-def _bot_conversation(db: Session) -> Conversation:
-    conversation = Conversation(
-        phone_number=PHONE_NUMBER,
-        last_message_at=datetime.datetime.now(tz=datetime.UTC),
-    )
-    db.add(conversation)
-    db.flush()
-
-    return conversation
-
-
-def _inactive_child_id(db: Session) -> uuid.UUID:
-    child = Child(
-        name="Sam Jones",
-        date_of_birth=datetime.date(2015, 3, 9),
-        grade_level=6,
-        school_name="Test School",
-        is_active=False,
-    )
-    db.add(child)
-    db.flush()
-
-    return child.id
-
-
-def _guardian_id(db: Session) -> uuid.UUID:
-    guardian = Guardian(name="Ada Lovelace", phone_number=PHONE_NUMBER)
-    db.add(guardian)
-    db.flush()
-
-    return guardian.id
-
-
 def _dependant(built: FastAPI, path: str) -> Dependant:
     route = next(entry for entry in _routes(built) if getattr(entry, "path", None) == path)
 
@@ -1105,3 +725,255 @@ def _dependency_calls(dependant: Dependant) -> set[Any]:
         calls |= _dependency_calls(nested)
 
     return calls
+
+
+# --- the bot's turn is scheduled, never answered inline ------------------------------------------
+
+
+def test_a_message_to_a_bot_chat_answers_empty_and_schedules_a_turn_four_seconds_out(
+    webhook_client: TestClient, db: Session, published: list[BroadcastEvent]
+) -> None:
+    before = datetime.datetime.now(tz=datetime.UTC)
+    response = _post_inbound(webhook_client)
+    after = datetime.datetime.now(tz=datetime.UTC)
+
+    conversation = _conversation(db, phone_number=PHONE_NUMBER)
+    assert conversation is not None
+    assert response.status_code == 200
+    assert response.text == EMPTY_TWIML
+    assert [row.body for row in _messages(db, author_kind=MessageAuthor.CLIENT)] == [INBOUND_BODY]
+    assert conversation.turn_due_at is not None
+    assert before + DEBOUNCE <= conversation.turn_due_at <= after + DEBOUNCE
+    assert _messages(db, author_kind=MessageAuthor.BOT) == []
+    assert _published(published) == [("message.created", INBOUND_BODY, "client")]
+
+
+def test_each_new_message_pushes_the_turn_on(webhook_client: TestClient, db: Session) -> None:
+    _post_inbound(webhook_client)
+    conversation = _conversation(db, phone_number=PHONE_NUMBER)
+    assert conversation is not None
+    first_due = conversation.turn_due_at
+
+    _post_inbound(webhook_client, form=_form(MessageSid=SECOND_INBOUND_SID, Body="for Sam"))
+    db.refresh(conversation)
+
+    assert first_due is not None
+    assert conversation.turn_due_at is not None
+    assert conversation.turn_due_at > first_due
+
+
+# --- delivery callbacks for bot replies ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("twilio_status", ["failed", "undelivered"])
+def test_a_bot_reply_twilio_could_not_deliver_is_failed_and_flags_the_chat_stuck(
+    # First, so `webhook_client`'s auth token is the one the callback is signed with.
+    fake_twilio: FakeTwilio,
+    webhook_client: TestClient,
+    db: Session,
+    published: list[BroadcastEvent],
+    twilio_status: str,
+) -> None:
+    reply = _sent_bot_reply(db)
+
+    response = _post_status(webhook_client, message_status=twilio_status, error_code="63016")
+    db.refresh(reply)
+    conversation = db.get_one(Conversation, reply.conversation_id)
+    db.refresh(conversation)
+
+    assert response.status_code == 204
+    assert (reply.status, reply.error_code) == (MessageStatus.FAILED, "63016")
+    assert conversation.flag_reason is FlagReason.STUCK
+    assert fake_twilio.sent == []
+    assert [event.message["status"] for event in published] == ["failed"]
+
+
+def test_a_bot_reply_moves_queued_sent_delivered_and_flags_nothing(
+    webhook_client: TestClient, db: Session
+) -> None:
+    reply = _sent_bot_reply(db)
+
+    statuses = []
+    for reported in ("sent", "delivered"):
+        _post_status(webhook_client, message_status=reported)
+        db.refresh(reply)
+        statuses.append(reply.status)
+
+    assert statuses == [MessageStatus.SENT, MessageStatus.DELIVERED]
+    assert db.get_one(Conversation, reply.conversation_id).flag_reason is None
+
+
+def test_a_replayed_failure_for_a_bot_reply_flags_the_chat_once(
+    webhook_client: TestClient, db: Session
+) -> None:
+    reply = _sent_bot_reply(db)
+    _post_status(webhook_client, message_status="failed", error_code="63016")
+    conversation = db.get_one(Conversation, reply.conversation_id)
+    db.refresh(conversation)
+    flagged_at = conversation.flagged_at
+
+    _post_status(webhook_client, message_status="undelivered", error_code="63016")
+    db.refresh(conversation)
+
+    assert flagged_at is not None
+    assert conversation.flagged_at == flagged_at
+
+
+def test_an_office_reply_that_fails_flags_nothing(webhook_client: TestClient, db: Session) -> None:
+    message = _admin_message(db)
+
+    _post_status(webhook_client, message_status="failed", error_code="63016")
+    db.refresh(message)
+
+    assert message.status is MessageStatus.FAILED
+    assert db.get_one(Conversation, message.conversation_id).flag_reason is None
+
+
+# --- end to end: webhook, worker tick, agent turn, send ------------------------------------------
+
+
+def test_an_inbound_message_is_answered_by_one_sent_bot_reply_carrying_a_sid(
+    committed_client: TestClient,
+    committed_sessions: sessionmaker[Session],
+    fake_twilio: FakeTwilio,
+) -> None:
+    model = FakeModel(script=[reply_step("Hello! What's your name?")])
+    lock_probe: list[bool] = []
+    fake_twilio.during_next_send(
+        lambda sid: lock_probe.append(_turn_lock_is_held(committed_sessions))
+    )
+
+    response = fake_twilio.post_inbound(
+        committed_client, from_number=PHONE_NUMBER, body="hi", sid=E2E_INBOUND_SID
+    )
+    ran = run_due_turns(
+        committed_sessions,
+        now=datetime.datetime.now(tz=datetime.UTC) + DEBOUNCE,
+        take_turn=bot_agent.turn_runner(replace(bot_agent.default_deps(), model=model)),
+    )
+
+    with committed_sessions() as session:
+        conversation = session.scalars(
+            select(Conversation).where(Conversation.phone_number == PHONE_NUMBER)
+        ).one()
+        replies = session.scalars(
+            select(Message).where(
+                Message.conversation_id == conversation.id,
+                Message.author_kind == MessageAuthor.BOT,
+            )
+        ).all()
+    assert response.text == EMPTY_TWIML
+    assert ran == 1
+    assert [(row.body, row.status) for row in replies] == [
+        ("Hello! What's your name?", MessageStatus.QUEUED)
+    ]
+    assert [(sent.to, sent.body, sent.sid) for sent in fake_twilio.sent] == [
+        (PHONE_NUMBER, "Hello! What's your name?", replies[0].twilio_sid)
+    ]
+    assert conversation.turn_due_at is None
+    # The worker's chat lock was still held while the reply was being sent.
+    assert lock_probe == [True]
+    # The real context reached the model: the Guardian's message is in its history.
+    assert "Guardian: hi" in model.requests[0]["messages"][0]["content"]
+
+
+def test_a_failed_bot_reply_callback_locks_the_chat_before_the_message(
+    committed_client: TestClient,
+    committed_sessions: sessionmaker[Session],
+    fake_twilio: FakeTwilio,
+) -> None:
+    """Conversation first, as a number change's merge takes them: a callback that locked the
+    message first could deadlock with a merge moving that message."""
+    with committed_sessions() as session:
+        reply_id = _sent_bot_reply(session).id
+        session.commit()
+    outcome: list[int] = []
+
+    def callback() -> None:
+        response = fake_twilio.post_status(
+            committed_client, sid=OUTBOUND_SID, status="failed", error_code="63016"
+        )
+        outcome.append(response.status_code)
+
+    with committed_sessions() as holder:
+        conversation_id = holder.get_one(Message, reply_id).conversation_id
+        conversation_service.lock(holder, conversation_id=conversation_id)
+        calling = threading.Thread(target=callback)
+        calling.start()
+        calling.join(CALLBACK_SETTLE_SECONDS)
+        is_waiting = calling.is_alive()
+        # The waiting callback holds no lock on the message yet.
+        holder.execute(
+            select(Message.id).where(Message.id == reply_id).with_for_update(nowait=True)
+        ).one()
+        holder.commit()
+    calling.join()
+
+    assert is_waiting is True
+    assert outcome == [204]
+    with committed_sessions() as session:
+        assert session.get_one(Message, reply_id).status is MessageStatus.FAILED
+        assert session.get_one(Conversation, conversation_id).flag_reason is FlagReason.STUCK
+
+
+# Long enough for a callback that did not wait on the chat to have finished.
+CALLBACK_SETTLE_SECONDS = 1.0
+DEBOUNCE = datetime.timedelta(seconds=4)
+# Not `SM` + digits: that is the shape `fake_twilio` gives the SIDs of its sends.
+E2E_INBOUND_SID = "SMin000000000000000000000000000001"
+
+
+@pytest.fixture
+def committed_client(
+    committed_sessions: sessionmaker[Session], fake_twilio: FakeTwilio
+) -> Generator[TestClient, None, None]:
+    """One committed session per request, signed by `fake_twilio`; the chat's rows are deleted
+    afterwards."""
+
+    def one_session_per_request() -> Generator[Session, None, None]:
+        session = committed_sessions()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = one_session_per_request
+    try:
+        yield TestClient(app)
+    finally:
+        del app.dependency_overrides[get_db]
+        with committed_sessions() as session:
+            conversation_ids = select(Conversation.id).where(
+                Conversation.phone_number == PHONE_NUMBER
+            )
+            session.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
+            session.execute(delete(Conversation).where(Conversation.phone_number == PHONE_NUMBER))
+            session.commit()
+
+
+def _turn_lock_is_held(sessions: sessionmaker[Session]) -> bool:
+    """Whether a turn holds the chat's lock, asked from another connection without waiting."""
+    with sessions() as session:
+        conversation_id = session.scalars(
+            select(Conversation.id).where(Conversation.phone_number == PHONE_NUMBER)
+        ).one()
+        session.execute(text("SET LOCAL lock_timeout = '100ms'"))
+        try:
+            bot_worker.hold_turns(session, conversation_ids=[conversation_id])
+        except OperationalError:
+            is_held = True
+        else:
+            is_held = False
+        session.rollback()
+    return is_held
+
+
+def _sent_bot_reply(db: Session) -> Message:
+    conversation = Conversation(
+        phone_number=PHONE_NUMBER, last_message_at=datetime.datetime.now(tz=datetime.UTC)
+    )
+    db.add(conversation)
+    db.flush()
+    reply = message_service.record_bot_reply(db, conversation=conversation, body=BOT_REPLY)
+
+    return message_service.attach_twilio_sid(db, message=reply, twilio_sid=OUTBOUND_SID)

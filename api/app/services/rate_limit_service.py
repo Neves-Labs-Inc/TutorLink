@@ -92,6 +92,13 @@ mechanics — reserve under the advisory lock, commit straight away — are the 
 surfaces differ only in what the router does with a refusal: login answers 429, forgot answers
 the same 202 as a hit, because a forgot that says "throttled" says "this address is worth
 throttling". There is no release either: every forgot request counts, hit or miss.
+
+**The link lookup has one bucket, per IP.** `POST /auth/password/link` takes a token, not an
+address, so there is no email to key on. It borrows the forgot-password IP thresholds rather
+than adding settings of its own, but keeps its own prefix (`ratelimit:link:ip:`) so a page
+reloading its link never spends the forgot or login budget. Like forgot, every request counts
+and nothing is released; unlike forgot, a refusal is a 429, since the answer to an unknown token
+is already public.
 """
 
 import uuid
@@ -110,6 +117,7 @@ IP_BUCKET_PREFIX = "ratelimit:login:ip:"
 EMAIL_BUCKET_PREFIX = "ratelimit:login:email:"
 FORGOT_IP_BUCKET_PREFIX = "ratelimit:forgot:ip:"
 FORGOT_EMAIL_BUCKET_PREFIX = "ratelimit:forgot:email:"
+LINK_IP_BUCKET_PREFIX = "ratelimit:link:ip:"
 
 IP_MAX_ATTEMPTS_SETTING = "login_rate_limit_ip_max_attempts"
 IP_WINDOW_SECONDS_SETTING = "login_rate_limit_ip_window_seconds"
@@ -196,6 +204,11 @@ def load_forgot_password_policies(db: Session) -> RateLimitPolicies:
     )
 
 
+def load_link_lookup_policy(db: Session) -> RateLimitPolicy:
+    """The link lookup's one bucket, on the forgot-password IP thresholds (module docstring)."""
+    return load_forgot_password_policies(db).ip
+
+
 def reserve_login_attempt(
     db: Session,
     *,
@@ -236,6 +249,24 @@ def reserve_forgot_password_attempt(
         ip_prefix=FORGOT_IP_BUCKET_PREFIX,
         email_prefix=FORGOT_EMAIL_BUCKET_PREFIX,
     )
+
+
+def reserve_link_lookup_attempt(
+    db: Session, *, client_ip: str | None, policy: RateLimitPolicy
+) -> Reservation:
+    """Take a slot in the link lookup's IP bucket, or refuse and take none.
+
+    Unthrottled when the bucket is off or there is no peer to key on, as for the other IP
+    buckets. Does not commit, and nothing releases it: every lookup counts.
+    """
+    if client_ip is not None and policy.enabled:
+        reservation = _reserve_every_bucket(
+            db, buckets=[(LINK_IP_BUCKET_PREFIX + client_ip, policy)]
+        )
+    else:
+        reservation = UNTHROTTLED
+
+    return reservation
 
 
 def reserve_attempt(

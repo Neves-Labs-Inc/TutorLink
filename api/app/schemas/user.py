@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel
@@ -23,25 +22,17 @@ def _looks_like_an_email(value: str) -> str:
 Email = Annotated[str, AfterValidator(_looks_like_an_email)]
 
 
-class UserRead(BaseModel):
-    id: uuid.UUID
-    email: str
-    name: str
-    role: UserRole
-    # Derived: the user's profile id, or null for a user with none. Read-only on every route.
-    tutor_id: uuid.UUID | None
-    is_active: bool
-    # Whether the account can sign in by password; the hash itself is never exposed.
-    has_password: bool
-    # Always null until invites exist; declared now so the read shape stays stable.
-    invite_expires_at: datetime | None
-
-
 class MeRead(BaseModel):
     id: uuid.UUID
     email: str
     role: UserRole
     name: str
+    # The caller's own profile id, or null for a user with none.
+    tutor_id: uuid.UUID | None
+    # The office's E.164 number, or null while an Admin has not set one. Same for every role.
+    office_phone: str | None
+    # True once the person has dismissed their welcome card; never goes back to false.
+    welcome_seen: bool
 
 
 class MeUpdate(BaseModel):
@@ -69,6 +60,8 @@ class UserCreate(BaseModel):
     role: UserRole
     tutor_id: uuid.UUID | None = None
     tutor: TutorProfileCreate | None = None
+    # Sends the Invite in this same request, by the same path as `POST /{id}/invite`.
+    send_invite: bool = False
 
 
 class UserUpdate(BaseModel):
@@ -77,4 +70,3 @@ class UserUpdate(BaseModel):
     email: Email | None = None
     name: str | None = None
     role: UserRole | None = None
-    is_active: bool | None = None

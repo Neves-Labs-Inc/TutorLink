@@ -3,7 +3,8 @@ Managers).
 
 - `PUT /api/children/{id}/levels/{subject_id}` sets or replaces a level; the caller is its setter.
 - `DELETE /api/children/{id}/levels/{subject_id}` removes one.
-- `POST /api/children/{id}/evaluated` marks the Child Evaluated; `DELETE` clears the mark.
+- `POST /api/children/{id}/evaluated` with `{tutor_ids}` marks the Child Evaluated and sets its
+  Assigned Tutors; `DELETE` clears the mark and keeps the assignments.
 
 A thin HTTP shell over `child_evaluation_service`, matching `children.py`: the service raises
 domain exceptions, this maps them to status codes and owns the commit. Mounted on the same
@@ -15,14 +16,16 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
-from app.schemas.child import ChildLevelRead, EvaluatedRead, LevelSet, StaffRef
+from app.routers.assigned_tutors import NOT_ASSIGNABLE_ERROR
+from app.schemas.child import ChildLevelRead, EvaluatedCreate, EvaluatedRead, LevelSet, StaffRef
+from app.services.assigned_tutor_service import NotAssignable
 from app.services.child_evaluation_service import (
     ChildNotFound,
     LastLevelOfEvaluatedChild,
@@ -43,6 +46,7 @@ SUBJECT_INACTIVE_ERROR = "That subject is inactive, so it can't get a new level"
 LAST_LEVEL_ERROR = (
     "An Evaluated child needs at least one level; clear Evaluated before removing this one"
 )
+NO_TUTORS_ERROR = "Pick at least one Tutor or Manager to assign"
 NO_LEVELS_ERROR = "Add at least one subject level before marking the child Evaluated"
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -97,13 +101,30 @@ def delete_level(
 
 
 @router.post("/{child_id}/evaluated", response_model=EvaluatedRead)
-def post_evaluated(child_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> EvaluatedRead:
+def post_evaluated(
+    child_id: uuid.UUID,
+    user: OfficePrincipal,
+    db: DbSession,
+    payload: Annotated[EvaluatedCreate | None, Body()] = None,
+) -> EvaluatedRead:
+    # An absent body is 422 like an empty list, not the app-wide 400 for a malformed one.
+    if payload is None or not payload.tutor_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, NO_TUTORS_ERROR)
+
     try:
-        child = mark_evaluated(db, child_id=child_id, by_user_id=user.id, now=datetime.now(UTC))
+        child = mark_evaluated(
+            db,
+            child_id=child_id,
+            by_user_id=user.id,
+            tutor_ids=payload.tutor_ids,
+            now=datetime.now(UTC),
+        )
     except ChildNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
     except NoLevelsToEvaluate as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, NO_LEVELS_ERROR) from exc
+    except NotAssignable as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, NOT_ASSIGNABLE_ERROR) from exc
 
     db.commit()
 
@@ -126,7 +147,7 @@ def _level(row: ChildSubjectLevel) -> ChildLevelRead:
     return ChildLevelRead(
         subject_id=row.subject_id,
         name=row.subject.name,
-        is_active=row.subject.is_active,
+        archived=row.subject.is_archived,
         level=row.level,
         set_by=StaffRef(id=row.set_by.id, name=row.set_by.name),
         updated_at=row.updated_at,

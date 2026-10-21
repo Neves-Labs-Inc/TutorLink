@@ -11,6 +11,7 @@ import uuid
 from pydantic import AwareDatetime, BaseModel
 
 from app.models.enums import BookingStatus
+from app.services.booking_write_service import WarningCode
 
 
 class BookingStatusUpdate(BaseModel):
@@ -18,6 +19,8 @@ class BookingStatusUpdate(BaseModel):
     # The `updated_at` the caller last read; when sent, a changed row is refused (#151).
     # Aware, as the column is: a naive value could never equal it and would always read stale.
     expected_updated_at: AwareDatetime | None = None
+    # Read only by a restore (`cancelled` → `confirmed`), under PUT/POST's warning contract.
+    confirm_warnings: list[WarningCode] = []
 
 
 class BookingStatusChanged(BaseModel):

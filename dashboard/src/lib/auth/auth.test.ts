@@ -3,12 +3,10 @@ import {
   ADMIN_ROLES,
   ROLES,
   OFFICE_ROLES,
-  chromeFor,
   decodeAccessToken,
   guardDecision,
   isOfficeRole,
   landingPath,
-  setPasswordFormErrors,
   type Role,
 } from './auth'
 
@@ -82,10 +80,10 @@ describe('decodeAccessToken', () => {
 
 describe('landingPath', () => {
   const cases: { role: Role; expected: string }[] = [
-    { role: 'admin', expected: '/dashboard' },
-    { role: 'developer', expected: '/dashboard' },
-    { role: 'manager', expected: '/dashboard' },
-    { role: 'tutor', expected: '/schedule' },
+    { role: 'admin', expected: '/home' },
+    { role: 'developer', expected: '/home' },
+    { role: 'manager', expected: '/home' },
+    { role: 'tutor', expected: '/sessions' },
   ]
 
   it.each(cases)('returns $expected for $role', ({ role, expected }) => {
@@ -120,19 +118,6 @@ describe('isOfficeRole', () => {
   })
 })
 
-describe('chromeFor', () => {
-  const cases: { role: Role; expected: 'office' | 'tutor' }[] = [
-    { role: 'admin', expected: 'office' },
-    { role: 'manager', expected: 'office' },
-    { role: 'developer', expected: 'office' },
-    { role: 'tutor', expected: 'tutor' },
-  ]
-
-  it.each(cases)('gives $role the $expected chrome', ({ role, expected }) => {
-    expect(chromeFor(role)).toBe(expected)
-  })
-})
-
 describe('guardDecision', () => {
   it('waits while the session bootstrap is in flight', () => {
     expect(guardDecision('loading', null, OFFICE_ROLES)).toEqual({ kind: 'wait' })
@@ -149,10 +134,10 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'manager', OFFICE_ROLES)).toEqual({ kind: 'allow' })
   })
 
-  it('sends a manager on an admin-only route such as /users or /settings to the dashboard', () => {
+  it('sends a manager on an admin-only route such as /users or /settings to Home', () => {
     expect(guardDecision('authenticated', 'manager', ADMIN_ROLES)).toEqual({
       kind: 'redirect',
-      to: '/dashboard',
+      to: '/home',
     })
   })
 
@@ -160,35 +145,10 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'admin', ADMIN_ROLES)).toEqual({ kind: 'allow' })
   })
 
-  it('sends a tutor on a staff route to their schedule', () => {
+  it('sends a tutor on a staff route to their sessions', () => {
     expect(guardDecision('authenticated', 'tutor', OFFICE_ROLES)).toEqual({
       kind: 'redirect',
-      to: '/schedule',
-    })
-  })
-})
-
-describe('setPasswordFormErrors', () => {
-  it('accepts a matching password of at least 8 characters', () => {
-    expect(setPasswordFormErrors('12345678', '12345678')).toEqual({})
-  })
-
-  it('refuses a password shorter than 8 characters', () => {
-    expect(setPasswordFormErrors('short', 'short')).toEqual({
-      password: 'Password must be at least 8 characters.',
-    })
-  })
-
-  it('refuses an empty password with the length error and an empty confirm with the mismatch error', () => {
-    expect(setPasswordFormErrors('', '')).toEqual({
-      password: 'Password must be at least 8 characters.',
-    })
-    expect(setPasswordFormErrors('12345678', '')).toEqual({ confirm: 'Passwords do not match.' })
-  })
-
-  it('refuses a confirm that differs from the password', () => {
-    expect(setPasswordFormErrors('12345678', '12345679')).toEqual({
-      confirm: 'Passwords do not match.',
+      to: '/sessions',
     })
   })
 })

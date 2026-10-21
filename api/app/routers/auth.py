@@ -20,6 +20,8 @@ from app.db import get_db
 from app.schemas.auth import (
     ForgotPasswordRequest,
     ForgotPasswordResponse,
+    LinkLookupRequest,
+    LinkLookupResponse,
     RefreshRequest,
     SetPasswordRequest,
     TokenPair,
@@ -38,15 +40,18 @@ from app.services.mail_templates import TemplateKind
 from app.services.password_link_service import (
     InvalidLink,
     InvalidPassword,
+    look_up_link,
     request_reset,
     send_reset_email,
     set_password_with_link,
 )
 from app.services.rate_limit_service import (
     load_forgot_password_policies,
+    load_link_lookup_policy,
     load_login_policies,
     release_login_attempt,
     reserve_forgot_password_attempt,
+    reserve_link_lookup_attempt,
     reserve_login_attempt,
 )
 from app.services.settings_service import read_email_template
@@ -63,6 +68,7 @@ INVALID_REFRESH_ERROR = "Invalid refresh token"
 # message that appeared only for real accounts would turn the 429 into the account-enumeration
 # oracle the shared 401 exists to prevent.
 RATE_LIMITED_ERROR = "Too many login attempts. Try again later."
+LINK_RATE_LIMITED_ERROR = "Too many requests. Try again later."
 # One message for every refusal of a link, so the endpoint never says whether a token exists.
 INVALID_LINK_ERROR = "This link is invalid or has expired"
 INVALID_PASSWORD_ERROR = "Password must be between 8 characters and 72 bytes"
@@ -179,6 +185,34 @@ def set_password(payload: SetPasswordRequest, response: Response, db: DbSession)
     _set_refresh_cookie(response, issued.refresh_token)
 
     return _token_pair(issued)
+
+
+@router.post("/password/link", response_model=LinkLookupResponse)
+def look_up_password_link(
+    payload: LinkLookupRequest, request: Request, db: DbSession
+) -> LinkLookupResponse:
+    """Say whether a link is valid, expired or used, so the page can tell before a password is
+    typed. Read-only: it locks nothing and spends nothing; `/password/set` re-checks.
+    """
+    policy = load_link_lookup_policy(db)
+
+    # Reserved and committed first, as `forgot_password` does: every lookup counts, there is
+    # no success to release, and the commit ends the transaction holding the bucket's lock.
+    reservation = reserve_link_lookup_attempt(db, client_ip=_client_ip(request), policy=policy)
+    db.commit()
+
+    if not reservation.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=LINK_RATE_LIMITED_ERROR,
+            headers={"Retry-After": str(reservation.retry_after_seconds)},
+        )
+
+    lookup = look_up_link(db, token=payload.token, now=datetime.now(UTC))
+
+    return LinkLookupResponse(
+        kind=lookup.kind, state=lookup.state, name=lookup.name, email=lookup.email
+    )
 
 
 @router.post(

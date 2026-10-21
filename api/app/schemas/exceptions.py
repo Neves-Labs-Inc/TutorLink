@@ -1,4 +1,4 @@
-"""Request and response shapes for tutor availability exceptions.
+"""Request and response shapes for a Staff member's Time off (availability exceptions).
 
 `status` is deliberately absent from `ExceptionCreate`. Who may create an already-approved
 exception is an authorisation decision, and a field on the request body would let a tutor
@@ -8,16 +8,35 @@ instead — see `app.services.exception_service.create_exception`.
 
 import datetime
 import uuid
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
-from app.models.enums import ExceptionStatus
+from app.models.availability import REASON_MAX_LENGTH
+from app.models.enums import BookingStatus, ExceptionStatus
+from app.schemas.booking import NamedRef, StaffRef
 
-# Mirrors the reason column's documented values in docs/erd.md and the admin dashboard's
-# reason dropdown. The column itself stays a plain String(32) with no DB-level constraint, so
-# this is the only place an unrecognised reason is rejected.
-type ExceptionReason = Literal["vacation", "personal", "sick", "other"]
+# The stored statuses plus `expired`: a stored `pending` row whose window has ended. Derived at
+# read time, never stored, so it is a wire type rather than a member of `ExceptionStatus`.
+ExceptionReadStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
+
+# The one warning a Time off write can raise (#204): the row would land approved over live
+# Bookings. Confirmed by naming it in `confirm_warnings`, as the #151 booking warnings are.
+TimeOffWarningCode = Literal["booking_clash"]
+
+
+def _strip_reason(raw: object) -> object:
+    """Trimmed, and blank means no reason at all."""
+    if not isinstance(raw, str):
+        return raw
+
+    return raw.strip() or None
+
+
+# Checked after trimming, so surrounding spaces don't count toward the limit.
+Reason = Annotated[
+    Annotated[str, Field(max_length=REASON_MAX_LENGTH)] | None, BeforeValidator(_strip_reason)
+]
 
 
 class ExceptionCreate(BaseModel):
@@ -25,8 +44,8 @@ class ExceptionCreate(BaseModel):
     end_date: datetime.date
     start_time: datetime.time | None = None
     end_time: datetime.time | None = None
-    reason: ExceptionReason
-    notes: str | None = None
+    reason: Reason = None
+    confirm_warnings: list[TimeOffWarningCode] = []
 
     @model_validator(mode="after")
     def _window_is_coherent(self) -> Self:
@@ -51,20 +70,48 @@ class ExceptionCreate(BaseModel):
 
 
 class ExceptionDecision(BaseModel):
-    # `pending` is not an accepted target. Approval and rejection are both terminal, and
-    # allowing a decided row to be pushed back to pending would mean an approved exception
-    # could stop blocking bookings without anyone rejecting it.
+    # Neither `pending` nor `cancelled` is an accepted target. Nothing goes back to pending, and
+    # cancelling has its own route with its own rules (the owner may cancel; only Admin roles
+    # decide).
     status: Literal[ExceptionStatus.APPROVED, ExceptionStatus.REJECTED]
+    confirm_warnings: list[TimeOffWarningCode] = []
+
+
+class ClashingBooking(BaseModel):
+    """A live Booking of the same person inside the Time off's window. Computed, never stored."""
+
+    booking_id: uuid.UUID
+    date: datetime.date
+    start_time: datetime.time
+    end_time: datetime.time
+    child_name: str
+    status: BookingStatus
+
+
+class TimeOffWarning(BaseModel):
+    code: TimeOffWarningCode
+    message: str
+    # The rows `ExceptionRead.clashing_bookings` would list once the write lands.
+    clashing_bookings: list[ClashingBooking]
 
 
 class ExceptionRead(BaseModel):
     id: uuid.UUID
-    tutor_id: uuid.UUID
+    # The person holding the Time off: their user id, name and role.
+    staff: StaffRef
     start_date: datetime.date
     end_date: datetime.date
     start_time: datetime.time | None
     end_time: datetime.time | None
-    reason: str
-    notes: str | None
-    status: ExceptionStatus
+    reason: str | None
+    status: ExceptionReadStatus
     created_at: datetime.datetime
+    decided_by: NamedRef | None
+    decided_at: datetime.datetime | None
+    cancelled_by: NamedRef | None
+    cancelled_at: datetime.datetime | None
+    # Who entered the row; null on rows from before it was recorded.
+    entered_by: NamedRef | None
+    # Empty unless the wire status is `pending` (not Expired) or `approved`.
+    clashing_bookings: list[ClashingBooking]
+    clashing_bookings_count: int

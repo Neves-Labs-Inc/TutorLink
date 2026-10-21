@@ -16,6 +16,7 @@ bookings for the same tutor whose times overlap, so the fixture would not build 
 
 import datetime
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -27,6 +28,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import Guardian
 from app.models.home import Home
@@ -69,12 +71,19 @@ SUMMARY_FIELDS = {
     "staff",
     "kind",
     "location",
+    "office_address",
     "subject",
+    "subject_level",
     "scheduled_date",
     "start_time",
     "end_time",
     "status",
     "notes",
+    "home",
+    "guardians",
+    "sort_out_reasons",
+    "clash_acknowledged_by",
+    "clash_acknowledged_at",
     "updated_at",
 }
 
@@ -96,7 +105,7 @@ class Stage:
 @pytest.fixture
 def stage(db: Session) -> Stage:
     subject = Subject(name=f"Subject {uuid.uuid4().hex[:12]}")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     child = Child(name=f"Child {uuid.uuid4().hex[:12]}", grade_level=7, school_name="PS 1")
     db.add_all([subject, home, child])
     db.flush()
@@ -108,11 +117,11 @@ def stage(db: Session) -> Stage:
 def landscape(db: Session, stage: Stage) -> Stage:
     casts = [stage.cast, *(_make_cast(db) for _ in range(ACTIVE_TUTOR_TOTAL - 1))]
     for _ in range(INACTIVE_TUTOR_TOTAL):
-        _make_cast(db, is_active=False)
+        _make_cast(db, is_archived=True)
     for _ in range(ACTIVE_CLIENT_TOTAL):
         _make_guardian(db)
     for _ in range(INACTIVE_CLIENT_TOTAL):
-        _make_guardian(db, is_active=False)
+        _make_guardian(db, is_archived=True)
 
     for index, cast in enumerate(casts):
         live = BookingStatus.PENDING if index % 2 == 0 else BookingStatus.CONFIRMED
@@ -336,7 +345,7 @@ def test_active_tutor_count_equals_the_tutor_list_total(
 
     body = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()
     listed = api.get("/api/tutors?is_active=true", headers=_auth(admin)).json()
-    deactivated = api.get("/api/tutors?is_active=false", headers=_auth(admin)).json()
+    deactivated = api.get("/api/tutors?archived=true", headers=_auth(admin)).json()
 
     assert body["active_tutor_count"] == listed["total"] == ACTIVE_TUTOR_TOTAL
     assert body["active_tutor_count"] > DEFAULT_PAGE_SIZE
@@ -350,7 +359,7 @@ def test_active_client_count_equals_the_client_list_total(
 
     body = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()
     listed = api.get("/api/clients?is_active=true", headers=_auth(admin)).json()
-    deactivated = api.get("/api/clients?is_active=false", headers=_auth(admin)).json()
+    deactivated = api.get("/api/clients?archived=true", headers=_auth(admin)).json()
 
     assert body["active_client_count"] == listed["total"] == ACTIVE_CLIENT_TOTAL
     assert body["active_client_count"] > DEFAULT_PAGE_SIZE
@@ -454,10 +463,22 @@ def test_a_cancelled_booking_created_last_leads_the_feed(
 
 
 def test_each_recent_booking_is_shaped_like_a_booking_list_item(
-    api: TestClient, db: Session, stage: Stage
+    api: TestClient,
+    db: Session,
+    stage: Stage,
+    freeze_business_clock: Callable[[datetime.datetime], None],
 ) -> None:
+    freeze_business_clock(datetime.datetime.combine(THURSDAY, datetime.time(9, 0)))
     admin = _make_user(db)
+    db.add(
+        ChildSubjectLevel(
+            child_id=stage.child.id, subject_id=stage.subject.id, level=5, set_by_user_id=admin.id
+        )
+    )
     booking = _book(db, stage, on=WEDNESDAY, status=BookingStatus.CONFIRMED)
+    booking.clash_acknowledged_by = admin.id
+    booking.clash_acknowledged_at = EPOCH
+    db.flush()
 
     item = api.get(f"/api/stats/overview?date={WEDNESDAY}", headers=_auth(admin)).json()[
         "recent_bookings"
@@ -465,13 +486,14 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
     listed = api.get(f"/api/bookings?from={WEDNESDAY}&to={WEDNESDAY}", headers=_auth(admin)).json()
 
     assert set(item) == SUMMARY_FIELDS
-    assert set(item["child"]) == set(item["subject"]) == {"id", "name"}
+    assert set(item["child"]) == {"id", "name", "notes"}
+    assert set(item["subject"]) == {"id", "name"}
     assert set(item["staff"]) == {"id", "name", "role"}
     assert item == listed["items"][0]
     assert datetime.datetime.fromisoformat(item.pop("updated_at")) == booking.updated_at
     assert item == {
         "id": str(booking.id),
-        "child": {"id": str(stage.child.id), "name": stage.child.name},
+        "child": {"id": str(stage.child.id), "name": stage.child.name, "notes": None},
         "staff": {
             "id": str(stage.cast.tutor.user_id),
             "name": stage.cast.tutor.user.name,
@@ -479,12 +501,25 @@ def test_each_recent_booking_is_shaped_like_a_booking_list_item(
         },
         "kind": "regular",
         "location": "home",
+        "office_address": None,
         "subject": {"id": str(stage.subject.id), "name": stage.subject.name},
+        "subject_level": 5,
         "scheduled_date": str(WEDNESDAY),
         "start_time": "10:00:00",
         "end_time": "11:00:00",
         "status": "confirmed",
         "notes": None,
+        "home": {
+            "id": str(stage.home.id),
+            "label": None,
+            "address": "1 Test Street",
+            "directions": "0000",
+        },
+        "guardians": [],
+        # The day after its date, still confirmed.
+        "sort_out_reasons": ["not_completed"],
+        "clash_acknowledged_by": {"id": str(admin.id), "name": admin.name},
+        "clash_acknowledged_at": "2026-08-01T12:00:00Z",
     }
 
 
@@ -546,14 +581,14 @@ def _evaluate(db: Session, stage: Stage, *, on: datetime.date, status: BookingSt
     return booking
 
 
-def _make_cast(db: Session, *, is_active: bool = True) -> Cast:
+def _make_cast(db: Session, *, is_archived: bool = False) -> Cast:
     suffix = uuid.uuid4().hex[:12]
     tutor = Tutor(
         user=User(
             email=f"tutor-{suffix}@example.com",
             name=f"Tutor {suffix}",
             role=UserRole.TUTOR,
-            is_active=is_active,
+            is_archived=is_archived,
         ),
         phone_number=f"+1{suffix[:10]}",
     )
@@ -568,10 +603,10 @@ def _make_cast(db: Session, *, is_active: bool = True) -> Cast:
     return Cast(tutor=tutor, availability_id=availability.id)
 
 
-def _make_guardian(db: Session, *, is_active: bool = True) -> Guardian:
+def _make_guardian(db: Session, *, is_archived: bool = False) -> Guardian:
     suffix = uuid.uuid4().hex[:12]
     guardian = Guardian(
-        name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}", is_active=is_active
+        name=f"Guardian {suffix}", phone_number=f"+1{suffix[:10]}", is_archived=is_archived
     )
     db.add(guardian)
     db.flush()
@@ -588,7 +623,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password("stats-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -596,7 +631,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("stats-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

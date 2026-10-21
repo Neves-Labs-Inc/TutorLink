@@ -1,8 +1,9 @@
 """Request and response shapes for `/api/children`.
 
-`ChildRead` echoing `guardian_ids` and `home_ids` is what makes `PATCH`'s replace semantics
-observable without a second request — the frozen contract offers no `GET /api/children/{id}` to
-check the result against. The shape itself is `docs/api-design.md`'s (amendment P7-10).
+`ChildRead` echoing `guardian_ids` is what makes `PATCH`'s replace semantics observable without a
+second request. The shape itself is `docs/api-design.md`'s (amendment P7-10). There is no
+`home_ids` anywhere on a child: its homes are its guardians' homes (#214), read through
+`ChildSummary.homes` / `ChildDetail.homes`.
 
 `grade_level` is the Overall grade, an integer 0..12 everywhere (0 = Kindergarten). The label
 ("Grade 7") is derived for display and is never stored, so a string is refused rather than
@@ -23,6 +24,9 @@ carries no flag": a child can be deactivated without being deleted. `ChildSummar
 `GuardianLinkCreate` exactly-one-of `guardian_id`/`guardian` rule belongs to the service, not a
 validator, because resolving it may mean creating a guardian row (07B P7B-A).
 
+`assigned_tutors` is the Child's Assigned Tutors (#242), edited through
+`/api/children/{id}/assigned-tutors`.
+
 `levels` and `evaluated` carry the Subject levels and the Evaluated mark, each with the Staff
 member behind it as a `StaffRef` (Display name). `created_at` on `ChildSummary` is the
 "Since" of the Awaiting evaluation tab.
@@ -30,11 +34,14 @@ member behind it as a `StaffRef` (Display name). `created_at` on `ChildSummary` 
 
 import datetime
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH
+from app.models.enums import Language, UserRole
 from app.schemas.booking import NamedRef
+from app.services.assigned_tutor_service import AssignedTutor
 
 
 class ChildRead(BaseModel):
@@ -44,14 +51,12 @@ class ChildRead(BaseModel):
     grade_level: int | None
     school_name: str
     notes: str | None
-    is_active: bool
+    archived: bool
     guardian_ids: list[uuid.UUID]
-    home_ids: list[uuid.UUID]
 
 
 class ChildCreate(BaseModel):
     guardian_ids: list[uuid.UUID]
-    home_ids: list[uuid.UUID]
     name: str
     date_of_birth: datetime.date
     grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)
@@ -64,14 +69,11 @@ class ChildUpdate(BaseModel):
     # distinguishable all the way down to the service, which is why the default is None and not
     # an empty list.
     guardian_ids: list[uuid.UUID] | None = None
-    home_ids: list[uuid.UUID] | None = None
     name: str | None = None
     date_of_birth: datetime.date | None = None
     grade_level: int | None = Field(default=None, ge=LOWEST_GRADE, le=HIGHEST_GRADE)
     school_name: str | None = None
     notes: str | None = Field(default=None, max_length=NOTES_MAX_LENGTH)
-    is_active: bool | None = None
-    expected_cancellations: int | None = Field(default=None, ge=0)
 
 
 class StaffRef(BaseModel):
@@ -92,7 +94,7 @@ class ChildLevelRead(BaseModel):
     subject_id: uuid.UUID
     name: str
     # The subject's flag: a level outlives its subject's deactivation and is shown muted.
-    is_active: bool
+    archived: bool
     level: int
     set_by: StaffRef
     updated_at: datetime.datetime
@@ -102,11 +104,13 @@ class ChildHomeRef(BaseModel):
     id: uuid.UUID
     label: str | None
     address: str
-    is_active: bool
+    archived: bool
+    # Every Guardian linked to the Home, archived ones included, by name then id.
+    guardians: list[NamedRef]
 
 
 class ChildHomeRead(ChildHomeRef):
-    access_code: str
+    directions: str | None
 
 
 class NextSession(BaseModel):
@@ -120,16 +124,47 @@ class NextSession(BaseModel):
     subject: NamedRef | None
 
 
+class AssignedTutorRead(BaseModel):
+    """An Assigned Tutor: always an active Tutor or Manager, so there is no `archived` here."""
+
+    id: uuid.UUID
+    name: str
+    role: UserRole
+
+
+class AssignedTutorCreate(BaseModel):
+    user_id: uuid.UUID
+
+
+class EvaluatedCreate(BaseModel):
+    # Defaults empty so a missing field is the same 422 as an empty list.
+    tutor_ids: list[uuid.UUID] = []
+
+
+def assigned_tutor_reads(tutors: list[AssignedTutor]) -> list[AssignedTutorRead]:
+    return [AssignedTutorRead(id=tutor.id, name=tutor.name, role=tutor.role) for tutor in tutors]
+
+
+class ChildLevelRef(BaseModel):
+    subject_id: uuid.UUID
+    name: str
+    level: int
+
+
 class ChildSummary(BaseModel):
     id: uuid.UUID
     name: str
     grade_level: int | None
     school_name: str
-    is_active: bool
+    archived: bool
     guardians: list[NamedRef]
     homes: list[ChildHomeRef]
     next_session: NextSession | None
+    # Levels in non-archived Subjects only, by Subject name; `ChildDetail.levels` has them all.
+    levels: list[ChildLevelRef]
     evaluated: EvaluatedRead | None
+    # By name then id, as on `ChildDetail`.
+    assigned_tutors: list[AssignedTutorRead]
     created_at: datetime.datetime
 
 
@@ -137,7 +172,11 @@ class ChildGuardianRead(BaseModel):
     id: uuid.UUID
     name: str
     phone_number: str
-    is_active: bool
+    archived: bool
+    # Never null: an undetected language reads English. Same values as the Guardians list row.
+    language: Language
+    reminders: Literal["opt_in", "opt_out", "never"]
+    reminders_blocked_by_whatsapp: bool
 
 
 class ChildDetail(BaseModel):
@@ -147,12 +186,17 @@ class ChildDetail(BaseModel):
     grade_level: int | None
     school_name: str
     notes: str | None
-    is_active: bool
+    archived: bool
     upcoming_session_count: int
+    next_session: NextSession | None
     guardians: list[ChildGuardianRead]
     homes: list[ChildHomeRead]
     levels: list[ChildLevelRead]
     evaluated: EvaluatedRead | None
+    # By name then id.
+    assigned_tutors: list[AssignedTutorRead]
+    # Prefills Mark Evaluated; null when no live Evaluation or its Staff can't be assigned.
+    evaluation_run_by: AssignedTutorRead | None
 
 
 class NewGuardian(BaseModel):

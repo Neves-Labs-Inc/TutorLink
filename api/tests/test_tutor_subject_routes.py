@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.dependencies import ADMIN_REQUIRED_ERROR
 from app.models.enums import UserRole
 from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
@@ -25,7 +26,7 @@ def _make_user(db: Session, *, role: UserRole = UserRole.ADMIN) -> User:
         name="Test User",
         hashed_password=hash_password(PASSWORD),
         role=role,
-        is_active=True,
+        is_archived=False,
     )
     db.add(user)
     db.flush()
@@ -187,7 +188,7 @@ def test_assign_with_a_retired_subject_is_400(api: TestClient, db: Session) -> N
     admin = _make_user(db)
     tutor = _make_tutor(db)
     subject = _make_subject(db)
-    subject.is_active = False
+    subject.is_archived = True
     db.flush()
 
     response = api.post(
@@ -268,7 +269,7 @@ def test_delete_still_works_after_the_subject_is_retired(api: TestClient, db: Se
         headers=headers,
         json={"subject_id": str(subject.id), "max_grade_level": 8},
     )
-    subject.is_active = False
+    subject.is_archived = True
     db.flush()
 
     response = api.delete(f"/api/tutors/{tutor.id}/subjects/{subject.id}", headers=headers)
@@ -313,7 +314,7 @@ def test_delete_does_not_deactivate_or_delete_the_tutor_or_subject(
     db.refresh(tutor)
     db.refresh(subject)
     assert tutor.is_active is True
-    assert subject.is_active is True
+    assert subject.is_archived is False
 
 
 def test_a_subject_may_be_assigned_to_two_tutors_and_a_tutor_may_hold_two_subjects(
@@ -361,6 +362,33 @@ def test_a_tutor_token_is_refused_on_both_routes(api: TestClient, db: Session) -
 
     assert post_response.status_code == 403
     assert delete_response.status_code == 403
+
+
+def test_a_manager_is_refused_on_both_routes_and_nothing_changes(
+    api: TestClient, db: Session
+) -> None:
+    """Staff writes are Admin-only (#208)."""
+    manager = _make_user(db, role=UserRole.MANAGER)
+    tutor = _make_tutor(db)
+    kept = _make_subject(db)
+    added = _make_subject(db)
+    db.add(TutorSubject(tutor_id=tutor.id, subject_id=kept.id, max_grade_level=8))
+    db.flush()
+    headers = _auth(manager)
+
+    post_response = api.post(
+        f"/api/tutors/{tutor.id}/subjects",
+        headers=headers,
+        json={"subject_id": str(added.id), "max_grade_level": 8},
+    )
+    delete_response = api.delete(f"/api/tutors/{tutor.id}/subjects/{kept.id}", headers=headers)
+
+    for response in (post_response, delete_response):
+        assert response.status_code == 403
+        assert response.json() == {"detail": ADMIN_REQUIRED_ERROR}
+    db.expire_all()
+    held = db.scalars(select(TutorSubject.subject_id).where(TutorSubject.tutor_id == tutor.id))
+    assert set(held) == {kept.id}
 
 
 def test_no_token_is_401(api: TestClient, db: Session) -> None:

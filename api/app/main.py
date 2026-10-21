@@ -9,10 +9,13 @@ from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import get_settings
-from app.db import SessionLocal
+from app.db import BotWorkerSessionLocal, SessionLocal
 from app.routers import (
+    archive,
+    assigned_tutors,
     auth,
     availability,
+    booking_clash,
     booking_status,
     booking_writes,
     bookings,
@@ -26,6 +29,7 @@ from app.routers import (
     clients,
     conversation_stream,
     conversations,
+    counts,
     exceptions,
     health,
     homes,
@@ -42,7 +46,10 @@ from app.routers import (
     users,
     webhook,
 )
+from app.services import bot_agent
+from app.services.bot_worker import run_forever as run_bot_turns_forever
 from app.services.reminder_scheduler import run_forever as run_reminders_forever
+from app.services.reply_window_scheduler import run_forever as run_reply_window_checks_forever
 from app.services.retention_scheduler import run_forever
 
 app_logger = logging.getLogger("app")
@@ -55,17 +62,26 @@ if not app_logger.handlers:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the retention and reminder schedulers for exactly as long as the app is served.
+    """Run the retention, reminder and reply-window schedulers and the bot's due-turn worker for
+    exactly as long as the app is served, and warm the bot's model up in the background.
 
     Here rather than in the scheduler modules, which are service code and know nothing about
-    FastAPI. Neither task touches the database until its first top-of-hour tick, so entering
-    this is free. On shutdown both are cancelled and awaited, so neither outlives the process's
-    event loop; a purge or reminder run already on its worker thread finishes or fails on its
-    own.
+    FastAPI. No task touches the database until its first tick, so entering this is free. On
+    shutdown all are cancelled and awaited, so none outlives the process's event loop; a run
+    already on its worker thread finishes or fails on its own.
     """
+    bot_deps = bot_agent.default_deps()
+    bot_agent.start_warm_up(bot_deps)
     schedulers = [
         asyncio.create_task(run_forever(SessionLocal)),
         asyncio.create_task(run_reminders_forever(SessionLocal)),
+        asyncio.create_task(run_reply_window_checks_forever(SessionLocal)),
+        asyncio.create_task(
+            run_bot_turns_forever(
+                BotWorkerSessionLocal,
+                take_turn=bot_agent.turn_runner(bot_deps),
+            )
+        ),
     ]
     try:
         yield
@@ -129,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(exceptions.router)
     app.include_router(settings.router)
     app.include_router(subjects.router)
+    app.include_router(archive.router)
     app.include_router(clients.router)
     app.include_router(client_bookings.router)
     app.include_router(client_reminders.router)
@@ -137,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(children_read.router)
     app.include_router(child_guardians.router)
     app.include_router(child_evaluation.router)
+    app.include_router(assigned_tutors.router)
     app.include_router(households.router)
     app.include_router(homes.router)
     app.include_router(tutors.router)
@@ -146,8 +164,10 @@ def create_app() -> FastAPI:
     app.include_router(bookings.router)
     app.include_router(booking_writes.router)
     app.include_router(booking_status.router)
+    app.include_router(booking_clash.router)
     app.include_router(staff.router)
     app.include_router(stats.router)
+    app.include_router(counts.router)
     app.include_router(reminders.router)
     app.include_router(webhook.router)
     app.include_router(conversations.router)

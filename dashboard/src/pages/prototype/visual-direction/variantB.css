@@ -1,0 +1,293 @@
+/*
+ * Variant B, "Calm product": neutral-first tokens with the brand blue as the
+ * single accent. Every colour is scoped to the variant root so nothing leaks
+ * into (or reads from) the global shadcn tokens.
+ *
+ * Neutrals are cool (hue ~205, a touch of blue) so the brand blue reads as part
+ * of the same family instead of sitting on top of a warm gray.
+ */
+
+/* Same order Tailwind declares, so this file can't reorder the layers when it
+ * happens to load first. */
+@layer theme, base, components, utilities;
+
+[data-variant="b"] {
+  /* Accent ramp derived from #ADD8E6 (hue ~195). */
+  --vb-blue-50: #e8f4f8; /* brand tint: selected rows, active nav */
+  --vb-blue-100: #d3ebf3;
+  --vb-blue-200: #add8e6; /* brand primary */
+  --vb-blue-400: #5fa9c2;
+  --vb-blue-600: #1f6f8b; /* text-safe: primary fill (5.7:1 with white) */
+  --vb-blue-700: #175a72; /* links, hover, text on tint (6.8:1) */
+  --vb-blue-800: #0f4357;
+
+  /* Brand pastels, small doses only (avatars, Evaluation marker). */
+  --vb-pastel-blue: #add8e6;
+  --vb-pastel-pink: #ffc0cb;
+  --vb-pastel-yellow: #fffacd;
+  --vb-pastel-green: #b8f0b8;
+  --vb-pastel-mauve: #e5d4e3;
+  --vb-on-pastel: #14191f;
+
+  --vb-font-ui: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --vb-font-display: "Lato", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --vb-radius-sm: 4px;
+  --vb-radius: 6px;
+  --vb-radius-lg: 8px;
+
+  --vb-row-h: 36px;
+  --vb-control-h: 30px;
+
+  font-family: var(--vb-font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  background: var(--vb-canvas);
+  color: var(--vb-text);
+}
+
+[data-variant="b"][data-theme="light"] {
+  color-scheme: light;
+  --vb-canvas: #f7f8fa;
+  --vb-surface: #ffffff;
+  --vb-sidebar: #f4f6f8;
+  --vb-subtle: #f1f3f5;
+  --vb-hover: #eef1f4;
+  --vb-border: #e3e7eb;
+  --vb-border-strong: #cdd3d9;
+  --vb-text: #14191f;
+  --vb-text-2: #4a5561;
+  --vb-text-3: #636e7a;
+
+  --vb-accent: var(--vb-blue-600);
+  --vb-accent-hover: var(--vb-blue-700);
+  --vb-on-accent: #ffffff;
+  --vb-link: var(--vb-blue-700);
+  --vb-focus: var(--vb-blue-600);
+  --vb-selected: var(--vb-blue-50);
+  --vb-selected-text: var(--vb-blue-700);
+  --vb-selected-border: var(--vb-blue-200);
+  --vb-today-column: rgb(232 244 248 / 0.5);
+
+  --vb-tutoring-bg: var(--vb-blue-50);
+  --vb-tutoring-bar: var(--vb-blue-400);
+  --vb-eval-bg: #ffffff;
+  --vb-eval-bar: #e79aae;
+  --vb-eval-chip-bg: #ffe5ec;
+  --vb-eval-chip-fg: #8a2847;
+
+  --vb-success-bg: #e6f4ec;
+  --vb-success-fg: #1e6b3e;
+  --vb-warning-bg: #fbf0dc;
+  --vb-warning-fg: #8a5300;
+  --vb-danger-bg: #fbe9ea;
+  --vb-danger-fg: #b42330;
+  --vb-neutral-bg: #eef1f4;
+  --vb-neutral-fg: #4a5561;
+  --vb-info-bg: var(--vb-blue-50);
+  --vb-info-fg: var(--vb-blue-700);
+
+  --vb-shadow-overlay:
+    0 0 0 1px rgb(20 25 31 / 0.06), 0 12px 32px -8px rgb(20 25 31 / 0.18);
+  --vb-scrim: rgb(20 25 31 / 0.16);
+}
+
+[data-variant="b"][data-theme="dark"] {
+  color-scheme: dark;
+  --vb-canvas: #0f1113;
+  --vb-surface: #16191c;
+  --vb-sidebar: #121417;
+  --vb-subtle: #1c2024;
+  --vb-hover: #20252a;
+  --vb-border: #262b31;
+  --vb-border-strong: #363c44;
+  --vb-text: #e8ebee;
+  --vb-text-2: #a9b1ba;
+  --vb-text-3: #8a939d;
+
+  /* The brand blue itself becomes the fill, carrying near-black text. */
+  --vb-accent: var(--vb-blue-200);
+  --vb-accent-hover: #c4e4ee;
+  --vb-on-accent: #0b2530;
+  --vb-link: #7cc4dc;
+  --vb-focus: #7cc4dc;
+  --vb-selected: #17303a;
+  --vb-selected-text: #8fd0e6;
+  --vb-selected-border: #24495a;
+  --vb-today-column: rgb(23 48 58 / 0.3);
+
+  --vb-tutoring-bg: #142a33;
+  --vb-tutoring-bar: #5fa9c2;
+  --vb-eval-bg: #1c2024;
+  --vb-eval-bar: #d98aa0;
+  --vb-eval-chip-bg: #3a1e28;
+  --vb-eval-chip-fg: #f5b3c6;
+
+  --vb-success-bg: #15291e;
+  --vb-success-fg: #7fd3a0;
+  --vb-warning-bg: #2e2210;
+  --vb-warning-fg: #f0b865;
+  --vb-danger-bg: #33171a;
+  --vb-danger-fg: #f59aa0;
+  --vb-neutral-bg: #23282d;
+  --vb-neutral-fg: #a9b1ba;
+  --vb-info-bg: #142a33;
+  --vb-info-fg: #8fd0e6;
+
+  --vb-shadow-overlay:
+    0 0 0 1px rgb(255 255 255 / 0.06), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+  --vb-scrim: rgb(0 0 0 / 0.4);
+}
+
+/*
+ * Component classes sit in the components layer so Tailwind utilities on the
+ * same element (p-0, h-10, size-11) still win.
+ */
+@layer components {
+  [data-variant="b"] .vb-display {
+    font-family: var(--vb-font-display);
+    letter-spacing: -0.005em;
+  }
+
+  [data-variant="b"] .vb-num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  [data-variant="b"] :focus-visible {
+    outline: 2px solid var(--vb-focus);
+    outline-offset: 1px;
+    border-radius: var(--vb-radius-sm);
+  }
+
+  /* Buttons: 30px tall, 6px radius, never pill. */
+  [data-variant="b"] .vb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--vb-control-h);
+    padding: 0 10px;
+    border: 1px solid var(--vb-border-strong);
+    border-radius: var(--vb-radius);
+    background: var(--vb-surface);
+    color: var(--vb-text);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+  [data-variant="b"] .vb-btn:hover {
+    background: var(--vb-hover);
+  }
+  [data-variant="b"] .vb-btn-primary {
+    border-color: transparent;
+    background: var(--vb-accent);
+    color: var(--vb-on-accent);
+  }
+  [data-variant="b"] .vb-btn-primary:hover {
+    background: var(--vb-accent-hover);
+  }
+  [data-variant="b"] .vb-btn-ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--vb-text-2);
+  }
+  [data-variant="b"] .vb-btn-ghost:hover {
+    background: var(--vb-hover);
+    color: var(--vb-text);
+  }
+  [data-variant="b"] .vb-btn-danger {
+    border-color: transparent;
+    background: transparent;
+    color: var(--vb-danger-fg);
+  }
+  [data-variant="b"] .vb-btn-danger:hover {
+    background: var(--vb-danger-bg);
+  }
+  [data-variant="b"] .vb-btn-lg {
+    height: 44px;
+    padding: 0 14px;
+    font-size: 14px;
+  }
+
+  [data-variant="b"] .vb-input {
+    height: var(--vb-control-h);
+    border: 1px solid var(--vb-border-strong);
+    border-radius: var(--vb-radius);
+    background: var(--vb-surface);
+    color: var(--vb-text);
+    font-size: 13px;
+  }
+  [data-variant="b"] .vb-input::placeholder {
+    color: var(--vb-text-3);
+  }
+
+  /* Badges are the one pill shape. */
+  [data-variant="b"] .vb-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  [data-variant="b"] .vb-badge-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  [data-variant="b"] .vb-kbd {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 5px;
+    border: 1px solid var(--vb-border);
+    border-radius: var(--vb-radius-sm);
+    color: var(--vb-text-3);
+    font-size: 11px;
+  }
+
+  [data-variant="b"] .vb-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--vb-border-strong) transparent;
+  }
+
+  [data-variant="b"] .vb-hatch {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent 0 6px,
+      var(--vb-subtle) 6px 7px
+    );
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-variant="b"] .vb-slide-in {
+    animation: vb-slide-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  [data-variant="b"] .vb-sheet-in {
+    animation: vb-sheet-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+
+@keyframes vb-slide-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+@keyframes vb-sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}

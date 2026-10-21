@@ -1,191 +1,215 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { AuthProvider } from '@/components/auth/AuthProvider'
-import { RouteGuard } from '@/components/layout/RouteGuard'
-import { AppShell } from '@/components/layout/AppShell'
-import { ADMIN_ROLES, OFFICE_ROLES } from '@/lib/auth/auth'
-import { Login } from '@/pages/Login'
-import ForgotPassword from '@/pages/ForgotPassword'
-import SetPassword from '@/pages/SetPassword'
-import { Dashboard } from '@/pages/admin/Dashboard'
-import { Tutors } from '@/pages/admin/Tutors'
-import { TutorDetail } from '@/pages/admin/TutorDetail'
-import { Children } from '@/pages/admin/Children'
-import { ChildDetail } from '@/pages/admin/ChildDetail'
-import { Guardians } from '@/pages/admin/Guardians'
-import { GuardianDetail } from '@/pages/admin/GuardianDetail'
-import { ChatsLayout } from '@/components/chat/ChatsLayout'
-import { ChatThread } from '@/pages/admin/ChatThread'
-import { Bookings } from '@/pages/admin/Bookings'
-import { Reminders } from '@/pages/admin/Reminders'
-import { Users } from '@/pages/admin/Users'
-import { Settings } from '@/pages/admin/Settings'
-import { Schedule } from '@/pages/tutor/Schedule'
-import { Sessions } from '@/pages/tutor/Sessions'
-import { TimeOff } from '@/pages/tutor/TimeOff'
-import { NotFound } from '@/pages/NotFound'
+import type { ReactNode } from "react";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
+import { AuthProvider } from "@/components/auth/AuthProvider";
+import AppLayout from "@/components/layout/app-layout";
+import { RouteGuard } from "@/components/layout/RouteGuard";
+import { OFFICE_ROLES, ROLES } from "@/lib/auth/auth";
+import type { Role } from "@/lib/auth/auth";
+import SignInPage from "@/pages/auth/sign-in-page";
+import ForgotPasswordPage from "@/pages/auth/forgot-password-page";
+import SetPasswordPage from "@/pages/set-password/set-password-page";
+import HomePage from "@/pages/home/home-page";
+import BookingsPage from "@/pages/bookings/bookings-page";
+import ChatsPage from "@/pages/chats/chats-page";
+import NotFoundPage from "@/pages/not-found/not-found-page";
+import ProfilePage from "@/pages/profile/profile-page";
+import SettingsPage from "@/pages/settings/settings-page";
+import FamiliesPage from "@/pages/families/families-page";
+import FamilyPage from "@/pages/families/family-page";
+import LegacyRedirect from "@/pages/families/legacy-redirect";
+import AvailabilityPage from "@/pages/availability/availability-page";
+import StaffPage from "@/pages/staff/staff-page";
+import TutorRedirect from "@/pages/staff/tutor-redirect";
+import MySessionsPage from "@/pages/sessions/my-sessions-page";
+import TimeOffPage from "@/pages/time-off/time-off-page";
+import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/VisualDirectionPrototype";
 
-export const App = () => (
+const TUTOR_ONLY: readonly Role[] = ["tutor"];
+
+// The old Reminders URL, keeping ?week=.
+function RedirectToReminders(): ReactNode {
+  const { search } = useLocation();
+  return <Navigate to={{ pathname: "/chats/reminders", search }} replace />;
+}
+
+export const App = (): ReactNode => (
   <BrowserRouter>
     <AuthProvider>
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/set-password" element={<SetPassword />} />
+        <Route path="/login" element={<SignInPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/set-password" element={<SetPasswordPage />} />
+        {/* Every signed-in screen renders inside the one shell; each
+            route below still guards its own roles. */}
         <Route
-          path="/dashboard"
           element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <Dashboard />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/tutors"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <Tutors />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/tutors/:id"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <TutorDetail />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/children"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <Children />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/children/:id"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <ChildDetail />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/guardians"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <Guardians />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/guardians/:id"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <GuardianDetail />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/chats"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <ChatsLayout />
-              </AppShell>
+            <RouteGuard allow={ROLES}>
+              <AppLayout />
             </RouteGuard>
           }
         >
-          <Route path=":id" element={<ChatThread />} />
+          <Route
+            path="/home"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <HomePage />
+              </RouteGuard>
+            }
+          />
+          <Route path="/dashboard" element={<Navigate to="/home" replace />} />
+          {/* /bookings/:id opens that Booking's details over the page. */}
+          <Route
+            path="/bookings/:id?"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <BookingsPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/chats"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <ChatsPage tab="conversations" />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/chats/reminders"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <ChatsPage tab="reminders" />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/chats/:id"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <ChatsPage tab="conversations" />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/reminders"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <RedirectToReminders />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/families"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <FamiliesPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/families/:memberId"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <FamilyPage />
+              </RouteGuard>
+            }
+          />
+          {/* Old Children and Guardians URLs live on in Families. */}
+          <Route path="/children" element={<LegacyRedirect kind="child" />} />
+          <Route
+            path="/children/:id"
+            element={<LegacyRedirect kind="child" />}
+          />
+          <Route
+            path="/guardians"
+            element={<LegacyRedirect kind="guardian" />}
+          />
+          <Route
+            path="/guardians/:id"
+            element={<LegacyRedirect kind="guardian" />}
+          />
+          <Route
+            path="/staff/:id?"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <StaffPage />
+              </RouteGuard>
+            }
+          />
+          {/* Users and Tutors became Staff. */}
+          <Route path="/users" element={<Navigate to="/staff" replace />} />
+          <Route path="/tutors" element={<Navigate to="/staff" replace />} />
+          <Route
+            path="/tutors/:id"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <TutorRedirect />
+              </RouteGuard>
+            }
+          />
+          {/* Office roles: a Manager gets "Settings are for Admins". */}
+          <Route
+            path="/settings"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <SettingsPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/sessions"
+            element={
+              <RouteGuard allow={TUTOR_ONLY}>
+                <MySessionsPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/sessions/:id"
+            element={
+              <RouteGuard allow={TUTOR_ONLY}>
+                <MySessionsPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/availability"
+            element={
+              <RouteGuard allow={TUTOR_ONLY}>
+                <AvailabilityPage />
+              </RouteGuard>
+            }
+          />
+          <Route
+            path="/schedule"
+            element={<Navigate to="/availability" replace />}
+          />
+          {/* Every role: Admins get the queue, others their own. */}
+          <Route
+            path="/time-off/:id?"
+            element={
+              <RouteGuard allow={ROLES}>
+                <TimeOffPage />
+              </RouteGuard>
+            }
+          />
+          <Route path="/profile" element={<ProfilePage />} />
         </Route>
-        <Route
-          path="/bookings"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <Bookings />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/reminders"
-          element={
-            <RouteGuard allow={OFFICE_ROLES}>
-              <AppShell>
-                <Reminders />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/users"
-          element={
-            <RouteGuard allow={ADMIN_ROLES}>
-              <AppShell>
-                <Users />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/settings"
-          element={
-            <RouteGuard allow={ADMIN_ROLES}>
-              <AppShell>
-                <Settings />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/schedule"
-          element={
-            <RouteGuard allow={['tutor']}>
-              <AppShell>
-                <Schedule />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/sessions"
-          element={
-            <RouteGuard allow={['tutor']}>
-              <AppShell>
-                <Sessions />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
-        <Route
-          path="/time-off"
-          element={
-            <RouteGuard allow={['tutor']}>
-              <AppShell>
-                <TimeOff />
-              </AppShell>
-            </RouteGuard>
-          }
-        />
+        {import.meta.env.DEV && (
+          <Route
+            path="/prototype/visual-direction"
+            element={<VisualDirectionPrototype />}
+          />
+        )}
         <Route path="/" element={<Navigate to="/login" replace />} />
-        <Route path="*" element={<NotFound />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AuthProvider>
   </BrowserRouter>
-)
+);

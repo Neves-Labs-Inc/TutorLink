@@ -1,15 +1,15 @@
 """A WhatsApp block belongs to one Guardian on one phone number (#119).
 
 WhatsApp's `system` opt-out (63050/63033 on a Booking reminder) blocks the Guardian while they
-hold the number the reminder went to. Only that Guardian's own START, button tap or Intake yes
+hold the number the reminder went to. Only that Guardian's own START, button tap or opt-in
 from that number lifts it. A START from another number neither lifts it nor counts toward it,
 a Guardian moved to a new number is not blocked there, and a number given to another Guardian
 does not carry the block to them.
 
 Seams: the client PATCH and reminders routes, the signed inbound and status webhooks with
 `fake_twilio`, and `reminder_service.due_guardians` / `run_week`. **No test here calls
-Anthropic**: a START needs no parse, and the parser raises if reached, except in the Intake
-yes case, which scripts its one parse.
+Anthropic**: a START is answered by code, and the agent's opt-in case runs `take_turn` with a
+scripted model.
 
 Every write in a test shares one transaction, so `now()` ties them; `_time_passes` moves the
 consent rows written so far an hour back, the way real time would separate the steps.
@@ -44,12 +44,13 @@ from app.models.guardian import ChildGuardian, Guardian
 from app.models.reminder_consent import ReminderConsent
 from app.models.system_setting import SystemSetting
 from app.models.user import User
-from app.schemas.bot import BotIntent, ParsedIntent, ReminderButton
+from app.schemas.bot import ReminderButton
 from app.security import create_access_token
-from app.services import bot_service, parser_service
-from app.services.bot_state import FlowState, save_state
 from app.services.reminder_service import ReminderCandidate, due_guardians, run_week
+from app.services import bot_tools_profile
+from app.services.bot_turn import TurnDeps, take_turn
 from tests.fake_twilio import FakeTwilio
+from tests.test_bot_turn import SYSTEM_PROMPT, FakeModel, build_context, call, reply
 
 # Sunday 2026-10-11, 6 PM, and the Sunday after: two weekly runs.
 NOW = datetime.datetime(2026, 10, 11, 18, 0)
@@ -64,14 +65,6 @@ BLOCKED_ERROR = (
 # Valid US numbers, unlike a random `+1` string, so the PATCH route's normaliser accepts them.
 AREA_CODES = ("202", "212", "312", "415", "617")
 SUBSCRIBER_NUMBERS = 10_000
-
-
-@pytest.fixture(autouse=True)
-def no_parser(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(**kwargs: object) -> object:
-        raise AssertionError("a test here reached the parser")
-
-    monkeypatch.setattr(parser_service, "parse_intent", refuse)
 
 
 @dataclass
@@ -148,7 +141,10 @@ class World:
         """Remind the Guardian, and have WhatsApp report the number blocked us. `callback_to`
         is the callback's `To` (after `whatsapp:`), the Guardian's number when not given."""
         run_week(self.db, now=now)
-        [sent] = [s for s in self.fake.sent if s.to == guardian.phone_number]
+        # The reminder is the template send; a START's confirmation is a free-form one.
+        [sent] = [
+            s for s in self.fake.sent if s.to == guardian.phone_number and s.content_sid is not None
+        ]
         response = self.fake.post_status(
             self.api,
             sid=sent.sid,
@@ -283,7 +279,7 @@ def test_a_start_from_a_number_staff_swapped_in_does_not_lift_the_block(
 
 @pytest.mark.parametrize("code", OPT_OUT_CODES)
 def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
-    world: World, code: str, monkeypatch: pytest.MonkeyPatch
+    world: World, code: str
 ) -> None:
     guardian = world.guardian()
     blocked_number = guardian.phone_number
@@ -295,7 +291,7 @@ def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
 
     # A thread still linked to the Guardian at the swapped-in number, as one from before threads
     # followed their Guardian (#126) would be. Its START must not reach the Guardian at all: the
-    # number is a stranger's now, so it is parsed as an Intake opener.
+    # number is a stranger's now, so it is an ordinary message for the agent.
     world.db.add(
         Conversation(
             phone_number=staff_number,
@@ -306,12 +302,6 @@ def test_a_later_start_from_the_swapped_in_number_still_does_not_lift_the_block(
     world.db.flush()
     consents_before = [row.id for row in world.consents(guardian)]
 
-    def read_hello(**kwargs: object) -> ParsedIntent:
-        return ParsedIntent(
-            intent=BotIntent.UNKNOWN, answer=None, fields={}, confidence_is_low=False
-        )
-
-    monkeypatch.setattr(parser_service, "parse_intent", read_hello)
     world.say("START", from_number=staff_number)
 
     assert [row.id for row in world.consents(guardian)] == consents_before
@@ -403,30 +393,36 @@ def test_a_stop_reminders_tap_from_the_blocked_number_lifts_the_block(world: Wor
     assert world.opt_in(guardian).status_code == 201
 
 
-def test_an_intake_yes_from_the_blocked_number_lifts_the_block(
-    world: World, monkeypatch: pytest.MonkeyPatch
+def test_the_agent_turning_reminders_on_from_the_blocked_number_lifts_the_block(
+    world: World,
 ) -> None:
     guardian = world.guardian()
     world.block(guardian)
-    # The thread at the blocked number is waiting on the Intake's reminder question.
-    save_state(
+    world.say("yes, send me the reminders", from_number=guardian.phone_number)
+    conversation = world.db.scalars(
+        select(Conversation).where(Conversation.phone_number == guardian.phone_number)
+    ).one()
+
+    take_turn(
         world.db,
-        phone_number=guardian.phone_number,
-        state=FlowState(step=bot_service.STEP_REMINDERS_OPT_IN, prompt="Weekly reminders?"),
+        conversation_id=conversation.id,
+        deps=TurnDeps(
+            model=FakeModel(
+                script=[
+                    call(("set_reminder_preference", {"opt_in": True})),
+                    reply("Done, you'll get the weekly reminder."),
+                ]
+            ),
+            tools=bot_tools_profile.TOOLS,
+            system_prompt=lambda: SYSTEM_PROMPT,
+            build_context=build_context,
+            sleep=lambda seconds: None,
+        ),
     )
 
-    def read_yes(**kwargs: object) -> ParsedIntent:
-        return ParsedIntent(
-            intent=BotIntent.UNKNOWN, answer="yes", fields={}, confidence_is_low=False
-        )
-
-    monkeypatch.setattr(parser_service, "parse_intent", read_yes)
-
-    world.say("yes", from_number=guardian.phone_number)
-
-    intake = world.consents(guardian)[-1]
-    assert (intake.source, intake.action, intake.phone_number) == (
-        ConsentSource.INTAKE,
+    latest = world.consents(guardian)[-1]
+    assert (latest.source, latest.action, latest.phone_number) == (
+        ConsentSource.MESSAGE,
         ConsentAction.OPT_IN,
         guardian.phone_number,
     )

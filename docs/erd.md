@@ -280,6 +280,11 @@ One row per WhatsApp identity, created on the first inbound message. Holds who i
 | flag_reason | ENUM `flag_reason` | nullable — `stuck`, `parse_error`, `guardian_link_request`, `reactivation_request` |
 | flagged_at | TIMESTAMPTZ | nullable |
 | reactivation_child_id | UUID | FK → children.id, nullable |
+| proposal_actions | JSONB | nullable — the bot's pending proposal (what a yes would commit) |
+| proposed_at | TIMESTAMPTZ | nullable — when the proposal was made; set together with `proposal_actions` |
+| no_progress_count | INTEGER | NOT NULL, default 0 — bot turns in a row without progress |
+| outage_apology_sent_at | TIMESTAMPTZ | nullable — one outage apology per outage stretch |
+| turn_due_at | TIMESTAMPTZ | nullable — when the debounced bot turn is due; partial index for the worker's poll |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
 
@@ -352,6 +357,7 @@ Every message in a conversation — what the client sent, what the bot replied, 
 | error_code | VARCHAR | nullable — Twilio's error code on `failed` |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | Moves only when the delivery callback advances `status` |
+| redacted_fields | TEXT[] | nullable — the private fields the message carried, shown to the bot as a placeholder |
 
 Constraints: `UNIQUE (twilio_sid)` · `CHECK ((author_kind = 'admin') = (author_user_id IS NOT NULL))` · `INDEX (conversation_id, created_at)`
 
@@ -399,7 +405,7 @@ Seeded contents. Every row is admin-editable today; the `is_developer_only` gate
 | session_gap_minutes | 30 | yes |
 | booking_lookahead_days | 90 | no |
 | min_booking_lead_hours | 0 | no |
-| cancellation_cutoff_hours | 24 | no |
+| cancellation_cutoff_hours | 6 | no |
 | chat_retention_days | 365 | no |
 | login_rate_limit_ip_max_attempts | 20 | no |
 | login_rate_limit_ip_window_seconds | 900 | no |
@@ -416,7 +422,7 @@ records-retention obligation will want.
 the API process, ticks at the top of every hour, and reads this row at each tick, so a changed hour
 takes effect the same day without a restart. When more than one API task is running, a PostgreSQL
 advisory lock lets exactly one of them purge; the others log that they skipped. The same run reaps
-expired `bot_flow_state` and `login_attempts` rows.
+expired `login_attempts` rows.
 
 It is a setting rather than a constant for the same reason `session_gap_minutes` is: the answer is a
 business policy, it differs from one client to the next, and it changes for reasons that have nothing to
@@ -432,35 +438,12 @@ than a boolean because `integer` is the only `value_type` in use, and adding one
 a schema change to say what `0` already says. `POST /auth/token` is the only reader of these, and the only
 reader of `system_settings` at all today — see `docs/api-design.md`.
 
-### `bot_flow_state`
-The live flow state of a bot session in progress — which step the bot is on and what it has collected so far. One row per phone number with a flow under way.
-
-| Column | Type | Notes |
-|---|---|---|
-| phone_number | VARCHAR(32) | Primary key — same type as `conversations.phone_number`; deliberately **no FK** |
-| step | TEXT | The flow step the bot is waiting on |
-| collected_data | JSONB | Answers gathered so far |
-| misses | INTEGER | Consecutive unusable answers in the current step |
-| prompt | TEXT | The last question asked, for a re-prompt |
-| expires_at | TIMESTAMPTZ | 30 minutes after the last write |
-
-A missing row and an expired row read the same: a fresh start. If a client goes idle mid-conversation,
-they start fresh next time they message. Expired rows are reaped by the nightly retention purge; there
-is no index on `expires_at` because the table only ever holds live flows.
-
-This table is not the record of the conversation, and the division is worth stating. `bot_flow_state`
-answers "where is this client up to in the flow right now", holds nothing once the flow ends, and is
-safe to lose — losing it costs a client one restarted intake. [`conversations`](#conversations) and
-[`messages`](#messages) answer "what was said, by whom, when, and did it get delivered", are the source
-of truth for the admin chat screens, and are retained for `chat_retention_days`. Nothing is written to
-both, which is why there is no foreign key between them.
-
-A takeover touches `bot_flow_state` not at all. Flow state keeps its 30-minute expiry and will usually
-expire during a handoff of any length, so when the admin releases the conversation the client resumes
-from a fresh state — the same behaviour as any other client who went idle. Freezing the expiry for the
-duration of a handoff was the alternative, and it is worse: it would restore a half-finished intake
-that the admin has by then completed by hand, and the bot would ask again for answers the client has
-already given.
+### `bot_flow_state` (dropped in `0054`)
+The state machine's per-number flow table is gone. The WhatsApp bot agent
+(`docs/specs/whatsapp-bot-agent.md`) keeps its runtime state on [`conversations`](#conversations)
+(`proposal_actions`/`proposed_at`, `no_progress_count`, `outage_apology_sent_at`, `turn_due_at`) and
+reads the rest from the chat's history in [`messages`](#messages), with `messages.redacted_fields`
+marking private details it must not repeat.
 
 ### `login_attempts`
 The counting store behind the `POST /auth/token` brute-force limiter. One row per reserved attempt per bucket.
@@ -476,7 +459,7 @@ Constraints: `PRIMARY KEY (bucket_key, attempt_id)`. Index: `(bucket_key, attemp
 A bucket's count is its rows inside the window. Rows older than the window are pruned on every touch of
 their bucket and reaped by the nightly retention purge. Concurrent attempts on the same bucket are
 serialized with a transaction-scoped advisory lock on the bucket key, so the count a request reads is
-the count it reserves against. Like `bot_flow_state`, this is not a system of record.
+the count it reserves against. This is not a system of record.
 
 ---
 

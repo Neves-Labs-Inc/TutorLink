@@ -11,6 +11,9 @@ export type Subject = {
   tutor_count: number
 }
 
+// The API's page cap; the catalogue is far smaller.
+const ACTIVE_PAGE_SIZE = 100
+
 export type SubjectListParams = {
   is_active?: boolean
   page?: number
@@ -44,6 +47,19 @@ export const subjectQueries = {
         return response.data
       },
       placeholderData: keepPreviousData,
+    }),
+
+  // Every Subject that can still be taught (not archived), in one page.
+  active: () =>
+    queryOptions({
+      queryKey: ['subjects', 'active'],
+      queryFn: async () => {
+        const response = await api.get<Page<Subject>>('/api/subjects', {
+          params: { archived: false, page_size: ACTIVE_PAGE_SIZE },
+        })
+
+        return response.data.items
+      },
     }),
 }
 

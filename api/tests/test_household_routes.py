@@ -9,23 +9,31 @@ Every test runs inside the rolled-back `db` transaction and the endpoint reads e
 the only rows it sees are the ones the test made.
 """
 
+import datetime
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, event
 from sqlalchemy.orm import Session
 
+from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import UserRole
+from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
 from app.models.guardian import ChildGuardian, Guardian
+from app.models.home import GuardianHome, Home
+from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import create_access_token, hash_password
 
 PASSWORD = "correct horse battery staple"
 URL = "/api/households"
+FROZEN_NOW = datetime.datetime(2026, 9, 23, 12, 0)
+TODAY = FROZEN_NOW.date()
+TOMORROW = TODAY + datetime.timedelta(days=1)
+YESTERDAY = TODAY - datetime.timedelta(days=1)
 
 
 def _make_user(
@@ -37,7 +45,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -45,7 +53,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -67,12 +75,12 @@ def _auth(user: User) -> dict[str, str]:
 
 
 def _make_guardian(
-    db: Session, name: str, *, phone_number: str | None = None, is_active: bool = True
+    db: Session, name: str, *, phone_number: str | None = None, is_archived: bool = False
 ) -> Guardian:
     guardian = Guardian(
         name=name,
         phone_number=phone_number or f"+1303{uuid.uuid4().int % 10**7:07d}",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(guardian)
     db.flush()
@@ -80,10 +88,10 @@ def _make_guardian(
 
 
 def _make_child(
-    db: Session, name: str, *, guardians: list[Guardian], is_active: bool = True
+    db: Session, name: str, *, guardians: list[Guardian], is_archived: bool = False
 ) -> Child:
     child = Child(
-        name=name, grade_level=7, school_name="Lincoln Middle School", is_active=is_active
+        name=name, grade_level=7, school_name="Lincoln Middle School", is_archived=is_archived
     )
     db.add(child)
     db.flush()
@@ -163,12 +171,16 @@ def test_list_returns_the_page_envelope_with_the_pinned_item_shape(
                         "id": str(jane.id),
                         "name": "Jane Doe",
                         "phone_number": "+12025550123",
-                        "is_active": True,
+                        "archived": False,
                     }
                 ],
                 "children": [
-                    {"id": str(tommy.id), "name": "Tommy Doe", "grade_level": 7, "is_active": True}
+                    {"id": str(tommy.id), "name": "Tommy Doe", "grade_level": 7, "archived": False}
                 ],
+                "name": "Doe family",
+                "archived": False,
+                "homes": [],
+                "next_booking": None,
             }
         ],
         "total": 1,
@@ -264,31 +276,35 @@ def test_a_guardian_with_no_children_is_a_household_of_one(api: TestClient, db: 
                     "id": str(solo.id),
                     "name": "Solo Guardian",
                     "phone_number": solo.phone_number,
-                    "is_active": True,
+                    "archived": False,
                 }
             ],
             "children": [],
+            "name": "Guardian family",
+            "archived": False,
+            "homes": [],
+            "next_booking": None,
         }
     ]
 
 
-def test_inactive_members_are_included_carrying_their_flag_and_is_active_is_not_a_filter(
+def test_archived_members_are_included_carrying_their_flag_and_is_active_is_not_a_filter(
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
-    _make_guardian(db, "Dormant Guardian", is_active=False)
+    _make_guardian(db, "Dormant Guardian", is_archived=True)
     parent = _make_guardian(db, "Active Guardian")
-    _make_child(db, "Dormant Child", guardians=[parent], is_active=False)
+    _make_child(db, "Dormant Child", guardians=[parent], is_archived=True)
 
-    default = _get(api, admin)
-    flagged = _get(api, admin, is_active="false")
+    default = _get(api, admin, include_archived="true")
+    flagged = _get(api, admin, include_archived="true", is_active="false")
 
     assert flagged == default
     assert default["total"] == 2
     active, dormant = default["items"]
-    assert active["guardians"][0]["is_active"] is True
-    assert active["children"][0]["is_active"] is False
-    assert dormant["guardians"][0]["is_active"] is False
+    assert active["guardians"][0]["archived"] is False
+    assert active["children"][0]["archived"] is True
+    assert dormant["guardians"][0]["archived"] is True
 
 
 # --- search -----------------------------------------------------------------------------------
@@ -430,3 +446,269 @@ def test_the_read_costs_a_constant_number_of_statements(
     api.get(URL, headers=headers)
 
     assert len(statements) == few
+
+
+def test_the_read_with_homes_and_bookings_costs_a_constant_number_of_statements(
+    api: TestClient,
+    db: Session,
+    statements: list[str],
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    freeze_business_clock(FROZEN_NOW)
+    admin = _make_user(db)
+    headers = _auth(admin)
+    _family_with_home_and_booking(db, "Seed")
+    api.get(URL, headers=headers)
+    statements.clear()
+
+    api.get(URL, headers=headers)
+    few = len(statements)
+
+    for index in range(10):
+        _family_with_home_and_booking(db, f"Family{index}")
+    statements.clear()
+    api.get(URL, headers=headers)
+
+    assert len(statements) == few
+
+
+# --- family read helpers ----------------------------------------------------------------------
+
+
+def _make_home(db: Session, *, owners: list[Guardian], is_archived: bool = False) -> Home:
+    home = Home(
+        label="Main",
+        address=f"{uuid.uuid4().hex[:6]} Elm Street",
+        directions="Gate 1234",
+        is_archived=is_archived,
+    )
+    db.add(home)
+    db.flush()
+    for owner in owners:
+        db.add(GuardianHome(guardian_id=owner.id, home_id=home.id))
+    db.flush()
+    return home
+
+
+def _book(
+    db: Session,
+    *,
+    child: Child,
+    on: datetime.date,
+    start: datetime.time,
+    status: BookingStatus = BookingStatus.CONFIRMED,
+) -> Booking:
+    """An in-office Regular booking written straight to the table, each with its own Staff
+    member so none collides on `excl_bookings_live_overlap`."""
+    staff = _make_user(db)
+    subject = Subject(name=f"Subject {uuid.uuid4().hex[:8]}")
+    db.add(subject)
+    db.flush()
+    booking = Booking(
+        child_id=child.id,
+        user_id=staff.id,
+        kind=BookingKind.REGULAR,
+        location=BookingLocation.IN_OFFICE,
+        subject_id=subject.id,
+        scheduled_date=on,
+        start_time=start,
+        end_time=(datetime.datetime.combine(on, start) + datetime.timedelta(hours=1)).time(),
+        status=status,
+    )
+    db.add(booking)
+    db.flush()
+    return booking
+
+
+def _family_with_home_and_booking(db: Session, surname: str) -> None:
+    guardian = _make_guardian(db, f"Pat {surname}")
+    child = _make_child(db, f"Kid {surname}", guardians=[guardian])
+    _make_home(db, owners=[guardian])
+    _book(db, child=child, on=TOMORROW, start=datetime.time(9, 0))
+
+
+def _read(api: TestClient, admin: User, member_id: uuid.UUID) -> dict:
+    response = api.get(f"{URL}/{member_id}", headers=_auth(admin))
+    assert response.status_code == 200
+    return response.json()
+
+
+@pytest.fixture
+def frozen_now(freeze_business_clock: Callable[[datetime.datetime], None]) -> None:
+    freeze_business_clock(FROZEN_NOW)
+
+
+# --- the single family read -------------------------------------------------------------------
+
+
+def test_reading_by_a_guardian_or_a_child_returns_the_same_family_as_the_list(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    family = _chained_family(db)
+    _make_guardian(db, "Unrelated")
+
+    by_guardian = _read(api, admin, family["partner"].id)
+    by_child = _read(api, admin, family["kid_a"].id)
+
+    assert by_guardian == by_child
+    listed = [item for item in _get(api, admin)["items"] if item["key"] == by_guardian["key"]]
+    assert listed == [by_guardian]
+    assert _names(by_guardian) == (["Dad", "Mum", "Partner"], ["Kid A", "Kid B"])
+
+
+def test_an_unknown_member_id_is_404_family_not_found(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    _chained_family(db)
+
+    response = api.get(f"{URL}/{uuid.uuid4()}", headers=_auth(admin))
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Family not found"}
+
+
+def test_an_archived_family_reads_fine(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    guardian = _make_guardian(db, "Ana Gomez", is_archived=True)
+    child = _make_child(db, "Leo Gomez", guardians=[guardian], is_archived=True)
+
+    body = _read(api, admin, child.id)
+
+    assert body["archived"] is True
+    assert body["key"] == str(guardian.id)
+
+
+def test_a_tutor_is_refused_the_single_read(api: TestClient, db: Session) -> None:
+    tutor = _make_tutor_user(db)
+    guardian = _make_guardian(db, "Jane Doe")
+
+    assert api.get(f"{URL}/{guardian.id}", headers=_auth(tutor)).status_code == 403
+
+
+# --- the family name --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("guardians", "expected"),
+    [
+        ([("Ana Gomez", False)], "Gomez family"),
+        ([("Ana Gomez", False), ("Luis GOMEZ", False)], "Gomez family"),
+        ([("Rosa Reyes", False), ("Carlos Martinez", False)], "Martinez & Reyes family"),
+        (
+            [("Ana Gomez", False), ("Bea Lopez", False), ("Cy Diaz", False)],
+            "Ana Gomez + 2 family",
+        ),
+        ([("Ana Gomez", False), ("Old Reyes", True)], "Gomez family"),
+        ([("Ana Gomez", True), ("Rosa Reyes", True)], "Gomez & Reyes family"),
+        ([("Cher", False)], "Cher family"),
+    ],
+    ids=["one", "shared-surname", "two", "three", "archived-ignored", "all-archived", "one-word"],
+)
+def test_the_family_name_is_built_from_guardian_surnames(
+    api: TestClient, db: Session, guardians: list[tuple[str, bool]], expected: str
+) -> None:
+    admin = _make_user(db)
+    members = [_make_guardian(db, name, is_archived=archived) for name, archived in guardians]
+    child = _make_child(db, "Kid", guardians=members)
+
+    assert _read(api, admin, child.id)["name"] == expected
+
+
+# --- homes ------------------------------------------------------------------------------------
+
+
+def test_a_home_shared_by_two_guardians_appears_once_with_both_guardian_ids(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_guardian(db, "Mum Gomez")
+    dad = _make_guardian(db, "Dad Gomez", is_archived=True)
+    child = _make_child(db, "Kid Gomez", guardians=[mum, dad])
+    shared = _make_home(db, owners=[mum, dad])
+    old = _make_home(db, owners=[dad], is_archived=True)
+
+    homes = _read(api, admin, child.id)["homes"]
+
+    # Both Homes share the transaction's `created_at`, so the order between them is by id.
+    assert len(homes) == 2
+    assert {home["id"]: home for home in homes} == {
+        str(shared.id): {
+            "id": str(shared.id),
+            "label": "Main",
+            "address": shared.address,
+            "directions": "Gate 1234",
+            "archived": False,
+            "guardian_ids": [str(dad.id), str(mum.id)],
+        },
+        str(old.id): {
+            "id": str(old.id),
+            "label": "Main",
+            "address": old.address,
+            "directions": "Gate 1234",
+            "archived": True,
+            "guardian_ids": [str(dad.id)],
+        },
+    }
+
+
+# --- next booking -----------------------------------------------------------------------------
+
+
+def test_next_booking_is_the_earliest_upcoming_live_one_of_any_child(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    guardian = _make_guardian(db, "Ana Gomez")
+    leo = _make_child(db, "Leo Gomez", guardians=[guardian])
+    mia = _make_child(db, "Mia Gomez", guardians=[guardian])
+    _book(db, child=leo, on=YESTERDAY, start=datetime.time(9, 0))
+    _book(db, child=leo, on=TODAY, start=datetime.time(11, 0))
+    _book(db, child=leo, on=TODAY, start=datetime.time(13, 0), status=BookingStatus.CANCELLED)
+    _book(db, child=leo, on=TOMORROW, start=datetime.time(9, 0))
+    earliest = _book(db, child=mia, on=TODAY, start=datetime.time(15, 0))
+
+    body = _read(api, admin, guardian.id)
+
+    assert body["next_booking"] == {
+        "id": str(earliest.id),
+        "kind": "regular",
+        "scheduled_date": "2026-09-23",
+        "start_time": "15:00:00",
+        "end_time": "16:00:00",
+        "location": "in_office",
+        "child": {"id": str(mia.id), "name": "Mia Gomez"},
+        "staff": {"id": str(earliest.user_id), "name": "Test User"},
+    }
+
+
+def test_next_booking_is_null_when_only_past_and_cancelled_ones_exist(
+    api: TestClient, db: Session, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    guardian = _make_guardian(db, "Ana Gomez")
+    leo = _make_child(db, "Leo Gomez", guardians=[guardian])
+    _book(db, child=leo, on=YESTERDAY, start=datetime.time(9, 0))
+    _book(db, child=leo, on=TOMORROW, start=datetime.time(9, 0), status=BookingStatus.CANCELLED)
+
+    assert _read(api, admin, guardian.id)["next_booking"] is None
+
+
+# --- the archived filter ----------------------------------------------------------------------
+
+
+def test_the_list_hides_all_archived_families_unless_asked(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    gone = _make_guardian(db, "Ana Gone", is_archived=True)
+    half = [_make_guardian(db, "Bo Half"), _make_guardian(db, "Cy Half", is_archived=True)]
+    _make_child(db, "Kid Half", guardians=half)
+    _make_guardian(db, "Di Live")
+
+    default = _get(api, admin)
+    everything = _get(api, admin, include_archived="true")
+
+    assert default["total"] == 2
+    assert [item["name"] for item in default["items"]] == ["Half family", "Live family"]
+    assert all(item["archived"] is False for item in default["items"])
+    assert everything["total"] == 3
+    assert everything["items"][0]["key"] == str(gone.id)
+    assert everything["items"][0]["archived"] is True

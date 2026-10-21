@@ -35,6 +35,7 @@ from app.dependencies import OFFICE_REQUIRED_ERROR, CREDENTIALS_ERROR
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import Booking
 from app.models.child import Child
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import (
     AvailabilityMode,
@@ -214,6 +215,7 @@ def test_a_sunday_query_reads_the_sunday_rows_and_not_the_monday_ones(
         (ExceptionStatus.APPROVED, [("10:30:00", "11:30:00")]),
         (ExceptionStatus.PENDING, DEFAULT_GRID),
         (ExceptionStatus.REJECTED, DEFAULT_GRID),
+        (ExceptionStatus.CANCELLED, DEFAULT_GRID),
     ],
 )
 def test_only_an_approved_exception_subtracts_from_availability(
@@ -225,7 +227,7 @@ def test_only_an_approved_exception_subtracts_from_availability(
     expected: list[tuple[str, str]],
 ) -> None:
     """#24: a pending request is a tutor asking for time off and blocks nothing until an admin
-    rules on it; a rejected one blocks nothing ever.
+    rules on it; a rejected or cancelled one blocks nothing ever.
 
     The window ends at 10:15, which is what makes this a bare-overlap assertion as well: the
     10:30 slot clears it by 15 minutes, so a step 2 that gap-expanded by `session_gap_minutes`
@@ -428,6 +430,24 @@ def test_child_id_with_no_level_for_the_subject_offers_no_tutor(
     assert _windows(response) == []
 
 
+def test_child_id_offers_tutors_the_child_is_not_assigned_to(
+    api: TestClient, db: Session, admin: User
+) -> None:
+    """Assigned Tutors bound only the bot; the office may book anyone (#242)."""
+    world = _make_world(db, date=DATE, max_grade_level=12)
+    _set_level(db, admin, world, level=5)
+    other = _make_tutor(db)
+    db.add(ChildAssignedTutor(child_id=world.child_id, user_id=other.user_id))
+    db.flush()
+
+    response = api.get(
+        _url(world, grade_level=None, child_id=world.child_id), headers=_bearer(admin)
+    )
+
+    assert response.status_code == 200
+    assert _tutors(response) == [world.tutor_id, world.tutor_id]
+
+
 def test_omitting_grade_level_offers_a_tutor_whatever_their_ceiling(
     api: TestClient, db: Session, admin: User
 ) -> None:
@@ -493,7 +513,7 @@ def test_a_retired_subject_is_never_offered(
     """#44 item 1 in its original direction: a soft-deleted `subject` must yield no qualified
     tutors here, the same empty `Page` a subject nobody is assigned to already yields, rather
     than a booking `POST /api/bookings` now refuses with a 400."""
-    db.get_one(Subject, world.subject_id).is_active = False
+    db.get_one(Subject, world.subject_id).is_archived = True
     db.flush()
 
     response = api.get(_url(world), headers=_bearer(admin))
@@ -502,15 +522,18 @@ def test_a_retired_subject_is_never_offered(
     assert _windows(response) == []
 
 
-def test_a_deactivated_tutor_is_never_offered(
+def test_an_archived_tutor_is_never_offered(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
-    """Through the Tutors page: deactivating the profile deactivates the person (#130)."""
-    deleted = api.delete(f"/api/tutors/{world.tutor_id}", headers=_bearer(admin))
+    """Archiving the Staff member takes their profile off the offer surface (#130)."""
+    person = db.get_one(Tutor, world.tutor_id).user
+    archived = api.post(
+        "/api/archive", headers=_bearer(admin), json={"type": "staff", "id": str(person.id)}
+    )
 
     response = api.get(_url(world), headers=_bearer(admin))
 
-    assert deleted.status_code == 200
+    assert archived.status_code == 200
     assert _windows(response) == []
 
 
@@ -596,44 +619,44 @@ def test_two_tutors_offering_the_same_time_come_back_in_a_stable_order(
     ]
 
 
-def test_the_cap_slices_the_page_while_total_counts_every_match(
+def test_the_office_is_offered_every_open_slot_past_the_bots_cap(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
-    """REQ-043.1 and REQ-043.2. `total` is computed before the cap, which is the only way the
-    bot can say "showing 5 of 8"; `len(items)` would make it always at most the cap."""
+    """The dashboard shows every free time as a chip, so the route is uncapped: with 8 open
+    slots and `max_slots_offered` at 5 it answers all 8, and the envelope says so."""
     _make_availability(db, world.tutor_id, date=DATE, start=TWELVE_THIRTY, end=TWENTY_ONE)
 
     body = api.get(_url(world), headers=_bearer(admin)).json()
 
     assert body["total"] == 8
-    assert len(body["items"]) == 5
     assert body["page"] == 1
-    assert body["page_size"] == 5
+    assert body["page_size"] == 8
     assert [item["start_time"] for item in body["items"]] == [
         "09:00:00",
         "10:30:00",
         "12:30:00",
         "14:00:00",
         "15:30:00",
+        "17:00:00",
+        "18:30:00",
+        "20:00:00",
     ]
 
 
-def test_lowering_the_cap_narrows_the_page_without_moving_total(
+def test_lowering_the_bots_cap_does_not_narrow_the_office_answer(
     api: TestClient,
     db: Session,
     world: SlotWorld,
     admin: User,
     set_int_setting: SetIntSetting,
 ) -> None:
-    """REQ-043.4: the cap is a `system_settings` row read at request time, not the literal 5."""
     _make_availability(db, world.tutor_id, date=DATE, start=TWELVE_THIRTY, end=TWENTY_ONE)
     set_int_setting(MAX_SLOTS_OFFERED_SETTING, 2)
 
     body = api.get(_url(world), headers=_bearer(admin)).json()
 
-    assert len(body["items"]) == 2
+    assert len(body["items"]) == 8
     assert body["total"] == 8
-    assert body["page_size"] == 2
 
 
 def test_an_empty_result_is_a_page_envelope_and_never_a_404(
@@ -644,21 +667,153 @@ def test_an_empty_result_is_a_page_envelope_and_never_a_404(
     response = api.get(_url(None, subject_id=subject.id, date=DATE), headers=_bearer(admin))
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 5}
+    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 0}
 
 
-def test_an_empty_result_reports_the_applied_cap_and_not_zero(
-    api: TestClient, db: Session, admin: User, set_int_setting: SetIntSetting
+# --- the bot's cap, at the service ------------------------------------------------------------
+
+
+def _search(db: Session, world: SlotWorld) -> slot_service.SlotSearchResult:
+    """The call the bot makes (`bot_tools_booking`): no cap argument, so the default cap."""
+    return slot_service.find_available_slots(
+        db,
+        subject_id=world.subject_id,
+        date=world.date,
+        tutor_id=None,
+        now=clock.business_now(),
+    )
+
+
+def test_the_bots_search_is_capped_while_total_counts_every_match(
+    db: Session, world: SlotWorld
 ) -> None:
-    """`page_size` is the cap the search applied, not `len(items)` — the two agree whenever
-    items is non-empty, so only an empty page with a non-default cap tells them apart."""
-    subject = _make_subject(db)
+    """REQ-043.1 and REQ-043.2. `total` is computed before the cap, which is the only way the
+    bot can say "showing 5 of 8"; `len(items)` would make it always at most the cap."""
+    _make_availability(db, world.tutor_id, date=DATE, start=TWELVE_THIRTY, end=TWENTY_ONE)
+
+    result = _search(db, world)
+
+    assert result.total == 8
+    assert result.page_size == 5
+    assert [slot.start_time for slot in result.items] == [
+        NINE,
+        TEN_THIRTY,
+        TWELVE_THIRTY,
+        FOURTEEN,
+        datetime.time(15, 30),
+    ]
+
+
+def test_lowering_the_cap_narrows_the_bots_search_without_moving_total(
+    db: Session, world: SlotWorld, set_int_setting: SetIntSetting
+) -> None:
+    """REQ-043.4: the cap is a `system_settings` row read at request time, not the literal 5."""
+    _make_availability(db, world.tutor_id, date=DATE, start=TWELVE_THIRTY, end=TWENTY_ONE)
     set_int_setting(MAX_SLOTS_OFFERED_SETTING, 2)
 
-    response = api.get(_url(None, subject_id=subject.id, date=DATE), headers=_bearer(admin))
+    result = _search(db, world)
+
+    assert len(result.items) == 2
+    assert result.total == 8
+    assert result.page_size == 2
+
+
+def test_an_empty_bot_search_reports_the_applied_cap_and_not_zero(
+    db: Session, set_int_setting: SetIntSetting
+) -> None:
+    """`page_size` is the cap the search applied, not `len(items)`: only an empty result with a
+    non-default cap tells them apart."""
+    world = _make_world(db, date=DATE)
+    db.get_one(Subject, world.subject_id).is_archived = True
+    db.flush()
+    set_int_setting(MAX_SLOTS_OFFERED_SETTING, 2)
+
+    result = _search(db, world)
+
+    assert result.items == []
+    assert result.total == 0
+    assert result.page_size == 2
+
+
+# --- exclude_booking_id: the Booking being changed --------------------------------------------
+
+
+def test_excluding_a_booking_offers_its_own_slot_back(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    booking = _make_booking(db, world, start=NINE, end=TEN)
+
+    without = api.get(_url(world), headers=_bearer(admin))
+    excluded = api.get(_url(world, exclude_booking_id=booking.id), headers=_bearer(admin))
+
+    assert _windows(without) == [("10:30:00", "11:30:00")]
+    assert _windows(excluded) == DEFAULT_GRID
+
+
+def test_excluding_an_off_grid_booking_frees_its_travel_gap_neighbours(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    booking = _make_booking(db, world, start=TEN, end=ELEVEN)
+
+    excluded = api.get(_url(world, exclude_booking_id=booking.id), headers=_bearer(admin))
+
+    assert _windows(excluded) == DEFAULT_GRID
+
+
+def test_excluding_a_booking_keeps_the_same_staff_members_other_bookings_busy(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    booking = _make_booking(db, world, start=NINE, end=TEN)
+    _make_booking(db, world, start=TEN_THIRTY, end=datetime.time(11, 30))
+
+    excluded = api.get(_url(world, exclude_booking_id=booking.id), headers=_bearer(admin))
+
+    assert _windows(excluded) == [("09:00:00", "10:00:00")]
+
+
+def test_excluding_a_booking_does_not_free_another_staff_members_window(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    other = _make_world(db, date=DATE, subject_id=world.subject_id)
+    booking = _make_booking(db, world, start=NINE, end=TEN)
+    _make_booking(db, other, start=NINE, end=TEN)
+
+    body = api.get(_url(world, exclude_booking_id=booking.id), headers=_bearer(admin)).json()
+
+    offered = {(item["tutor_id"], item["start_time"]) for item in body["items"]}
+    assert (str(world.tutor_id), "09:00:00") in offered
+    assert (str(other.tutor_id), "09:00:00") not in offered
+    assert (str(other.tutor_id), "10:30:00") in offered
+
+
+def test_an_unknown_exclude_booking_id_excludes_nothing(
+    api: TestClient, db: Session, world: SlotWorld, admin: User
+) -> None:
+    _make_booking(db, world, start=NINE, end=TEN)
+
+    response = api.get(_url(world, exclude_booking_id=uuid.uuid4()), headers=_bearer(admin))
 
     assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 2}
+    assert _windows(response) == [("10:30:00", "11:30:00")]
+
+
+def test_a_malformed_exclude_booking_id_is_400(
+    api: TestClient, world: SlotWorld, admin: User
+) -> None:
+    response = api.get(_url(world, exclude_booking_id="not-a-uuid"), headers=_bearer(admin))
+
+    _assert_detail_shape(response, 400)
+
+
+def test_a_tutor_token_is_403_with_exclude_booking_id(
+    api: TestClient, db: Session, world: SlotWorld
+) -> None:
+    booking = _make_booking(db, world, start=NINE, end=TEN)
+    tutor_user = _make_user(db, role=UserRole.TUTOR, tutor_id=world.tutor_id)
+
+    response = api.get(_url(world, exclude_booking_id=booking.id), headers=_bearer(tutor_user))
+
+    _assert_detail(response, 403, OFFICE_REQUIRED_ERROR)
 
 
 # --- the offer surface agrees with the write surface ------------------------------------------
@@ -670,7 +825,7 @@ def test_a_retired_subject_offered_by_neither_surface(
     """The divergence #44 item 1 exists to close: the same retired `subject_id` the offer
     surface now declines to offer must also be the one `POST /api/bookings` refuses, so the
     two surfaces cannot drift apart again without both of these assertions failing."""
-    db.get_one(Subject, world.subject_id).is_active = False
+    db.get_one(Subject, world.subject_id).is_archived = True
     db.flush()
 
     offered = api.get(_url(world), headers=_bearer(admin))
@@ -850,14 +1005,14 @@ def test_no_page_or_page_size_parameter_changes_the_answer(
     api: TestClient, db: Session, world: SlotWorld, admin: User
 ) -> None:
     """REQ-043.3: there is no paging here, so a caller sending one gets the same first page
-    rather than a second one."""
+    rather than a second one, and every slot rather than `page_size` of them."""
     _make_availability(db, world.tutor_id, date=DATE, start=TWELVE_THIRTY, end=TWENTY_ONE)
 
-    body = api.get(f"{_url(world)}&page=2&page_size=50", headers=_bearer(admin)).json()
+    body = api.get(f"{_url(world)}&page=2&page_size=3", headers=_bearer(admin)).json()
 
     assert body["page"] == 1
-    assert body["page_size"] == 5
-    assert len(body["items"]) == 5
+    assert body["page_size"] == 8
+    assert len(body["items"]) == 8
 
 
 # --- Location: the mode filter and the In office neighbour rule (spec 03) --------------------
@@ -1027,6 +1182,7 @@ def _url(
     tutor_id: uuid.UUID | None = None,
     child_id: uuid.UUID | None = None,
     location: str | None = None,
+    exclude_booking_id: uuid.UUID | str | None = None,
 ) -> str:
     query = {
         "subject_id": str(subject_id if subject_id is not None else world.subject_id),
@@ -1040,6 +1196,8 @@ def _url(
         query["child_id"] = str(child_id)
     if location is not None:
         query["location"] = location
+    if exclude_booking_id is not None:
+        query["exclude_booking_id"] = str(exclude_booking_id)
 
     return f"/api/slots/available?{urlencode(query)}"
 
@@ -1072,7 +1230,7 @@ def _make_world(
     _assign(db, tutor_id=tutor.id, subject_id=subject_id, max_grade_level=max_grade_level)
 
     child = Child(name=f"Child {suffix}", grade_level=7, school_name="Test School")
-    home = Home(address="1 Test Street", access_code="0000")
+    home = Home(address="1 Test Street", directions="0000")
     db.add_all([child, home])
     db.flush()
 
@@ -1188,7 +1346,7 @@ def _make_exception(
     end_time: datetime.time | None = None,
 ) -> TutorAvailabilityException:
     row = TutorAvailabilityException(
-        tutor_id=tutor_id,
+        user_id=db.get_one(Tutor, tutor_id).user_id,
         start_date=start_date,
         end_date=end_date,
         start_time=start_time,

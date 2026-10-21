@@ -4,6 +4,8 @@ import importlib.util
 import os
 from collections.abc import Callable, Generator
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +18,10 @@ from sqlalchemy.orm import Session
 # autouse: no test may reach a real SMTP server, and a send from a background task would not
 # show up in a test that forgot to request the fixture.
 from tests.fake_mail import fake_mail  # noqa: F401
-from tests.fake_twilio import fake_twilio  # noqa: F401
+from tests.fake_twilio import FakeTwilio, fake_twilio  # noqa: F401
+
+if TYPE_CHECKING:
+    from tests.whatsapp_chat import WhatsAppChat
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost:5432/test")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-use")
@@ -24,13 +29,43 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Emailed links can be built (`mail_service.public_url`) without configuring SMTP.
 os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 
-# 0034 holds the default email copy and 0035 the default brand colour; the harness seeds from
-# them so each default has one source.
+# 0034 holds the default email copy, 0039 the blank office phone, 0041 the reminders switch and
+# 0050 the blank office address; the harness seeds from them so each default has one source.
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "alembic" / "versions"
-EMAIL_SETTING_MIGRATIONS = (
+SEEDED_SETTING_MIGRATIONS = (
     MIGRATIONS_DIR / "0034_email_template_settings.py",
-    MIGRATIONS_DIR / "0035_email_brand_color_setting.py",
+    MIGRATIONS_DIR / "0039_office_phone_setting.py",
+    MIGRATIONS_DIR / "0041_reminders_enabled_setting.py",
+    MIGRATIONS_DIR / "0050_office_address_setting.py",
 )
+# 0035 seeded the default brand colour, which 0051 copies to one row per email.
+DEFAULT_BRAND_COLOR_MIGRATION = MIGRATIONS_DIR / "0035_email_brand_color_setting.py"
+PER_EMAIL_BRAND_COLOR_MIGRATION = MIGRATIONS_DIR / "0051_per_email_brand_color.py"
+
+
+@pytest.fixture(autouse=True)
+def _no_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """No test may reach the paid Anthropic API, e.g. through the app's start-up warm-up; a test
+    that needs a key sets a dummy one itself."""
+    # Imported lazily, like `client` below.
+    from app.config import get_settings
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def whatsapp_chat(
+    db: Session, request: pytest.FixtureRequest
+) -> Generator["WhatsAppChat", None, None]:
+    """One WhatsApp number posting to the real webhook route (`tests/whatsapp_chat.py`)."""
+    # Imported lazily, like `client` below: app.db needs the environment above.
+    from tests.whatsapp_chat import open_whatsapp_chat
+
+    fake: FakeTwilio = request.getfixturevalue("fake_twilio")
+    yield from open_whatsapp_chat(db, fake)
 
 
 @pytest.fixture
@@ -130,8 +165,8 @@ def _get_test_engine() -> Engine:
 
 
 def _seed_login_rate_limit_settings(engine: Engine) -> None:
-    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021, 0025, 0034 and
-    0035 seed.
+    """Insert the `system_settings` rows migrations 0004, 0011-0014, 0018, 0021, 0025, 0034, 0039,
+    0041, 0050 and 0051 seed.
 
     `create_all` reproduces the schema and none of the data a migration writes, and `POST
     /auth/token` now reads the four rate-limit rows on every request — without them every login
@@ -198,7 +233,8 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
         ("reminder_template_sid_en", "", SETTING_VALUE_TYPE_STRING, True),
         ("reminder_template_sid_es", "", SETTING_VALUE_TYPE_STRING, True),
     ]
-    rows += [row for migration in EMAIL_SETTING_MIGRATIONS for row in _seed_rows(migration)]
+    rows += [row for migration in SEEDED_SETTING_MIGRATIONS for row in _seed_rows(migration)]
+    rows += _per_email_brand_color_rows()
     statement = text(
         "INSERT INTO system_settings (key, value, value_type, is_developer_only)"
         " VALUES (:key, :value, :value_type, :is_developer_only) ON CONFLICT (key) DO NOTHING"
@@ -217,13 +253,28 @@ def _seed_login_rate_limit_settings(engine: Engine) -> None:
 
 
 def _seed_rows(migration: Path) -> tuple[tuple[str, str, str, bool], ...]:
-    """A migration's `SEED_SETTINGS`, loaded from its file (alembic/ is not a package)."""
+    """A migration's `SEED_SETTINGS`, loaded from its file."""
+    return _load_migration(migration).SEED_SETTINGS
+
+
+def _per_email_brand_color_rows() -> list[tuple[str, str, str, bool]]:
+    """0035's default colour under each of 0051's per-email keys, with 0035's flags."""
+    [(_shared_key, color, value_type, is_developer_only)] = _seed_rows(
+        DEFAULT_BRAND_COLOR_MIGRATION
+    )
+    keys = _load_migration(PER_EMAIL_BRAND_COLOR_MIGRATION).PER_EMAIL_COLOR_KEYS
+
+    return [(key, color, value_type, is_developer_only) for key in keys]
+
+
+def _load_migration(migration: Path) -> ModuleType:
+    """A migration module, loaded from its file (alembic/ is not a package)."""
     spec = importlib.util.spec_from_file_location(f"migration_{migration.stem}", migration)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    return module.SEED_SETTINGS
+    return module
 
 
 @pytest.fixture

@@ -29,6 +29,7 @@ HIDDEN_CHARACTER_NAMES = {
 }
 NEW_NAME = "Maria Lopez"
 MAX_NAME_LENGTH = 255
+OFFICE_PHONE_NUMBER = "+15551234567"
 
 
 def test_each_role_renames_its_own_row(api: TestClient, db: Session) -> None:
@@ -44,6 +45,9 @@ def test_each_role_renames_its_own_row(api: TestClient, db: Session) -> None:
             "email": caller.email,
             "role": role.value,
             "name": NEW_NAME,
+            "tutor_id": None if caller.profile_id is None else str(caller.profile_id),
+            "office_phone": None,
+            "welcome_seen": False,
         }
         db.refresh(caller)
         db.refresh(bystander)
@@ -168,16 +172,114 @@ def test_no_token_is_401(api: TestClient) -> None:
     assert response.status_code == 401
 
 
-def _make_user(db: Session, *, role: UserRole, is_default: bool = False) -> User:
+def test_get_me_carries_the_callers_own_tutor_id(api: TestClient, db: Session) -> None:
+    tutor = _make_user(db, role=UserRole.TUTOR)
+    manager = _make_user(db, role=UserRole.MANAGER, has_profile=True)
+    admin = _make_user(db, role=UserRole.ADMIN)
+
+    tutor_ids = [
+        api.get("/api/me", headers=_auth(caller)).json()["tutor_id"]
+        for caller in (tutor, manager, admin)
+    ]
+
+    assert tutor.profile_id is not None and manager.profile_id is not None
+    assert tutor_ids == [str(tutor.profile_id), str(manager.profile_id), None]
+
+
+def test_patch_me_carries_the_callers_own_tutor_id(api: TestClient, db: Session) -> None:
+    manager = _make_user(db, role=UserRole.MANAGER, has_profile=True)
+
+    response = api.patch("/api/me", headers=_auth(manager), json={"name": NEW_NAME})
+
+    assert manager.profile_id is not None
+    assert response.json()["tutor_id"] == str(manager.profile_id)
+
+
+def test_a_tutor_reads_the_office_phone_an_admin_saved(api: TestClient, db: Session) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    tutor = _make_user(db, role=UserRole.TUTOR)
+
+    saved = api.patch(
+        "/api/settings",
+        headers=_auth(admin),
+        json={"updates": [{"key": "office_phone", "value": OFFICE_PHONE_NUMBER}]},
+    )
+    response = api.get("/api/me", headers=_auth(tutor))
+
+    assert saved.status_code == 200
+    assert response.json()["office_phone"] == OFFICE_PHONE_NUMBER
+
+
+@pytest.mark.parametrize("value", ["", "   "], ids=["empty", "whitespace"])
+def test_a_cleared_office_phone_reads_as_null(api: TestClient, db: Session, value: str) -> None:
+    admin_headers = _auth(_make_user(db, role=UserRole.ADMIN))
+    tutor = _make_user(db, role=UserRole.TUTOR)
+    for phone in (OFFICE_PHONE_NUMBER, value):
+        api.patch(
+            "/api/settings",
+            headers=admin_headers,
+            json={"updates": [{"key": "office_phone", "value": phone}]},
+        )
+
+    response = api.get("/api/me", headers=_auth(tutor))
+
+    assert response.json()["office_phone"] is None
+
+
+def test_a_new_user_has_not_seen_the_welcome_and_posting_marks_it_seen(
+    api: TestClient, db: Session
+) -> None:
+    for role in UserRole:
+        caller = _make_user(db, role=role)
+        assert api.get("/api/me", headers=_auth(caller)).json()["welcome_seen"] is False
+
+        first = api.post("/api/me/welcome-seen", headers=_auth(caller))
+        db.refresh(caller)
+        first_seen_at = caller.welcome_seen_at
+        second = api.post("/api/me/welcome-seen", headers=_auth(caller))
+        db.refresh(caller)
+
+        assert (first.status_code, second.status_code) == (204, 204), role
+        assert api.get("/api/me", headers=_auth(caller)).json()["welcome_seen"] is True
+        assert first_seen_at is not None
+        assert caller.welcome_seen_at == first_seen_at
+
+
+def test_patch_me_carries_welcome_seen(api: TestClient, db: Session) -> None:
+    caller = _make_user(db, role=UserRole.MANAGER)
+    api.post("/api/me/welcome-seen", headers=_auth(caller))
+
+    response = api.patch("/api/me", headers=_auth(caller), json={"name": NEW_NAME})
+
+    assert response.json()["welcome_seen"] is True
+
+
+def test_marking_the_welcome_seen_touches_only_the_caller(api: TestClient, db: Session) -> None:
+    caller = _make_user(db, role=UserRole.ADMIN)
+    bystander = _make_user(db, role=UserRole.ADMIN)
+
+    api.post("/api/me/welcome-seen", headers=_auth(caller))
+
+    db.refresh(bystander)
+    assert bystander.welcome_seen_at is None
+
+
+def test_welcome_seen_without_a_token_is_401(api: TestClient) -> None:
+    assert api.post("/api/me/welcome-seen").status_code == 401
+
+
+def _make_user(
+    db: Session, *, role: UserRole, is_default: bool = False, has_profile: bool = False
+) -> User:
     user = User(
         email=f"me-{uuid.uuid4().hex[:12]}@example.com",
         name=ORIGINAL_NAME,
         name_is_default=is_default,
         hashed_password="not-a-real-hash",
         role=role,
-        is_active=True,
+        is_archived=False,
     )
-    if role is UserRole.TUTOR:
+    if role is UserRole.TUTOR or has_profile:
         # One record per person: the Tutor is this user, with a profile hanging off it.
         user.profile = Tutor(phone_number=f"+1{uuid.uuid4().hex[:10]}")
     db.add(user)

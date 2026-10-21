@@ -43,8 +43,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies import OfficePrincipal
 from app.models.booking import Booking
-from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
-from app.schemas.booking import BookingDetail, booking_detail
+from app.schemas.booking import BookingDetail
 from app.schemas.booking_write import (
     BookingCreate,
     BookingCreated,
@@ -52,8 +51,10 @@ from app.schemas.booking_write import (
     BookingWarning,
 )
 from app.services import clock
+from app.services.booking_read_service import booking_detail
 from app.services.booking_write_service import (
     BlockedByException,
+    BookingChangedSinceOpened,
     BookingKindImmutable,
     BookingNotFound,
     BookingNotLive,
@@ -64,6 +65,7 @@ from app.services.booking_write_service import (
     BookingShapeInvalid,
     BookingWriteError,
     ChildAlreadyEvaluated,
+    ChildNotEvaluated,
     DateOutOfWindow,
     GapNotRespected,
     GuardianNotLinkedToChild,
@@ -72,6 +74,7 @@ from app.services.booking_write_service import (
     LeadTimeNotMet,
     LiveEvaluationExists,
     OutsideAvailability,
+    StaffArchived,
     StaffRoleNotAllowed,
     TutorGradeCeilingExceeded,
     UnconfirmedWarnings,
@@ -80,6 +83,8 @@ from app.services.booking_write_service import (
     replace_booking,
 )
 
+# Defined here, not in `booking_status`, which imports this module's error mapping.
+BOOKING_NOT_FOUND_ERROR = "Booking not found"
 BOOKING_NOT_LIVE_ERROR = "Only a pending or confirmed booking can be edited"
 BOOKING_KIND_IMMUTABLE_ERROR = "A booking's kind cannot be changed"
 REFERENCE_NOT_FOUND_ERROR = "One of the ids in the request does not exist"
@@ -92,11 +97,14 @@ HOME_NOT_LINKED_ERROR = "That home is not one of the child's homes"
 GUARDIAN_NOT_LINKED_ERROR = "That guardian is not linked to the child"
 DATE_OUT_OF_WINDOW_ERROR = "That date is in the past or beyond the booking window"
 LEAD_TIME_NOT_MET_ERROR = "That start time is too soon to be booked"
+STAFF_ARCHIVED_ERROR = "That Staff member is archived"
 STAFF_ROLE_NOT_ALLOWED_ERROR = "That Staff member's role cannot take this kind of booking"
 BOOKING_SHAPE_INVALID_ERROR = (
     "The subject, availability range and home must match the booking's kind and location"
 )
 CHILD_ALREADY_EVALUATED_ERROR = "That child is already Evaluated"
+CHILD_NOT_EVALUATED_ERROR = "Child must be Evaluated before Tutoring is booked"
+BOOKING_STALE_ERROR = "That booking changed since it was opened"
 LIVE_EVALUATION_EXISTS_ERROR = "That child already has an Evaluation booked"
 UNCONFIRMED_WARNINGS_ERROR = "This booking needs the listed warnings confirmed"
 
@@ -122,6 +130,7 @@ _STATUS_BY_ERROR: tuple[tuple[type[BookingWriteError], int, str], ...] = (
     (TutorGradeCeilingExceeded, status.HTTP_422_UNPROCESSABLE_CONTENT, GRADE_CEILING_ERROR),
     (HomeNotLinkedToChild, status.HTTP_422_UNPROCESSABLE_CONTENT, HOME_NOT_LINKED_ERROR),
     (GuardianNotLinkedToChild, status.HTTP_422_UNPROCESSABLE_CONTENT, GUARDIAN_NOT_LINKED_ERROR),
+    (StaffArchived, status.HTTP_422_UNPROCESSABLE_CONTENT, STAFF_ARCHIVED_ERROR),
     (StaffRoleNotAllowed, status.HTTP_422_UNPROCESSABLE_CONTENT, STAFF_ROLE_NOT_ALLOWED_ERROR),
     (BookingShapeInvalid, status.HTTP_422_UNPROCESSABLE_CONTENT, BOOKING_SHAPE_INVALID_ERROR),
     (
@@ -129,6 +138,8 @@ _STATUS_BY_ERROR: tuple[tuple[type[BookingWriteError], int, str], ...] = (
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         CHILD_ALREADY_EVALUATED_ERROR,
     ),
+    (ChildNotEvaluated, status.HTTP_422_UNPROCESSABLE_CONTENT, CHILD_NOT_EVALUATED_ERROR),
+    (BookingChangedSinceOpened, status.HTTP_409_CONFLICT, BOOKING_STALE_ERROR),
 )
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -148,9 +159,9 @@ def create(
             confirm_warnings=frozenset(payload.confirm_warnings),
         )
     except UnconfirmedWarnings as exc:
-        return _warnings_response(exc)
+        return warnings_response(exc)
     except BookingWriteError as exc:
-        raise _http_error(exc) from exc
+        raise http_error(exc) from exc
 
     db.commit()
 
@@ -170,16 +181,18 @@ def replace(
             confirm_warnings=frozenset(payload.confirm_warnings),
         )
     except UnconfirmedWarnings as exc:
-        return _warnings_response(exc)
+        return warnings_response(exc)
     except BookingWriteError as exc:
-        raise _http_error(exc) from exc
+        raise http_error(exc) from exc
 
     db.commit()
 
-    return booking_detail(booking)
+    # `OfficePrincipal` only, so the caller is always Office.
+    return booking_detail(db, booking, now=clock.business_now(), shows_conversations=True)
 
 
-def _http_error(exc: BookingWriteError) -> HTTPException:
+def http_error(exc: BookingWriteError) -> HTTPException:
+    """The refusal's status and message; shared with the restore in `booking_status`."""
     for error, status_code, detail in _STATUS_BY_ERROR:
         if isinstance(exc, error):
             return HTTPException(status_code=status_code, detail=detail)
@@ -188,7 +201,8 @@ def _http_error(exc: BookingWriteError) -> HTTPException:
     raise exc
 
 
-def _warnings_response(exc: UnconfirmedWarnings) -> JSONResponse:
+def warnings_response(exc: UnconfirmedWarnings) -> JSONResponse:
+    """The #151 409 body; shared with the restore in `booking_status`."""
     warnings = [
         BookingWarning(code=code, message=WARNING_MESSAGES[code]).model_dump(mode="json")
         for code in exc.codes
@@ -229,6 +243,7 @@ def _replacement(payload: BookingReplace) -> BookingReplacement:
         end_time=payload.end_time,
         kind=payload.kind,
         notes=payload.notes if payload.notes_given else KEEP_NOTES,
+        expected_updated_at=payload.expected_updated_at,
     )
 
 

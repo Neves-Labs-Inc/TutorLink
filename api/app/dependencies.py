@@ -24,9 +24,9 @@ Five properties this module exists to guarantee, all of which Phase 3 onwards de
   401 and the same message. Never tell an unauthenticated caller which one it was.
 
 - **The `users` row is read on every request** (D-023). One primary-key lookup buys the
-  property that setting `is_active = false` takes effect on the caller's *next* request rather
+  property that setting `is_archived = true` takes effect on the caller's *next* request rather
   than up to fifteen minutes later when their access token expires — which is the entire point
-  of `is_active` soft delete. `role` and `tutor_id` (the user's profile id, read through
+  of the `is_archived` soft delete. `role` and `tutor_id` (the user's profile id, read through
   `tutors.user_id`) are taken from that row, not from the token's claims, for the same reason.
   Do not "optimise" this into a claims-only path and do not cache it.
 
@@ -132,7 +132,7 @@ def get_current_user(
         raise _unauthorized() from exc
 
     user = db.get(User, claims.subject, options=[joinedload(User.profile)])
-    if user is None or not user.is_active:
+    if user is None or user.is_archived:
         raise _unauthorized()
 
     return CurrentUser(

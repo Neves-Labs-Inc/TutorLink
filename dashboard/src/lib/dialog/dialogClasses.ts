@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 
-// The centred dialog look, shared by ConfirmDialog and MyProfileDialog. Lives outside both
-// component files because react-refresh wants component files to export components only.
+// The centred dialog look used by ConfirmDialog. Lives outside the component file because
+// react-refresh wants component files to export components only.
 export const dialogOverlayClasses = cn(
   'fixed inset-0 z-50 bg-black/60',
   'data-[state=open]:animate-in data-[state=closed]:animate-out',

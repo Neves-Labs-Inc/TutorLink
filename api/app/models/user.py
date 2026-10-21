@@ -1,19 +1,20 @@
+import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Index, String, text
+from sqlalchemy import Boolean, DateTime, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.enums import UserRole, user_role_enum
-from app.models.mixins import HasActiveFlag, HasID, HasTimestamps
+from app.models.mixins import HasArchivedFlag, HasID, HasTimestamps
 
 if TYPE_CHECKING:
     from app.models.booking import Booking
     from app.models.tutor import Tutor
 
 
-class User(HasID, HasTimestamps, HasActiveFlag, Base):
+class User(HasID, HasTimestamps, HasArchivedFlag, Base):
     """The one record of a person. A Tutor or Manager's teaching profile hangs off it through
     `profile`; an Admin or Developer has none."""
 
@@ -30,10 +31,16 @@ class User(HasID, HasTimestamps, HasActiveFlag, Base):
     # NULL means the person cannot sign in: a Tutor the office created without a login.
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(user_role_enum, nullable=False)
+    # When the person dismissed their Staff welcome card; NULL until then. Never reset.
+    welcome_seen_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     profile: Mapped["Tutor | None"] = relationship(back_populates="user", uselist=False)
     # The sessions this person is the Staff member of (#130).
-    bookings: Mapped[list["Booking"]] = relationship(back_populates="staff")
+    bookings: Mapped[list["Booking"]] = relationship(
+        back_populates="staff", foreign_keys="Booking.user_id"
+    )
 
     @property
     def profile_id(self) -> uuid.UUID | None:

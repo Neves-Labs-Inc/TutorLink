@@ -1,14 +1,10 @@
 """Sending an outbound WhatsApp message (free-form or approved template) through Twilio's REST
-API, and building the two TwiML responses the webhook returns.
+API, and the empty TwiML the inbound webhook answers with.
 
-Two mechanisms, two status lifecycles (amendment P7-3, `docs/erd.md:349-356`,
-`docs/api-design.md:527-534`). `send_whatsapp_message` is the REST path: it starts a message
-`queued`, and `POST /webhook/whatsapp/status` advances it to `sent`/`delivered`/`failed` once
-Twilio calls back with the `MessageSid` this function returns. A bot reply never calls this
-function — it goes out as `twiml_reply`'s TwiML in the webhook's own response, and Twilio does
-not mint a `MessageSid` for it until after reading that response, so a bot reply is recorded
-`status = 'sent'` with `twilio_sid` NULL and never reaches the status callback. Mixing the two up
-leaves every bot reply stuck `queued` forever.
+Every outbound message, bot replies included (docs/specs/whatsapp-bot-agent.md §7), goes out
+through `send_whatsapp_message` or `send_whatsapp_template`: it starts `queued`, and
+`POST /webhook/whatsapp/status` advances it to `sent`/`delivered`/`failed` once Twilio calls back
+with the `MessageSid` the send returned.
 
 No FastAPI import, no `Session` parameter: this module raises the domain exceptions below and
 knows nothing about routers, sockets or the database.
@@ -17,19 +13,19 @@ knows nothing about routers, sockets or the database.
 import json
 import logging
 import socket
-from xml.sax.saxutils import escape
 
 from twilio.base.exceptions import TwilioRestException, TwilioServiceException
 from twilio.http.http_client import TwilioHttpClient
 from twilio.rest import Client
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 HTTP_SERVER_ERROR = 500
 # The SDK's default is no timeout at all. A hung send would hold whatever its caller holds (a
 # reminder's row lock, a pooled connection, the scheduler's lock) until the process restarts. A
 # timeout surfaces as a read timeout, which is never retried, so it cannot cause a duplicate.
 SEND_TIMEOUT_SECONDS = 15.0
+TYPING_INDICATOR_CHANNEL = "whatsapp"
 
 # The socket-level causes that prove the request never left this host: nothing reached Twilio,
 # so sending again cannot deliver the message twice.
@@ -97,10 +93,33 @@ def send_whatsapp_template(*, to: str, content_sid: str, content_variables: dict
     )
 
 
-def _create_message(*, to: str, **content: str) -> str:
-    """The one REST send both public functions share: credentials, addressing, callback, errors."""
-    settings = get_settings()
+def send_typing_indicator(*, message_sid: str) -> None:
+    """Show "typing..." in the Guardian's WhatsApp, against their inbound message `message_sid`.
 
+    Twilio's WhatsApp typing indicator lasts about 25 seconds, or until the next reply. It also
+    marks that message read. Any failure is a `TwilioSendFailed`; the caller decides whether it
+    matters.
+    """
+    client = _client(get_settings())
+
+    try:
+        client.messaging.v2.typing_indicator.create(
+            channel=TYPING_INDICATOR_CHANNEL, message_id=message_sid
+        )
+    except (TwilioRestException, TwilioServiceException) as exc:
+        raise TwilioSendFailed(
+            f"Twilio refused the typing indicator (HTTP {exc.status})",
+            code=_twilio_code(exc.code, status=exc.status),
+            is_retryable=False,
+        ) from exc
+    except OSError as exc:
+        raise TwilioSendFailed(
+            "could not reach Twilio to send the typing indicator", code=None, is_retryable=False
+        ) from exc
+
+
+def _client(settings: Settings) -> Client:
+    """A REST client with the send timeout, or `TwilioNotConfigured`."""
     if not (
         settings.twilio_account_sid
         and settings.twilio_auth_token
@@ -110,11 +129,17 @@ def _create_message(*, to: str, **content: str) -> str:
             "twilio_account_sid, twilio_auth_token or twilio_whatsapp_number is unset"
         )
 
-    client = Client(
+    return Client(
         settings.twilio_account_sid,
         settings.twilio_auth_token,
         http_client=TwilioHttpClient(timeout=SEND_TIMEOUT_SECONDS),
     )
+
+
+def _create_message(*, to: str, **content: str) -> str:
+    """The one REST send both public functions share: credentials, addressing, callback, errors."""
+    settings = get_settings()
+    client = _client(settings)
     kwargs = {}
     if settings.twilio_status_callback_url:
         kwargs["status_callback"] = settings.twilio_status_callback_url
@@ -178,10 +203,6 @@ def _was_never_sent(error: BaseException) -> bool:
         current = current.__cause__ or current.__context__
 
     return any(isinstance(link, _NEVER_SENT_CAUSES) for link in seen)
-
-
-def twiml_reply(body: str) -> str:
-    return f"<Response><Message>{escape(body, {'"': '&quot;', "'": '&apos;'})}</Message></Response>"
 
 
 def twiml_empty() -> str:

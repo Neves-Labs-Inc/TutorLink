@@ -2,6 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Applies the stored theme before first paint, so a Dark choice on a
+         light OS never flashes light. Mirrors src/lib/theme/theme.ts (same
+         storage key and fallback to the OS); keep the two in sync. -->
+    <script>
+      (function () {
+        var preference = null;
+        try {
+          preference = window.localStorage.getItem("tutorlink.theme");
+        } catch (error) {
+          preference = null;
+        }
+        var theme = preference;
+        if (theme !== "light" && theme !== "dark") {
+          var isOsDark =
+            !!window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          theme = isOsDark ? "dark" : "light";
+        }
+        var root = document.documentElement;
+        root.setAttribute("data-theme", theme);
+        root.style.colorScheme = theme;
+        root.classList.add(theme);
+        root.classList.remove(theme === "dark" ? "light" : "dark");
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>dashboard</title>

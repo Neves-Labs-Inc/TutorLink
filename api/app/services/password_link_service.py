@@ -29,7 +29,9 @@ import logging
 import secrets
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import Session
@@ -75,6 +77,32 @@ class InvalidLink(PasswordLinkError):
     address changed since the send): the router turns it into a single 400 with a single
     message, so the response never says whether a token exists.
     """
+
+
+class LinkState(StrEnum):
+    VALID = "valid"
+    EXPIRED = "expired"
+    USED = "used"
+    INVALID = "invalid"
+
+
+@dataclass(frozen=True)
+class LinkLookup:
+    """What the Set-password page may show before the password is typed.
+
+    `name` and `email` are set only for a valid Invite: the Welcome page names whose account
+    it sets up, and nothing else needs them.
+    """
+
+    kind: PasswordLinkPurpose | None
+    state: LinkState
+    name: str | None = None
+    email: str | None = None
+
+
+# One value for every refusal, so the lookup never says whether a token exists or why it was
+# killed: unknown, revoked, archived user and changed address all read the same.
+INVALID_LOOKUP = LinkLookup(kind=None, state=LinkState.INVALID)
 
 
 def issue_link(
@@ -185,7 +213,7 @@ def set_password_with_link(db: Session, *, token: str, password: str, now: datet
         logger.warning("password_link.set_password: no live link for the token")
         raise InvalidLink
 
-    if not user.is_active:
+    if user.is_archived:
         logger.warning("password_link.set_password: user %s is inactive", user.id)
         raise InvalidLink
 
@@ -207,6 +235,36 @@ def set_password_with_link(db: Session, *, token: str, password: str, now: datet
     return user
 
 
+def look_up_link(db: Session, *, token: str, now: datetime) -> LinkLookup:
+    """The state of the link `token` names, without locking or spending it.
+
+    Checked in the spec's order, so a spent link reads `used` even after its user moved on, and
+    an expired one reads `expired` only while nothing else has killed it. `set_password_with_link`
+    stays the authority: this is a read for the page, and the submit re-checks under its locks.
+    """
+    link = db.scalars(
+        select(PasswordLink).where(PasswordLink.token_hash == hash_token(token))
+    ).first()
+    user = db.get(User, link.user_id) if link is not None else None
+
+    if link is None or user is None:
+        lookup = INVALID_LOOKUP
+    elif link.used_at is not None:
+        lookup = LinkLookup(kind=link.purpose, state=LinkState.USED)
+    elif link.revoked_at is not None or user.is_archived or user.email != link.email:
+        lookup = INVALID_LOOKUP
+    elif link.expires_at <= now:
+        lookup = LinkLookup(kind=link.purpose, state=LinkState.EXPIRED)
+    elif link.purpose is PasswordLinkPurpose.INVITE:
+        lookup = LinkLookup(
+            kind=link.purpose, state=LinkState.VALID, name=user.name, email=user.email
+        )
+    else:
+        lookup = LinkLookup(kind=link.purpose, state=LinkState.VALID)
+
+    return lookup
+
+
 def request_reset(db: Session, *, email: str, now: datetime) -> tuple[User, str] | None:
     """A new reset link for the active, password-holding account at `email`, or None.
 
@@ -216,7 +274,7 @@ def request_reset(db: Session, *, email: str, now: datetime) -> tuple[User, str]
     """
     user = _lock_user_by_email(db, email=normalise_email(email))
 
-    if user is None or not user.is_active or user.hashed_password is None:
+    if user is None or user.is_archived or user.hashed_password is None:
         return None
 
     _link, token = issue_link(db, user=user, purpose=PasswordLinkPurpose.RESET, now=now)

@@ -1,8 +1,10 @@
 """Wire shapes for `GET /api/reminders/week` (one week's preview and its reminder rows) and for
 one Guardian's reminder status and consent under `/api/clients/{id}/reminders`.
 
-Deliberately without the send weekday, hour or timezone: those are settings, which only Admin
-and Developer may read, and the Reminders page takes them from there.
+The week read carries `reminders` (`on`, `off` or `not_set_up`: whether the weekly run is
+running) and `next_run_at`, when the next weekly run sends, which is `None` unless `reminders` is
+`on`. The send weekday and hour themselves stay settings, which only Admin and Developer may
+read, and the Reminders page takes them from there.
 """
 
 import datetime
@@ -11,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.services.settings_service import RemindersState
 from app.models.enums import (
     ConsentAction,
     ConsentSource,
@@ -57,6 +60,8 @@ class ReminderWeekRead(BaseModel):
     has_run: bool
     preview: list[ReminderPreviewItem] | None
     rows: list[ReminderRowRead]
+    reminders: RemindersState
+    next_run_at: datetime.datetime | None
 
 
 class ConsentRead(BaseModel):

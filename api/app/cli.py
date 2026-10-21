@@ -32,13 +32,12 @@ from app.db import SessionLocal
 from app.models.booking import Booking
 from app.models.booking_reminder import BookingReminder
 from app.models.booking_reminder_run import BookingReminderRun
-from app.models.bot_flow_state import BotFlowState
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.conversation import Conversation
 from app.models.enums import Language, UserRole
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome, Home
 from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.models.user import User
@@ -58,9 +57,9 @@ from app.services.name_rules import InvalidName, normalize_name
 # (and the bot's writes queued behind it) wait forever.
 PRELAUNCH_LOCK_TIMEOUT = "10s"
 
-# FK-safe: every table is deleted before the tables it references. The link tables and
-# bot_flow_state have no creation timestamp, so they are not checked against the cutoff; they
-# go with the rows they belong to.
+# FK-safe: every table is deleted before the tables it references. The link tables have no
+# creation timestamp, so they are not checked against the cutoff; they go with the rows they
+# belong to.
 PRELAUNCH_DELETE_ORDER: tuple[type, ...] = (
     ReminderConsent,
     BookingReminder,
@@ -71,12 +70,10 @@ PRELAUNCH_DELETE_ORDER: tuple[type, ...] = (
     Message,
     Conversation,
     GuardianHome,
-    ChildHome,
     ChildGuardian,
     Home,
     Child,
     Guardian,
-    BotFlowState,
 )
 
 
@@ -98,7 +95,7 @@ def seed_admin(db: Session, *, email: str, password: str, name: str) -> str:
             name_is_default=False,
             hashed_password=hash_password(password),
             role=UserRole.ADMIN,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
         db.commit()
@@ -129,7 +126,7 @@ def seed_developer(db: Session, *, email: str, password: str, name: str) -> str:
             name_is_default=False,
             hashed_password=hash_password(password),
             role=UserRole.DEVELOPER,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
         db.commit()
@@ -293,10 +290,7 @@ def _run_purge_messages() -> int:
                 f"purged {run.purge.messages_deleted} message(s) and "
                 f"{run.purge.conversations_deleted} conversation(s)"
             )
-        print(
-            f"reaped {run.flow_states_deleted} expired flow state(s) and "
-            f"{run.login_attempts_deleted} expired login attempt(s)"
-        )
+        print(f"reaped {run.login_attempts_deleted} expired login attempt(s)")
         status = 0
 
     return status

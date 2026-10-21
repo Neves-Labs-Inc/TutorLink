@@ -1,5 +1,6 @@
 import ipaddress
 from functools import lru_cache
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import field_validator
@@ -51,6 +52,11 @@ class Settings(BaseSettings):
     # run without this rather than failing lazily at request time. Read from the environment
     # only — never from a file, so Phase 8 can supply it from Secret Manager as an env var.
     anthropic_api_key: str | None = None
+    # The bot agent's model and effort (docs/specs/whatsapp-bot-agent.md §2). Haiku ships after
+    # matching Sonnet in the pre-launch evaluation (2026-10-20); switch back to
+    # "claude-sonnet-5-5" if real chats show problems.
+    bot_model: str = "claude-haiku-5-5"
+    bot_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
 
     # Outbound email, plain SMTP so the provider is a config-only switch (a mailbox's app
     # password today, SES over SMTP later). Nullable and defaulted like the `twilio_*` block:

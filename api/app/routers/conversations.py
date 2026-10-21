@@ -14,6 +14,11 @@ nobody reads would arm the unapplied-scope guard and turn every query in this mo
 500 — `client_bookings.py:36-37` documents that exact mistake. The name is deliberately
 absent from this file, prose included, so that the grep criterion 8 names is a real gate.
 
+**`GET /api/conversations` takes a repeatable `holder` (`bot`, `mine`, `others`)**, the Chats
+list's **With** filter. Values combine with OR and the result ANDs with `status`, `unread`,
+`flagged` and `q`; `mine` and `others` are relative to the calling admin, and an unknown value is
+a 400. It is filtered in SQL so `total` and paging stay right.
+
 **Takeover, release, approve, deny and mark handled publish `conversation.updated` after the
 commit**, on every 200 including a no-op, so the other admins' list screens move without a
 reload. `POST /read` publishes nothing: the watermark is shared,
@@ -86,12 +91,15 @@ from app.services.conversation_service import (
     ConversationWindowClosed,
     FlagChanged,
     FlagNeedsReactivationDecision,
+    HolderFilter,
     NoReactivationPending,
+    NothingToUndo,
     change_language,
     get_detail,
     list_conversations,
     mark_handled,
     mark_read,
+    undo_handled,
     resolve_reactivation,
 )
 from app.services.message_service import ThreadMessage, list_thread
@@ -106,6 +114,7 @@ from app.services.notice_service import (
 CONVERSATION_NOT_FOUND_ERROR = "Conversation not found"
 HELD_BY_ANOTHER_ERROR = "This conversation has already been taken over by {name}"
 NO_REACTIVATION_PENDING_ERROR = "No reactivation request is pending"
+NOTHING_TO_UNDO_ERROR = "Nothing to undo; the chat changed since it was marked done"
 FLAG_CHANGED_ERROR = "The flag changed since you opened this conversation; review it and try again"
 REACTIVATION_FLAG_ERROR = "Approve or deny the reactivation request instead"
 NOT_HELD_ERROR = "The assistant has this conversation; take it over instead"
@@ -135,6 +144,7 @@ def list_all(
     unread: bool | None = None,
     flagged: bool | None = None,
     q: str | None = None,
+    holder: Annotated[list[HolderFilter] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ConversationSummary]:
@@ -149,6 +159,8 @@ def list_all(
         q=q,
         limit=page_size,
         offset=(page - 1) * page_size,
+        holders=holder or (),
+        caller_id=user.id,
     )
 
     return Page[ConversationSummary](
@@ -345,6 +357,24 @@ def mark_flag_handled(
     return conversation
 
 
+@router.post("/{conversation_id}/handled/undo", response_model=ConversationRead)
+def undo_flag_handled(
+    conversation_id: uuid.UUID, user: OfficePrincipal, db: DbSession
+) -> ConversationRead:
+    try:
+        detail = undo_handled(db, conversation_id=conversation_id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CONVERSATION_NOT_FOUND_ERROR) from exc
+    except NothingToUndo as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NOTHING_TO_UNDO_ERROR) from exc
+
+    db.commit()
+    conversation = _read(detail)
+    _publish_update(conversation)
+
+    return conversation
+
+
 def _resolve_reactivation(
     db: Session, *, conversation_id: uuid.UUID, approve: bool
 ) -> ConversationRead:
@@ -397,6 +427,10 @@ def _summary(row: ConversationListItem) -> ConversationSummary:
         last_message_preview=row.last_message_preview,
         unread=row.unread,
         flag_reason=row.conversation.flag_reason,
+        last_client_message_at=row.last_client_message_at,
+        is_window_open=row.is_window_open,
+        flagged_at=row.conversation.flagged_at,
+        intake_in_progress=row.intake_in_progress,
     )
 
 
@@ -413,12 +447,12 @@ def _read(detail: ConversationDetail) -> ConversationRead:
         flag_reason=detail.conversation.flag_reason,
         flagged_at=detail.conversation.flagged_at,
         message_count=detail.message_count,
-        unread_count=detail.unread_count,
         created_at=detail.conversation.created_at,
         reactivation_request=_reactivation_request(detail.reactivation_child),
         is_window_open=detail.is_window_open,
         last_client_message_at=detail.last_client_message_at,
         language=detail.conversation.language,
+        intake_in_progress=detail.intake_in_progress,
     )
 
 
@@ -450,7 +484,7 @@ def _reactivation_request(child: Child | None) -> ReactivationRequestRead | None
         request = None
     else:
         request = ReactivationRequestRead(
-            child=ReactivationChildRef(id=child.id, name=child.name, is_active=child.is_active)
+            child=ReactivationChildRef(id=child.id, name=child.name, archived=child.is_archived)
         )
 
     return request

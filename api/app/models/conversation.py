@@ -26,11 +26,12 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from app.models.message import Message
 
 TAKEOVER_PAIR_PREDICATE = "(status = 'human') = (taken_over_by_user_id IS NOT NULL)"
+PROPOSAL_PAIR_PREDICATE = "(proposal_actions IS NULL) = (proposed_at IS NULL)"
 
 
 class Conversation(HasID, HasTimestamps, Base):
@@ -65,11 +67,19 @@ class Conversation(HasID, HasTimestamps, Base):
         CheckConstraint(
             in_values_predicate("language", Language), name="ck_conversations_language"
         ),
+        # A proposal is its actions and when it was made; half of one has no meaning.
+        CheckConstraint(PROPOSAL_PAIR_PREDICATE, name="ck_conversations_proposal_pair"),
         # Not unique: a guardian who has changed handsets has more than one thread, the older
         # one still readable as history.
         Index("ix_conversations_guardian_id", "guardian_id"),
         # DESC because the list screen reads newest first and nothing reads it the other way.
         Index("ix_conversations_last_message_at", text("last_message_at DESC")),
+        # Partial: the worker polls for due turns, and almost every chat has none.
+        Index(
+            "ix_conversations_turn_due_at",
+            "turn_due_at",
+            postgresql_where=text("turn_due_at IS NOT NULL"),
+        ),
     )
 
     phone_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
@@ -113,10 +123,46 @@ class Conversation(HasID, HasTimestamps, Base):
     reactivation_child_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("children.id"), nullable=True
     )
+    # The flag the last Mark done cleared, and when, so Undo can put it back. All NULL when
+    # there is nothing to undo.
+    handled_flag_reason: Mapped[FlagReason | None] = mapped_column(flag_reason_enum, nullable=True)
+    handled_flagged_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    handled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The `last_client_message_at` whose closed reply window was already flagged, so each closed
+    # window raises `reply_window_closed` once.
+    reply_window_flagged_for: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # The Guardian's language on this thread. NULL means not detected yet, so English is used.
     language: Mapped[Language | None] = mapped_column(
         varchar_enum(Language, length=LANGUAGE_CODE_LENGTH), nullable=True
+    )
+
+    # The bot agent's runtime state (docs/specs/whatsapp-bot-agent.md §8). The pending proposal
+    # the Guardian may confirm: its actions as JSON and when it was made, both or neither.
+    # `none_as_null`: Python None must be SQL NULL, not JSON `null`, or the pair CHECK fails.
+    proposal_actions: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    proposed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Turns in a row without progress; reset only on progress.
+    no_progress_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # Set when the outage apology goes out, so one outage stretch gets one apology.
+    outage_apology_sent_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # When the debounced bot turn is due; cleared when the turn commits.
+    turn_due_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation")

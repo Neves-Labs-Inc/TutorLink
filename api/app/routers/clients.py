@@ -19,17 +19,20 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies import OfficePrincipal
+from app.models.enums import Language
+from app.schemas.booking import NamedRef
 from app.schemas.client import (
-    ChildRead,
     ClientCreate,
     ClientRead,
     ClientSummary,
     ClientUpdate,
     HomeCreate,
-    HomeRead,
+    child_read,
+    home_read,
 )
 from app.schemas.common import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.services.client_service import (
+    CLIENT_NOT_FOUND_ERROR,
     ActingUserNotFound,
     ClientDetail,
     ClientNotFound,
@@ -37,17 +40,24 @@ from app.services.client_service import (
     HomeInput,
     PhoneNumberTaken,
     WhatsAppChatTaken,
-    create_client,
     get_client,
     list_clients,
     update_client,
 )
+from app.routers.client_homes import BLANK_HOME_DETAILS_ERROR
+from app.services.child_service import ChildNotFound
+from app.services.deadlock_retry import retry_on_deadlock
+from app.services.guardian_link_service import HomesNotOfChild, create_guardian_in_family
+from app.services.guardian_state import ReminderState, guardian_states
+from app.services.home_service import BlankAddress
+from app.services.home_set import guardians_by_home, upcoming_booking_counts
 from app.services.phone_service import InvalidPhoneNumber
 
-CLIENT_NOT_FOUND_ERROR = "Client not found"
 PHONE_NUMBER_TAKEN_ERROR = "A client with that phone number already exists"
 INVALID_PHONE_NUMBER_ERROR = "phone_number is not a phone number that can be dialled"
 ACTING_USER_NOT_FOUND_ERROR = "Your account no longer exists; sign in again"
+CHILD_NOT_FOUND_ERROR = "Child not found"
+HOMES_NOT_OF_CHILD_ERROR = "home_ids must name active homes of this child"
 WHATSAPP_CHAT_TAKEN_ERROR = "That number's WhatsApp chat belongs to another Guardian"
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -59,18 +69,23 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 def list_all(
     user: OfficePrincipal,
     db: DbSession,
-    is_active: bool = True,
+    archived: bool = False,
     phone_number: str | None = None,
     q: str | None = None,
+    # Repeatable; OR within one, AND with every other filter.
+    language: Annotated[list[Language] | None, Query()] = None,
+    reminders: Annotated[list[ReminderState] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ClientSummary]:
     try:
         clients, total = list_clients(
             db,
-            is_active=is_active,
+            is_archived=archived,
             phone_number=phone_number,
             q=q,
+            languages=language or (),
+            reminders=reminders or (),
             limit=page_size,
             offset=(page - 1) * page_size,
         )
@@ -92,26 +107,38 @@ def read_one(client_id: uuid.UUID, user: OfficePrincipal, db: DbSession) -> Clie
     except ClientNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, CLIENT_NOT_FOUND_ERROR) from exc
 
-    return _to_read(found)
+    return _to_read(db, found)
 
 
 @router.post("", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
 def create(payload: ClientCreate, user: OfficePrincipal, db: DbSession) -> ClientRead:
     try:
-        created = create_client(
+        # A bot turn finishing Intake at the same number can deadlock this; retried once.
+        created = retry_on_deadlock(
             db,
-            name=payload.name,
-            phone_number=payload.phone_number,
-            home=_home_input(payload.home),
+            lambda: create_guardian_in_family(
+                db,
+                name=payload.name,
+                phone_number=payload.phone_number,
+                home=_home_input(payload.home),
+                child_ids=payload.child_ids,
+                home_ids=payload.home_ids,
+            ),
         )
     except PhoneNumberTaken as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, PHONE_NUMBER_TAKEN_ERROR) from exc
     except InvalidPhoneNumber as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, INVALID_PHONE_NUMBER_ERROR) from exc
+    except BlankAddress as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, BLANK_HOME_DETAILS_ERROR) from exc
+    except ChildNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CHILD_NOT_FOUND_ERROR) from exc
+    except HomesNotOfChild as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, HOMES_NOT_OF_CHILD_ERROR) from exc
 
     db.commit()
 
-    return _to_read(created)
+    return _to_read(db, created)
 
 
 @router.patch("/{client_id}", response_model=ClientRead)
@@ -124,7 +151,6 @@ def update(
             client_id=client_id,
             name=payload.name,
             phone_number=payload.phone_number,
-            is_active=payload.is_active,
             acting_user_id=user.id,
         )
     except ClientNotFound as exc:
@@ -140,7 +166,7 @@ def update(
 
     db.commit()
 
-    return _to_read(updated)
+    return _to_read(db, updated)
 
 
 def _summary(row: ClientWithCounts) -> ClientSummary:
@@ -148,9 +174,13 @@ def _summary(row: ClientWithCounts) -> ClientSummary:
         id=row.client.id,
         name=row.client.name,
         phone_number=row.client.phone_number,
-        is_active=row.client.is_active,
+        archived=row.client.is_archived,
         home_count=row.home_count,
         child_count=row.child_count,
+        language=row.state.language,
+        reminders=row.state.reminders,
+        reminders_blocked_by_whatsapp=row.state.is_blocked_by_whatsapp,
+        children=[NamedRef(id=child.id, name=child.name) for child in row.children],
     )
 
 
@@ -158,20 +188,25 @@ def _home_input(home: HomeCreate | None) -> HomeInput | None:
     return (
         None
         if home is None
-        else HomeInput(label=home.label, address=home.address, access_code=home.access_code)
+        else HomeInput(label=home.label, address=home.address, directions=home.directions)
     )
 
 
-def _to_read(detail: ClientDetail) -> ClientRead:
+def _to_read(db: Session, detail: ClientDetail) -> ClientRead:
+    owners = guardians_by_home(db, home_ids=[home.id for home in detail.homes])
+    counts = upcoming_booking_counts(db, home_ids=[home.id for home in detail.homes])
+    state = guardian_states(db, [detail.client.id])[detail.client.id]
     conversation = detail.language_conversation
 
     return ClientRead(
         id=detail.client.id,
         name=detail.client.name,
         phone_number=detail.client.phone_number,
-        is_active=detail.client.is_active,
-        homes=[HomeRead.model_validate(home) for home in detail.homes],
-        children=[ChildRead.model_validate(child) for child in detail.children],
+        archived=detail.client.is_archived,
+        homes=[home_read(home, owners[home.id], counts[home.id]) for home in detail.homes],
+        children=[child_read(child) for child in detail.children],
         language=None if conversation is None else conversation.language,
         language_conversation_id=None if conversation is None else conversation.id,
+        reminders=state.reminders,
+        reminders_blocked_by_whatsapp=state.is_blocked_by_whatsapp,
     )

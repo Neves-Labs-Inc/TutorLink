@@ -1,7 +1,7 @@
 """Assigning and removing which subjects a tutor teaches, and at what grade ceiling.
 
 The junction row is hard-deleted rather than soft-deleted: unlike a tutor or a subject,
-an assignment carries no `is_active` of its own.
+an assignment carries no `is_archived` of its own.
 """
 
 import uuid
@@ -49,7 +49,7 @@ def assign_subject(
     if subject is None:
         raise SubjectNotFound
 
-    if not subject.is_active:
+    if subject.is_archived:
         raise SubjectRetired
 
     if _assignment_exists(db, tutor_id=tutor_id, subject_id=subject_id):

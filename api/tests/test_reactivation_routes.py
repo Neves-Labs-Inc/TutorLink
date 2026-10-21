@@ -58,12 +58,12 @@ CONVERSATION_READ_KEYS = {
     "flag_reason",
     "flagged_at",
     "message_count",
-    "unread_count",
     "created_at",
     "reactivation_request",
     "is_window_open",
     "last_client_message_at",
     "language",
+    "intake_in_progress",
 }
 
 
@@ -72,14 +72,14 @@ CONVERSATION_READ_KEYS = {
 
 def test_the_detail_names_the_child_a_pending_request_is_for(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=False)
+    child = _make_child(db, is_archived=True)
     conversation = _make_conversation(db, child=child)
 
     body = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
 
     assert body["flag_reason"] == "reactivation_request"
     assert body["reactivation_request"] == {
-        "child": {"id": str(child.id), "name": child.name, "is_active": False}
+        "child": {"id": str(child.id), "name": child.name, "archived": True}
     }
 
 
@@ -99,7 +99,7 @@ def test_the_list_shape_is_unchanged_by_a_pending_request(api: TestClient, db: S
     """The list's `flag_reason` already carries the badge; the request is the thread's."""
     admin = _make_user(db)
     marker = _marker()
-    _make_conversation(db, marker=marker, child=_make_child(db, is_active=False))
+    _make_conversation(db, marker=marker, child=_make_child(db, is_archived=True))
 
     item = api.get("/api/conversations", params={"q": marker}, headers=_auth(admin)).json()[
         "items"
@@ -116,7 +116,7 @@ def test_approving_reactivates_the_child_and_ends_the_request(
     api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=False)
+    child = _make_child(db, is_archived=True)
     conversation = _make_conversation(db, child=child)
 
     response = api.post(APPROVE.format(conversation_id=conversation.id), headers=_auth(admin))
@@ -129,7 +129,7 @@ def test_approving_reactivates_the_child_and_ends_the_request(
     row = _row(db, conversation.id)
     assert row.reactivation_child_id is None
     assert row.flagged_at is None
-    assert db.get_one(Child, child.id).is_active is True
+    assert db.get_one(Child, child.id).is_archived is False
     assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
     assert broadcasts[0].frame()["type"] == "conversation.updated"
 
@@ -138,7 +138,7 @@ def test_denying_ends_the_request_and_leaves_the_child_inactive(
     api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=False)
+    child = _make_child(db, is_archived=True)
     conversation = _make_conversation(db, child=child)
 
     response = api.post(DENY.format(conversation_id=conversation.id), headers=_auth(admin))
@@ -149,7 +149,7 @@ def test_denying_ends_the_request_and_leaves_the_child_inactive(
     assert body["reactivation_request"] is None
     assert body["flag_reason"] is None
     assert _row(db, conversation.id).reactivation_child_id is None
-    assert db.get_one(Child, child.id).is_active is False
+    assert db.get_one(Child, child.id).is_archived is True
     assert [event.conversation["id"] for event in broadcasts] == [str(conversation.id)]
 
 
@@ -158,7 +158,7 @@ def test_a_flag_raised_after_the_request_survives_its_resolution(
     api: TestClient, db: Session, path: str, active_after: bool
 ) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=False)
+    child = _make_child(db, is_archived=True)
     conversation = _make_conversation(db, child=child, flag_reason=FlagReason.STUCK)
 
     response = api.post(path.format(conversation_id=conversation.id), headers=_auth(admin))
@@ -169,26 +169,26 @@ def test_a_flag_raised_after_the_request_survives_its_resolution(
     assert row.reactivation_child_id is None
     assert row.flag_reason is FlagReason.STUCK
     assert row.flagged_at == NOON
-    assert db.get_one(Child, child.id).is_active is active_after
+    assert db.get_one(Child, child.id).is_archived is (not active_after)
 
 
 def test_approving_a_child_that_is_already_active_is_200_and_ends_the_request(
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=True)
+    child = _make_child(db, is_archived=False)
     conversation = _make_conversation(db, child=child)
 
     response = api.post(APPROVE.format(conversation_id=conversation.id), headers=_auth(admin))
 
     assert response.status_code == 200
     assert _row(db, conversation.id).reactivation_child_id is None
-    assert db.get_one(Child, child.id).is_active is True
+    assert db.get_one(Child, child.id).is_archived is False
 
 
 def test_no_takeover_is_needed_and_none_is_taken(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    conversation = _make_conversation(db, child=_make_child(db, is_active=False))
+    conversation = _make_conversation(db, child=_make_child(db, is_archived=True))
 
     response = api.post(APPROVE.format(conversation_id=conversation.id), headers=_auth(admin))
 
@@ -208,7 +208,7 @@ def test_nothing_is_written_to_the_thread_or_sent_to_the_guardian(
 
     monkeypatch.setattr(twilio_service, "send_whatsapp_message", refuse_to_send)
     admin = _make_user(db)
-    conversation = _make_conversation(db, child=_make_child(db, is_active=False))
+    conversation = _make_conversation(db, child=_make_child(db, is_archived=True))
 
     response = api.post(path.format(conversation_id=conversation.id), headers=_auth(admin))
 
@@ -261,7 +261,7 @@ def test_a_tutor_is_refused_and_the_request_stays_pending(
     api: TestClient, db: Session, path: str
 ) -> None:
     tutor = _make_tutor_user(db)
-    child = _make_child(db, is_active=False)
+    child = _make_child(db, is_archived=True)
     conversation = _make_conversation(db, child=child)
 
     response = api.post(path.format(conversation_id=conversation.id), headers=_auth(tutor))
@@ -284,7 +284,7 @@ def test_an_unauthenticated_request_is_401_not_403(api: TestClient, path: str) -
 @pytest.mark.parametrize("path", REACTIVATION_ROUTES)
 def test_a_developer_may_resolve_a_request(api: TestClient, db: Session, path: str) -> None:
     developer = _make_user(db, role=UserRole.DEVELOPER)
-    conversation = _make_conversation(db, child=_make_child(db, is_active=False))
+    conversation = _make_conversation(db, child=_make_child(db, is_archived=True))
 
     response = api.post(path.format(conversation_id=conversation.id), headers=_auth(developer))
 
@@ -348,12 +348,12 @@ def _make_conversation(
     return conversation
 
 
-def _make_child(db: Session, *, is_active: bool) -> Child:
+def _make_child(db: Session, *, is_archived: bool) -> Child:
     child = Child(
         name=f"Child {uuid.uuid4().hex[:8]}",
         grade_level=3,
         school_name="Elm Primary",
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()
@@ -370,7 +370,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -378,7 +378,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

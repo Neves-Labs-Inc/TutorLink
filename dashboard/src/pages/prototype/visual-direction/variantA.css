@@ -1,0 +1,86 @@
+/* Variant A "Faithful pastel": utilities that Tailwind arbitrary values
+   can't express cleanly. Colour tokens are set inline on the root by
+   VariantA.tsx so the spec strip can show the same values. */
+
+[data-variant="a"] {
+  font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  background-color: var(--va-canvas);
+  background-image:
+    radial-gradient(60rem 30rem at -10% -10%, var(--va-glow), transparent 60%),
+    radial-gradient(40rem 24rem at 110% 0%, var(--va-glow-pink), transparent 60%);
+  background-attachment: fixed;
+  color: var(--va-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-variant="a"] .va-display {
+  font-family: "Lato", ui-sans-serif, system-ui, sans-serif;
+}
+
+[data-variant="a"] .va-shadow-soft {
+  box-shadow: var(--va-shadow-soft);
+}
+
+[data-variant="a"] .va-shadow-raised {
+  box-shadow: var(--va-shadow-raised);
+}
+
+[data-variant="a"] .va-focus:focus-visible {
+  outline: 2px solid var(--va-focus);
+  outline-offset: 2px;
+}
+
+/* Cancelled calendar blocks: hatched so the state never relies on colour. */
+[data-variant="a"] .va-hatched {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    var(--va-hatch) 6px 8px
+  );
+}
+
+[data-variant="a"] .va-hour-lines {
+  background-image: linear-gradient(
+    to bottom,
+    var(--va-border) 1px,
+    transparent 1px
+  );
+}
+
+[data-variant="a"] .va-no-scrollbar {
+  scrollbar-width: none;
+}
+
+[data-variant="a"] .va-no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+[data-variant="a"] details > summary {
+  list-style: none;
+}
+
+[data-variant="a"] details > summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-variant="a"] .va-rise {
+  animation: va-rise 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes va-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-variant="a"] .va-rise {
+    animation: none;
+  }
+}

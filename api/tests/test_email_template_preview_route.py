@@ -22,6 +22,9 @@ from tests.fake_mail import FakeMail
 PREVIEW_URL = "/api/settings/email-templates/preview"
 SETTINGS_URL = "/api/settings"
 BRAND_COLOR_ERROR = "Enter a colour like #74C8C9."
+# Each email's saved colour, told apart so a preview using the other one shows up.
+SAVED_COLORS = {"invite": "#0B6E4F", "password_reset": "#7A1F5C"}
+COLOR_KEYS = {"invite": "email_invite_brand_color", "password_reset": "email_reset_brand_color"}
 PASSWORD = "correct horse battery staple"
 SAMPLE_LINK = "http://testserver/set-password?token=example"
 FALLBACK_LINK = "https://example.com/set-password?token=example"
@@ -75,20 +78,30 @@ def test_a_password_reset_draft_is_rendered_too(api: TestClient, db: Session) ->
     assert SAMPLE_LINK in response.json()["html"]
 
 
-def test_the_saved_brand_colour_is_used_when_none_is_given(api: TestClient, db: Session) -> None:
+@pytest.mark.parametrize("template", ["invite", "password_reset"])
+def test_the_chosen_emails_saved_colour_is_used_when_none_is_given(
+    api: TestClient, db: Session, template: str
+) -> None:
     admin = _make_user(db)
     saved = api.patch(
         SETTINGS_URL,
         headers=_auth(admin),
-        json={"updates": [{"key": "email_brand_color", "value": "#0B6E4F"}]},
+        json={
+            "updates": [
+                {"key": COLOR_KEYS[kind], "value": color} for kind, color in SAVED_COLORS.items()
+            ]
+        },
     )
     assert saved.status_code == 200
+    [other_color] = [color for kind, color in SAVED_COLORS.items() if kind != template]
 
-    response = api.post(PREVIEW_URL, headers=_auth(admin), json=_draft("invite", "Hi", "{link}"))
+    response = api.post(PREVIEW_URL, headers=_auth(admin), json=_draft(template, "Hi", "{link}"))
 
     assert response.status_code == 200
-    assert "background:#0B6E4F;" in response.json()["html"]
-    assert "#74C8C9" not in response.json()["html"]
+    html = response.json()["html"]
+    assert f"background:{SAVED_COLORS[template]};" in html
+    assert other_color not in html
+    assert "#74C8C9" not in html
 
 
 @pytest.mark.parametrize(

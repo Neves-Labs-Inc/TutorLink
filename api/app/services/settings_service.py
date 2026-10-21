@@ -61,10 +61,12 @@ it distinguishable from a purge that ran and found nothing. The maximum is the s
 argument as above, reached through `timedelta(days=...)` in the CLI instead of a request handler.
 
 **Only the keys below are bounded**: a bound is a fact about how a value is used, and every other
-row here is used somewhere this module has no business guessing about — the four
-`login_rate_limit_*` rows still accept a negative, which is #17/#18's and not this table's. The
-keys are spelled out rather than imported from the modules that own them, because
-`scheduling_service` and `retention_service` both import this one.
+row here is used somewhere this module has no business guessing about. The eight rate-limit
+rows and `cancellation_cutoff_hours` are bounded too: an attempt count refuses a negative but
+keeps `0`, the documented kill switch, and has no maximum; a window accepts a minute to 31 days;
+the cutoff accepts 0 to a year. Those maxima are the `timedelta` overflow argument above, not
+product limits. The keys are spelled out rather than imported from the modules that own
+them, because `scheduling_service` and `retention_service` both import this one.
 
 **Which rows a caller may see is decided here, from `actor_role`** (D-010), rather than by the
 caller handing in a precomputed flag. One place answers "what may this role see", and it is
@@ -76,16 +78,19 @@ owns the transaction boundary.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import phonenumbers
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking
 from app.models.enums import UserRole
 from app.models.system_setting import (
+    SETTING_VALUE_TYPE_BOOLEAN,
     SETTING_VALUE_TYPE_INTEGER,
     SETTING_VALUE_TYPE_STRING,
     SystemSetting,
@@ -100,6 +105,14 @@ from app.services.mail_templates import (
 BUSINESS_TIMEZONE_SETTING = "business_timezone"
 REMINDER_TEMPLATE_SID_EN_SETTING = "reminder_template_sid_en"
 REMINDER_TEMPLATE_SID_ES_SETTING = "reminder_template_sid_es"
+# Migration 0041's row: the Admin's "Send Booking reminders" switch.
+REMINDERS_ENABLED_SETTING = "reminders_enabled"
+# The only stored forms of a boolean row; anything else is refused rather than guessed at.
+_BOOLEAN_VALUES = {"true": True, "false": False}
+
+# What the weekly reminder pass may do: `not_set_up` wins over the switch, because with no
+# template approved there is nothing to send whichever way it is set.
+RemindersState = Literal["on", "off", "not_set_up"]
 
 _INTEGER_VALUE_PATTERN = re.compile(r"[+-]?[0-9]{1,18}")
 
@@ -108,8 +121,21 @@ EMAIL_TEMPLATE_SETTINGS = {
     TemplateKind.INVITE: ("email_invite_subject", "email_invite_body"),
     TemplateKind.PASSWORD_RESET: ("email_reset_subject", "email_reset_body"),
 }
-# Migration 0035's row: the colour both emails use.
-EMAIL_BRAND_COLOR_SETTING = "email_brand_color"
+# The rows migration 0051 seeds: each email's own button colour, by template kind.
+EMAIL_BRAND_COLOR_SETTINGS = {
+    TemplateKind.INVITE: "email_invite_brand_color",
+    TemplateKind.PASSWORD_RESET: "email_reset_brand_color",
+}
+# Migration 0039's row: the office number every Staff member reads through `GET /api/me`.
+OFFICE_PHONE_SETTING = "office_phone"
+OFFICE_PHONE_INVALID_ERROR = "office_phone must be a phone number in E.164 form, like +15551234567"
+# Migration 0050's row: where an In office Booking happens, shown on every such Booking read.
+OFFICE_ADDRESS_SETTING = "office_address"
+MAX_OFFICE_ADDRESS_LENGTH = 500
+OFFICE_ADDRESS_TOO_LONG_ERROR = (
+    f"office_address must be at most {MAX_OFFICE_ADDRESS_LENGTH} characters"
+)
+_E164_PATTERN = re.compile(r"\+[1-9][0-9]{1,14}")
 
 
 @dataclass(frozen=True)
@@ -153,6 +179,8 @@ class _Bounds:
         )
 
 
+_RATE_LIMIT_WINDOW_BOUNDS = _Bounds(minimum=60, maximum=31 * 24 * 60 * 60)
+
 _VALUE_BOUNDS = {
     # A slot length of zero emits no grid at all; a day is the longest slot that can fit inside
     # one `tutor_availability` range, all of which live within a single day.
@@ -182,6 +210,23 @@ _VALUE_BOUNDS = {
     # outside either range never matches the tick, so reminders would silently stop.
     "reminder_weekday": _Bounds(minimum=1, maximum=7),
     "reminder_hour": _Bounds(minimum=0, maximum=23),
+    # Zero lets a Guardian change or cancel up to the session's start. Negative would let them
+    # cancel a session that already started. The year cap is no product limit; it only keeps
+    # the bot's `timedelta(hours=...)` from overflowing on every change or cancel turn.
+    "cancellation_cutoff_hours": _Bounds(minimum=0, maximum=24 * 365),
+    # Zero is the documented kill switch for a bucket (`RateLimitPolicy.enabled`), so it stays.
+    # Negative disables the bucket just the same while reading as a mistake.
+    "login_rate_limit_ip_max_attempts": _Bounds(minimum=0, maximum=None),
+    "login_rate_limit_email_max_attempts": _Bounds(minimum=0, maximum=None),
+    "forgot_password_rate_limit_ip_max_attempts": _Bounds(minimum=0, maximum=None),
+    "forgot_password_rate_limit_email_max_attempts": _Bounds(minimum=0, maximum=None),
+    # Under a minute the sliding window forgets an attempt almost as soon as it is recorded, so
+    # the bucket throttles nothing; zero or negative prunes every row on each touch. The 31-day
+    # cap only keeps the limiter's `timedelta(seconds=...)` from overflowing on every sign-in.
+    "login_rate_limit_ip_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
+    "login_rate_limit_email_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
+    "forgot_password_rate_limit_ip_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
+    "forgot_password_rate_limit_email_window_seconds": _RATE_LIMIT_WINDOW_BOUNDS,
 }
 
 
@@ -207,6 +252,11 @@ class SettingNotAnInteger(SettingsError):
 
 class SettingNotAString(SettingsError):
     """The row exists but its `value_type` is not `string`."""
+
+
+class SettingNotABoolean(SettingsError):
+    """The row exists but its `value_type` is not `boolean`, or it holds neither `true` nor
+    `false` (a hand edit in SQL; the write path refuses both)."""
 
 
 class SettingNotEditable(SettingsError):
@@ -246,6 +296,19 @@ class EmailTemplateSettingInvalid(SettingValueInvalid):
 
     Carries the rule's message, which the router returns as-is: unlike a type error, the Admin
     needs to know which rule they broke to fix the template.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class SettingRuleBroken(SettingValueInvalid):
+    """A string row was given a value its key's rule in `_STRING_RULES` refuses, or a boolean
+    row a value other than `true` or `false`.
+
+    Carries the rule's message, which the router returns as-is, for the same reason as
+    `EmailTemplateSettingInvalid`: the Admin needs to know what a valid value looks like.
     """
 
     def __init__(self, message: str) -> None:
@@ -296,18 +359,34 @@ def get_str_setting(db: Session, *, key: str) -> str:
     return row.value
 
 
-def read_settings_flags(db: Session) -> SettingsFlags:
-    # Both reminder ids blank is the documented "paused" state: no template is approved yet, so
-    # the weekly run would skip every Guardian.
-    reminder_sids = [
-        get_str_setting(db, key=REMINDER_TEMPLATE_SID_EN_SETTING),
-        get_str_setting(db, key=REMINDER_TEMPLATE_SID_ES_SETTING),
-    ]
+def get_bool_setting(db: Session, *, key: str) -> bool:
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == key)).scalar_one_or_none()
 
+    if row is None:
+        raise SettingNotFound(f"no system setting {key!r}")
+
+    if row.value_type != SETTING_VALUE_TYPE_BOOLEAN:
+        raise SettingNotABoolean(f"system setting {key!r} is {row.value_type!r}, not a boolean")
+
+    if row.value not in _BOOLEAN_VALUES:
+        raise SettingNotABoolean(f"system setting {key!r} holds {row.value!r}")
+
+    return _BOOLEAN_VALUES[row.value]
+
+
+def read_settings_flags(db: Session) -> SettingsFlags:
     return SettingsFlags(
         business_timezone_locked=has_any_booking(db),
-        reminders_paused=all(sid.strip() == "" for sid in reminder_sids),
+        reminders_paused=_are_reminder_templates_unset(db),
     )
+
+
+def reminders_state(db: Session) -> RemindersState:
+    """Whether the weekly reminder pass should run: set up, and switched on by an Admin."""
+    if _are_reminder_templates_unset(db):
+        return "not_set_up"
+
+    return "on" if get_bool_setting(db, key=REMINDERS_ENABLED_SETTING) else "off"
 
 
 def list_settings(db: Session, *, actor_role: UserRole) -> list[SystemSetting]:
@@ -374,6 +453,8 @@ def apply_setting_updates(
             value = update.value
         elif row.value_type == SETTING_VALUE_TYPE_STRING:
             value = _checked_string_value(update)
+        elif row.value_type == SETTING_VALUE_TYPE_BOOLEAN:
+            value = _checked_boolean_value(update)
         else:
             raise SettingValueTypeUnsupported(
                 f"system setting {update.key!r} is {row.value_type!r}, which has no validator"
@@ -392,19 +473,33 @@ def apply_setting_updates(
 
 
 def read_email_template(db: Session, *, kind: TemplateKind) -> EmailTemplate:
-    """The saved subject and body of the `kind` email, and the saved brand colour."""
+    """The saved subject, body and brand colour of the `kind` email."""
     subject_key, body_key = EMAIL_TEMPLATE_SETTINGS[kind]
 
     return EmailTemplate(
         subject=get_str_setting(db, key=subject_key),
         body=get_str_setting(db, key=body_key),
-        brand_color=read_email_brand_color(db),
+        brand_color=read_email_brand_color(db, kind=kind),
     )
 
 
-def read_email_brand_color(db: Session) -> str:
-    """The saved `#RRGGBB` colour every email is branded with."""
-    return get_str_setting(db, key=EMAIL_BRAND_COLOR_SETTING)
+def read_email_brand_color(db: Session, *, kind: TemplateKind) -> str:
+    """The saved `#RRGGBB` colour the `kind` email is branded with."""
+    return get_str_setting(db, key=EMAIL_BRAND_COLOR_SETTINGS[kind])
+
+
+def read_office_phone(db: Session) -> str | None:
+    """The office's E.164 phone number, or `None` while an Admin has not set one."""
+    phone = get_str_setting(db, key=OFFICE_PHONE_SETTING)
+
+    return phone or None
+
+
+def read_office_address(db: Session) -> str | None:
+    """The office's address, or `None` while an Admin has not set one."""
+    address = get_str_setting(db, key=OFFICE_ADDRESS_SETTING)
+
+    return address or None
 
 
 def has_any_booking(db: Session) -> bool:
@@ -422,6 +517,28 @@ def _check_integer_value(update: SettingUpdate) -> None:
         raise SettingValueInvalid(
             f"system setting {update.key!r} rejects {update.value!r}: accepts {bounds}"
         )
+
+
+def _checked_boolean_value(update: SettingUpdate) -> str:
+    # Exactly lowercase `true` or `false`: the stored form `get_bool_setting` reads back, so a
+    # value that saves is always one the scheduler can read.
+    value = update.value.strip()
+
+    if value not in _BOOLEAN_VALUES:
+        raise SettingRuleBroken(f"{update.key} must be true or false")
+
+    return value
+
+
+def _are_reminder_templates_unset(db: Session) -> bool:
+    # Both reminder ids blank is the documented "paused" state: no template is approved yet, so
+    # the weekly run would skip every Guardian.
+    reminder_sids = [
+        get_str_setting(db, key=REMINDER_TEMPLATE_SID_EN_SETTING),
+        get_str_setting(db, key=REMINDER_TEMPLATE_SID_ES_SETTING),
+    ]
+
+    return all(sid.strip() == "" for sid in reminder_sids)
 
 
 def _check_email_templates(updates: Sequence[SettingUpdate]) -> None:
@@ -447,19 +564,25 @@ def _checked_string_value(update: SettingUpdate) -> str:
 
     Stripped because every string row is pasted in by hand (a zone name, a Twilio template id),
     and a trailing space would make a template id that looks set fail at send time.
-    Only `business_timezone` has a validator here; the template-id rows accept anything, and
+    Keys in `_STRING_RULES` get their own rule, which does its own stripping. Otherwise only
+    `business_timezone` has a validator here; the template-id rows accept anything, and
     blank is their documented "not approved" value. Email template rows are stored as written:
     their whitespace is the email's layout, and `_check_email_templates` validates them. The
-    brand colour is not stripped either: the spec refuses `#74C8C9 ` rather than repairing it.
+    brand colours are not stripped either: the spec refuses `#74C8C9 ` rather than repairing it.
     """
     if _is_email_template_key(update.key):
         return update.value
 
-    if update.key == EMAIL_BRAND_COLOR_SETTING:
+    if update.key in EMAIL_BRAND_COLOR_SETTINGS.values():
         try:
             return validate_brand_color(update.value)
         except EmailTemplateInvalid as exc:
             raise EmailTemplateSettingInvalid(exc.message) from exc
+
+    rule = _STRING_RULES.get(update.key)
+
+    if rule is not None:
+        return rule(update.value)
 
     value = update.value.strip()
 
@@ -467,6 +590,50 @@ def _checked_string_value(update: SettingUpdate) -> str:
         raise BusinessTimezoneUnknown(f"system setting {update.key!r} rejects {update.value!r}")
 
     return value
+
+
+def _checked_office_phone(value: str) -> str:
+    # Not `phone_service`: it imports this module. Blank is the "not set" value.
+    phone = value.strip()
+
+    if phone and not _is_e164_phone(phone):
+        raise SettingRuleBroken(OFFICE_PHONE_INVALID_ERROR)
+
+    return phone
+
+
+def _checked_office_address(value: str) -> str:
+    # Line breaks are kept: an address is written over several lines. Blank is "not set".
+    address = value.strip()
+
+    if len(address) > MAX_OFFICE_ADDRESS_LENGTH:
+        raise SettingRuleBroken(OFFICE_ADDRESS_TOO_LONG_ERROR)
+
+    return address
+
+
+def _is_e164_phone(phone: str) -> bool:
+    # The pattern first: `phonenumbers.parse` is lenient about spaces and dashes, and the
+    # stored form must be exactly what a `tel:` link and Twilio both take.
+    if _E164_PATTERN.fullmatch(phone) is None:
+        return False
+
+    try:
+        parsed = phonenumbers.parse(phone, None)
+    except phonenumbers.NumberParseException:
+        return False
+
+    # Possible (right length for the country), not valid: `is_valid_number` also checks the
+    # area code is allocated, and refuses the 555 numbers the office uses as its example.
+    return phonenumbers.is_possible_number(parsed)
+
+
+# Per-key rules for string rows: each takes the submitted string and returns the value to
+# store, or raises `SettingRuleBroken` with the message the Admin sees.
+_STRING_RULES: dict[str, Callable[[str], str]] = {
+    OFFICE_PHONE_SETTING: _checked_office_phone,
+    OFFICE_ADDRESS_SETTING: _checked_office_address,
+}
 
 
 def _is_email_template_key(key: str) -> bool:

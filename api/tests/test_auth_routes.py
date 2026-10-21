@@ -49,10 +49,13 @@ TEST_CLIENT_PEER = "testclient"
 INVITEE_EMAIL = "invitee@example.com"
 NEW_PASSWORD = "a brand new password"
 INVALID_LINK_BODY = {"detail": "This link is invalid or has expired"}
+INVALID_LOOKUP_BODY = {"kind": None, "state": "invalid", "name": None, "email": None}
 FORGOT_BODY = {
     "detail": "If an account exists for that email, we sent a link to reset the password."
 }
 BARRIER_TIMEOUT_SECONDS = 10
+# The schemas' cap on a submitted token; real tokens are 43 characters.
+MAX_TOKEN_LENGTH = 128
 
 
 def test_login_returns_a_token_pair_and_sets_the_refresh_cookie(
@@ -102,7 +105,7 @@ def test_login_rejects_bad_credentials_with_one_indistinguishable_401(
     api: TestClient, db: Session, email: str, password: str
 ) -> None:
     _make_user(db, email=EMAIL)
-    _make_user(db, email=DORMANT_EMAIL, is_active=False)
+    _make_user(db, email=DORMANT_EMAIL, is_archived=True)
     _make_user(db, email=NO_PASSWORD_EMAIL, password=None)
 
     response = _login(api, email=email, password=password)
@@ -314,7 +317,7 @@ def test_an_invite_link_sets_the_password_and_signs_the_user_in(
     body = response.json()
     set_cookie = response.headers["set-cookie"]
     claims = decode_token(body["access_token"], expected_type=ACCESS_TOKEN_TYPE)
-    read_back = api.get(f"/api/users/{invitee.id}", headers=_admin_auth(db)).json()
+    read_back = api.get(f"/api/staff/{invitee.id}", headers=_admin_auth(db)).json()
     api.cookies.clear()
     login = _login(api, email=INVITEE_EMAIL, password=NEW_PASSWORD)
 
@@ -326,7 +329,7 @@ def test_an_invite_link_sets_the_password_and_signs_the_user_in(
     assert "Path=/auth" in set_cookie
     assert claims.subject == invitee.id
     assert claims.role is UserRole.ADMIN
-    assert read_back["has_password"] is True
+    assert read_back["sign_in_state"] == "active"
     assert read_back["invite_expires_at"] is None
     assert login.status_code == 200
 
@@ -370,7 +373,7 @@ def test_a_deactivated_users_link_gets_the_same_400(
 ) -> None:
     invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
     token = _invite(api, db, invitee, fake_mail)
-    invitee.is_active = False
+    invitee.is_archived = True
     db.flush()
 
     response = _set_password(api, token=token)
@@ -434,6 +437,14 @@ def test_an_unusable_password_is_422_and_leaves_the_link_live(
     assert refused.status_code == 422
     assert refused.json() == {"detail": "Password must be between 8 characters and 72 bytes"}
     assert accepted.status_code == 200
+
+
+def test_an_over_long_token_is_refused_by_set_password(api: TestClient) -> None:
+    response = _set_password(api, token="x" * (MAX_TOKEN_LENGTH + 1))
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("token:")
+    assert "set-cookie" not in response.headers
 
 
 def test_a_missing_field_is_400_and_leaves_the_link_live(
@@ -527,6 +538,151 @@ def test_two_concurrent_submits_of_one_token_let_exactly_one_through(
     assert sorted(outcomes) == [False, True]
 
 
+# --- POST /auth/password/link ------------------------------------------------------------------
+
+
+def test_a_valid_invite_link_reports_its_kind_and_whose_account_it_is(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+
+    response = _look_up_link(api, token=token)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "kind": "invite",
+        "state": "valid",
+        "name": "Test User",
+        "email": INVITEE_EMAIL,
+    }
+
+
+def test_a_valid_reset_link_reports_its_kind_without_name_or_email(
+    api: TestClient, db: Session
+) -> None:
+    user = _make_user(db)
+    _link, token = issue_link(
+        db, user=user, purpose=PasswordLinkPurpose.RESET, now=datetime.now(UTC)
+    )
+
+    response = _look_up_link(api, token=token)
+
+    assert response.status_code == 200
+    assert response.json() == {"kind": "reset", "state": "valid", "name": None, "email": None}
+
+
+def test_an_expired_link_reports_expired_with_its_kind(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    _link_of(db, token).expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db.flush()
+
+    response = _look_up_link(api, token=token)
+
+    assert response.status_code == 200
+    assert response.json() == {"kind": "invite", "state": "expired", "name": None, "email": None}
+
+
+def test_a_used_link_reports_used_with_its_kind(api: TestClient, db: Session) -> None:
+    user = _make_user(db)
+    _link, token = issue_link(
+        db, user=user, purpose=PasswordLinkPurpose.RESET, now=datetime.now(UTC)
+    )
+    _set_password(api, token=token)
+
+    response = _look_up_link(api, token=token)
+
+    assert response.status_code == 200
+    assert response.json() == {"kind": "reset", "state": "used", "name": None, "email": None}
+
+
+def test_an_unknown_token_reports_invalid(api: TestClient) -> None:
+    response = _look_up_link(api, token="not-a-token-anyone-was-sent")
+
+    assert response.status_code == 200
+    assert response.json() == INVALID_LOOKUP_BODY
+
+
+def test_an_invite_replaced_by_a_resend_reports_the_same_invalid(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    first = _invite(api, db, invitee, fake_mail)
+    _invite(api, db, invitee, fake_mail)
+
+    response = _look_up_link(api, token=first)
+
+    assert response.status_code == 200
+    assert response.json() == INVALID_LOOKUP_BODY
+
+
+def test_a_link_revoked_by_a_password_set_through_another_link_reports_the_same_invalid(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    invite_token = _invite(api, db, invitee, fake_mail)
+    _link, reset_token = issue_link(
+        db, user=invitee, purpose=PasswordLinkPurpose.RESET, now=datetime.now(UTC)
+    )
+    _set_password(api, token=reset_token)
+
+    response = _look_up_link(api, token=invite_token)
+
+    assert response.status_code == 200
+    assert response.json() == INVALID_LOOKUP_BODY
+
+
+def test_an_archived_users_link_reports_the_same_invalid(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    invitee.is_archived = True
+    db.flush()
+
+    response = _look_up_link(api, token=token)
+
+    assert response.status_code == 200
+    assert response.json() == INVALID_LOOKUP_BODY
+
+
+def test_a_link_sent_to_an_address_the_user_no_longer_has_reports_the_same_invalid(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    invitee.email = "drifted@example.com"
+    db.flush()
+
+    response = _look_up_link(api, token=token)
+
+    assert response.status_code == 200
+    assert response.json() == INVALID_LOOKUP_BODY
+
+
+def test_an_over_long_token_is_refused_by_the_lookup(api: TestClient) -> None:
+    response = _look_up_link(api, token="x" * (MAX_TOKEN_LENGTH + 1))
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("token:")
+
+
+def test_looking_up_a_link_does_not_spend_it(
+    api: TestClient, db: Session, fake_mail: FakeMail
+) -> None:
+    invitee = _make_user(db, email=INVITEE_EMAIL, password=None)
+    token = _invite(api, db, invitee, fake_mail)
+    _look_up_link(api, token=token)
+    _look_up_link(api, token=token)
+
+    response = _set_password(api, token=token)
+
+    assert response.status_code == 200
+
+
 # --- POST /auth/password/forgot ----------------------------------------------------------------
 
 
@@ -568,7 +724,7 @@ def test_a_miss_answers_identically_and_sends_nothing(
     if setup == "password-less":
         _make_user(db, password=None)
     elif setup == "inactive":
-        _make_user(db, is_active=False)
+        _make_user(db, is_archived=True)
 
     response = _forgot(api, email=email)
 
@@ -750,14 +906,14 @@ def _make_user(
     *,
     email: str = EMAIL,
     password: str | None = PASSWORD,
-    is_active: bool = True,
+    is_archived: bool = False,
 ) -> User:
     user = User(
         email=email,
         name="Test User",
         hashed_password=None if password is None else hash_password(password),
         role=UserRole.ADMIN,
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(user)
     db.flush()
@@ -792,6 +948,10 @@ def _invite(api: TestClient, db: Session, invitee: User, fake_mail: FakeMail) ->
 
 def _set_password(api: TestClient, *, token: str, password: str = NEW_PASSWORD) -> Response:
     return api.post("/auth/password/set", json={"token": token, "password": password})
+
+
+def _look_up_link(api: TestClient, *, token: str) -> Response:
+    return api.post("/auth/password/link", json={"token": token})
 
 
 def _forgot(api: TestClient, *, email: str = EMAIL) -> Response:

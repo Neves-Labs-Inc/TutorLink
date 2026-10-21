@@ -1,5 +1,9 @@
 # TutorLink production runbook
 
+> **Stale.** This file describes the retired ECS Express setup. The current setup (an EC2 host in
+> the tutorlink-prod account) is described in [`infra/README.md`](../infra/README.md). The rewrite
+> is tracked as "RB" in [`docs/deployment-todo.md`](../docs/deployment-todo.md).
+
 Operational procedure for standing up and operating TutorLink on Amazon ECS Express Mode. This is
 **not** a frozen contract (`docs/` is; see `CONSTITUTION.md` §1) — it documents this one
 deployment, it will change whenever AWS or the workflow changes, and it lives beside the files it
@@ -39,8 +43,9 @@ the only datastore. Secrets live in Secrets Manager. The image lives in one ECR 
 
 **Not used, and why:**
 - **Redis / ElastiCache** — retired this phase. Chat broadcast runs on `LISTEN`/`NOTIFY`, the login
-  limiter and bot flow state live in Postgres tables, and duplicate Twilio deliveries are rejected
-  by `messages.twilio_sid`'s unique constraint alone.
+  limiter lives in a Postgres table, the bot agent keeps its state on `conversations` and `messages`
+  (the old `bot_flow_state` table was dropped in `0054`), and duplicate Twilio deliveries are
+  rejected by `messages.twilio_sid`'s unique constraint alone.
 - **RDS Proxy** — a pooling proxy multiplexes connections onto a smaller pool of backend sessions,
   which breaks a session-scoped `LISTEN` the moment the proxy recycles it onto a different backend
   connection. If a proxy is ever added later, the `LISTEN` connection must bypass it.
@@ -294,14 +299,14 @@ stream are printed directly in the workflow's "Run the database migration" step 
 **The retention scheduler's four log lines**, logger `app.services.retention_scheduler`, exactly:
 
 ```
-retention purge: ran messages=%d conversations=%d flow_states=%d login_attempts=%d
-retention purge: ran, chat purge disabled (chat_retention_days=0) flow_states=%d login_attempts=%d
+retention purge: ran messages=%d conversations=%d login_attempts=%d
+retention purge: ran, chat purge disabled (chat_retention_days=0) login_attempts=%d
 retention purge: skipped, another instance holds the lock
 retention purge: failed
 ```
 
 The first two are a completed purge — the first when chat purging is enabled, the second when
-`chat_retention_days` is `0` and only the state tables were reaped. The third is normal at 3+ tasks:
+`chat_retention_days` is `0` and only expired login attempts were reaped. The third is normal at 3+ tasks:
 only one instance holds `pg_try_advisory_xact_lock(8102, 1)` in a given hour, and the others log
 this and do nothing — exactly one "ran" line per night across every task is the expected pattern,
 not a fault. The fourth means the tick could not reach the database; it does not kill the

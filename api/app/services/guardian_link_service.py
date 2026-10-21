@@ -11,8 +11,10 @@ existing guardian and its link — runs before the first insert, so a refusal wr
 nested guardian goes through `create_client(home=None)` and is never an upsert:
 `PhoneNumberTaken` and `InvalidPhoneNumber` travel through this module unchanged.
 
-`home_ids` becomes `guardian_homes` rows only. It never touches `child_homes`, and it does not
-limit where this guardian may book the child (P7B-D). Linking to an inactive child is allowed.
+`home_ids` shares existing homes with the new guardian as `guardian_homes` rows. Each must be one
+of the child's bookable homes (`home_set`), so it can never widen the child's home set, and it
+does not limit where this guardian may book the child (P7B-D). Linking to an inactive child is
+allowed.
 """
 
 import uuid
@@ -25,9 +27,10 @@ from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, GuardianHome, Home
+from app.models.home import GuardianHome
 from app.services.child_service import ChildNotFound
-from app.services.client_service import create_client
+from app.services.client_service import ClientDetail, HomeInput, create_client, get_client
+from app.services.home_set import child_home_ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +48,7 @@ class GuardianChoiceInvalid(GuardianLinkServiceError):
 
 
 class HomesNotOfChild(GuardianLinkServiceError):
-    """A home id that is not an active home of the child."""
+    """A home id that is not one of the child's bookable homes."""
 
 
 class GuardianNotFound(GuardianLinkServiceError):
@@ -102,9 +105,50 @@ def link_guardian(
         db.add(GuardianHome(guardian_id=guardian.id, home_id=home_id))
 
     db.flush()
-    db.expire(child, ["guardian_links", "home_links"])
+    db.expire(child, ["guardian_links"])
 
     return child
+
+
+def create_guardian_in_family(
+    db: Session,
+    *,
+    name: str,
+    phone_number: str,
+    home: HomeInput | None,
+    child_ids: Sequence[uuid.UUID],
+    home_ids: Sequence[uuid.UUID],
+) -> ClientDetail:
+    """Create a Guardian already linked to `child_ids` and sharing `home_ids`, in one go.
+
+    No same-family check: choosing Children of two families merges them. Every check that needs
+    no write runs before `create_client`, so a refusal writes nothing.
+    """
+    wanted_children = set(child_ids)
+    found = set(db.scalars(select(Child.id).where(Child.id.in_(wanted_children))).all())
+
+    if found != wanted_children:
+        raise ChildNotFound
+
+    wanted_homes = set(home_ids)
+    bookable: set[uuid.UUID] = set()
+    for child_id in wanted_children:
+        bookable |= set(db.scalars(child_home_ids(child_id, include_archived=False)).all())
+
+    if not wanted_homes <= bookable:
+        raise HomesNotOfChild
+
+    created = create_client(db, name=name, phone_number=phone_number, home=home)
+
+    for child_id in wanted_children:
+        db.add(ChildGuardian(child_id=child_id, guardian_id=created.client.id))
+
+    for home_id in wanted_homes:
+        db.add(GuardianHome(guardian_id=created.client.id, home_id=home_id))
+
+    db.flush()
+
+    return get_client(db, client_id=created.client.id)
 
 
 def _guardian_choice(
@@ -124,15 +168,9 @@ def _validated_home_ids(
     db: Session, *, child_id: uuid.UUID, requested: Sequence[uuid.UUID]
 ) -> set[uuid.UUID]:
     wanted = set(requested)
-    active = set(
-        db.scalars(
-            select(ChildHome.home_id)
-            .join(Home, Home.id == ChildHome.home_id)
-            .where(ChildHome.child_id == child_id, Home.is_active.is_(True))
-        ).all()
-    )
+    bookable = set(db.scalars(child_home_ids(child_id, include_archived=False)).all())
 
-    if not wanted <= active:
+    if not wanted <= bookable:
         raise HomesNotOfChild
 
     return wanted

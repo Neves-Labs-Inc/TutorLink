@@ -19,9 +19,10 @@ from sqlalchemy.orm import Session
 
 from app.models.child import Child
 from app.models.conversation import Conversation
-from app.models.enums import Language, UserRole
+from app.models.enums import ConsentAction, ConsentSource, Language, UserRole
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.home import GuardianHome, Home
+from app.models.reminder_consent import ReminderConsent
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.security import create_access_token, hash_password
@@ -44,7 +45,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -52,7 +53,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -74,16 +75,16 @@ def _auth(user: User) -> dict[str, str]:
 
 
 def _make_client(
-    db: Session, *, name: str = "Jane Doe", phone_number: str = PHONE, is_active: bool = True
+    db: Session, *, name: str = "Jane Doe", phone_number: str = PHONE, is_archived: bool = False
 ) -> Guardian:
-    client = Guardian(name=name, phone_number=phone_number, is_active=is_active)
+    client = Guardian(name=name, phone_number=phone_number, is_archived=is_archived)
     db.add(client)
     db.flush()
     return client
 
 
 def _make_home(db: Session, *, client: Guardian, label: str | None = "Mum's") -> Home:
-    home = Home(label=label, address="123 Main St", access_code="1234")
+    home = Home(label=label, address="123 Main St", directions="1234")
     db.add(home)
     db.flush()
     db.add(GuardianHome(guardian_id=client.id, home_id=home.id))
@@ -143,24 +144,24 @@ def test_total_counts_matches_not_returned_rows(api: TestClient, db: Session) ->
 def test_deactivated_clients_are_hidden_until_asked_for(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
     _make_client(db, name="Active One", phone_number=PHONE)
-    dormant = _make_client(db, name="Dormant One", phone_number=OTHER_PHONE, is_active=False)
+    dormant = _make_client(db, name="Dormant One", phone_number=OTHER_PHONE, is_archived=True)
     headers = _auth(admin)
 
     default = api.get("/api/clients", headers=headers).json()
-    asked = api.get("/api/clients?is_active=false", headers=headers).json()
+    asked = api.get("/api/clients?archived=true", headers=headers).json()
 
     assert [row["name"] for row in default["items"]] == ["Active One"]
     assert [row["id"] for row in asked["items"]] == [str(dormant.id)]
     assert asked["total"] == 1
 
 
-def test_malformed_is_active_query_is_400_not_422(api: TestClient, db: Session) -> None:
+def test_malformed_archived_query_is_400_not_422(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
 
-    response = api.get("/api/clients?is_active=maybe", headers=_auth(admin))
+    response = api.get("/api/clients?archived=maybe", headers=_auth(admin))
 
     assert response.status_code == 400
-    assert "is_active" in response.json()["detail"]
+    assert "archived" in response.json()["detail"]
 
 
 @pytest.mark.parametrize(
@@ -256,11 +257,11 @@ def test_phone_number_lookup_does_not_special_case_the_is_active_default(
     api: TestClient, db: Session
 ) -> None:
     admin = _make_user(db)
-    dormant = _make_client(db, phone_number=PHONE, is_active=False)
+    dormant = _make_client(db, phone_number=PHONE, is_archived=True)
     headers = _auth(admin)
 
     default = api.get(f"/api/clients?phone_number={PHONE}", headers=headers).json()
-    asked = api.get(f"/api/clients?phone_number={PHONE}&is_active=false", headers=headers).json()
+    asked = api.get(f"/api/clients?phone_number={PHONE}&archived=true", headers=headers).json()
 
     assert default["total"] == 0
     assert asked["total"] == 1
@@ -268,6 +269,24 @@ def test_phone_number_lookup_does_not_special_case_the_is_active_default(
 
 
 # --- REQ-032.4: the by-id shape --------------------------------------------------------------
+
+
+def test_get_by_id_names_every_owner_of_a_shared_home_archived_ones_included(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    zed = _make_client(db, name="Zed Doe", phone_number="+15550000001", is_archived=True)
+    amy = _make_client(db, name="Amy Doe", phone_number="+15550000002")
+    home = _make_home(db, client=zed)
+    db.add(GuardianHome(guardian_id=amy.id, home_id=home.id))
+    db.flush()
+
+    body = api.get(f"/api/clients/{amy.id}", headers=_auth(admin)).json()
+
+    assert body["homes"][0]["guardians"] == [
+        {"id": str(amy.id), "name": "Amy Doe"},
+        {"id": str(zed.id), "name": "Zed Doe"},
+    ]
 
 
 def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> None:
@@ -284,8 +303,10 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "id": str(home.id),
             "label": "Mum's",
             "address": "123 Main St",
-            "access_code": "1234",
-            "is_active": True,
+            "directions": "1234",
+            "archived": False,
+            "guardians": [{"id": str(client.id), "name": client.name}],
+            "upcoming_booking_count": 0,
         }
     ]
     assert body["children"] == [
@@ -296,9 +317,97 @@ def test_get_by_id_nests_homes_and_children(api: TestClient, db: Session) -> Non
             "grade_level": 7,
             "school_name": "Lincoln Middle School",
             "notes": "Peanut allergy",
-            "is_active": True,
+            "archived": False,
+            "evaluated": None,
         }
     ]
+
+
+def test_details_say_reminders_never_when_the_guardian_was_never_asked(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert body["reminders"] == "never"
+    assert body["reminders_blocked_by_whatsapp"] is False
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [(ConsentAction.OPT_IN, "opt_in"), (ConsentAction.OPT_OUT, "opt_out")],
+)
+def test_details_carry_the_current_reminders_state(
+    api: TestClient, db: Session, action: ConsentAction, expected: str
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _add_consent(db, client, action, ConsentSource.INTAKE)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert body["reminders"] == expected
+    assert body["reminders_blocked_by_whatsapp"] is False
+
+
+def test_details_flag_a_guardian_blocked_by_whatsapp(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _add_consent(db, client, ConsentAction.OPT_OUT, ConsentSource.SYSTEM)
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    assert body["reminders"] == "opt_out"
+    assert body["reminders_blocked_by_whatsapp"] is True
+
+
+def test_the_patch_response_carries_the_reminders_state_too(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _add_consent(db, client, ConsentAction.OPT_IN, ConsentSource.INTAKE)
+
+    body = api.patch(
+        f"/api/clients/{client.id}", json={"name": "New Name"}, headers=_auth(admin)
+    ).json()
+
+    assert body["reminders"] == "opt_in"
+    assert body["reminders_blocked_by_whatsapp"] is False
+
+
+def _add_consent(
+    db: Session, client: Guardian, action: ConsentAction, source: ConsentSource
+) -> None:
+    db.add(
+        ReminderConsent(
+            guardian_id=client.id,
+            action=action,
+            source=source,
+            phone_number=client.phone_number,
+        )
+    )
+    db.flush()
+
+
+def test_an_evaluated_child_carries_when_and_by_whom_on_the_guardian_details(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    evaluator = _make_user(db)
+    evaluator.name = "Marta"
+    child = _make_child(db, guardians=[client])
+    child.evaluated_at = datetime.datetime(2026, 9, 1, 10, 0, tzinfo=datetime.UTC)
+    child.evaluated_by_user_id = evaluator.id
+    db.flush()
+    db.expire_all()
+
+    body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
+
+    [row] = body["children"]
+    assert row["evaluated"]["by"] == {"id": str(evaluator.id), "name": "Marta"}
+    assert datetime.datetime.fromisoformat(row["evaluated"]["at"]) == child.evaluated_at
 
 
 def test_a_child_registered_before_date_of_birth_renders_it_as_null(
@@ -335,12 +444,12 @@ def test_a_deactivated_client_is_still_readable_by_id(api: TestClient, db: Sessi
     """A 404 would make a soft delete indistinguishable from a hard one, and `is_active` is on
     the body because the bot's documented 409 recovery has to decide whether to reactivate."""
     admin = _make_user(db)
-    dormant = _make_client(db, is_active=False)
+    dormant = _make_client(db, is_archived=True)
 
     response = api.get(f"/api/clients/{dormant.id}", headers=_auth(admin))
 
     assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    assert response.json()["archived"] is True
 
 
 def test_an_unknown_client_id_is_404(api: TestClient, db: Session) -> None:
@@ -366,7 +475,7 @@ def test_post_creates_the_client_and_normalises_the_number(api: TestClient, db: 
 
     assert response.status_code == 201
     assert response.json()["phone_number"] == PHONE
-    assert response.json()["is_active"] is True
+    assert response.json()["archived"] is False
     stored = db.scalars(select(Guardian).where(Guardian.phone_number == PHONE)).one()
     assert stored.name == "Jane Doe"
 
@@ -380,7 +489,7 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
         json={
             "name": "Jane Doe",
             "phone_number": PHONE,
-            "home": {"label": "Mum's", "address": "123 Main St", "access_code": "1234"},
+            "home": {"label": "Mum's", "address": "123 Main St", "directions": "1234"},
         },
     ).json()
 
@@ -392,10 +501,160 @@ def test_post_with_a_home_creates_the_home_and_the_link(api: TestClient, db: Ses
             "id": str(links[0].home_id),
             "label": "Mum's",
             "address": "123 Main St",
-            "access_code": "1234",
-            "is_active": True,
+            "directions": "1234",
+            "archived": False,
+            "guardians": [{"id": body["id"], "name": "Jane Doe"}],
+            "upcoming_booking_count": 0,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("home", "stored"),
+    [
+        ({"address": "123 Main St"}, None),
+        ({"address": "123 Main St", "directions": "  "}, None),
+        ({"address": "123 Main St", "directions": " Gate 1234 "}, "Gate 1234"),
+        ({"address": "123 Main St", "directions": "x" * 500}, "x" * 500),
+    ],
+)
+def test_post_with_a_home_stores_its_directions_trimmed_and_blank_as_null(
+    api: TestClient, db: Session, home: dict[str, str], stored: str | None
+) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={"name": "Jane Doe", "phone_number": PHONE, "home": home},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["homes"][0]["directions"] == stored
+    assert db.scalars(select(Home)).one().directions == stored
+
+
+def test_post_refuses_directions_over_500_characters(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Jane Doe",
+            "phone_number": PHONE,
+            "home": {"address": "123 Main St", "directions": "x" * 501},
+        },
+    )
+
+    assert response.status_code == 400
+    assert db.scalars(select(Guardian)).all() == []
+
+
+def test_post_refuses_a_blank_address_and_writes_nothing(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={"name": "Jane Doe", "phone_number": PHONE, "home": {"address": "  "}},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "address must not be blank"}
+    assert db.scalars(select(Guardian)).all() == []
+    assert db.scalars(select(Home)).all() == []
+
+
+def test_post_with_child_ids_links_every_child_and_shares_their_homes(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    home = _make_home(db, client=mum)
+    first = _make_child(db, guardians=[mum], name="Ann")
+    second = _make_child(db, guardians=[mum], name="Ben")
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Dad",
+            "phone_number": PHONE,
+            "child_ids": [str(first.id), str(second.id), str(first.id)],
+            "home_ids": [str(home.id), str(home.id)],
+        },
+    )
+
+    body = response.json()
+    assert response.status_code == 201
+    assert [child["name"] for child in body["children"]] == ["Ann", "Ben"]
+    assert [shared["id"] for shared in body["homes"]] == [str(home.id)]
+    assert {guardian["name"] for guardian in body["homes"][0]["guardians"]} == {"Mum", "Dad"}
+    child_read = api.get(f"/api/children/{first.id}", headers=_auth(admin)).json()
+    assert "Dad" in [guardian["name"] for guardian in child_read["guardians"]]
+
+
+def test_post_with_a_home_id_of_no_chosen_child_is_400_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    child = _make_child(db, guardians=[mum])
+    stranger = _make_client(db, name="Stranger", phone_number="+12025550199")
+    elsewhere = _make_home(db, client=stranger)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Dad",
+            "phone_number": PHONE,
+            "child_ids": [str(child.id)],
+            "home_ids": [str(elsewhere.id)],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "home_ids must name active homes of this child"}
+    assert db.scalars(select(Guardian).where(Guardian.name == "Dad")).all() == []
+
+
+def test_post_with_an_unknown_child_id_is_404_and_writes_nothing(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    child = _make_child(db, guardians=[mum])
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={
+            "name": "Dad",
+            "phone_number": PHONE,
+            "child_ids": [str(child.id), str(uuid.uuid4())],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Child not found"}
+    assert db.scalars(select(Guardian).where(Guardian.name == "Dad")).all() == []
+
+
+def test_post_with_home_ids_but_no_child_ids_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    mum = _make_client(db, name="Mum", phone_number=OTHER_PHONE)
+    home = _make_home(db, client=mum)
+
+    response = api.post(
+        "/api/clients",
+        headers=_auth(admin),
+        json={"name": "Dad", "phone_number": PHONE, "home_ids": [str(home.id)]},
+    )
+
+    assert response.status_code == 400
+    assert db.scalars(select(Guardian).where(Guardian.name == "Dad")).all() == []
 
 
 def test_post_without_a_home_creates_neither_row(api: TestClient, db: Session) -> None:
@@ -411,12 +670,12 @@ def test_post_without_a_home_creates_neither_row(api: TestClient, db: Session) -
     assert db.scalars(select(GuardianHome).where(GuardianHome.guardian_id == client_id)).all() == []
 
 
-@pytest.mark.parametrize("is_active", [True, False])
-def test_post_is_never_an_upsert(api: TestClient, db: Session, is_active: bool) -> None:
+@pytest.mark.parametrize("is_archived", [False, True])
+def test_post_is_never_an_upsert(api: TestClient, db: Session, is_archived: bool) -> None:
     """Active or deactivated, the number is taken. Upserting here would overwrite a real
     guardian's name with whatever was just typed into WhatsApp."""
     admin = _make_user(db)
-    existing = _make_client(db, name="Jane Doe", phone_number=PHONE, is_active=is_active)
+    existing = _make_client(db, name="Jane Doe", phone_number=PHONE, is_archived=is_archived)
 
     response = api.post(
         "/api/clients",
@@ -507,13 +766,13 @@ def test_patch_echoing_the_clients_own_number_is_a_200_no_op(
     assert response.json()["name"] == "Jane Roe"
 
 
-@pytest.mark.parametrize("is_active", [True, False])
+@pytest.mark.parametrize("is_archived", [False, True])
 def test_patch_to_another_clients_number_is_the_same_409(
-    api: TestClient, db: Session, is_active: bool
+    api: TestClient, db: Session, is_archived: bool
 ) -> None:
     admin = _make_user(db)
     client = _make_client(db, name="Jane Doe", phone_number=PHONE)
-    _make_client(db, name="John Doe", phone_number=OTHER_PHONE, is_active=is_active)
+    _make_client(db, name="John Doe", phone_number=OTHER_PHONE, is_archived=is_archived)
 
     response = api.patch(
         f"/api/clients/{client.id}",
@@ -568,24 +827,40 @@ def test_patching_the_phone_number_moves_that_column_and_nothing_else(
     assert [row["id"] for row in body["children"]] == [str(child.id)]
 
 
-def test_patch_deactivates_and_reactivates(api: TestClient, db: Session) -> None:
-    """The only deactivation path there is — REQ-032.9, and why there is no DELETE."""
+def test_archive_and_restore_move_the_client_out_of_and_back_into_the_list(
+    api: TestClient, db: Session
+) -> None:
     admin = _make_user(db)
     client = _make_client(db)
     headers = _auth(admin)
+    target = {"type": "guardian", "id": str(client.id)}
 
-    deactivated = api.patch(f"/api/clients/{client.id}", headers=headers, json={"is_active": False})
-    listed_while_dormant = api.get("/api/clients", headers=headers).json()
-    reactivated = api.patch(f"/api/clients/{client.id}", headers=headers, json={"is_active": True})
+    archived = api.post("/api/archive", headers=headers, json=target)
+    listed_while_archived = api.get("/api/clients", headers=headers).json()
+    restored = api.post("/api/restore", headers=headers, json=target)
 
-    assert deactivated.json()["is_active"] is False
-    assert listed_while_dormant["total"] == 0
-    assert reactivated.json()["is_active"] is True
+    assert archived.json()["archived"] is True
+    assert listed_while_archived["total"] == 0
+    assert restored.json()["archived"] is False
     assert api.get("/api/clients", headers=headers).json()["total"] == 1
 
 
+def test_patch_ignores_is_active(api: TestClient, db: Session) -> None:
+    """Archive and Restore are `POST /api/archive` and `/api/restore`, not this."""
+    admin = _make_user(db)
+    client = _make_client(db)
+
+    response = api.patch(
+        f"/api/clients/{client.id}", headers=_auth(admin), json={"is_active": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["archived"] is False
+    assert api.get("/api/clients", headers=_auth(admin)).json()["total"] == 1
+
+
 def test_delete_is_not_offered(api: TestClient, db: Session) -> None:
-    """Deactivation is `PATCH {"is_active": false}`; the frozen contract lists no DELETE."""
+    """Archive is `POST /api/archive`; the frozen contract lists no DELETE."""
     admin = _make_user(db)
     client = _make_client(db)
 
@@ -663,6 +938,70 @@ def test_a_guardian_with_no_conversation_has_no_language_conversation(
     body = api.get(f"/api/clients/{client.id}", headers=_auth(admin)).json()
 
     assert (body["language"], body["language_conversation_id"]) == (None, None)
+
+
+# --- the list row's Guardian state ---------------------------------------------------------
+
+
+def test_a_listed_guardian_without_a_conversation_reads_english(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    _make_client(db)
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["language"] == "en"
+
+
+def test_a_listed_guardian_whose_latest_conversation_is_undetected_reads_english(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _make_conversation(db, client=client, language=Language.ES, last_message_at=NOON)
+    _make_conversation(
+        db, client=client, language=None, last_message_at=NOON + datetime.timedelta(hours=1)
+    )
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["language"] == "en"
+
+
+def test_a_listed_guardian_reads_the_language_of_their_latest_conversation(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    _make_conversation(db, client=client, language=Language.EN, last_message_at=NOON)
+    _make_conversation(
+        db, client=client, language=Language.ES, last_message_at=NOON + datetime.timedelta(hours=1)
+    )
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["language"] == "es"
+
+
+def test_a_listed_guardian_names_their_non_archived_children_by_name(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    client = _make_client(db)
+    zoe = _make_child(db, guardians=[client], name="Zoe Doe")
+    adam = _make_child(db, guardians=[client], name="Adam Doe")
+    gone = _make_child(db, guardians=[client], name="Beth Doe")
+    gone.is_archived = True
+    db.flush()
+
+    [row] = api.get("/api/clients", headers=_auth(admin)).json()["items"]
+
+    assert row["children"] == [
+        {"id": str(adam.id), "name": "Adam Doe"},
+        {"id": str(zoe.id), "name": "Zoe Doe"},
+    ]
+    assert row["child_count"] == 2
 
 
 def _make_conversation(

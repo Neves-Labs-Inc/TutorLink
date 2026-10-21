@@ -19,6 +19,13 @@ what makes the lead-time and lookahead behaviour testable without freezing the c
 router passes the business wall-clock (`clock.business_now`, per `BUSINESS_TIMEZONE`), the zone
 every scheduling column is stored in.
 
+**The cap binds the bot only.** `find_available_slots` caps `items` at `max_slots_offered` by
+default, the bot's limit; the router passes `should_cap=False` because the dashboard shows every
+free time. `exclude_booking_id` is the router's too: the Booking being changed is not busy.
+
+**Assigned Tutors bound the bot only** (#242). `assigned_only=True` is the bot's call and keeps
+the Child's Assigned Tutors; the router never passes it, so the office may book anyone.
+
 `DateOutOfWindow` is `scheduling_service`'s and is deliberately re-exported by propagation
 rather than wrapped in a local class: the router maps the same exception from this endpoint and
 from `POST /api/bookings`, and two names for one refusal would let the two drift.
@@ -34,6 +41,7 @@ from sqlalchemy.orm import Session
 
 from app.models.availability import TutorAvailability, TutorAvailabilityException
 from app.models.booking import LIVE_BOOKING_STATUSES, Booking
+from app.models.child_assigned_tutor import ChildAssignedTutor
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.enums import AvailabilityMode, BookingLocation, ExceptionStatus
 from app.models.subject import Subject
@@ -79,9 +87,9 @@ class OpenSlot:
 class SlotSearchResult:
     """`items` capped at `page_size`; `total` is the pre-cap count (REQ-043.3, REQ-043.4).
 
-    `page_size` is the one read of `max_slots_offered` this search makes, so the cap the router
-    reports is the exact cap it applied to `items` rather than a second, possibly-stale read of
-    the same setting.
+    Capped, `page_size` is the one read of `max_slots_offered` this search makes, so the cap the
+    bot reports is the exact cap it applied to `items` rather than a second, possibly-stale read
+    of the same setting. Uncapped, it is `len(items)`.
     """
 
     items: list[OpenSlot]
@@ -99,6 +107,9 @@ def find_available_slots(
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
     location: BookingLocation | None = None,
+    assigned_only: bool = False,
+    should_cap: bool = True,
+    exclude_booking_id: uuid.UUID | None = None,
 ) -> SlotSearchResult:
     """The cap is applied last, after every subtraction and after the sort, so `total` is the
     number that matched and `items` is the earliest few of them.
@@ -107,12 +118,23 @@ def find_available_slots(
     and the neighbour test against an In office booking relaxes to bare overlap for an In
     office candidate (`travel_gap_minutes`). `None` is the dashboard's call: every range, and
     the full gap against every booking, as before the parameter existed.
+
+    `assigned_only` keeps only the Child's Assigned Tutors (`_qualified_tutor_names`).
+
+    `should_cap=False` returns every open slot (the dashboard). `exclude_booking_id` leaves that
+    Booking out of its Staff member's busy windows, travel gap included, so a Booking being
+    changed does not block its own time; an id that matches nothing excludes nothing.
     """
     settings = load_scheduling_settings(db)
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
 
     names = _qualified_tutor_names(
-        db, subject_id=subject_id, child_id=child_id, grade_level=grade_level, tutor_id=tutor_id
+        db,
+        subject_id=subject_id,
+        child_id=child_id,
+        grade_level=grade_level,
+        tutor_id=tutor_id,
+        assigned_only=assigned_only,
     )
     tutor_ids = list(names)
     # `date.weekday()` is 0 = Monday … 6 = Sunday, which is the encoding `tutor_availability`
@@ -120,7 +142,9 @@ def find_available_slots(
     # never PostgreSQL's `EXTRACT(DOW)`, which makes Sunday 0.
     ranges = _active_ranges(db, tutor_ids=tutor_ids, day_of_week=date.weekday(), location=location)
     whole_day_off, exception_windows = _approved_exceptions(db, tutor_ids=tutor_ids, date=date)
-    booking_windows = _live_booking_windows(db, tutor_ids=tutor_ids, date=date)
+    booking_windows = _live_booking_windows(
+        db, tutor_ids=tutor_ids, date=date, exclude_booking_id=exclude_booking_id
+    )
     # With no Location chosen the candidate is treated as a home visit, which keeps the full
     # gap against every neighbour: today's answer, and the stricter of the two.
     candidate_location = location if location is not None else BookingLocation.HOME
@@ -160,11 +184,9 @@ def find_available_slots(
 
     open_slots.sort(key=lambda slot: (slot.start_time, slot.tutor_id))
 
-    return SlotSearchResult(
-        items=open_slots[: settings.max_slots_offered],
-        total=len(open_slots),
-        page_size=settings.max_slots_offered,
-    )
+    cap = settings.max_slots_offered if should_cap else len(open_slots)
+
+    return SlotSearchResult(items=open_slots[:cap], total=len(open_slots), page_size=cap)
 
 
 def allowed_locations(
@@ -175,6 +197,7 @@ def allowed_locations(
     date: datetime.date,
     tutor_id: uuid.UUID | None,
     now: datetime.datetime,
+    assigned_only: bool = False,
 ) -> frozenset[BookingLocation]:
     """The Locations the bot may ask about on `date`: the union over the active ranges, on that
     weekday, of the qualified Tutors (`tutor_id=None` is every one of them).
@@ -187,10 +210,40 @@ def allowed_locations(
     settings = load_scheduling_settings(db)
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
 
-    names = _qualified_tutor_names(db, subject_id=subject_id, child_id=child_id, tutor_id=tutor_id)
+    names = _qualified_tutor_names(
+        db,
+        subject_id=subject_id,
+        child_id=child_id,
+        tutor_id=tutor_id,
+        assigned_only=assigned_only,
+    )
     ranges = _active_ranges(db, tutor_ids=list(names), day_of_week=date.weekday(), location=None)
 
     return frozenset().union(*(MODE_LOCATIONS[row.mode] for row in ranges))
+
+
+def has_assigned_tutor(
+    db: Session, *, child_id: uuid.UUID, subject_id: uuid.UUID, location: BookingLocation
+) -> bool:
+    """Whether any of the Child's Assigned Tutors teaches `subject_id` at the Child's level and
+    has an active range, on any weekday, whose `mode` allows `location`: the Tutors
+    `find_available_slots(assigned_only=True, location=...)` could ever offer. Lets the bot tell
+    "nobody teaches it there" (an Office handoff) from "nobody is free" (other days)."""
+    names = _qualified_tutor_names(
+        db, subject_id=subject_id, child_id=child_id, tutor_id=None, assigned_only=True
+    )
+    allowing_modes = [mode for mode, allowed in MODE_LOCATIONS.items() if location in allowed]
+    any_range = db.scalar(
+        select(TutorAvailability.id)
+        .where(
+            TutorAvailability.tutor_id.in_(list(names)),
+            TutorAvailability.is_active.is_(True),
+            TutorAvailability.mode.in_(allowing_modes),
+        )
+        .limit(1)
+    )
+
+    return any_range is not None
 
 
 def _qualified_tutor_names(
@@ -200,13 +253,14 @@ def _qualified_tutor_names(
     child_id: uuid.UUID | None = None,
     grade_level: int | None = None,
     tutor_id: uuid.UUID | None,
+    assigned_only: bool = False,
 ) -> dict[uuid.UUID, str]:
     """Active Tutors and Managers who teach `subject_id`, at a ceiling that reaches the Child
     or the grade.
 
-    Active is the person's `users.is_active`, and the role is checked too: an Admin keeps the
-    profile they had as a Tutor (`user_service`) but is no longer offered (#130). Names are the
-    person's.
+    Active is the person's `users.is_archived` being false, and the role is checked too: an
+    Admin keeps the profile they had as a Tutor (`user_service`) but is no longer offered
+    (#130). Names are the person's.
 
     The ceiling is matched one of three ways:
 
@@ -216,29 +270,35 @@ def _qualified_tutor_names(
     - `grade_level`: the dashboard's plain `?grade_level=` filter.
     - neither: no ceiling filter, every tutor who teaches the subject qualifies.
 
+    `assigned_only` further keeps the Child's Assigned Tutors (#242), matched by person since an
+    assignment names the user, not the profile. Only the bot asks for it, and it needs `child_id`.
+
     `max_grade_level` is a ceiling, so the comparison is `>=` and never a membership test
     (#36). The join to `TutorSubject` is inner on purpose: a tutor with no `tutor_subjects`
     row for the subject has no ceiling to compare against and does not teach it, so dropping
     the row here is the refusal REQ-042.3 asks for rather than the silent pass the same shape
     produces on the booking write path.
 
-    The join to `Subject` and its `is_active` filter close #44 item 1 in its original
+    The join to `Subject` and its `is_archived` filter close #44 item 1 in its original
     direction: a retired subject must yield no qualified tutors here the same way a retired
     tutor already yields none, so a retired `subject_id` answers with the empty `Page`
     `test_a_tutor_with_no_assignment_for_the_subject_is_never_offered` already established for
     an unassigned one, rather than a new refusal shape this endpoint has never used for an
     unsatisfiable filter.
     """
+    if assigned_only and child_id is None:
+        raise ValueError("assigned_only needs a child_id")
+
     statement = (
         select(Tutor.id, User.name)
         .join(User, User.id == Tutor.user_id)
         .join(TutorSubject, TutorSubject.tutor_id == Tutor.id)
         .join(Subject, Subject.id == TutorSubject.subject_id)
         .where(
-            User.is_active.is_(True),
+            User.is_archived.is_(False),
             User.role.in_(PROFILE_ROLES),
             Subject.id == subject_id,
-            Subject.is_active.is_(True),
+            Subject.is_archived.is_(False),
         )
     )
     if child_id is not None:
@@ -246,12 +306,21 @@ def _qualified_tutor_names(
             ChildSubjectLevel,
             (ChildSubjectLevel.subject_id == Subject.id) & (ChildSubjectLevel.child_id == child_id),
         ).where(TutorSubject.max_grade_level >= ChildSubjectLevel.level)
+    if assigned_only:
+        statement = statement.join(
+            ChildAssignedTutor,
+            (ChildAssignedTutor.user_id == Tutor.user_id)
+            & (ChildAssignedTutor.child_id == child_id),
+        )
     if grade_level is not None:
         statement = statement.where(TutorSubject.max_grade_level >= grade_level)
     if tutor_id is not None:
         statement = statement.where(Tutor.id == tutor_id)
 
-    return {row.id: row.name for row in db.execute(statement)}
+    # The bot numbers its tutor menu in this order, so it must not be left to the query plan.
+    ordered = statement.order_by(User.name, Tutor.id)
+
+    return {row.id: row.name for row in db.execute(ordered)}
 
 
 def _active_ranges(
@@ -291,14 +360,19 @@ def _approved_exceptions(
     `rejected` blocks nothing ever (#24). The date comparison is inclusive at both ends, so a
     range covers its middle days as well as its edges, and a set time window applies to every
     day in the range rather than as one continuous absence across it.
+
+    Time off is held by the person, so it is reached through `tutors.user_id`; the result is
+    still keyed by profile, like every other step.
     """
     rows = db.execute(
         select(
-            TutorAvailabilityException.tutor_id,
+            Tutor.id,
             TutorAvailabilityException.start_time,
             TutorAvailabilityException.end_time,
-        ).where(
-            TutorAvailabilityException.tutor_id.in_(tutor_ids),
+        )
+        .join(Tutor, Tutor.user_id == TutorAvailabilityException.user_id)
+        .where(
+            Tutor.id.in_(tutor_ids),
             TutorAvailabilityException.status == ExceptionStatus.APPROVED,
             TutorAvailabilityException.start_date <= date,
             TutorAvailabilityException.end_date >= date,
@@ -319,13 +393,17 @@ def _approved_exceptions(
 
 
 def _live_booking_windows(
-    db: Session, *, tutor_ids: list[uuid.UUID], date: datetime.date
+    db: Session,
+    *,
+    tutor_ids: list[uuid.UUID],
+    date: datetime.date,
+    exclude_booking_id: uuid.UUID | None = None,
 ) -> dict[uuid.UUID, list[BookingWindow]]:
     """Step 3's rows, keyed by profile. `LIVE_BOOKING_STATUSES` is the one definition of a
     booking that counts. A booking names its Staff member as a user (#130), so the profile is
     reached through `tutors.user_id`. Each window carries the booking's Location, which decides
-    the travel gap a candidate needs from it."""
-    rows = db.execute(
+    the travel gap a candidate needs from it. `exclude_booking_id` drops that one Booking."""
+    statement = (
         select(Tutor.id, Booking.start_time, Booking.end_time, Booking.location)
         .join(Booking, Booking.user_id == Tutor.user_id)
         .where(
@@ -333,7 +411,10 @@ def _live_booking_windows(
             Booking.scheduled_date == date,
             Booking.status.in_(LIVE_BOOKING_STATUSES),
         )
-    ).all()
+    )
+    if exclude_booking_id is not None:
+        statement = statement.where(Booking.id != exclude_booking_id)
+    rows = db.execute(statement).all()
 
     windows: dict[uuid.UUID, list[BookingWindow]] = {}
     for tutor, start_time, end_time, location in rows:

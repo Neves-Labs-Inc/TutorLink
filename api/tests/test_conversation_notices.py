@@ -810,6 +810,9 @@ def test_me_returns_the_staff_members_own_account(
         "email": staff.email,
         "role": role.value,
         "name": STAFF_NAME,
+        "tutor_id": None if staff.profile_id is None else str(staff.profile_id),
+        "office_phone": None,
+        "welcome_seen": False,
     }
 
 
@@ -824,6 +827,9 @@ def test_me_is_open_to_a_tutor(api: TestClient, db: Session) -> None:
         "email": tutor.email,
         "role": "tutor",
         "name": STAFF_NAME,
+        "tutor_id": str(tutor.profile_id),
+        "office_phone": None,
+        "welcome_seen": False,
     }
 
 
@@ -930,7 +936,7 @@ def _make_user(
             name_is_default=is_nameless,
             hashed_password=hash_password("conversation-notice-password"),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -938,7 +944,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password("conversation-notice-password")
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

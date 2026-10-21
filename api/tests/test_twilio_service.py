@@ -20,7 +20,6 @@ from app.services.twilio_service import (
     send_whatsapp_message,
     send_whatsapp_template,
     twiml_empty,
-    twiml_reply,
 )
 
 ACCOUNT_SID = "ACtest"
@@ -375,20 +374,3 @@ def test_a_send_failure_never_names_the_recipient(
 
 def test_twiml_empty_is_byte_for_byte() -> None:
     assert twiml_empty() == "<Response></Response>"
-
-
-def test_twiml_reply_wraps_the_body() -> None:
-    assert twiml_reply("hi") == "<Response><Message>hi</Message></Response>"
-
-
-@pytest.mark.parametrize(
-    ("raw", "escaped"),
-    [
-        ("A & B", "A &amp; B"),
-        ("<script>", "&lt;script&gt;"),
-        ('say "hi"', "say &quot;hi&quot;"),
-        ("it's", "it&apos;s"),
-    ],
-)
-def test_twiml_reply_escapes_special_characters(raw: str, escaped: str) -> None:
-    assert twiml_reply(raw) == f"<Response><Message>{escaped}</Message></Response>"

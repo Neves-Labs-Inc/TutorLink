@@ -6,7 +6,7 @@ and it holds for a reason rather than by coincidence only because this module wr
 of its own: `apply_booking_filters`, `matching_tutors` and `visible_clients` are the same
 functions `list_bookings`, `list_tutors` and `list_clients` build their pages from
 (CONSTITUTION §11). A hand-written `where` on `Booking.status`, `Tutor.is_active` or
-`Guardian.is_active` added here is a second aggregation path that can disagree with the lists,
+`Guardian.is_archived` added here is a second aggregation path that can disagree with the lists,
 which is the single failure this endpoint exists to prevent.
 
 `LIVE_SESSION_STATUSES` is derived from `LIVE_BOOKING_STATUSES` for the same reason: `pending`
@@ -73,9 +73,9 @@ def overview(db: Session, *, on: datetime.date) -> StatsOverviewData:
         ),
         active_tutor_count=_count(
             db,
-            matching_tutors(is_active=True, tutor_id=None, subject_id=None, grade_level=None),
+            matching_tutors(is_archived=False, tutor_id=None, subject_id=None, grade_level=None),
         ),
-        active_client_count=_count(db, visible_clients(is_active=True, phone_number=None)),
+        active_client_count=_count(db, visible_clients(is_archived=False, phone_number=None)),
         recent_bookings=_recent_bookings(db),
     )
 
@@ -86,7 +86,10 @@ def _live_sessions(
     return apply_booking_filters(
         select(Booking),
         BookingFilters(
-            statuses=LIVE_SESSION_STATUSES, date_from=date_from, date_to=date_to, kind=kind
+            statuses=LIVE_SESSION_STATUSES,
+            date_from=date_from,
+            date_to=date_to,
+            kinds=() if kind is None else (kind,),
         ),
     )
 
@@ -102,6 +105,8 @@ def _recent_bookings(db: Session) -> list[Booking]:
                 joinedload(Booking.child),
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
+                joinedload(Booking.home),
+                joinedload(Booking.clash_acknowledged_by_user),
             )
             .order_by(Booking.created_at.desc(), Booking.id.desc())
             .limit(RECENT_BOOKING_LIMIT)

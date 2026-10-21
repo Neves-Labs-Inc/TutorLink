@@ -8,13 +8,19 @@ import datetime
 import uuid
 from dataclasses import dataclass, replace
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, func, not_, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.booking import Booking
+from app.models.child import Child
 from app.models.enums import BookingKind, BookingLocation, BookingStatus
 from app.models.guardian import ChildGuardian, Guardian
 from app.models.tutor import Tutor
+from app.models.user import User
+from app.services.sort_out_service import SortOutReason, sort_out_predicate
+
+_LIKE_ESCAPE = "\\"
+_LIKE_WILDCARDS = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,11 +32,22 @@ class BookingFilters:
     date_from: datetime.date | None = None
     date_to: datetime.date | None = None
     subject_id: uuid.UUID | None = None
-    child_id: uuid.UUID | None = None
-    kind: BookingKind | None = None
+    child_ids: tuple[uuid.UUID, ...] = ()
+    kinds: tuple[BookingKind, ...] = ()
     location: BookingLocation | None = None
-    # The Staff member's user id (`bookings.user_id`); `tutor_id` above is the profile-keyed twin.
-    user_id: uuid.UUID | None = None
+    # Staff members' user ids (`bookings.user_id`); `tutor_id` above is the profile-keyed twin.
+    user_ids: tuple[uuid.UUID, ...] = ()
+    # Case-insensitive substring of the Child's or the Staff member's name.
+    q: str | None = None
+    # Bookings to sort out (`sort_out_service`): True only those with a reason, False only those
+    # with none, None either. `reason` narrows to that one reason and implies True. Both read
+    # `now` (business wall-clock), which must then be set.
+    to_sort_out: bool | None = None
+    reason: SortOutReason | None = None
+    now: datetime.datetime | None = None
+    # Only this Staff member's Bookings (`bookings.user_id`), on top of `user_ids`: the route
+    # sets it from `sort_out_staff_limit` for a Manager sorting out.
+    staff_user_id: uuid.UUID | None = None
 
 
 class BookingServiceError(Exception): ...
@@ -59,6 +76,8 @@ def list_bookings(
                 joinedload(Booking.child),
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
+                joinedload(Booking.home),
+                joinedload(Booking.clash_acknowledged_by_user),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)
@@ -69,12 +88,17 @@ def list_bookings(
     return bookings, total
 
 
+def count_bookings(db: Session, *, tutor_id: uuid.UUID | None, filters: BookingFilters) -> int:
+    """What `list_bookings` totals for the same arguments, without loading its rows."""
+    return _count_matching(db, tutor_id=tutor_id, filters=filters)
+
+
 def count_bookings_by_kind(
     db: Session, *, tutor_id: uuid.UUID | None, filters: BookingFilters
 ) -> dict[BookingKind, int]:
-    """What `list_bookings` would total with `kind` forced to each value, `filters.kind` ignored."""
+    """What `list_bookings` would total with `kind` forced to each value, `filters.kinds` ignored."""
     return {
-        kind: _count_matching(db, tutor_id=tutor_id, filters=replace(filters, kind=kind))
+        kind: _count_matching(db, tutor_id=tutor_id, filters=replace(filters, kinds=(kind,)))
         for kind in BookingKind
     }
 
@@ -99,14 +123,18 @@ def booked_with_profile(tutor_id: uuid.UUID) -> ColumnElement[bool]:
 
 
 def get_booking(db: Session, *, booking_id: uuid.UUID) -> Booking:
+    """The row with every relationship a detail read needs, refreshed even when the session
+    already holds it: a write made through a Core `UPDATE` leaves the loaded object stale."""
     booking = db.scalar(
         select(Booking)
         .where(Booking.id == booking_id)
+        .execution_options(populate_existing=True)
         .options(
             joinedload(Booking.child),
             joinedload(Booking.staff),
             joinedload(Booking.subject),
             joinedload(Booking.home),
+            joinedload(Booking.clash_acknowledged_by_user),
             joinedload(Booking.booked_by_guardian),
         )
     )
@@ -135,6 +163,8 @@ def list_client_bookings(
                 joinedload(Booking.child),
                 joinedload(Booking.staff),
                 joinedload(Booking.subject),
+                joinedload(Booking.home),
+                joinedload(Booking.clash_acknowledged_by_user),
             )
             .order_by(Booking.scheduled_date, Booking.start_time, Booking.id)
             .limit(limit)
@@ -178,17 +208,35 @@ def apply_booking_filters(
     if filters.subject_id is not None:
         statement = statement.where(Booking.subject_id == filters.subject_id)
 
-    if filters.child_id is not None:
-        statement = statement.where(Booking.child_id == filters.child_id)
+    if filters.child_ids:
+        statement = statement.where(Booking.child_id.in_(filters.child_ids))
 
-    if filters.kind is not None:
-        statement = statement.where(Booking.kind == filters.kind)
+    if filters.kinds:
+        statement = statement.where(Booking.kind.in_(filters.kinds))
 
     if filters.location is not None:
         statement = statement.where(Booking.location == filters.location)
 
-    if filters.user_id is not None:
-        statement = statement.where(Booking.user_id == filters.user_id)
+    if filters.user_ids:
+        statement = statement.where(Booking.user_id.in_(filters.user_ids))
+
+    if filters.staff_user_id is not None:
+        statement = statement.where(Booking.user_id == filters.staff_user_id)
+
+    sorting_out = _sort_out_condition(filters)
+    if sorting_out is not None:
+        statement = statement.where(sorting_out)
+
+    pattern = _substring_pattern(filters.q)
+    if pattern is not None:
+        # Correlated EXISTS, never a join: `total` counts this statement.
+        child_named = select(1).where(
+            Child.id == Booking.child_id, Child.name.ilike(pattern, escape=_LIKE_ESCAPE)
+        )
+        staff_named = select(1).where(
+            User.id == Booking.user_id, User.name.ilike(pattern, escape=_LIKE_ESCAPE)
+        )
+        statement = statement.where(or_(child_named.exists(), staff_named.exists()))
 
     if filters.date_from is not None:
         statement = statement.where(Booking.scheduled_date >= filters.date_from)
@@ -197,3 +245,29 @@ def apply_booking_filters(
         statement = statement.where(Booking.scheduled_date <= filters.date_to)
 
     return statement
+
+
+def _sort_out_condition(filters: BookingFilters) -> ColumnElement[bool] | None:
+    wants_reason = filters.reason is not None or filters.to_sort_out is True
+    if not wants_reason and filters.to_sort_out is None:
+        return None
+    if filters.now is None:
+        raise ValueError("BookingFilters.now is required to filter Bookings to sort out")
+
+    if wants_reason:
+        condition = sort_out_predicate(filters.now, filters.reason)
+    else:
+        condition = not_(sort_out_predicate(filters.now))
+
+    return condition
+
+
+def _substring_pattern(raw: str | None) -> str | None:
+    trimmed = "" if raw is None else raw.strip()
+
+    if not trimmed:
+        pattern = None
+    else:
+        pattern = f"%{trimmed.translate(_LIKE_WILDCARDS)}%"
+
+    return pattern

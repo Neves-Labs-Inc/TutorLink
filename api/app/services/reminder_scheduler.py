@@ -15,8 +15,14 @@ lock would be released by the first of those commits. A second session keeps the
 transaction open for the whole run, and a crash still releases it with that session's
 connection.
 
-**Each tick logs one fixed line**: ran with counts, not due, skipped (lock held), or failed.
-Settings and the clock are read afresh every tick, so an edit takes effect at the next hour.
+**The Admin's switch and the templates are checked first.** A tick with both reminder templates
+blank logs "not set up", and one with `reminders_enabled` off logs "switched off"; neither takes
+the lock or writes a row, so switching on later on the run day still runs that week at the next
+due tick, and the week's rows keep it from running twice.
+
+**Each tick logs one fixed line**: ran with counts, not set up, switched off, not due, skipped
+(lock held), or failed. Settings and the clock are read afresh every tick, so an edit takes
+effect at the next hour.
 """
 
 import asyncio
@@ -32,7 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.services import clock
 from app.services.reminder_service import RunResult, run_week
-from app.services.settings_service import get_int_setting
+from app.services.settings_service import get_int_setting, reminders_state
 
 REMINDER_WEEKDAY_SETTING = "reminder_weekday"
 REMINDER_HOUR_SETTING = "reminder_hour"
@@ -42,6 +48,8 @@ REMINDER_LOCK_KEY = 2
 
 RAN_MESSAGE = "booking reminders: ran week_start=%s sent=%d failed=%d undeliverable=%d skipped=%d"
 NOT_DUE_MESSAGE = "booking reminders: not due"
+OFF_MESSAGE = "booking reminders: switched off"
+NOT_SET_UP_MESSAGE = "booking reminders: not set up"
 SKIPPED_MESSAGE = "booking reminders: skipped, another instance holds the lock"
 FAILED_MESSAGE = "booking reminders: failed"
 
@@ -52,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 class TickResult(enum.Enum):
     RAN = "ran"
+    OFF = "off"
+    NOT_SET_UP = "not_set_up"
     NOT_DUE = "not_due"
     SKIPPED = "skipped"
     FAILED = "failed"
@@ -92,10 +102,15 @@ async def run_forever(session_factory: Callable[[], Session]) -> None:
 
 def _tick(session_factory: Callable[[], Session], *, now: datetime.datetime) -> TickOutcome:
     with session_factory() as lock_session:
+        state = reminders_state(lock_session)
         weekday = get_int_setting(lock_session, key=REMINDER_WEEKDAY_SETTING)
         hour = get_int_setting(lock_session, key=REMINDER_HOUR_SETTING)
 
-        if not _is_due(now, weekday=weekday, hour=hour):
+        if state == "not_set_up":
+            outcome = TickOutcome(result=TickResult.NOT_SET_UP)
+        elif state == "off":
+            outcome = TickOutcome(result=TickResult.OFF)
+        elif not _is_due(now, weekday=weekday, hour=hour):
             outcome = TickOutcome(result=TickResult.NOT_DUE)
         elif not _try_lock(lock_session):
             outcome = TickOutcome(result=TickResult.SKIPPED)
@@ -129,6 +144,10 @@ def _log(outcome: TickOutcome) -> None:
             outcome.run.undeliverable,
             outcome.run.skipped,
         )
+    elif outcome.result is TickResult.NOT_SET_UP:
+        logger.info(NOT_SET_UP_MESSAGE)
+    elif outcome.result is TickResult.OFF:
+        logger.info(OFF_MESSAGE)
     elif outcome.result is TickResult.NOT_DUE:
         logger.info(NOT_DUE_MESSAGE)
     else:

@@ -24,7 +24,14 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import OFFICE_REQUIRED_ERROR
 from app.models.booking import NOTES_MAX_LENGTH, Booking
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.child_subject_level import ChildSubjectLevel
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ExceptionStatus,
+    UserRole,
+)
 from app.models.user import User
 from app.routers.booking_status import BOOKING_NOT_FOUND_ERROR
 from app.routers.booking_writes import (
@@ -32,9 +39,13 @@ from app.routers.booking_writes import (
     BOOKING_NOT_LIVE_ERROR,
     BOOKING_OVERLAPS_ERROR,
     BOOKING_SHAPE_INVALID_ERROR,
+    BOOKING_STALE_ERROR,
+    CHILD_NOT_EVALUATED_ERROR,
     DATE_OUT_OF_WINDOW_ERROR,
     HOME_NOT_LINKED_ERROR,
     LEAD_TIME_NOT_MET_ERROR,
+    REFERENCE_NOT_FOUND_ERROR,
+    STAFF_ARCHIVED_ERROR,
     STAFF_ROLE_NOT_ALLOWED_ERROR,
 )
 from app.services import booking_write_service
@@ -44,11 +55,14 @@ from tests.test_booking_write_routes import (
     MONDAY,
     OUTSIDE_SLOT,
     TEN,
+    TIME_OFF,
+    TUESDAY,
     TWELVE,
     Family,
     _assert_detail,
     _assert_warnings,
     _auth,
+    _make_exception,
     _make_family,
     _make_user,
     _mark_evaluated,
@@ -92,6 +106,30 @@ def test_editing_a_live_regular_bookings_time_keeps_its_id_and_status(
     assert row.start_time == datetime.time(10, 0)
     assert datetime.datetime.fromisoformat(body["updated_at"]) == row.updated_at
     assert row.updated_at > before
+
+
+def test_the_edit_response_is_the_booking_detail_with_level_and_guardians(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    user = _make_user(db)
+    family.guardian.name = "Zoe Parent"
+    family.co_guardian.name = "Amy Parent"
+    db.add(
+        ChildSubjectLevel(
+            child_id=family.child.id, subject_id=family.subject.id, level=7, set_by_user_id=user.id
+        )
+    )
+    db.flush()
+    booking = _book(db, family)
+
+    body = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN).json()
+
+    assert body["subject_level"] == 7
+    assert body["guardians"] == [
+        {"id": str(family.co_guardian.id), "name": "Amy Parent", "conversation_id": None},
+        {"id": str(family.guardian.id), "name": "Zoe Parent", "conversation_id": None},
+    ]
+    assert body["home"]["directions"] == family.home.directions
 
 
 # --- the booking is not its own neighbour (rules 2 and 3) -----------------------------------
@@ -334,6 +372,42 @@ def test_a_tutor_booking_moved_outside_its_slot_is_the_outside_slot_warning(
     assert _row(db, booking.id).start_time == datetime.time(12, 0)
 
 
+def test_an_admin_booking_moved_onto_approved_time_off_is_the_time_off_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    admin = _make_user(db, role=UserRole.ADMIN)
+    booking = _book(
+        db, family, user_id=admin.id, start=datetime.time(13, 0), end=datetime.time(14, 0)
+    )
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=admin.id)
+    user = _make_user(db)
+
+    refused = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+    confirmed = _put(
+        api, user, booking, family, start_time=TEN, end_time=ELEVEN, confirm_warnings=[TIME_OFF]
+    )
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 200
+    assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+def test_an_evaluation_moved_onto_approved_time_off_is_the_time_off_warning(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    evaluation = _book_evaluation(db, family)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED, user_id=evaluation.user_id)
+    user = _make_user(db)
+
+    refused = _put(api, user, evaluation, family, start_time=TEN, end_time=ELEVEN)
+    confirmed = _put(
+        api, user, evaluation, family, start_time=TEN, end_time=ELEVEN, confirm_warnings=[TIME_OFF]
+    )
+
+    _assert_warnings(refused, [TIME_OFF])
+    assert confirmed.status_code == 200
+
+
 # --- correction mode: a session already started may be moved into the past -----------------
 
 
@@ -353,6 +427,84 @@ def test_a_past_booking_may_be_moved_to_another_past_time(
 
     assert response.status_code == 200
     assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+def test_a_future_tutoring_booking_of_a_child_whose_evaluation_was_cleared_is_422(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    family.child.evaluated_at = None
+    family.child.evaluated_by_user_id = None
+    db.flush()
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    _assert_detail(response, 422, CHILD_NOT_EVALUATED_ERROR)
+    assert _row(db, booking.id).start_time == datetime.time(9, 0)
+
+
+def test_a_past_tutoring_booking_of_a_child_whose_evaluation_was_cleared_can_be_corrected(
+    api: TestClient,
+    db: Session,
+    family: Family,
+    freeze_business_clock: Callable[[datetime.datetime], None],
+) -> None:
+    booking = _book(db, family)
+    family.child.evaluated_at = None
+    family.child.evaluated_by_user_id = None
+    db.flush()
+    freeze_business_clock(datetime.datetime.combine(MONDAY, datetime.time(11, 0)))
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+# --- stale-save guard -----------------------------------------------------------------------
+
+
+def test_an_edit_with_the_current_updated_at_is_accepted(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    user = _make_user(db)
+
+    response = _put(
+        api,
+        user,
+        booking,
+        family,
+        start_time=TEN,
+        end_time=ELEVEN,
+        expected_updated_at=booking.updated_at.isoformat(),
+    )
+
+    assert response.status_code == 200
+    assert _row(db, booking.id).start_time == datetime.time(10, 0)
+
+
+def test_an_edit_with_an_older_updated_at_is_409_and_changes_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    user = _make_user(db)
+    stale = booking.updated_at - datetime.timedelta(minutes=1)
+
+    response = _put(
+        api,
+        user,
+        booking,
+        family,
+        start_time=TEN,
+        end_time=ELEVEN,
+        expected_updated_at=stale.isoformat(),
+    )
+
+    _assert_detail(response, 409, BOOKING_STALE_ERROR)
+    assert _row(db, booking.id).start_time == datetime.time(9, 0)
 
 
 def test_a_future_booking_moved_into_the_past_is_400(
@@ -384,6 +536,178 @@ def test_a_future_booking_moved_beyond_the_window_is_400(
     _assert_detail(response, 400, DATE_OUT_OF_WINDOW_ERROR)
 
 
+def test_moving_to_an_archived_staff_member_is_422_and_changes_nothing(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    admin.is_archived = True
+    db.flush()
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, user_id=str(admin.id), availability_id=None)
+
+    _assert_detail(response, 422, STAFF_ARCHIVED_ERROR)
+    assert _row(db, booking.id).user_id == family.tutor.user_id
+
+
+def test_an_unknown_or_developer_staff_member_is_still_400(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    developer = _make_user(db, role=UserRole.DEVELOPER)
+    user = _make_user(db)
+
+    unknown = _put(api, user, booking, family, user_id=str(uuid.uuid4()))
+    not_bookable = _put(api, user, booking, family, user_id=str(developer.id), availability_id=None)
+
+    _assert_detail(unknown, 400, REFERENCE_NOT_FOUND_ERROR)
+    _assert_detail(not_bookable, 400, REFERENCE_NOT_FOUND_ERROR)
+
+
+def test_a_booking_whose_staff_member_was_archived_can_still_be_rescheduled(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    """Keeping the same `user_id` is not an assignment, so the archive is not re-judged."""
+    booking = _book(db, family)
+    family.tutor.user.is_archived = True
+    db.flush()
+    user = _make_user(db)
+
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert response.status_code == 200
+    row = _row(db, booking.id)
+    assert row.user_id == family.tutor.user_id
+    assert row.start_time == datetime.time(10, 0)
+
+
+def test_moving_a_booking_off_its_staff_members_time_off_clears_the_clash(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family, start=datetime.time(9, 0), end=datetime.time(10, 0))
+    _make_exception(
+        db,
+        family,
+        status=ExceptionStatus.APPROVED,
+        start_time=datetime.time(9, 0),
+        end_time=datetime.time(10, 0),
+    )
+    user = _make_user(db)
+
+    before = api.get(f"/api/bookings/{booking.id}", headers=_auth(user)).json()
+    response = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+
+    assert before["sort_out_reasons"] == ["time_off_clash"]
+    assert response.status_code == 200
+    assert response.json()["sort_out_reasons"] == []
+
+
+# --- what an edit does to a clash acknowledgement (#209) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("change", "still_clashes"),
+    [
+        ("date", False),
+        ("start", True),
+        ("end", True),
+        ("staff", False),
+    ],
+)
+def test_moving_an_acknowledged_booking_clears_the_acknowledgement(
+    api: TestClient, db: Session, family: Family, change: str, still_clashes: bool
+) -> None:
+    """The whole-day Time off covers only `MONDAY`, so a Booking still on it clashes again."""
+    booking = _acknowledged_booking(api, db, family)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    overrides: dict[str, Any] = {
+        "date": {"scheduled_date": TUESDAY.isoformat()},
+        "start": {"start_time": "09:30:00"},
+        "end": {"end_time": "10:30:00"},
+        "staff": {"user_id": str(admin.id), "availability_id": None},
+    }[change]
+
+    response = _put(
+        api,
+        _make_user(db),
+        booking,
+        family,
+        confirm_warnings=[OUTSIDE_SLOT, TIME_OFF],
+        **overrides,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["clash_acknowledged_by"] is None
+    assert body["clash_acknowledged_at"] is None
+    assert body["sort_out_reasons"] == (["time_off_clash"] if still_clashes else [])
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"location": "in_office", "home_id": None},
+        {"notes": "Bring the workbook"},
+        # The values it already has, restated: nothing moved.
+        {},
+    ],
+    ids=["location", "notes", "restated"],
+)
+def test_an_edit_that_does_not_move_the_booking_keeps_the_acknowledgement(
+    api: TestClient, db: Session, family: Family, overrides: dict[str, Any]
+) -> None:
+    booking = _acknowledged_booking(api, db, family)
+    acknowledged = api.get(f"/api/bookings/{booking.id}", headers=_auth(_make_user(db))).json()
+
+    response = _put(api, _make_user(db), booking, family, confirm_warnings=[TIME_OFF], **overrides)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["clash_acknowledged_by"] == acknowledged["clash_acknowledged_by"]
+    assert body["clash_acknowledged_at"] == acknowledged["clash_acknowledged_at"]
+    assert body["sort_out_reasons"] == []
+
+
+def _acknowledged_booking(api: TestClient, db: Session, family: Family) -> Booking:
+    """A booking on `MONDAY` inside its tutor's whole-day Time off, kept by an Admin."""
+    booking = _book(db, family)
+    _make_exception(db, family, status=ExceptionStatus.APPROVED)
+    admin = _make_user(db, role=UserRole.ADMIN)
+    acknowledged = api.post(
+        f"/api/bookings/{booking.id}/clash-acknowledgement", headers=_auth(admin)
+    )
+    assert acknowledged.json()["clash_acknowledged_by"]["id"] == str(admin.id)
+
+    return booking
+
+
+def test_moving_a_booking_from_archived_staff_to_active_staff_clears_it(
+    api: TestClient, db: Session, family: Family
+) -> None:
+    booking = _book(db, family)
+    family.tutor.user.is_archived = True
+    db.flush()
+    admin = _make_user(db, role=UserRole.ADMIN)
+    user = _make_user(db)
+
+    kept = _put(api, user, booking, family, start_time=TEN, end_time=ELEVEN)
+    moved = _put(
+        api,
+        user,
+        booking,
+        family,
+        user_id=str(admin.id),
+        availability_id=None,
+        start_time=TWELVE,
+        end_time=ONE_PM,
+    )
+
+    assert kept.json()["sort_out_reasons"] == ["archived_staff"]
+    assert moved.status_code == 200
+    assert moved.json()["sort_out_reasons"] == []
+
+
 # --- what an edit keeps: the booking guardian is neither accepted nor re-judged -------------
 
 
@@ -395,7 +719,7 @@ def test_a_booking_made_by_a_since_deactivated_guardian_can_still_be_edited(
     cannot carry."""
     booking = _book(db, family)
     booking.booked_by_guardian_id = family.guardian.id
-    family.guardian.is_active = False
+    family.guardian.is_archived = True
     db.flush()
     user = _make_user(db)
 

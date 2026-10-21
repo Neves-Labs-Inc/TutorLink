@@ -9,9 +9,9 @@ what makes the level upsert safe against two concurrent `PUT`s on one Child and 
 
 The rules (spec, "Evaluation, levels and matching"):
 
-- Marking Evaluated needs at least one level; marking an already-Evaluated Child keeps the
-  original who and when.
-- Clearing Evaluated sets both columns NULL and keeps the levels.
+- Marking Evaluated needs at least one level and sets the Assigned Tutors; marking an
+  already-Evaluated Child keeps the original who and when, and its assignments.
+- Clearing Evaluated sets both columns NULL and keeps the levels and the Assigned Tutors.
 - Removing the last level of an Evaluated Child is refused.
 - An inactive subject gets no new level, but an existing row on one can still be edited or
   removed: the rows outlive the subject's deactivation.
@@ -19,6 +19,7 @@ The rules (spec, "Evaluation, levels and matching"):
 
 import datetime
 import uuid
+from collections.abc import Collection
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.models.child import Child
 from app.models.child_subject_level import ChildSubjectLevel
 from app.models.subject import Subject
+from app.services.assigned_tutor_service import replace_all
 
 
 class ChildEvaluationError(Exception):
@@ -73,7 +75,7 @@ def set_level(
 
     row = _level_row(db, child_id=child_id, subject_id=subject_id)
 
-    if row is None and not subject.is_active:
+    if row is None and subject.is_archived:
         raise SubjectInactive
 
     if row is None:
@@ -107,15 +109,26 @@ def remove_level(db: Session, *, child_id: uuid.UUID, subject_id: uuid.UUID) -> 
 
 
 def mark_evaluated(
-    db: Session, *, child_id: uuid.UUID, by_user_id: uuid.UUID, now: datetime.datetime
+    db: Session,
+    *,
+    child_id: uuid.UUID,
+    by_user_id: uuid.UUID,
+    tutor_ids: Collection[uuid.UUID],
+    now: datetime.datetime,
 ) -> Child:
-    """A no-op on an already-Evaluated Child, so the original who and when stay."""
+    """Sets the mark and replaces the Assigned Tutors with `tutor_ids` in one go.
+
+    A no-op on an already-Evaluated Child, so the original who and when stay and so do its
+    assignments. Raises `NotAssignable` for a bad id, `NoLevelsToEvaluate` for a Child with
+    no level; either leaves the Child as it was.
+    """
     child = _locked_child(db, child_id)
 
     if child.evaluated_at is None:
         if _level_count(db, child_id=child_id) == 0:
             raise NoLevelsToEvaluate
 
+        replace_all(db, child_id=child_id, user_ids=tutor_ids, by_user_id=by_user_id)
         child.evaluated_at = now
         child.evaluated_by_user_id = by_user_id
         _flush_evaluated(db, child)

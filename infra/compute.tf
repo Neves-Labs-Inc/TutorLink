@@ -17,9 +17,17 @@ data "aws_ssm_parameter" "al2023_ami" {
 resource "aws_instance" "app" {
   ami                    = data.aws_ssm_parameter.al2023_ami.insecure_value
   instance_type          = var.instance_type
-  subnet_id              = data.aws_subnet.app.id
+  subnet_id              = aws_subnet.app.id
   vpc_security_group_ids = [aws_security_group.app.id]
   iam_instance_profile   = aws_iam_instance_profile.app.name
+
+  # First boot downloads packages and the compose plugin, so the internet route and the egress
+  # rules (the security group starts with none) must exist first.
+  depends_on = [
+    aws_route.internet,
+    aws_route_table_association.app,
+    aws_vpc_security_group_egress_rule.all,
+  ]
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     data_dir        = local.data_dir
@@ -27,9 +35,9 @@ resource "aws_instance" "app" {
     compose_version = local.compose_version
     compose_sha256  = local.compose_sha256
   })
-  # user_data only runs on first boot, so a change replaces the instance. The data volume is
-  # detached safely (stop_instance_before_detaching) and the EIP re-associated, so the site
-  # address stays the same.
+  # user_data only runs on first boot, so a change replaces the instance. The data volume (Caddy
+  # data and the deploy files) is detached safely (stop_instance_before_detaching) and the Elastic
+  # IP re-associated, so the site address stays the same.
   user_data_replace_on_change = true
 
   metadata_options {
@@ -50,6 +58,11 @@ resource "aws_instance" "app" {
   lifecycle {
     # A new AMI is picked up by replacing the instance on purpose, not on every plan.
     ignore_changes = [ami]
+
+    precondition {
+      condition     = contains(data.aws_ec2_instance_type_offerings.available.locations, local.availability_zone_id)
+      error_message = "Instance type ${var.instance_type} is not offered in ${local.availability_zone_id}, the app subnet's zone."
+    }
   }
 }
 
@@ -62,16 +75,13 @@ resource "aws_ec2_tag" "primary_eni" {
   value       = each.value
 }
 
+# Caddy's certificates and the deploy files, kept across instance replacements. Both can be
+# recreated (Caddy reissues, the deploy rewrites), so the volume isn't protected from destroy.
 resource "aws_ebs_volume" "data" {
-  availability_zone = local.availability_zone
+  availability_zone = aws_subnet.app.availability_zone
   size              = var.data_volume_size_gb
   type              = "gp3"
   encrypted         = true
-
-  lifecycle {
-    # No backups exist yet; this volume is the only copy of the database.
-    prevent_destroy = true
-  }
 }
 
 resource "aws_volume_attachment" "data" {
@@ -79,15 +89,33 @@ resource "aws_volume_attachment" "data" {
   volume_id   = aws_ebs_volume.data.id
   instance_id = aws_instance.app.id
 
-  # On replacement, stop the old instance (clean Postgres and xfs shutdown) before detaching.
+  # On replacement, stop the old instance (clean container and xfs shutdown) before detaching.
   stop_instance_before_detaching = true
 }
 
+# The Elastic IP is transferred in from the management account during the cutover, so it can't
+# exist before apply 2. Terraform adopts it, never creates a new one.
+import {
+  for_each = var.elastic_ip_allocation_id == null ? toset([]) : toset([var.elastic_ip_allocation_id])
+  to       = aws_eip.app[0]
+  id       = each.value
+}
+
 resource "aws_eip" "app" {
+  count = var.elastic_ip_allocation_id == null ? 0 : 1
+
   domain = "vpc"
+
+  lifecycle {
+    # The sslip.io site URL is this address, and a released one can't be recovered. Rollback runs
+    # `terraform state rm` on the address and its association; nulling the variable would plan a destroy.
+    prevent_destroy = true
+  }
 }
 
 resource "aws_eip_association" "app" {
-  allocation_id = aws_eip.app.id
+  count = length(aws_eip.app)
+
+  allocation_id = aws_eip.app[0].id
   instance_id   = aws_instance.app.id
 }

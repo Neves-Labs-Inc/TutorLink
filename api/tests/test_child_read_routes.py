@@ -22,9 +22,19 @@ from sqlalchemy.orm import Session
 from app.models.availability import TutorAvailability
 from app.models.booking import Booking
 from app.models.child import Child
-from app.models.enums import BookingKind, BookingLocation, BookingStatus, UserRole
+from app.models.conversation import Conversation
+from app.models.enums import (
+    BookingKind,
+    BookingLocation,
+    BookingStatus,
+    ConsentAction,
+    ConsentSource,
+    Language,
+    UserRole,
+)
 from app.models.guardian import ChildGuardian, Guardian
-from app.models.home import ChildHome, Home
+from app.models.home import GuardianHome, Home
+from app.models.reminder_consent import ReminderConsent
 from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -99,22 +109,22 @@ def test_deactivated_children_are_hidden_until_asked_for(
 ) -> None:
     admin = _make_user(db)
     active = _make_child(db, name=f"Active {token}")
-    dormant = _make_child(db, name=f"Dormant {token}", is_active=False)
+    dormant = _make_child(db, name=f"Dormant {token}", is_archived=True)
     headers = _auth(admin)
 
     default = api.get(f"/api/children?q={token}", headers=headers).json()
-    inactive = api.get(f"/api/children?q={token}&is_active=false", headers=headers).json()
+    inactive = api.get(f"/api/children?q={token}&archived=true", headers=headers).json()
 
     assert [row["id"] for row in default["items"]] == [str(active.id)]
     assert default["total"] == 1
     assert [row["id"] for row in inactive["items"]] == [str(dormant.id)]
-    assert inactive["items"][0]["is_active"] is False
+    assert inactive["items"][0]["archived"] is True
     assert inactive["total"] == 1
 
 
 @pytest.mark.parametrize(
     "query",
-    ["is_active=maybe", "page=0", "page_size=0", "page_size=101"],
+    ["archived=maybe", "page=0", "page_size=0", "page_size=101"],
 )
 def test_malformed_list_query_is_400_not_422(api: TestClient, db: Session, query: str) -> None:
     admin = _make_user(db)
@@ -172,10 +182,10 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
     api: TestClient, db: Session, token: str
 ) -> None:
     admin = _make_user(db)
-    zed = _make_guardian(db, name="Zed Doe", is_active=False)
+    zed = _make_guardian(db, name="Zed Doe", is_archived=True)
     amy = _make_guardian(db, name="Amy Doe")
     active_home = _make_home(db, label="Mum's")
-    dormant_home = _make_home(db, label="Dad's", is_active=False)
+    dormant_home = _make_home(db, label="Dad's", is_archived=True)
     child = _make_child(
         db, name=f"Tommy {token}", guardians=[zed, amy], homes=[active_home, dormant_home]
     )
@@ -193,7 +203,8 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
             "id": str(active_home.id),
             "label": "Mum's",
             "address": active_home.address,
-            "is_active": True,
+            "archived": False,
+            "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         }
     ]
     assert set(row) == {
@@ -201,11 +212,13 @@ def test_list_row_nests_every_guardian_and_only_active_homes(
         "name",
         "grade_level",
         "school_name",
-        "is_active",
+        "archived",
         "guardians",
         "homes",
         "next_session",
+        "levels",
         "evaluated",
+        "assigned_tutors",
         "created_at",
     }
 
@@ -214,9 +227,9 @@ def test_detail_nests_every_guardian_and_every_home(
     api: TestClient, db: Session, token: str
 ) -> None:
     admin = _make_user(db)
-    zed = _make_guardian(db, name="Zed Doe", is_active=False)
+    zed = _make_guardian(db, name="Zed Doe", is_archived=True)
     amy = _make_guardian(db, name="Amy Doe")
-    older = _make_home(db, label="Dad's", is_active=False, created_days_ago=2)
+    older = _make_home(db, label="Dad's", is_archived=True, created_days_ago=2)
     newer = _make_home(db, label="Mum's", created_days_ago=1)
     child = _make_child(db, name=f"Tommy {token}", guardians=[zed, amy], homes=[newer, older])
 
@@ -224,13 +237,21 @@ def test_detail_nests_every_guardian_and_every_home(
     body = response.json()
 
     assert response.status_code == 200
+    state = {"language": "en", "reminders": "never", "reminders_blocked_by_whatsapp": False}
     assert body["guardians"] == [
-        {"id": str(amy.id), "name": "Amy Doe", "phone_number": amy.phone_number, "is_active": True},
+        {
+            "id": str(amy.id),
+            "name": "Amy Doe",
+            "phone_number": amy.phone_number,
+            "archived": False,
+            **state,
+        },
         {
             "id": str(zed.id),
             "name": "Zed Doe",
             "phone_number": zed.phone_number,
-            "is_active": False,
+            "archived": True,
+            **state,
         },
     ]
     assert body["homes"] == [
@@ -238,15 +259,17 @@ def test_detail_nests_every_guardian_and_every_home(
             "id": str(older.id),
             "label": "Dad's",
             "address": older.address,
-            "access_code": "1234",
-            "is_active": False,
+            "directions": "1234",
+            "archived": True,
+            "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         },
         {
             "id": str(newer.id),
             "label": "Mum's",
             "address": newer.address,
-            "access_code": "1234",
-            "is_active": True,
+            "directions": "1234",
+            "archived": False,
+            "guardians": [{"id": str(zed.id), "name": "Zed Doe"}],
         },
     ]
 
@@ -260,6 +283,73 @@ def test_list_homes_are_ordered_by_creation(api: TestClient, db: Session, token:
     body = api.get(f"/api/children?q={token}", headers=_auth(admin)).json()
 
     assert [home["id"] for home in body["items"][0]["homes"]] == [str(older.id), str(newer.id)]
+
+
+def test_a_home_two_guardians_share_appears_once(api: TestClient, db: Session, token: str) -> None:
+    admin = _make_user(db)
+    mum, dad = _make_guardian(db, name="Mum"), _make_guardian(db, name="Dad")
+    shared = _make_home(db)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[mum, dad], homes=[shared])
+    _give_home(db, dad, shared)
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert [home["id"] for home in listed["items"][0]["homes"]] == [str(shared.id)]
+    assert [home["id"] for home in detail["homes"]] == [str(shared.id)]
+
+
+def test_a_shared_home_names_both_owners_by_name_on_list_and_detail(
+    api: TestClient, db: Session, token: str
+) -> None:
+    admin = _make_user(db)
+    zed, amy = _make_guardian(db, name="Zed"), _make_guardian(db, name="Amy")
+    shared = _make_home(db)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[zed, amy], homes=[shared])
+    _give_home(db, amy, shared)
+    headers = _auth(admin)
+    expected = [{"id": str(amy.id), "name": "Amy"}, {"id": str(zed.id), "name": "Zed"}]
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert listed["items"][0]["homes"][0]["guardians"] == expected
+    assert detail["homes"][0]["guardians"] == expected
+
+
+def test_a_home_added_to_a_guardian_later_is_one_of_the_childs_homes(
+    api: TestClient, db: Session, token: str
+) -> None:
+    admin = _make_user(db)
+    guardian = _make_guardian(db)
+    first = _make_home(db, created_days_ago=1)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[guardian], homes=[first])
+    later = _make_home(db)
+    _give_home(db, guardian, later)
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert [home["id"] for home in listed["items"][0]["homes"]] == [str(first.id), str(later.id)]
+    assert [home["id"] for home in detail["homes"]] == [str(first.id), str(later.id)]
+
+
+def test_an_archived_guardians_homes_stay_the_childs(
+    api: TestClient, db: Session, token: str
+) -> None:
+    admin = _make_user(db)
+    archived = _make_guardian(db, is_archived=True)
+    home = _make_home(db)
+    child = _make_child(db, name=f"Tommy {token}", guardians=[archived], homes=[home])
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()
+    detail = api.get(f"/api/children/{child.id}", headers=headers).json()
+
+    assert [row["id"] for row in listed["items"][0]["homes"]] == [str(home.id)]
+    assert [row["id"] for row in detail["homes"]] == [str(home.id)]
 
 
 # --- next_session and upcoming_session_count --------------------------------------------------
@@ -423,6 +513,73 @@ def test_the_list_runs_the_same_statements_for_one_child_or_five(
     assert counts[0] == counts[1] > 0
 
 
+# --- guardian cards and the detail's next session ---------------------------------------------
+
+
+def test_detail_guardian_cards_carry_the_state_the_guardians_list_reports(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    talker = _make_guardian(db, name="Aa Talker")
+    quiet = _make_guardian(db, name="Bb Quiet")
+    db.add(
+        Conversation(
+            phone_number=talker.phone_number,
+            guardian_id=talker.id,
+            last_message_at=NOW.replace(tzinfo=datetime.UTC),
+            language=Language.ES,
+        )
+    )
+    db.add(
+        ReminderConsent(
+            guardian_id=talker.id,
+            action=ConsentAction.OPT_IN,
+            source=ConsentSource.INTAKE,
+            phone_number=talker.phone_number,
+        )
+    )
+    child = _make_child(db, guardians=[talker, quiet])
+    headers = _auth(admin)
+
+    cards = api.get(f"/api/children/{child.id}", headers=headers).json()["guardians"]
+    listed = {
+        row["id"]: row
+        for row in api.get("/api/clients?page_size=100", headers=headers).json()["items"]
+    }
+
+    assert [(c["language"], c["reminders"]) for c in cards] == [("es", "opt_in"), ("en", "never")]
+    for card in cards:
+        row = listed[card["id"]]
+        assert (card["language"], card["reminders"], card["reminders_blocked_by_whatsapp"]) == (
+            row["language"],
+            row["reminders"],
+            row["reminders_blocked_by_whatsapp"],
+        )
+
+
+def test_detail_next_session_equals_the_list_rows_and_is_null_without_one(
+    api: TestClient, db: Session, token: str, frozen_now: None
+) -> None:
+    admin = _make_user(db)
+    booked = _make_child(db, name=f"Booked {token}")
+    idle = _make_child(db, name=f"Idle {token}")
+    _book(db, child=booked, on=YESTERDAY, start=NINE, status=BookingStatus.CONFIRMED)
+    _book(db, child=booked, on=TOMORROW, start=NINE, status=BookingStatus.CANCELLED)
+    expected = _book(db, child=booked, on=IN_THREE_DAYS, start=NINE, status=BookingStatus.PENDING)
+    headers = _auth(admin)
+
+    listed = api.get(f"/api/children?q={token}", headers=headers).json()["items"]
+    detail = api.get(f"/api/children/{booked.id}", headers=headers).json()
+    idle_detail = api.get(f"/api/children/{idle.id}", headers=headers).json()
+
+    assert detail["next_session"]["id"] == str(expected.id)
+    assert (
+        detail["next_session"]
+        == next(r for r in listed if r["id"] == str(booked.id))["next_session"]
+    )
+    assert idle_detail["next_session"] is None
+
+
 # --- the by-id read ---------------------------------------------------------------------------
 
 
@@ -450,13 +607,13 @@ def test_a_malformed_child_id_is_400_not_422(api: TestClient, db: Session) -> No
 
 def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
     admin = _make_user(db)
-    child = _make_child(db, is_active=False, notes="Peanut allergy")
+    child = _make_child(db, is_archived=True, notes="Peanut allergy")
 
     response = api.get(f"/api/children/{child.id}", headers=_auth(admin))
     body = response.json()
 
     assert response.status_code == 200
-    assert body["is_active"] is False
+    assert body["archived"] is True
     assert body["notes"] == "Peanut allergy"
     assert body["date_of_birth"] == "2014-05-02"
     assert set(body) == {
@@ -466,12 +623,15 @@ def test_an_inactive_childs_detail_is_200(api: TestClient, db: Session) -> None:
         "grade_level",
         "school_name",
         "notes",
-        "is_active",
+        "archived",
         "upcoming_session_count",
+        "next_session",
         "guardians",
         "homes",
         "levels",
         "evaluated",
+        "assigned_tutors",
+        "evaluation_run_by",
     }
 
 
@@ -487,7 +647,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -495,7 +655,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
     return user
 
@@ -520,9 +680,9 @@ def _make_tutor(db: Session) -> Tutor:
     return tutor
 
 
-def _make_guardian(db: Session, *, name: str = "Jane Doe", is_active: bool = True) -> Guardian:
+def _make_guardian(db: Session, *, name: str = "Jane Doe", is_archived: bool = False) -> Guardian:
     guardian = Guardian(
-        name=name, phone_number=f"+1{uuid.uuid4().int % 10**10:010d}", is_active=is_active
+        name=name, phone_number=f"+1{uuid.uuid4().int % 10**10:010d}", is_archived=is_archived
     )
     db.add(guardian)
     db.flush()
@@ -530,13 +690,13 @@ def _make_guardian(db: Session, *, name: str = "Jane Doe", is_active: bool = Tru
 
 
 def _make_home(
-    db: Session, *, label: str | None = None, is_active: bool = True, created_days_ago: int = 0
+    db: Session, *, label: str | None = None, is_archived: bool = False, created_days_ago: int = 0
 ) -> Home:
     home = Home(
         label=label,
         address=f"{uuid.uuid4().hex[:6]} Main St",
-        access_code="1234",
-        is_active=is_active,
+        directions="1234",
+        is_archived=is_archived,
         created_at=datetime.datetime.now(tz=datetime.UTC)
         - datetime.timedelta(days=created_days_ago),
     )
@@ -551,7 +711,7 @@ def _make_child(
     name: str = "Tommy Doe",
     guardians: list[Guardian] | None = None,
     homes: list[Home] | None = None,
-    is_active: bool = True,
+    is_archived: bool = False,
     notes: str | None = None,
 ) -> Child:
     child = Child(
@@ -560,16 +720,23 @@ def _make_child(
         grade_level=7,
         school_name="Lincoln Middle School",
         notes=notes,
-        is_active=is_active,
+        is_archived=is_archived,
     )
     db.add(child)
     db.flush()
-    for guardian in guardians or [_make_guardian(db)]:
+    linked = guardians or [_make_guardian(db)]
+    for guardian in linked:
         db.add(ChildGuardian(child_id=child.id, guardian_id=guardian.id))
+    # A Child's Homes are its Guardians' (#214): `homes` go to the first Guardian.
     for home in homes or [_make_home(db)]:
-        db.add(ChildHome(child_id=child.id, home_id=home.id))
+        _give_home(db, linked[0], home)
     db.flush()
     return child
+
+
+def _give_home(db: Session, guardian: Guardian, home: Home) -> None:
+    db.add(GuardianHome(guardian_id=guardian.id, home_id=home.id))
+    db.flush()
 
 
 def _book(

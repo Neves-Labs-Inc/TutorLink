@@ -11,27 +11,30 @@ variable "instance_type" {
 }
 
 variable "data_volume_size_gb" {
-  description = "Size of the persistent data volume mounted at /srv/tutorlink (Postgres data, Caddy certificates, deploy files)."
+  description = "Size of the persistent data volume mounted at /srv/tutorlink (Caddy certificates and the deploy files)."
   type        = number
   default     = 5
-}
-
-variable "db_instance_class" {
-  description = "RDS instance class for the PostgreSQL database."
-  type        = string
-  default     = "db.t4g.micro"
-}
-
-variable "db_allocated_storage_gb" {
-  description = "Allocated gp3 storage for the RDS database, in GB. Can be grown later, never shrunk."
-  type        = number
-  default     = 20
 }
 
 variable "domain" {
   description = "Public hostname for the site. When null, the site uses <elastic-ip-with-dashes>.sslip.io."
   type        = string
   default     = null
+}
+
+variable "elastic_ip_allocation_id" {
+  description = <<-EOT
+    Allocation ID of the site's Elastic IP (52.87.65.127), transferred into tutorlink-prod during the
+    cutover (Neves-Labs-Infra database/RUNBOOK.md). Null only before the transfer (apply 1). Never set it
+    back to null to roll back: use `terraform state rm`.
+  EOT
+  type        = string
+  default     = "eipalloc-0f1a4ca7010c7fba3"
+
+  validation {
+    condition     = var.elastic_ip_allocation_id == null || can(regex("^eipalloc-[0-9a-f]+$", var.elastic_ip_allocation_id))
+    error_message = "elastic_ip_allocation_id must be null or look like eipalloc-<hex>."
+  }
 }
 
 variable "github_repo" {

@@ -266,8 +266,8 @@ def test_migration_0017_downgrade_forgets_a_pending_request_and_restores_the_typ
     with _migration_engine.begin() as connection:
         child_id = connection.execute(
             text(
-                "INSERT INTO children (name, grade_level, school_name, is_active)"
-                " VALUES ('Sam Jones', 3, 'Elm Primary', false) RETURNING id"
+                "INSERT INTO children (name, grade_level, school_name, is_archived)"
+                " VALUES ('Sam Jones', 3, 'Elm Primary', true) RETURNING id"
             )
         ).scalar_one()
         conversation_id = connection.execute(

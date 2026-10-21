@@ -29,14 +29,14 @@ import pathlib
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import delete
+from sqlalchemy import delete, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -47,9 +47,12 @@ from app.models.enums import (
     Language,
     MessageAuthor,
     MessageStatus,
+    SystemMessageKind,
     UserRole,
 )
-from app.models.guardian import Guardian
+from app.models.child import Child
+from app.models.guardian import ChildGuardian, Guardian
+from app.models.home import GuardianHome, Home
 from app.models.message import Message
 from app.models.tutor import Tutor
 from app.models.user import User
@@ -118,12 +121,30 @@ def test_a_list_item_carries_every_field_the_inbox_renders(api: TestClient, db: 
         "last_message_preview",
         "unread",
         "flag_reason",
+        "last_client_message_at",
+        "is_window_open",
+        "flagged_at",
+        "intake_in_progress",
     }
     assert item["guardian"] == {"id": str(guardian.id), "name": guardian.name}
     assert item["taken_over_by"] == {"id": str(admin.id), "name": admin.name}
     assert item["last_message_preview"] == "Could we move Tommy?"
     assert item["status"] == "human"
     assert item["flag_reason"] == "stuck"
+
+
+def test_a_chat_the_bot_did_not_understand_reads_as_didnt_understand(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    _make_conversation(db, marker=marker, flag_reason=FlagReason.DIDNT_UNDERSTAND)
+
+    item = api.get("/api/conversations", params={"q": marker}, headers=_auth(admin)).json()[
+        "items"
+    ][0]
+
+    assert item["flag_reason"] == "didnt_understand"
 
 
 def test_the_list_reads_as_an_inbox_newest_activity_first(api: TestClient, db: Session) -> None:
@@ -168,6 +189,180 @@ def test_total_counts_the_filtered_query_before_paging(
 
     assert len(body["items"]) == 1
     assert body["total"] == expected_total
+
+
+def _list_rows(api: TestClient, admin: User, marker: str, **params: str) -> dict:
+    return api.get(
+        "/api/conversations", params={"q": marker, **params}, headers=_auth(admin)
+    ).json()
+
+
+def test_a_never_opened_chat_with_a_guardian_message_is_unread(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker)
+    _make_message(db, conversation, body="hi", at=NOON)
+
+    body = _list_rows(api, admin, marker)
+
+    assert [row["unread"] for row in body["items"]] == [True]
+
+
+def test_a_never_opened_chat_with_only_bot_and_system_messages_is_not_unread(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker)
+    _make_message(
+        db,
+        conversation,
+        body="reminder",
+        at=NOON,
+        author_kind=MessageAuthor.SYSTEM,
+        system_kind=SystemMessageKind.BOOKING_REMINDER,
+    )
+    _make_message(db, conversation, body="bot", at=NOON, author_kind=MessageAuthor.BOT)
+
+    assert [r["unread"] for r in _list_rows(api, admin, marker)["items"]] == [False]
+    assert _list_rows(api, admin, marker, unread="true")["total"] == 0
+    assert _list_rows(api, admin, marker, unread="false")["total"] == 1
+
+
+def test_only_a_new_guardian_message_makes_a_read_chat_unread_again(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker)
+    _make_message(db, conversation, body="hi", at=NOON)
+    conversation.last_read_at = NOON + _minutes(1)
+    db.flush()
+    _make_message(
+        db, conversation, body="bot", at=NOON + _minutes(2), author_kind=MessageAuthor.BOT
+    )
+    _make_message(
+        db,
+        conversation,
+        body="office",
+        at=NOON + _minutes(3),
+        author_kind=MessageAuthor.ADMIN,
+        author=admin,
+    )
+    assert [r["unread"] for r in _list_rows(api, admin, marker)["items"]] == [False]
+
+    _make_message(db, conversation, body="again", at=NOON + _minutes(4))
+
+    assert [r["unread"] for r in _list_rows(api, admin, marker)["items"]] == [True]
+
+
+def test_the_unread_total_equals_the_rows_flagged_unread(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    _make_inbox(db, marker=marker, admin=admin)
+
+    body = _list_rows(api, admin, marker, unread="true", page_size="10")
+
+    assert body["total"] == len(body["items"]) == 2
+    assert all(row["unread"] for row in body["items"])
+
+
+def test_flagged_chats_list_oldest_flag_first_with_id_breaking_ties(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    newest_activity = _make_conversation(
+        db, marker=marker, last_message_at=NOON + _minutes(9), flag_reason=FlagReason.STUCK
+    )
+    oldest_flag = _make_conversation(
+        db, marker=marker, last_message_at=NOON, flag_reason=FlagReason.STUCK
+    )
+    oldest_flag.flagged_at = NOON - _minutes(30)
+    newest_activity.flagged_at = NOON - _minutes(10)
+    tied = [
+        _make_conversation(db, marker=marker, last_message_at=NOON, flag_reason=FlagReason.STUCK)
+        for _ in range(2)
+    ]
+    for conversation in tied:
+        conversation.flagged_at = NOON
+    db.flush()
+
+    body = _list_rows(api, admin, marker, flagged="true", status="bot")
+
+    assert [row["id"] for row in body["items"]] == [
+        str(oldest_flag.id),
+        str(newest_activity.id),
+        *sorted(str(c.id) for c in tied),
+    ]
+
+
+def test_a_list_row_reports_its_takeover_window_and_flag_time(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    now = datetime.datetime.now(tz=datetime.UTC)
+    open_chat = _make_conversation(db, marker=marker, flag_reason=FlagReason.STUCK)
+    closed_chat = _make_conversation(db, marker=marker)
+    silent_chat = _make_conversation(db, marker=marker)
+    _make_message(db, open_chat, body="hi", at=now - _minutes(30))
+    _make_message(db, closed_chat, body="hi", at=now - datetime.timedelta(hours=25))
+    _make_message(db, silent_chat, body="bot only", at=now, author_kind=MessageAuthor.BOT)
+
+    rows = {row["id"]: row for row in _list_rows(api, admin, marker)["items"]}
+
+    assert rows[str(open_chat.id)]["is_window_open"] is True
+    assert rows[str(open_chat.id)]["last_client_message_at"] is not None
+    assert rows[str(closed_chat.id)]["is_window_open"] is False
+    assert rows[str(closed_chat.id)]["last_client_message_at"] is not None
+    assert rows[str(silent_chat.id)]["is_window_open"] is False
+    assert rows[str(silent_chat.id)]["last_client_message_at"] is None
+
+
+def test_a_list_rows_flagged_at_matches_the_details(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker, flag_reason=FlagReason.STUCK)
+
+    row = _list_rows(api, admin, marker)["items"][0]
+    detail = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert row["flagged_at"] is not None
+    assert row["flagged_at"] == detail["flagged_at"]
+
+
+def test_needs_attention_lists_open_windows_closing_soonest_then_closed_by_flag_age(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    now = datetime.datetime.now(tz=datetime.UTC)
+
+    def flagged_chat(*, message_age: datetime.timedelta | None, flag_age: datetime.timedelta):
+        chat = _make_conversation(db, marker=marker, flag_reason=FlagReason.STUCK)
+        chat.flagged_at = now - flag_age
+        if message_age is not None:
+            _make_message(db, chat, body="hi", at=now - message_age)
+        return chat
+
+    hour = datetime.timedelta(hours=1)
+    # Created so that neither flag age nor creation order alone yields the expected order.
+    closed_newer_flag = flagged_chat(message_age=25 * hour, flag_age=1 * hour)
+    open_newest_message = flagged_chat(message_age=1 * hour, flag_age=30 * hour)
+    no_window_older_flag = flagged_chat(message_age=None, flag_age=3 * hour)
+    open_oldest_message = flagged_chat(message_age=20 * hour, flag_age=2 * hour)
+    expected = [
+        open_oldest_message,
+        open_newest_message,
+        no_window_older_flag,
+        closed_newer_flag,
+    ]
+
+    first = _list_rows(api, admin, marker, flagged="true", page_size="2")
+    second = _list_rows(api, admin, marker, flagged="true", page_size="2", page="2")
+
+    assert [row["id"] for row in first["items"] + second["items"]] == [str(c.id) for c in expected]
 
 
 def test_a_flag_and_a_status_are_independent_axes(api: TestClient, db: Session) -> None:
@@ -236,6 +431,196 @@ def test_a_thread_with_no_guardian_still_lists_under_its_number(
     assert body["items"][0]["taken_over_by"] is None
 
 
+@dataclass(frozen=True)
+class _HolderInbox:
+    me: User
+    colleague: User
+    bot: list[Conversation]
+    mine: list[Conversation]
+    others: list[Conversation]
+
+
+def _make_holder_inbox(db: Session, *, marker: str) -> _HolderInbox:
+    """Two chats per holder, newest activity first within each group: the bot's, `me`'s, and
+    the colleague's."""
+    me = _make_user(db)
+    colleague = _make_user(db)
+
+    def pair(offset: int, holder: User | None) -> list[Conversation]:
+        return [
+            _make_conversation(
+                db, marker=marker, last_message_at=NOON + _minutes(offset + 1), holder=holder
+            ),
+            _make_conversation(
+                db, marker=marker, last_message_at=NOON + _minutes(offset), holder=holder
+            ),
+        ]
+
+    return _HolderInbox(
+        me=me,
+        colleague=colleague,
+        bot=pair(0, None),
+        mine=pair(10, me),
+        others=pair(20, colleague),
+    )
+
+
+def _ids(chats: list[Conversation]) -> set[str]:
+    return {str(chat.id) for chat in chats}
+
+
+def _holder_params(*holders: str, **params: str | int) -> list[tuple[str, str | int]]:
+    return [*params.items(), *(("holder", holder) for holder in holders)]
+
+
+@pytest.mark.parametrize("holder", ["bot", "mine", "others"])
+def test_holder_filters_to_one_group(api: TestClient, db: Session, holder: str) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params(holder, q=marker),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert {row["id"] for row in body["items"]} == _ids(getattr(inbox, holder))
+    assert body["total"] == 2
+
+
+def test_holder_values_combine_with_or(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", "others", q=marker),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert {row["id"] for row in body["items"]} == _ids(inbox.mine + inbox.others)
+    assert body["total"] == 4
+
+
+def test_all_three_holder_values_are_no_filter(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("bot", "mine", "others", q=marker),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert body["total"] == 6
+    assert {row["id"] for row in body["items"]} == _ids(inbox.bot + inbox.mine + inbox.others)
+
+
+def test_mine_is_the_callers_not_every_admins(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    as_colleague = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", q=marker),
+        headers=_auth(inbox.colleague),
+    ).json()
+    colleague_others = api.get(
+        "/api/conversations",
+        params=_holder_params("others", q=marker),
+        headers=_auth(inbox.colleague),
+    ).json()
+
+    assert {row["id"] for row in as_colleague["items"]} == _ids(inbox.others)
+    assert {row["id"] for row in colleague_others["items"]} == _ids(inbox.mine)
+
+
+def test_holder_keeps_the_needs_attention_order(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+    newer_flag, older_flag = inbox.mine[0], inbox.others[0]
+    for chat, flagged_at in ((newer_flag, NOON), (older_flag, NOON - _minutes(30))):
+        chat.flag_reason = FlagReason.STUCK
+        chat.flagged_at = flagged_at
+    inbox.bot[0].flag_reason = FlagReason.STUCK
+    inbox.bot[0].flagged_at = NOON - _minutes(60)
+    db.flush()
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", "others", q=marker, flagged="true"),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert [row["id"] for row in body["items"]] == [str(older_flag.id), str(newer_flag.id)]
+    assert body["total"] == 2
+
+
+def test_holder_combines_with_q_and_unread(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+    unread_mine = inbox.mine[0]
+    for chat in inbox.mine + inbox.others + inbox.bot:
+        _make_message(db, chat, body="hi", at=chat.last_message_at)
+        chat.last_read_at = chat.last_message_at
+    unread_mine.last_read_at = None
+    inbox.others[0].last_read_at = None
+    db.flush()
+
+    unread = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", q=marker, unread="true"),
+        headers=_auth(inbox.me),
+    ).json()
+    other_marker = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", q=_marker()),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert [row["id"] for row in unread["items"]] == [str(unread_mine.id)]
+    assert unread["total"] == 1
+    assert other_marker["total"] == 0
+
+
+def test_holder_combines_with_status(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("bot", "mine", q=marker, status="human"),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert {row["id"] for row in body["items"]} == _ids(inbox.mine)
+
+
+def test_holder_total_counts_before_paging(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+    params = _holder_params("mine", "others", q=marker, page_size=3)
+
+    first = api.get("/api/conversations", params=[*params, ("page", 1)], headers=_auth(inbox.me))
+    second = api.get("/api/conversations", params=[*params, ("page", 2)], headers=_auth(inbox.me))
+
+    assert len(first.json()["items"]) == 3
+    assert len(second.json()["items"]) == 1
+    assert first.json()["total"] == second.json()["total"] == 4
+
+
+def test_an_unknown_holder_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get(
+        "/api/conversations", params=_holder_params("mine", "nobody"), headers=_auth(admin)
+    )
+
+    assert response.status_code == 400
+    assert set(response.json()) == {"detail"}
+    assert response.json()["detail"].startswith("query.holder")
+
+
 @pytest.mark.parametrize(
     "query", [{"status": "nobody"}, {"unread": "maybe"}, {"flagged": "maybe"}, {"page": "0"}]
 )
@@ -278,16 +663,67 @@ def test_the_detail_carries_the_counts_the_thread_header_shows(
         "flag_reason",
         "flagged_at",
         "message_count",
-        "unread_count",
         "created_at",
         "reactivation_request",
         "is_window_open",
         "last_client_message_at",
         "language",
+        "intake_in_progress",
     }
     assert body["message_count"] == 2
-    assert body["unread_count"] == 1
+    assert "unread_count" not in body
     assert body["created_at"] is not None
+
+
+def test_a_thread_with_no_guardian_is_intake_in_progress_on_list_and_detail(
+    api: TestClient, db: Session
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_conversation(db, marker=marker)
+
+    listed = _list_rows(api, admin, marker)["items"][0]
+    detail = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert listed["intake_in_progress"] is True
+    assert detail["intake_in_progress"] is True
+
+
+@pytest.mark.parametrize(
+    ("has_home", "has_child", "expected"),
+    [(True, False, True), (False, True, True), (True, True, False)],
+)
+def test_a_named_guardian_is_in_intake_until_they_have_a_home_and_a_child(
+    api: TestClient, db: Session, has_home: bool, has_child: bool, expected: bool
+) -> None:
+    admin = _make_user(db)
+    marker = _marker()
+    conversation = _make_held_conversation(db, marker=marker)
+    if has_home:
+        _add_home(db, conversation.guardian_id)
+    if has_child:
+        _add_child(db, conversation.guardian_id)
+
+    listed = _list_rows(api, admin, marker)["items"][0]
+    detail = api.get(f"/api/conversations/{conversation.id}", headers=_auth(admin)).json()
+
+    assert listed["intake_in_progress"] is expected
+    assert detail["intake_in_progress"] is expected
+
+
+def test_the_list_query_count_does_not_grow_with_the_rows(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+    small_marker, large_marker = _marker(), _marker()
+    for _ in range(2):
+        _add_home(db, _make_held_conversation(db, marker=small_marker).guardian_id)
+    for _ in range(8):
+        _add_home(db, _make_held_conversation(db, marker=large_marker).guardian_id)
+
+    _list_rows(api, admin, small_marker)  # warms one-off reads (the login row) out of the count
+    small = _statement_count(db, lambda: _list_rows(api, admin, small_marker))
+    large = _statement_count(db, lambda: _list_rows(api, admin, large_marker))
+
+    assert large == small
 
 
 @pytest.mark.parametrize(("method", "path"), ID_BEARING_ROUTES)
@@ -589,7 +1025,7 @@ def test_releasing_a_conversation_the_bot_already_has_is_a_no_op_200(
     assert response.json()["status"] == "bot"
 
 
-def test_marking_read_returns_the_recomputed_unread_count_and_broadcasts_nothing(
+def test_marking_read_returns_the_conversation_and_broadcasts_nothing(
     api: TestClient, db: Session, broadcasts: list[ConversationUpdated]
 ) -> None:
     """The watermark is shared, but a read is not an event anybody else needs pushed. Returning
@@ -599,11 +1035,9 @@ def test_marking_read_returns_the_recomputed_unread_count_and_broadcasts_nothing
     _make_message(db, conversation, body="unread", at=NOON)
     headers = _auth(admin)
 
-    before = api.get(f"/api/conversations/{conversation.id}", headers=headers).json()
     after = api.post(f"/api/conversations/{conversation.id}/read", headers=headers).json()
 
-    assert before["unread_count"] == 1
-    assert after["unread_count"] == 0
+    assert "unread_count" not in after
     assert after["message_count"] == 1
     assert after["last_read_at"] is not None
     assert broadcasts == []
@@ -858,6 +1292,54 @@ def _marker() -> str:
     return f"{uuid.uuid4().int % 10**8:08d}"
 
 
+def _make_held_conversation(db: Session, *, marker: str) -> Conversation:
+    # The Guardian holds the thread's number: `owner_id` treats any other Guardian as no one.
+    conversation = _make_conversation(db, marker=marker)
+    guardian = Guardian(
+        name=f"Guardian {uuid.uuid4().hex[:8]}",
+        phone_number=conversation.phone_number,
+        is_archived=False,
+    )
+    db.add(guardian)
+    db.flush()
+    conversation.guardian_id = guardian.id
+    db.flush()
+
+    return conversation
+
+
+def _add_home(db: Session, guardian_id: uuid.UUID | None) -> None:
+    home = Home(address="1 Elm St", is_archived=False)
+    db.add(home)
+    db.flush()
+    db.add(GuardianHome(guardian_id=guardian_id, home_id=home.id))
+    db.flush()
+
+
+def _add_child(db: Session, guardian_id: uuid.UUID | None) -> None:
+    child = Child(name="Tommy", school_name="Test School", is_archived=False)
+    db.add(child)
+    db.flush()
+    db.add(ChildGuardian(child_id=child.id, guardian_id=guardian_id))
+    db.flush()
+
+
+def _statement_count(db: Session, call: Callable[[], object]) -> int:
+    statements: list[str] = []
+
+    def record(*args: object) -> None:
+        statements.append(str(args[2]))
+
+    bind = db.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        call()
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+
+    return len(statements)
+
+
 def _phone_number(marker: str) -> str:
     return f"+1{marker}{uuid.uuid4().int % 10**4:04d}"
 
@@ -868,8 +1350,9 @@ def _minutes(count: int) -> datetime.timedelta:
 
 def _make_inbox(db: Session, *, marker: str, admin: User) -> list[Conversation]:
     """Four conversations spanning both statuses, both read states and both flag states, in the
-    order `last_message_at DESC` puts them."""
-    return [
+    order `last_message_at DESC` puts them. Each carries one Guardian message at its
+    `last_message_at`, since Unread is decided from the messages."""
+    inbox = [
         _make_conversation(
             db,
             marker=marker,
@@ -892,6 +1375,9 @@ def _make_inbox(db: Session, *, marker: str, admin: User) -> list[Conversation]:
         ),
         _make_conversation(db, marker=marker, last_message_at=NOON),
     ]
+    for conversation in inbox:
+        _make_message(db, conversation, body="hello", at=conversation.last_message_at)
+    return inbox
 
 
 def _make_conversation(
@@ -929,10 +1415,12 @@ def _make_message(
     at: datetime.datetime,
     author_kind: MessageAuthor = MessageAuthor.CLIENT,
     author: User | None = None,
+    system_kind: SystemMessageKind | None = None,
 ) -> Message:
     message = Message(
         conversation_id=conversation.id,
         author_kind=author_kind,
+        system_kind=system_kind,
         author_user_id=None if author is None else author.id,
         body=body,
         status=MessageStatus.RECEIVED,
@@ -958,7 +1446,7 @@ def _make_guardian(db: Session, *, name: str | None = None) -> Guardian:
     guardian = Guardian(
         name=name or f"Guardian {uuid.uuid4().hex[:8]}",
         phone_number=_phone_number(_marker()),
-        is_active=True,
+        is_archived=False,
     )
     db.add(guardian)
     db.flush()
@@ -975,7 +1463,7 @@ def _make_user(
             name="Test User",
             hashed_password=hash_password(PASSWORD),
             role=role,
-            is_active=True,
+            is_archived=False,
         )
         db.add(user)
     else:
@@ -983,7 +1471,7 @@ def _make_user(
         user = db.get_one(Tutor, tutor_id).user
         user.hashed_password = hash_password(PASSWORD)
         user.role = role
-        user.is_active = True
+        user.is_archived = False
     db.flush()
 
     return user

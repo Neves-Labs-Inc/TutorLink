@@ -9,9 +9,10 @@ must not take `TutorScope` either (§15) — there is no tutor-owned table in it
 (decision P7-T).** With no scope dependency the `do_orm_execute` guard is never armed on this
 `Session` (`dependencies.py:237-255`), so a wrong `tutor_id` here would fail silent-200 rather
 than loud-500. That is accepted: this router resolves no `tutor_id` of its own and must not
-start — it applies a `BotTurn` and commits — and every booking write the bot makes goes through
-`booking_write_service`, whose `_resolve` refuses a retired tutor with a 400 and whose rule 1
-validates the booking against the `tutor_availability` row named by `availability_id`.
+start — it records the message, schedules the bot's turn and commits. The bot's own booking
+writes happen later, in `bot_worker`'s turn, through `booking_write_service`, whose `_resolve`
+refuses a retired tutor and whose rule 1 validates the booking against the
+`tutor_availability` row named by `availability_id`.
 
 **The broadcast runs after the commit.** `broadcast_service.publish` fails open and logs rather
 than raising, which is only safe because the write it announces is already durable: raising
@@ -28,7 +29,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.message import Message
 from app.schemas.message import MessageRead
-from app.services import webhook_service
+from app.services import twilio_service, webhook_service
 from app.services.broadcast_service import MessageCreated, MessageUpdated, publish
 
 INVALID_SIGNATURE_ERROR = "Invalid Twilio signature"
@@ -43,7 +44,7 @@ async def get_twilio_form(request: Request) -> dict[str, str]:
 
     Async while both routes below are sync, which FastAPI resolves independently and this
     endpoint needs in both directions. `Request.form()` has no synchronous form, and an
-    `async def` route would run the bot's database work — and its LLM call — on the event loop.
+    `async def` route would run the webhook's database work on the event loop.
     Declaring `From`/`Body`/`MessageSid` as `Form(...)` parameters instead would hand the
     signature check a *subset* of the parameters Twilio signed over, and every signature on the
     endpoint would fail.
@@ -67,7 +68,7 @@ def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Respo
     # regression no functional test catches.
     _require_twilio_signature(request, form)
 
-    turn = webhook_service.handle_inbound(
+    inbound = webhook_service.handle_inbound(
         db,
         twilio_from=_required(form, "From"),
         body=form.get("Body", ""),
@@ -79,15 +80,16 @@ def receive_whatsapp(request: Request, form: TwilioForm, db: DbSession) -> Respo
 
     # Record, commit, send, attach: the notice is a line in the thread before it is sent.
     notice = None
-    if turn.notice is not None:
-        notice = webhook_service.send_notice(db, notice=turn.notice)
+    if inbound.notice is not None:
+        notice = webhook_service.send_notice(db, notice=inbound.notice)
         db.commit()
 
-    for message in (*turn.recorded, notice):
+    for message in (*inbound.recorded, notice):
         if message is not None:
             publish(_message_created(message))
 
-    return Response(content=turn.twiml, media_type=TWIML_MEDIA_TYPE)
+    # The bot answers through the REST API from its turn (spec §7), never inline.
+    return Response(content=twilio_service.twiml_empty(), media_type=TWIML_MEDIA_TYPE)
 
 
 @router.post("/whatsapp/status", status_code=status.HTTP_204_NO_CONTENT)

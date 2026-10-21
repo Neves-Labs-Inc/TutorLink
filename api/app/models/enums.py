@@ -35,20 +35,24 @@ class BookingStatus(str, enum.Enum):
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
+    # A started Booking the office marks as not having taken place; not live, like Cancelled.
+    DIDNT_HAPPEN = "didnt_happen"
 
 
 class ExceptionStatus(str, enum.Enum):
-    """Approval state of a tutor availability exception.
+    """Approval state of a Staff member's Time off.
 
-    Only `APPROVED` blocks bookings. A `PENDING` request is a tutor asking for time off and
-    has no effect on availability until an admin decides it, and `REJECTED` is terminal — so
-    any query that subtracts exceptions from a tutor's schedule must filter on `APPROVED`
-    rather than on the row's existence.
+    Only `APPROVED` blocks bookings. A `PENDING` request is someone asking for time off and
+    has no effect on availability until an admin decides it; `REJECTED` and `CANCELLED` block
+    nothing — so any query that subtracts Time off from a schedule must filter on `APPROVED`
+    rather than on the row's existence. Cancelling keeps the row, at `CANCELLED`. The wire
+    adds a derived `expired` (see `exception_service.read_status`), never stored here.
     """
 
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    CANCELLED = "cancelled"
 
 
 class ConversationStatus(str, enum.Enum):
@@ -98,9 +102,10 @@ class MessageStatus(str, enum.Enum):
 class FlagReason(str, enum.Enum):
     """Why an admin needs to look at a conversation.
 
-    `STUCK` is two failed re-prompts in a row with no usable reply. `PARSE_ERROR` is the parser
-    itself failing rather than the client being unclear, raised immediately rather than burning
-    a re-prompt on an outage that is not the client's fault.
+    `DIDNT_UNDERSTAND` means the bot couldn't make sense of the Guardian: it made no progress
+    for several turns, or judged the chat was going in circles. `STUCK` means the bot itself
+    failed (a model outage, an unexpected error, a reply that could not be sent), so the
+    Guardian is not to blame. The two swapped meanings in 0053, which also retired `parse_error`.
 
     `GUARDIAN_LINK_REQUEST` is **not** a failure: the bot worked, understood a second guardian
     asking to be linked to an existing child, and stopped because phone-alone identity cannot
@@ -118,17 +123,21 @@ class FlagReason(str, enum.Enum):
     Subject level for the subject), which only Staff can place; a question is one the bot cannot
     answer.
 
+    `REPLY_WINDOW_CLOSED` is a taken-over chat whose 24-hour WhatsApp reply window closed while
+    Staff still held it, so someone must reach the Guardian outside the bot or hand back.
+
     No value exists for a policy refusal. A reschedule or cancellation refused inside
     `cancellation_cutoff_hours` is the bot working as intended rather than failing, and flagging
     it would bury the flags that mean the bot needs help.
     """
 
     STUCK = "stuck"
-    PARSE_ERROR = "parse_error"
+    DIDNT_UNDERSTAND = "didnt_understand"
     GUARDIAN_LINK_REQUEST = "guardian_link_request"
     REACTIVATION_REQUEST = "reactivation_request"
     BOOKING_REQUEST = "booking_request"
     QUESTION = "question"
+    REPLY_WINDOW_CLOSED = "reply_window_closed"
 
 
 # The enums below are stored as VARCHAR with a CHECK rather than as native PostgreSQL enums:
@@ -205,6 +214,20 @@ class SystemMessageKind(str, enum.Enum):
     CONSENT_NOTICE = "consent_notice"
     # Staff-only: records a Guardian's number change in their thread. Never sent to WhatsApp.
     NUMBER_CHANGE_NOTE = "number_change_note"
+    # Staff-only: the bot's summary when it hands a chat to the office. Never sent to WhatsApp.
+    HANDOFF_NOTE = "handoff_note"
+
+
+class RedactedField(str, enum.Enum):
+    """A sensitive field a message carried, which the bot's history replaces with a placeholder.
+
+    The message body itself is kept, so the office's record stays intact.
+    """
+
+    HOME_ADDRESS = "home_address"
+    HOME_DIRECTIONS = "home_directions"
+    CHILD_DATE_OF_BIRTH = "child_date_of_birth"
+    CHILD_NOTES = "child_notes"
 
 
 def _values(enum_class: type[enum.Enum]) -> list[str]:

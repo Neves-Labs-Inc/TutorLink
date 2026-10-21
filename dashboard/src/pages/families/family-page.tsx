@@ -1,9 +1,12 @@
 // /families/:memberId: one family's overview. Sections (03, 05, 04) fill
 // themselves from useFamily; ?child= / ?guardian= open details over it.
 import type { ReactNode } from "react";
+import { CalendarPlus } from "lucide-react";
 import { useParams } from "react-router-dom";
+import { pluralize } from "@/components/kit/format";
 import { PageHeader } from "@/components/kit/shell/page-header";
 import { ErrorState } from "@/components/kit/states/states";
+import { useBookingOverlays } from "@/hooks/use-booking-overlays";
 import { useFamily } from "@/hooks/use-family";
 import { errorStatus } from "@/lib/api";
 import FamiliesBackLink from "@/pages/families/components/families-back-link";
@@ -13,13 +16,27 @@ import FamilyPageSkeleton from "@/pages/families/components/family-page-skeleton
 import FamilyPeopleSection from "@/pages/families/components/family-people-section";
 import FamilyWeekSection from "@/pages/families/components/family-week-section";
 import { FAMILY_SECTIONS } from "@/pages/families/lib/family-classes";
+import type { HouseholdRead } from "@/types/families";
 
 const NOT_FOUND = 404;
+
+// "2 Children · 2 Guardians · 1 Home", live ones only.
+function getCountsLine(household: HouseholdRead): string {
+  const children = household.children.filter((child) => !child.archived);
+  const guardians = household.guardians.filter((guardian) => !guardian.archived);
+  const homes = household.homes.filter((home) => !home.archived);
+  return [
+    pluralize(children.length, "Child", "Children"),
+    pluralize(guardians.length, "Guardian", "Guardians"),
+    pluralize(homes.length, "Home", "Homes"),
+  ].join(" · ");
+}
 
 export default function FamilyPage(): ReactNode {
   const { memberId = "" } = useParams();
   const family = useFamily(memberId);
   const { household } = family;
+  const { openNewBooking } = useBookingOverlays();
   const backLink = <FamiliesBackLink />;
   // v5 puts a failed query back to pending while it retries; the error
   // stays up meanwhile.
@@ -27,11 +44,26 @@ export default function FamilyPage(): ReactNode {
     !household.data && (household.isError || household.errorUpdateCount > 0);
   const isNotFound = hasFailed && errorStatus(household.error) === NOT_FOUND;
 
+  function handleNewBooking(): void {
+    // With one live Child the form needs no pick.
+    const liveChildren = family.children.filter((child) => !child.archived);
+    openNewBooking(liveChildren.length === 1 ? { childId: liveChildren[0].id } : {});
+  }
+
   let content: ReactNode;
   if (household.data) {
     content = (
       <>
-        <PageHeader eyebrow={backLink} title={household.data.name} />
+        <PageHeader
+          eyebrow={backLink}
+          title={household.data.name}
+          description={getCountsLine(household.data)}
+          primaryAction={{
+            label: "New booking",
+            icon: CalendarPlus,
+            onClick: handleNewBooking,
+          }}
+        />
         <div className={FAMILY_SECTIONS}>
           <FamilyChildrenSection family={family} />
           <FamilyWeekSection family={family} />

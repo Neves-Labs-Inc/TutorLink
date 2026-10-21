@@ -36,7 +36,7 @@ export default function ThreadMessages({
   const anchorRef = useRef<HTMLDivElement>(null);
   const nowMs = useNow();
   const { messages } = thread;
-  useThreadScroll(anchorRef, messages);
+  useThreadScroll(anchorRef, messages, thread.lastSentId);
 
   let content: ReactNode;
   if (thread.messageState === "loading") {

@@ -18,7 +18,6 @@ import SetPasswordPage from "@/pages/set-password/set-password-page";
 import { Dashboard } from "@/pages/admin/Dashboard";
 import { Bookings } from "@/pages/admin/Bookings";
 import ChatsPage from "@/pages/chats/chats-page";
-import { TimeOff } from "@/pages/tutor/TimeOff";
 import NotFoundPage from "@/pages/not-found/not-found-page";
 import ProfilePage from "@/pages/profile/profile-page";
 import SettingsPage from "@/pages/settings/settings-page";
@@ -29,6 +28,7 @@ import AvailabilityPage from "@/pages/availability/availability-page";
 import StaffPage from "@/pages/staff/staff-page";
 import TutorRedirect from "@/pages/staff/tutor-redirect";
 import MySessionsPage from "@/pages/sessions/my-sessions-page";
+import TimeOffPage from "@/pages/time-off/time-off-page";
 import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/VisualDirectionPrototype";
 import HomePrototype from "@/pages/prototype/home/home-prototype";
 import BookingsPrototype from "@/pages/prototype/bookings/bookings-prototype";
@@ -196,9 +196,14 @@ export const App = (): ReactNode => (
             path="/schedule"
             element={<Navigate to="/availability" replace />}
           />
+          {/* Every role: Admins get the queue, others their own. */}
           <Route
-            path="/time-off"
-            element={renderLegacy(TUTOR_ONLY, <TimeOff />)}
+            path="/time-off/:id?"
+            element={
+              <RouteGuard allow={ROLES}>
+                <TimeOffPage />
+              </RouteGuard>
+            }
           />
           <Route path="/profile" element={<ProfilePage />} />
         </Route>

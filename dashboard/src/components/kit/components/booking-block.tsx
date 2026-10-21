@@ -87,12 +87,23 @@ export default function BookingBlock(props: BookingBlockProps): ReactNode {
       "border-l-(--tl-border) bg-(--tl-surface-sunk) text-(--tl-muted)";
   }
 
-  const timeLine = (
-    <span className="truncate text-[12px] leading-4 font-semibold whitespace-nowrap tabular-nums">
-      {time}
-      {note && <span className="font-normal"> · {note}</span>}
-    </span>
-  );
+  // Fill blocks have a fixed height, so their time line truncates. Stack
+  // blocks grow instead: a narrow column wraps the status under the time
+  // rather than cutting it, since it may be the only status cue.
+  const timeLine =
+    layout === "stack" ? (
+      <span className="flex flex-wrap gap-x-1 text-[12px] leading-4 font-semibold tabular-nums">
+        <span className="whitespace-nowrap">{time}</span>
+        {/* Whitespace between flex items doesn't render; it keeps the text readable when copied. */}
+        {note && " "}
+        {note && <span className="font-normal whitespace-nowrap">· {note}</span>}
+      </span>
+    ) : (
+      <span className="truncate text-[12px] leading-4 font-semibold whitespace-nowrap tabular-nums">
+        {time}
+        {note && <span className="font-normal"> · {note}</span>}
+      </span>
+    );
   const nameLine = (
     <span className="flex min-w-0 items-center gap-1">
       {ReasonIcon && <ReasonIcon aria-hidden className="size-4 shrink-0" />}

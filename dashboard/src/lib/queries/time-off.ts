@@ -92,6 +92,10 @@ export type TimeOffSort = "start" | "requested";
 export type TimeOffListParams = {
   status?: TimeOffStatus[];
   user_id?: string;
+  // Business dates; the window overlaps them (`end_date >= from`,
+  // `start_date <= to`).
+  from?: string;
+  to?: string;
   sort?: TimeOffSort;
   page?: number;
   page_size?: number;
@@ -104,9 +108,14 @@ export type UserTimeOffParams = {
   page_size?: number;
 };
 
+// The filters of a list read whole: every page, gathered.
+export type TimeOffListAllParams = Omit<TimeOffListParams, "page" | "page_size">;
+
 const HTTP_CONFLICT = 409;
 const NOT_READABLE = new Set([403, 404]);
 const MAX_DETAIL_RETRIES = 1;
+// The API's largest page (`MAX_PAGE_SIZE`), so a whole list takes the fewest reads.
+const WHOLE_LIST_PAGE_SIZE = 100;
 
 // Every Time off query sits under this key, so one invalidation reaches all.
 export const TIME_OFF_KEY = ["time-off"] as const;
@@ -123,6 +132,24 @@ function serializeParams(params: object): string {
   return search.toString();
 }
 
+// Reads page 1, then the rest at once, and gathers them as one page.
+async function getWholeList(
+  getPage: (page: number) => Promise<Page<ExceptionRead>>,
+): Promise<Page<ExceptionRead>> {
+  const first = await getPage(1);
+  const pageCount = Math.ceil(first.total / WHOLE_LIST_PAGE_SIZE);
+  const others = await Promise.all(
+    Array.from({ length: Math.max(pageCount - 1, 0) }, (_, index) =>
+      getPage(index + 2),
+    ),
+  );
+  // A row moving between two reads could land on both pages.
+  const byId = new Map(
+    [first, ...others].flatMap((page) => page.items).map((item) => [item.id, item]),
+  );
+  return { ...first, items: [...byId.values()] };
+}
+
 export const timeOffQueries = {
   // Every Staff member's Time off (Office only).
   list: (params: TimeOffListParams = {}) =>
@@ -135,6 +162,36 @@ export const timeOffQueries = {
         );
         return response.data;
       },
+    }),
+  // The whole filtered list, for screens that place, filter and page it
+  // themselves. Under `list`, so the optimistic replace reaches it.
+  listAll: (params: TimeOffListAllParams = {}) =>
+    queryOptions({
+      queryKey: [...TIME_OFF_KEY, "list", "all", params],
+      queryFn: () =>
+        getWholeList(async (page) => {
+          const response = await api.get<Page<ExceptionRead>>(
+            "/api/exceptions",
+            {
+              params: { ...params, page, page_size: WHOLE_LIST_PAGE_SIZE },
+              paramsSerializer: serializeParams,
+            },
+          );
+          return response.data;
+        }),
+    }),
+  // One person's whole list (own lists are small).
+  forUserAll: (userId: string) =>
+    queryOptions({
+      queryKey: [...TIME_OFF_KEY, "user", userId, "all"],
+      queryFn: () =>
+        getWholeList(async (page) => {
+          const response = await api.get<Page<ExceptionRead>>(
+            `/api/users/${userId}/exceptions`,
+            { params: { page, page_size: WHOLE_LIST_PAGE_SIZE } },
+          );
+          return response.data;
+        }),
     }),
   // One person's Time off: their own, or anyone's for the Office.
   forUser: (userId: string, params: UserTimeOffParams = {}) =>

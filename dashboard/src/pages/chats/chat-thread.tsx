@@ -95,6 +95,7 @@ export function ChatThread({
         conversation={detail}
         currentUserId={currentUserId}
         container={container}
+        composer={thread.composer}
       />
     );
   }

@@ -142,7 +142,8 @@ export type CountsRead = {
 type NavOptions = {
   // Left out: items without badges; see applyCounts for the rest.
   counts?: CountsRead | null;
-  // The office Time off screen comes with area 6; prototypes show it now.
+  // On by default: the office Time off screen is live (area 6). Kept so
+  // the prototypes that pass it still compile.
   hasOfficeTimeOff?: boolean;
 };
 
@@ -198,7 +199,7 @@ export function applyCounts(
 
 export function getNav(
   role: NavRole,
-  { counts, hasOfficeTimeOff = false }: NavOptions = {},
+  { counts, hasOfficeTimeOff = true }: NavOptions = {},
 ): NavItem[] {
   const items =
     role === "tutor" ? TUTOR_NAV : getOfficeNav(role, hasOfficeTimeOff);

@@ -250,3 +250,52 @@ describe("after a write", () => {
     expect(client.getQueryState(["counts"])?.isInvalidated).toBe(true);
   });
 });
+
+describe("timeOffQueries.listAll", () => {
+  function pageOf(ids: string[], page: number, total: number) {
+    return {
+      data: {
+        items: ids.map((id) => ({ ...ROW, id })),
+        total,
+        page,
+        page_size: 100,
+      },
+    };
+  }
+
+  it("reads every page of the filtered list", async () => {
+    network.get.mockImplementation(
+      async (_url: string, config: { params: { page: number } }) =>
+        config.params.page === 1
+          ? pageOf(["to-1", "to-2"], 1, 201)
+          : pageOf([`to-p${config.params.page}`], config.params.page, 201),
+    );
+    const client = new QueryClient();
+    const result = await client.fetchQuery(
+      timeOffQueries.listAll({ status: ["approved"], from: "2031-10-20" }),
+    );
+    expect(result.items.map((item) => item.id)).toEqual([
+      "to-1",
+      "to-2",
+      "to-p2",
+      "to-p3",
+    ]);
+    expect(result.total).toBe(201);
+    const params = network.get.mock.calls.map(([, config]) => config.params);
+    expect(params).toEqual([
+      { status: ["approved"], from: "2031-10-20", page: 1, page_size: 100 },
+      { status: ["approved"], from: "2031-10-20", page: 2, page_size: 100 },
+      { status: ["approved"], from: "2031-10-20", page: 3, page_size: 100 },
+    ]);
+  });
+
+  it("reads every page of one person's own list", async () => {
+    network.get.mockResolvedValue(pageOf(["to-1"], 1, 1));
+    const client = new QueryClient();
+    const result = await client.fetchQuery(timeOffQueries.forUserAll("u-tutor"));
+    expect(result.items).toHaveLength(1);
+    expect(network.get).toHaveBeenCalledWith("/api/users/u-tutor/exceptions", {
+      params: { page: 1, page_size: 100 },
+    });
+  });
+});

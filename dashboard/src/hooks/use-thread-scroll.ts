@@ -36,6 +36,7 @@ function findScroller(element: HTMLElement | null): HTMLElement | null {
 export function useThreadScroll(
   anchorRef: RefObject<HTMLElement | null>,
   messages: Message[],
+  lastSentId: string | null,
 ): void {
   // Measured after each render and scroll, so it is the distance before
   // the next content lands.
@@ -63,7 +64,7 @@ export function useThreadScroll(
       previous: snapshotRef.current,
       next,
       wasNearBottom: savedDistance <= NEAR_BOTTOM_PX,
-      lastIsOwnSend: false,
+      lastIsOwnSend: next.lastId !== null && next.lastId === lastSentId,
     });
     if (decision === "jump" || decision === "follow") {
       scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
@@ -75,5 +76,5 @@ export function useThreadScroll(
     }
     snapshotRef.current = next;
     distanceRef.current = getDistanceFromBottom(scroller);
-  }, [anchorRef, messages]);
+  }, [anchorRef, messages, lastSentId]);
 }

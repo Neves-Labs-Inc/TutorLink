@@ -110,6 +110,7 @@ describe("app shell from 1024px", () => {
       "Chats7 unread",
       "Families",
       "Staff",
+      "Time off4 to review",
       "Settings",
     ]);
 
@@ -135,6 +136,7 @@ describe("app shell from 1024px", () => {
       "Chats",
       "Families",
       "Staff",
+      "Time off",
     ]);
   });
 
@@ -254,7 +256,7 @@ describe("app shell below 1024px", () => {
     await page.viewport(PHONE.width, PHONE.height);
   });
 
-  it("gives an Admin 4 tabs and More, with Staff and Settings inside", async () => {
+  it("gives an Admin 4 tabs and More, with Staff, Time off and Settings inside", async () => {
     await renderShell("admin", "/settings");
     const nav = page.getByRole("navigation", { name: "Main" });
     const more = nav.getByRole("button", { name: "More" });
@@ -265,7 +267,8 @@ describe("app shell below 1024px", () => {
       "9 to sort outBookings",
       "7 unreadChats",
       "Families",
-      "More",
+      // More carries the Time off it holds.
+      "4 waitingMore",
     ]);
     expect(more.element().ariaCurrent).toBeNull();
 
@@ -279,11 +282,13 @@ describe("app shell below 1024px", () => {
     await expect.element(currentPath()).toHaveTextContent("/staff");
   });
 
-  it("gives a Manager 5 tabs and no More", async () => {
+  it("gives a Manager 4 tabs and More, with Staff and Time off inside", async () => {
     await renderShell("manager", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
-    await expect.element(nav.getByRole("button", { name: "Staff" })).toBeVisible();
-    expect(nav.getByRole("button", { name: "More" }).elements()).toHaveLength(0);
+    await nav.getByRole("button", { name: /More/ }).click();
+    const sheet = page.getByRole("dialog", { name: "More" });
+    await expect.element(sheet.getByRole("button", { name: /^Staff/ })).toBeVisible();
+    await expect.element(sheet.getByRole("button", { name: /^Time off/ })).toBeVisible();
   });
 
   it("opens Profile from the avatar button", async () => {

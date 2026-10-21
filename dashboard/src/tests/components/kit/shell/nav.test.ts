@@ -36,19 +36,20 @@ const ADMIN_LINKS: [string, string][] = [
   ["Chats", "/chats"],
   ["Families", "/families"],
   ["Staff", "/staff"],
+  ["Time off", "/time-off"],
   ["Settings", "/settings"],
 ];
 
 describe("getNav", () => {
   it.each<NavRole>(["admin", "developer"])(
-    "gives %s the full office nav in order, without Time off",
+    "gives %s the full office nav in order, Time off included",
     (role) => {
       expect(getLinks(getNav(role))).toEqual(ADMIN_LINKS);
     },
   );
 
   it("gives a manager the office nav without Settings", () => {
-    expect(getLinks(getNav("manager"))).toEqual(ADMIN_LINKS.slice(0, 5));
+    expect(getLinks(getNav("manager"))).toEqual(ADMIN_LINKS.slice(0, 6));
   });
 
   it("gives a tutor My sessions, My availability and Time off", () => {
@@ -59,11 +60,11 @@ describe("getNav", () => {
     ]);
   });
 
-  it("keeps office Time off for the prototypes that ask for it", () => {
-    const labels = getNav("admin", { hasOfficeTimeOff: true }).map(
-      (item) => item.label,
+  it("opens the same Time off path for every role", () => {
+    const paths = (["admin", "developer", "manager", "tutor"] as NavRole[]).map(
+      (role) => getNav(role).find((item) => item.id === "time-off")?.path,
     );
-    expect(labels).toContain("Time off");
+    expect(paths).toEqual(["/time-off", "/time-off", "/time-off", "/time-off"]);
   });
 
   it("gives no badges while counts are loading", () => {
@@ -73,7 +74,6 @@ describe("getNav", () => {
   it("gives no badges when every count is zero", () => {
     const items = getNav("admin", {
       counts: NO_COUNTS,
-      hasOfficeTimeOff: true,
     });
     expect(getBadges(items)).toEqual({});
   });
@@ -81,7 +81,6 @@ describe("getNav", () => {
   it("puts the counts on Bookings, Chats and Time off", () => {
     const items = getNav("admin", {
       counts: SOME_COUNTS,
-      hasOfficeTimeOff: true,
     });
     expect(getBadges(items)).toEqual({
       Bookings: { count: 9, label: "to sort out", tone: "pink" },
@@ -101,7 +100,6 @@ describe("getNav", () => {
   it("gives Time off no badge when its count is null", () => {
     const items = getNav("manager", {
       counts: { ...SOME_COUNTS, time_off_pending: null },
-      hasOfficeTimeOff: true,
     });
     expect(Object.keys(getBadges(items))).toEqual(["Bookings", "Chats"]);
   });
@@ -131,6 +129,7 @@ describe("getNavIdForPath", () => {
     ["/schedule", "my-availability"],
     ["/availability", "my-availability"],
     ["/time-off", "time-off"],
+    ["/time-off/to-1", "time-off"],
     ["/profile", "profile"],
     ["/Children/k-1", "accounts"],
   ])("maps %s to %s", (path, expected) => {

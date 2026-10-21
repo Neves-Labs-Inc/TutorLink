@@ -1,6 +1,9 @@
 // The kit's root: tokens and the size container every responsive
 // class queries (`@5xl:` = 1024px wide). The root is a fixed-height box
-// that scrolls inside, and `contain: layout` makes it the containing
+// that clips and is never a scroll container itself (`overflow: clip`, not
+// `hidden`), so `scrollIntoView` or focus on an element that escapes to it
+// can't shift the whole shell; the inner `[data-kit-scroll]` is the one
+// box that scrolls the page. `contain: layout` makes it the containing
 // block for `fixed` overlays, so they pin to it: to the window on a real
 // screen, and to the frame when the prototype fakes a phone. Overlays
 // portal to a host beside the scroll area, so the page can go inert
@@ -51,7 +54,7 @@ export default function KitRoot({
       data-kit
       data-theme={theme}
       style={style}
-      className="@container relative overflow-hidden text-[15px] leading-6 [contain:layout]"
+      className="@container relative overflow-clip text-[15px] leading-6 [contain:layout]"
     >
       <OverlayHostContext.Provider value={overlayHost}>
         <ToastProvider>

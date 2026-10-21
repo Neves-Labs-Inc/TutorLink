@@ -267,7 +267,8 @@ describe("Chat badges", () => {
     );
     await renderAt("/chats/c1");
     await expect.element(pane().getByText("Taken over by you")).toBeVisible();
-    await expect.element(pane().getByText(/Replies close in/)).toBeVisible();
+    // The footer hint says it too; this is the header cue.
+    await expect.element(pane().getByText(/^Replies close in/)).toBeVisible();
   });
 
   it("names a colleague by first name and drops the cue once the window closed", async () => {
@@ -281,7 +282,8 @@ describe("Chat badges", () => {
     );
     await renderAt("/chats/c1");
     await expect.element(pane().getByText("Taken over by Maria")).toBeVisible();
-    expect(pane().getByText(/close in|Reply outside the bot/).elements()).toHaveLength(0);
+    // The footer says "Reply outside the bot"; the header has no cue.
+    expect(pane().getByText(/close in/).elements()).toHaveLength(0);
     expect(pane().getByText("Intake in progress").elements()).toHaveLength(0);
   });
 });

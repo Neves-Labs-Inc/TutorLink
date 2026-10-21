@@ -38,6 +38,7 @@ export default function CheckGroup({
       {error && (
         <p
           id={errorId}
+          role="alert"
           className="flex items-start gap-1.5 px-1 text-[13px] leading-[18px] font-medium text-(--tl-danger)"
         >
           <CircleAlert aria-hidden className="mt-px size-4 shrink-0" />

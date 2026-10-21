@@ -106,7 +106,7 @@ describe("forgot-password page", () => {
     await renderForgot();
 
     await sendFor(EMAIL);
-    await expect.element(page.getByRole("button", { name: "Sending…" })).toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "Sending…" })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("checks the email before sending, then again on blur", async () => {

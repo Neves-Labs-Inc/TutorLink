@@ -332,6 +332,10 @@ describe("kit overlay exits", () => {
     const panel = await openSettled();
 
     await userEvent.keyboard("{Escape}");
+    // Hold the exit mid-way: on a slow run it could finish and unmount the
+    // panel before the click lands.
+    await expect.poll(() => getExit(panel)).toBeTruthy();
+    getExit(panel).pause();
     await userEvent.click(opener());
 
     await expect.element(overlay()).toBeVisible();

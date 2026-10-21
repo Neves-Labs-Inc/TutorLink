@@ -90,7 +90,7 @@ describe("SaveBar", () => {
 
   it("shows Saving… and disables Discard while saving", async () => {
     await renderBar({ saveState: "saving" });
-    await expect.element(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "Saving…" })).toHaveAttribute("aria-disabled", "true");
     await expect.element(page.getByRole("button", { name: "Discard" })).toBeDisabled();
   });
 

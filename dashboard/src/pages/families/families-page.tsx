@@ -1,6 +1,7 @@
 // /families: every family, the Guardians linked through shared Children,
 // with search, archived families on request and 50 per page. A row opens
 // the family's page.
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { Archive, Baby, BookUser, SearchX, UserPlus } from "lucide-react";
@@ -13,26 +14,18 @@ import { PageToolbar } from "@/components/kit/shell/page-toolbar";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/kit/states/states";
 import { FAMILIES_PAGE_SIZE } from "@/lib/queries/families";
 import { familyPath } from "@/lib/families/family-paths";
+import AddChildFromListSheet from "@/pages/families/components/add-child-from-list-sheet";
+import AddGuardianSheet from "@/pages/families/components/add-guardian-sheet";
 import FamiliesTable from "@/pages/families/components/families-table";
 import { useFamiliesList } from "@/pages/families/hooks/use-families-list";
 
 const SKELETON_ROWS = 6;
 
-// Disabled until the add flows (ticket 09) land; no handler on purpose.
-const ADD_BUTTONS = (
-  <>
-    <Button icon={UserPlus} disabled>
-      Add guardian
-    </Button>
-    <Button variant="primary" icon={Baby} disabled>
-      Add child
-    </Button>
-  </>
-);
-
 export default function FamiliesPage(): ReactNode {
   const navigate = useNavigate();
   const list = useFamiliesList();
+  const [isAddingGuardian, setIsAddingGuardian] = useState(false);
+  const [isAddingChild, setIsAddingChild] = useState(false);
   const { result } = list;
   const data = result.data;
   // v5 puts a failed query back to pending while it retries; the error
@@ -89,6 +82,21 @@ export default function FamiliesPage(): ReactNode {
     );
   }
 
+  const addButtons = (
+    <>
+      <Button icon={UserPlus} onClick={() => setIsAddingGuardian(true)}>
+        Add guardian
+      </Button>
+      <Button
+        variant="primary"
+        icon={Baby}
+        onClick={() => setIsAddingChild(true)}
+      >
+        Add child
+      </Button>
+    </>
+  );
+
   return (
     <>
       <PageHeader
@@ -100,9 +108,9 @@ export default function FamiliesPage(): ReactNode {
             </span>
           ) : undefined
         }
-        secondaryActions={ADD_BUTTONS}
+        secondaryActions={addButtons}
       >
-        <div className="grid grid-cols-2 gap-2 @3xl:hidden">{ADD_BUTTONS}</div>
+        <div className="grid grid-cols-2 gap-2 @3xl:hidden">{addButtons}</div>
         <PageToolbar
           searchLabel="Search families"
           searchPlaceholder="Child, Guardian or phone"
@@ -119,6 +127,23 @@ export default function FamiliesPage(): ReactNode {
         />
       </PageHeader>
       {body}
+      <AddGuardianSheet
+        isOpen={isAddingGuardian}
+        mode="new-family"
+        onClose={() => setIsAddingGuardian(false)}
+        onAdded={(guardian) => {
+          setIsAddingGuardian(false);
+          navigate(familyPath(guardian.id));
+        }}
+      />
+      <AddChildFromListSheet
+        isOpen={isAddingChild}
+        onClose={() => setIsAddingChild(false)}
+        onAdded={(child) => {
+          setIsAddingChild(false);
+          navigate(familyPath(child.id));
+        }}
+      />
     </>
   );
 }

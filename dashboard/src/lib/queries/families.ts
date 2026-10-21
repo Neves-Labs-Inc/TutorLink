@@ -2,7 +2,7 @@
 // api/app/schemas/ (see @/types/families). Other areas use parts of it,
 // so keep these exports stable:
 //   familyQueries.households / household / child / guardian /
-//     guardianSearch / reminders / activeSubjects
+//     guardianSearch / activeGuardians / reminders / activeSubjects
 //   familyMutations.<write>() → mutationOptions for useMutation
 // Every write refreshes the families list, the open family and its
 // members' details; writes that move a To do count refresh /api/counts.
@@ -10,12 +10,14 @@
 // "guardians") where the endpoint is the same, so writes from either
 // side refresh both.
 import {
+  hashKey,
   keepPreviousData,
   mutationOptions,
   queryOptions,
 } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { remainingPages } from "@/lib/booking-calendar/booking-calendar";
 import type {
   ArchiveRead,
   ArchiveTarget,
@@ -45,6 +47,8 @@ export const FAMILIES_PAGE_SIZE = 50;
 // The API's page cap; the Office has far fewer active Subjects.
 const SUBJECTS_PAGE_SIZE = 100;
 const GUARDIAN_SEARCH_PAGE_SIZE = 20;
+// The API's `page_size` cap (api/app/schemas/common.py).
+const MAX_PAGE_SIZE = 100;
 
 export const familyKeys = {
   households: ["households"] as const,
@@ -57,6 +61,7 @@ export const familyKeys = {
   guardian: (guardianId: string) =>
     ["guardians", "detail", guardianId] as const,
   guardianSearch: (q: string) => ["guardians", "search", q] as const,
+  activeGuardians: ["guardians", "active"] as const,
   reminders: (guardianId: string) =>
     ["guardians", "reminders", guardianId] as const,
   activeSubjects: ["subjects", "active"] as const,
@@ -125,6 +130,25 @@ export const familyQueries = {
       placeholderData: keepPreviousData,
     }),
 
+  // Every active Guardian, for pickers that filter locally (Combobox).
+  activeGuardians: () =>
+    queryOptions({
+      queryKey: familyKeys.activeGuardians,
+      queryFn: async (): Promise<ClientSummary[]> => {
+        const fetchPage = async (page: number) => {
+          const response = await api.get<Page<ClientSummary>>("/api/clients", {
+            params: { archived: false, page, page_size: MAX_PAGE_SIZE },
+          });
+          return response.data;
+        };
+        const first = await fetchPage(1);
+        const rest = await Promise.all(
+          remainingPages(first.total, MAX_PAGE_SIZE).map(fetchPage),
+        );
+        return [first, ...rest].flatMap((page) => page.items);
+      },
+    }),
+
   reminders: (guardianId: string) =>
     queryOptions({
       queryKey: familyKeys.reminders(guardianId),
@@ -160,6 +184,10 @@ type RefreshScope = {
   hasConversations?: boolean;
   // The write cancels Bookings (an archive) or brings Children back.
   hasBookings?: boolean;
+  // The household (by member id) the page is moving off after the write.
+  // It's marked stale but not refetched: its page may still be on screen
+  // until the move renders, and must not show the write's result first.
+  movingFrom?: string;
 };
 
 // Only queries on screen refetch; the rest are marked stale, so
@@ -172,15 +200,33 @@ export async function refreshFamilies(
     familyKeys.households,
     familyKeys.children,
     familyKeys.guardians,
+    familyKeys.activeGuardians,
     ...(scope.hasCounts ? [familyKeys.counts] : []),
     ...(scope.hasStaff ? [familyKeys.staff] : []),
     ...(scope.remindersOf ? [familyKeys.reminders(scope.remindersOf)] : []),
     ...(scope.hasConversations ? [["conversations"]] : []),
     ...(scope.hasBookings ? [["bookings"]] : []),
   ];
-  await Promise.all(
-    keys.map((queryKey) => client.invalidateQueries({ queryKey })),
-  );
+  const leftKey = scope.movingFrom
+    ? hashKey(familyKeys.household(scope.movingFrom))
+    : null;
+  await Promise.all([
+    ...keys.map((queryKey) =>
+      client.invalidateQueries({
+        queryKey,
+        predicate: (query) => query.queryHash !== leftKey,
+      }),
+    ),
+    ...(scope.movingFrom
+      ? [
+          client.invalidateQueries({
+            queryKey: familyKeys.household(scope.movingFrom),
+            exact: true,
+            refetchType: "none",
+          }),
+        ]
+      : []),
+  ]);
 }
 
 export type ChildPatch = { childId: string; changes: ChildUpdate };

@@ -330,6 +330,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("Welcome card", () => {
+  it("shows the role's card under the header while the welcome is unseen", async () => {
+    handlers.me = ok({ id: USER_ID, name: "Maria Lopes", role: "admin", welcome_seen: false });
+    await renderHome("admin");
+
+    await expect
+      .element(page.getByRole("region", { name: "Welcome to TutorLink" }))
+      .toBeVisible();
+  });
+});
+
 describe("Home groups by role", () => {
   it("gives an Admin Chats, Bookings and Time off, with the day's summary", async () => {
     await renderHome("admin");

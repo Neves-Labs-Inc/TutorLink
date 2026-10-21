@@ -21,6 +21,7 @@ import { prefersReducedMotion } from "@/components/kit/overlays/use-enter-animat
 import { EyebrowPill, PageHeader } from "@/components/kit/shell/page-header";
 import { EmptyState, ErrorState, ListSkeleton, Skeleton } from "@/components/kit/states/states";
 import { CARD, HEADING, cn } from "@/components/kit/tokens";
+import { LandingWelcome } from "@/components/layout/landing-welcome";
 import type { BookingSummary } from "@/lib/queries/bookings";
 import { meQueries } from "@/lib/queries/me";
 import { PAST_SESSIONS_PAGE_SIZE, sessionQueries } from "@/lib/queries/sessions";
@@ -144,8 +145,11 @@ export default function MySessionsPage(): ReactNode {
           ]}
         />
       </PageHeader>
-      <div ref={listTopRef} className="scroll-mt-4">
-        {content}
+      <div className="flex flex-col gap-6">
+        <LandingWelcome />
+        <div ref={listTopRef} className="scroll-mt-4">
+          {content}
+        </div>
       </div>
       <SessionDetails
         sessionId={id ?? null}

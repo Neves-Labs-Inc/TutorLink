@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import KitRoot from "@/components/kit/kit-root";
 import type { Theme } from "@/components/kit/tokens";
+import { BookingOverlaysContext } from "@/hooks/use-booking-overlays";
+import type { BookingOverlays } from "@/hooks/use-booking-overlays";
 import FamilyPage from "@/pages/families/family-page";
 import { renderWithProviders } from "@/test/render-with-providers";
 import type {
@@ -167,6 +169,13 @@ function httpError(status: number, detail = String(status)): AxiosError {
 
 type Responses = Record<string, () => Promise<unknown>>;
 
+// Child details' footer opens the Bookings form through this.
+const BOOKING_OVERLAYS: BookingOverlays = {
+  openBooking: () => {},
+  openNewBooking: () => {},
+  openChangeBooking: () => {},
+};
+
 const ok = (data: unknown) => () => Promise.resolve({ data });
 
 let guardian: ClientRead = LAURA;
@@ -194,17 +203,19 @@ function LocationProbe(): ReactNode {
 function renderAt(path: string, theme: Theme = "light") {
   return renderWithProviders(
     <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route
-          path="/families/:memberId"
-          element={
-            <KitRoot theme={theme} height="640px">
-              <FamilyPage />
-            </KitRoot>
-          }
-        />
-        <Route path="/chats/:id" element={<p>Chat page</p>} />
-      </Routes>
+      <BookingOverlaysContext.Provider value={BOOKING_OVERLAYS}>
+        <Routes>
+          <Route
+            path="/families/:memberId"
+            element={
+              <KitRoot theme={theme} height="640px">
+                <FamilyPage />
+              </KitRoot>
+            }
+          />
+          <Route path="/chats/:id" element={<p>Chat page</p>} />
+        </Routes>
+      </BookingOverlaysContext.Provider>
       <LocationProbe />
     </MemoryRouter>,
   );

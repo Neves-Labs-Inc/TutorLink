@@ -5,6 +5,7 @@ import { page } from "vitest/browser";
 import KitRoot from "@/components/kit/kit-root";
 import type { BookingDetail, BookingSummary } from "@/lib/queries/bookings";
 import MySessionsPage from "@/pages/sessions/my-sessions-page";
+import { useAuthStore } from "@/stores/authStore";
 import { renderWithProviders } from "@/test/render-with-providers";
 
 // 3:05 PM on Tuesday, October 20 2026 in New York.
@@ -233,6 +234,18 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("welcome card", () => {
+  it("shows the Tutor's card under the header while the welcome is unseen", async () => {
+    fixtures.me = { ...ME, welcome_seen: false } as Me;
+    useAuthStore.setState({ status: "authenticated", role: "tutor" });
+    await renderAt("/sessions");
+
+    await expect
+      .element(page.getByRole("region", { name: "Welcome to TutorLink" }))
+      .toBeVisible();
+  });
 });
 
 describe.each([

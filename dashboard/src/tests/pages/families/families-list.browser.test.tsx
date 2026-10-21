@@ -123,12 +123,6 @@ describe("families list", () => {
     await expect.element(page.getByText("Nothing booked", { exact: true })).toBeVisible();
   });
 
-  it("disables both Add buttons until their tickets land", async () => {
-    await renderList();
-    await expect.element(page.getByRole("button", { name: "Add guardian" })).toBeDisabled();
-    await expect.element(page.getByRole("button", { name: "Add child" })).toBeDisabled();
-  });
-
   it("shows phone rows at 390px", async () => {
     await page.viewport(390, 800);
     await renderList();

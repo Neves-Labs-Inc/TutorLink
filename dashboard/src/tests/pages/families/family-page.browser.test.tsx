@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import KitRoot from "@/components/kit/kit-root";
 import { RouteGuard } from "@/components/layout/RouteGuard";
+import { BookingOverlaysContext } from "@/hooks/use-booking-overlays";
+import type { BookingOverlays } from "@/hooks/use-booking-overlays";
 import { OFFICE_ROLES } from "@/lib/auth/auth";
 import FamiliesPage from "@/pages/families/families-page";
 import FamilyPage from "@/pages/families/family-page";
@@ -89,6 +91,13 @@ function serve(responses: Responses): void {
   });
 }
 
+// Child details' footer opens the Bookings form through this.
+const BOOKING_OVERLAYS: BookingOverlays = {
+  openBooking: () => {},
+  openNewBooking: () => {},
+  openChangeBooking: () => {},
+};
+
 const ok = (data: unknown) => () => Promise.resolve({ data });
 const never = () => new Promise(() => {});
 
@@ -132,15 +141,17 @@ function renderAt(path: string) {
   );
   return renderWithProviders(
     <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route path="/families" element={shell(<FamiliesPage />)} />
-        <Route path="/families/:memberId" element={shell(<FamilyPage />)} />
-        <Route path="/children" element={<LegacyRedirect kind="child" />} />
-        <Route path="/children/:id" element={<LegacyRedirect kind="child" />} />
-        <Route path="/guardians" element={<LegacyRedirect kind="guardian" />} />
-        <Route path="/guardians/:id" element={<LegacyRedirect kind="guardian" />} />
-        <Route path="/sessions" element={<p>My sessions page</p>} />
-      </Routes>
+      <BookingOverlaysContext.Provider value={BOOKING_OVERLAYS}>
+        <Routes>
+          <Route path="/families" element={shell(<FamiliesPage />)} />
+          <Route path="/families/:memberId" element={shell(<FamilyPage />)} />
+          <Route path="/children" element={<LegacyRedirect kind="child" />} />
+          <Route path="/children/:id" element={<LegacyRedirect kind="child" />} />
+          <Route path="/guardians" element={<LegacyRedirect kind="guardian" />} />
+          <Route path="/guardians/:id" element={<LegacyRedirect kind="guardian" />} />
+          <Route path="/sessions" element={<p>My sessions page</p>} />
+        </Routes>
+      </BookingOverlaysContext.Provider>
     </MemoryRouter>,
   );
 }

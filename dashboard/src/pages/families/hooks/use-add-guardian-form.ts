@@ -175,7 +175,7 @@ export function useAddGuardianForm({
         const message =
           mode === "family"
             ? `${name} added to the family.`
-            : `${name} added: a new family.`;
+            : `${name} added as a new family.`;
         showToast({ tone: "success", message });
         onAdded(guardian);
       },

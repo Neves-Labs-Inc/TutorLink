@@ -10,6 +10,7 @@ import { formatDay, getGreeting } from "@/components/kit/format";
 import { EyebrowPill, PageHeader } from "@/components/kit/shell/page-header";
 import { Skeleton } from "@/components/kit/states/states";
 import { cn, HEADING } from "@/components/kit/tokens";
+import { LandingWelcome } from "@/components/layout/landing-welcome";
 import { useBookingOverlays } from "@/hooks/use-booking-overlays";
 import type { Role } from "@/lib/auth/auth";
 import type { ChildSummary } from "@/lib/queries/children";
@@ -64,6 +65,7 @@ function HomeScreen({ role }: HomeScreenProps): ReactNode {
       />
 
       <div className="flex flex-col gap-6">
+        <LandingWelcome />
         <section aria-labelledby="home-todo">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3">
             <h2 id="home-todo" className={HEADING}>

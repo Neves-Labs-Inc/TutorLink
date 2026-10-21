@@ -79,8 +79,8 @@ export function SessionDetails({
   // Set on success; the next commit, after the dialog hands focus back, moves it on.
   const shouldFocusHeadingRef = useRef(false);
   const detail = useQuery({
-    // The id comes from the URL; encoded, it can't reach another API path.
-    ...bookingQueries.detail(encodeURIComponent(sessionId ?? "")),
+    // The id comes from the URL; the query encodes it, so it can't reach another API path.
+    ...bookingQueries.detail(sessionId ?? ""),
     enabled: sessionId !== null,
   });
 

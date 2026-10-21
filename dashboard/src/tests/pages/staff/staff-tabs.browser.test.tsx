@@ -136,6 +136,9 @@ function serve({
       } else if (url.startsWith("/api/exceptions/")) {
         const id = url.slice("/api/exceptions/".length);
         data = [COMING_SOON, COMING_LATE, GONE_OLD, GONE_NEW].find((row) => row.id === id);
+      } else if (url.startsWith("/api/bookings/")) {
+        // Booking details stay loading; these tests only follow the link.
+        data = await new Promise(() => {});
       } else if (url.startsWith("/api/bookings")) {
         data = await bookings();
       } else if (url.endsWith("/availability")) {
@@ -395,7 +398,13 @@ describe.each(SIZES)("Staff tabs at %s", (_label, size) => {
       }
       expectNoHorizontalScroll();
       await panel().getByRole("button", { name: /Sat, Nov 1/ }).click();
-      await expect.poll(getPath).toBe("/bookings/b-0");
+      // /bookings/:id opens the details, then drops back to /bookings.
+      await expect.poll(getPath).toBe("/bookings");
+      await expect
+        .poll(() =>
+          network.get.mock.calls.some(([u]) => String(u) === "/api/bookings/b-0"),
+        )
+        .toBe(true);
     });
 
     it("asks for this person's live Bookings and shows ten at most", async () => {

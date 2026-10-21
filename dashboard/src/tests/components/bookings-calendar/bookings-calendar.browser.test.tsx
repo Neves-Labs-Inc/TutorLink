@@ -31,6 +31,7 @@ const NO_FILTERS: BookingListFilters = {
   kinds: [],
   statuses: [],
   userIds: [],
+  childIds: [],
 };
 
 const ANA = { id: "user-ana", name: "Ana Souza", role: "tutor" as const };
@@ -373,6 +374,7 @@ describe("week view", () => {
         kinds: ["evaluation"],
         statuses: ["confirmed", "pending"],
         userIds: [ANA.id],
+        childIds: [],
       },
     }).screen;
 

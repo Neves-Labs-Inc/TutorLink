@@ -43,6 +43,13 @@ export type ChildLevel = {
   updated_at: string
 }
 
+// A Subject level on a list row (`ChildLevelRef`): non-archived Subjects only, by Subject name.
+export type ChildLevelRef = {
+  subject_id: string
+  name: string
+  level: number
+}
+
 export type ChildSummary = {
   id: string
   name: string
@@ -52,6 +59,8 @@ export type ChildSummary = {
   guardians: NamedRef[]
   homes: ChildHomeRef[]
   next_session: NextSession | null
+  // The API always sends it; optional so rows built before it was typed stay valid.
+  levels?: ChildLevelRef[]
   evaluated: Evaluated | null
   created_at: string
 }
@@ -145,7 +154,9 @@ export const childQueries = {
     queryOptions({
       queryKey: ['children', 'detail', childId],
       queryFn: async () => {
-        const response = await api.get<ChildDetail>(`/api/children/${childId}`)
+        const response = await api.get<ChildDetail>(
+          `/api/children/${encodeURIComponent(childId)}`,
+        )
 
         return response.data
       },

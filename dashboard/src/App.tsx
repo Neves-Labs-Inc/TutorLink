@@ -8,15 +8,14 @@ import {
 } from "react-router-dom";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import AppLayout from "@/components/layout/app-layout";
-import LegacyPage from "@/components/layout/legacy-page";
 import { RouteGuard } from "@/components/layout/RouteGuard";
 import { OFFICE_ROLES, ROLES } from "@/lib/auth/auth";
 import type { Role } from "@/lib/auth/auth";
 import SignInPage from "@/pages/auth/sign-in-page";
 import ForgotPasswordPage from "@/pages/auth/forgot-password-page";
 import SetPasswordPage from "@/pages/set-password/set-password-page";
-import { Dashboard } from "@/pages/admin/Dashboard";
-import { Bookings } from "@/pages/admin/Bookings";
+import HomePage from "@/pages/home/home-page";
+import BookingsPage from "@/pages/bookings/bookings-page";
 import ChatsPage from "@/pages/chats/chats-page";
 import NotFoundPage from "@/pages/not-found/not-found-page";
 import ProfilePage from "@/pages/profile/profile-page";
@@ -30,22 +29,11 @@ import TutorRedirect from "@/pages/staff/tutor-redirect";
 import MySessionsPage from "@/pages/sessions/my-sessions-page";
 import TimeOffPage from "@/pages/time-off/time-off-page";
 import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/VisualDirectionPrototype";
-import HomePrototype from "@/pages/prototype/home/home-prototype";
-import BookingsPrototype from "@/pages/prototype/bookings/bookings-prototype";
 import ChatsPrototype from "@/pages/prototype/chats/chats-prototype";
 import TutorTimeOffPrototype from "@/pages/prototype/tutor-timeoff/tutor-timeoff-prototype";
 import AccountsStaffPrototype from "@/pages/prototype/accounts-staff/accounts-staff-prototype";
 
 const TUTOR_ONLY: readonly Role[] = ["tutor"];
-
-// An old screen, for the roles that may open it.
-function renderLegacy(allow: readonly Role[], screen: ReactNode): ReactNode {
-  return (
-    <RouteGuard allow={allow}>
-      <LegacyPage>{screen}</LegacyPage>
-    </RouteGuard>
-  );
-}
 
 // The old Reminders URL, keeping ?week=.
 function RedirectToReminders(): ReactNode {
@@ -71,12 +59,21 @@ export const App = (): ReactNode => (
         >
           <Route
             path="/home"
-            element={renderLegacy(OFFICE_ROLES, <Dashboard />)}
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <HomePage />
+              </RouteGuard>
+            }
           />
           <Route path="/dashboard" element={<Navigate to="/home" replace />} />
+          {/* /bookings/:id opens that Booking's details over the page. */}
           <Route
-            path="/bookings"
-            element={renderLegacy(OFFICE_ROLES, <Bookings />)}
+            path="/bookings/:id?"
+            element={
+              <RouteGuard allow={OFFICE_ROLES}>
+                <BookingsPage />
+              </RouteGuard>
+            }
           />
           <Route
             path="/chats"
@@ -212,12 +209,6 @@ export const App = (): ReactNode => (
             path="/prototype/visual-direction"
             element={<VisualDirectionPrototype />}
           />
-        )}
-        {import.meta.env.DEV && (
-          <Route path="/prototype/home" element={<HomePrototype />} />
-        )}
-        {import.meta.env.DEV && (
-          <Route path="/prototype/bookings" element={<BookingsPrototype />} />
         )}
         {import.meta.env.DEV && (
           <Route path="/prototype/chats" element={<ChatsPrototype />} />

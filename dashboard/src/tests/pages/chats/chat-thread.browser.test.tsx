@@ -726,7 +726,7 @@ describe("Scrolling", () => {
     );
     server = { detail: async () => makeDetail(), messages: async () => toPage(messages) };
     await renderAt("/chats/c1");
-    await expect.element(messageList().getByText("Line 29")).toBeVisible();
+    await expect.element(messageList().getByText(/Line 29$/)).toBeVisible();
     const scroller = messageList().element().closest<HTMLElement>(".overflow-y-auto");
     expect(scroller).not.toBeNull();
     expect(scroller!.scrollHeight).toBeGreaterThan(scroller!.clientHeight);

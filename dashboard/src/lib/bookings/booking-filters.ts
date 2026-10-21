@@ -15,6 +15,7 @@ export type BookingListFilters = {
   statuses: BookingStatus[];
   // Staff user ids.
   userIds: string[];
+  childIds: string[];
 };
 
 // The week's Bookings query: Monday to Sunday plus the filters. With no
@@ -30,6 +31,7 @@ export function toWeekParams(
     kind: filters.kinds,
     status: filters.statuses,
     user_id: filters.userIds,
+    child_id: filters.childIds,
     ...(query ? { q: query } : {}),
   };
 }

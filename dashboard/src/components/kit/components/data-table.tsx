@@ -18,6 +18,8 @@ export type Column<T> = {
 export type PhoneRow = {
   leading?: ReactNode;
   title: string;
+  // Struck through, e.g. a cancelled Booking.
+  isTitleStruck?: boolean;
   subtitle?: string;
   meta?: string;
   trailing?: ReactNode;
@@ -144,7 +146,12 @@ export function DataTable<T>({
               >
                 {phoneRow.leading}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] leading-6 font-semibold">
+                  <span
+                    className={cn(
+                      "block truncate text-[15px] leading-6 font-semibold",
+                      phoneRow.isTitleStruck && "line-through",
+                    )}
+                  >
                     {phoneRow.title}
                   </span>
                   {phoneRow.subtitle && (

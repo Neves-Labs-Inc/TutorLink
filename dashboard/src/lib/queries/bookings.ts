@@ -239,7 +239,9 @@ export const bookingQueries = {
     queryOptions({
       queryKey: [...BOOKING_QUERY_KEY, 'detail', bookingId],
       queryFn: async () => {
-        const response = await api.get<BookingDetail>(`/api/bookings/${bookingId}`)
+        const response = await api.get<BookingDetail>(
+          `/api/bookings/${encodeURIComponent(bookingId)}`,
+        )
 
         return response.data
       },

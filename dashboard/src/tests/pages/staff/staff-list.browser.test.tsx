@@ -272,13 +272,16 @@ describe("Staff list at 1280", () => {
     // A fresh entry drops forward entries an earlier test's Back left behind.
     window.history.pushState(null, "", "/staff");
     await renderApp("/staff");
-    const before = window.history.length;
+    // React Router's entry index: history.length caps at 50 in Chromium, so a
+    // long suite run can't see it grow.
+    const historyIndex = () => (window.history.state as { idx: number }).idx;
+    const before = historyIndex();
     await page.getByRole("button", { name: "Open Ana Brooks" }).click();
-    expect(window.history.length).toBe(before + 1);
+    await expect.poll(historyIndex).toBe(before + 1);
     await page.getByRole("button", { name: "Close" }).click();
     await expect.poll(getPath).toBe("/staff");
     // Stepped back rather than pushing a second list entry.
-    expect(window.history.length).toBe(before + 1);
+    expect(historyIndex()).toBe(before);
     await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
   });
 

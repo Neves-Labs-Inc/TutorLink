@@ -244,6 +244,35 @@ async function openSettled(): Promise<HTMLElement> {
   return panel;
 }
 
+// Clicks the opener in the same microtask run as usePresence's own
+// exit-finished handler (registered first, so it runs first), before
+// React commits the unmount: the window a busy page can land a reopen in.
+async function reopenAsExitFinishes(panel: Element): Promise<void> {
+  const exit = getExit(panel);
+  await exit.finished.then(() => {
+    (opener().element() as HTMLElement).click();
+  });
+  await expect.element(overlay()).toBeVisible();
+  expect(overlay().element()).toBe(panel);
+}
+
+// Waits out the enter, then checks the panel and its scrim are fully
+// shown and every edge of the panel sits inside the kit root.
+async function expectSettledInsideKit(panel: Element): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, EXIT_SETTLED_MS));
+  expect(window.getComputedStyle(panel).opacity).toBe("1");
+  expect(window.getComputedStyle(getScrim(panel)).opacity).toBe("1");
+  const kit = panel.closest("[data-kit]");
+  if (!kit) throw new Error("Panel is not inside a kit root");
+  const box = panel.getBoundingClientRect();
+  const kitBox = kit.getBoundingClientRect();
+  expect(box.width).toBeGreaterThan(0);
+  expect(box.left).toBeGreaterThanOrEqual(kitBox.left);
+  expect(box.right).toBeLessThanOrEqual(kitBox.right);
+  expect(box.top).toBeGreaterThanOrEqual(kitBox.top);
+  expect(box.bottom).toBeLessThanOrEqual(kitBox.bottom);
+}
+
 async function setReducedMotion(isReduced: boolean): Promise<void> {
   await cdp().send("Emulation.setEmulatedMedia", {
     features: [
@@ -344,6 +373,66 @@ describe("kit overlay exits", () => {
     expect(panel.contains(document.activeElement)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, EXIT_SETTLED_MS));
     await expect.element(overlay()).toBeVisible();
+  });
+
+  describe("reopened before unmount", () => {
+    it.each<OverlayKind>(["dialog", "sheet", "detail"])(
+      "settles a %s inside the kit when reopened as its exit finishes",
+      async (kind) => {
+        await render(<Harness kind={kind} />);
+        const panel = await openSettled();
+
+        await userEvent.keyboard("{Escape}");
+        await reopenAsExitFinishes(panel);
+
+        await expectSettledInsideKit(panel);
+      },
+    );
+
+    it("lets the reopened detail close again", async () => {
+      await render(<Harness kind="detail" />);
+      const panel = await openSettled();
+
+      await userEvent.keyboard("{Escape}");
+      await reopenAsExitFinishes(panel);
+      await expectSettledInsideKit(panel);
+      await userEvent.click(overlay().getByRole("button", { name: "Close" }));
+
+      await expect.element(overlay()).not.toBeInTheDocument();
+    });
+
+    it("settles a detail closed on a phone and reopened mid-exit on a wide kit", async () => {
+      await page.viewport(PHONE_WIDTH, VIEWPORT_HEIGHT);
+      await render(<Harness kind="detail" />);
+      const panel = await openSettled();
+
+      await userEvent.keyboard("{Escape}");
+      getExit(panel).pause();
+      await page.viewport(DESKTOP_WIDTH, VIEWPORT_HEIGHT);
+      await userEvent.click(opener());
+
+      await expectSettledInsideKit(panel);
+      await userEvent.click(overlay().getByRole("button", { name: "Close" }));
+      await expect.element(overlay()).not.toBeInTheDocument();
+    });
+
+    it("settles a detail closed on a phone and reopened on a wide kit as its exit finishes", async () => {
+      await page.viewport(PHONE_WIDTH, VIEWPORT_HEIGHT);
+      await render(<Harness kind="detail" />);
+      const panel = await openSettled();
+
+      await userEvent.keyboard("{Escape}");
+      const exit = getExit(panel);
+      exit.pause();
+      await page.viewport(DESKTOP_WIDTH, VIEWPORT_HEIGHT);
+      const reopened = reopenAsExitFinishes(panel);
+      exit.play();
+      await reopened;
+
+      await expectSettledInsideKit(panel);
+      await userEvent.click(overlay().getByRole("button", { name: "Close" }));
+      await expect.element(overlay()).not.toBeInTheDocument();
+    });
   });
 
   it("reverses from where the panel is when closed mid-enter", async () => {

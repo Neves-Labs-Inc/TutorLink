@@ -112,7 +112,8 @@ export function usePresence(
       }
       return;
     }
-    // Closed with reduced motion: already unmounted, nothing to play.
+    // Closed with reduced motion, or the exit has played: unmounted, so
+    // the next open mounts fresh nodes with nothing to interrupt.
     if (!isExiting) {
       stopAll(running);
       return;
@@ -135,8 +136,9 @@ export function usePresence(
       () => {
         // A reopen since has replaced this exit; it owns the element now.
         if (runningRef.current.panel !== exit) return;
-        // The next open mounts fresh nodes with nothing to interrupt.
-        runningRef.current = { panel: null, scrim: null };
+        // Keep the finished exits referenced: their forwards fill holds
+        // the panel off-screen, and a reopen landing before the unmount
+        // commits must cancel them. The unmount render drops them.
         setIsExiting(false);
       },
       // Cancelled by a reopen or an unmount: nothing left to do.

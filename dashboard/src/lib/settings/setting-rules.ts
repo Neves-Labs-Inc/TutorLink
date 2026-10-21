@@ -10,6 +10,8 @@ type Bound = {
   noun: string;
   // How the range reads; none means a plain count.
   units?: Unit[];
+  // What an unbounded count counts, when "Enter 1 or more." is too bare.
+  countNoun?: string;
 };
 
 const MINUTE_S = 60;
@@ -87,7 +89,12 @@ const BOUNDS: Record<string, Bound> = {
 
 // The API lets 0 switch a bucket off; the screen asks for 1 or more
 // (Franklin 2026-10-20).
-const RATE_LIMIT_TRIES: Bound = { min: 1, max: null, noun: "a number" };
+const RATE_LIMIT_TRIES: Bound = {
+  min: 1,
+  max: null,
+  noun: "a number",
+  countNoun: "tries",
+};
 const RATE_LIMIT_WINDOW: Bound = {
   min: MINUTE_S,
   max: 31 * DAY_S,
@@ -129,8 +136,9 @@ function checkNumber(value: string, bound: Bound): string | null {
     (bound.max === null || number <= bound.max);
   if (isInRange) return null;
 
+  const count = [bound.min, "or more", bound.countNoun].filter(Boolean);
   return bound.max === null
-    ? `Enter ${bound.min} or more.`
+    ? `Enter ${count.join(" ")}.`
     : `Enter ${bound.noun} from ${describe(bound.min, bound)} to ${describe(bound.max, bound)}.`;
 }
 

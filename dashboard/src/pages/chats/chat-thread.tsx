@@ -1,6 +1,7 @@
 // One chat: the pinned header and Needs attention card, the messages,
 // and the footer slot. From 1152px it fills the split's pane; below
 // that it is the kit DetailOverlay (a page pushed in on phones).
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DetailOverlay } from "@/components/kit/overlays/detail-overlay";
@@ -34,6 +35,17 @@ export function ChatThread({
   const isPane = container === "pane";
   const { detail } = thread;
 
+  // A flag that shows up after the chat was seen unflagged (stream or Undo)
+  // fades in; one already there when the chat opens does not.
+  const [unflaggedSeenFor, setUnflaggedSeenFor] = useState<string | null>(null);
+  if (
+    detail !== null &&
+    detail.flag_reason === null &&
+    unflaggedSeenFor !== conversationId
+  ) {
+    setUnflaggedSeenFor(conversationId);
+  }
+
   let label = "Chat";
   let header: ReactNode = null;
   let attention: ReactNode = null;
@@ -62,7 +74,13 @@ export function ChatThread({
       />
     );
     if (detail.flag_reason !== null) {
-      attention = <AttentionCard conversation={detail} isCompact={!isPane} />;
+      attention = (
+        <AttentionCard
+          conversation={detail}
+          isCompact={!isPane}
+          isLive={unflaggedSeenFor === conversationId}
+        />
+      );
     }
     body = (
       <ThreadMessages

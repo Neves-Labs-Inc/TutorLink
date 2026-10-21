@@ -1,6 +1,7 @@
 // Settings: how TutorLink runs for the whole office. One page of groups
 // with a jump list, one Save bar, and a leave guard while anything is
 // unsaved. Admin and Developer edit; a Manager is told to ask an Admin.
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { Settings } from "lucide-react";
 import { Button } from "@/components/kit/components/button";
@@ -19,9 +20,14 @@ import type { Role } from "@/lib/auth/auth";
 import { SETTINGS_GROUPS } from "@/lib/settings/settings-groups";
 import type { GroupId } from "@/lib/settings/settings-groups";
 import BookingRulesGroup from "@/pages/settings/components/booking-rules-group";
+import ChatHistoryGroup from "@/pages/settings/components/chat-history-group";
 import DeveloperGroup from "@/pages/settings/components/developer-group";
+import EmailsGroup from "@/pages/settings/components/emails-group";
 import OfficeGroup from "@/pages/settings/components/office-group";
+import RemindersGroup from "@/pages/settings/components/reminders-group";
+import RetentionConfirm from "@/pages/settings/components/retention-confirm";
 import SettingsSkeleton from "@/pages/settings/components/settings-skeleton";
+import SignInGroup from "@/pages/settings/components/sign-in-group";
 import { useSettingsForm } from "@/pages/settings/hooks/use-settings-form";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -29,11 +35,14 @@ const TITLE = "Settings";
 const DESCRIPTION =
   "How TutorLink runs for the whole office. Changes apply as soon as you save.";
 
-// The groups this page renders, in page order. Tickets 08 and 09 add
-// "reminders", "emails", "chat-history" and "sign-in" in their places.
+// The groups this page renders, in page order.
 const SHOWN_GROUPS: readonly GroupId[] = [
   "booking-rules",
+  "reminders",
   "office",
+  "emails",
+  "chat-history",
+  "sign-in",
   "developer",
 ];
 
@@ -81,6 +90,20 @@ function SettingsEditor({ isDeveloper }: SettingsEditorProps): ReactNode {
     where: TITLE,
     onDiscard: form.discard,
   });
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  // Shortening retention deletes chats, so Save asks first. With an
+  // error on the page it saves anyway, which only shows the errors.
+  function handleSave(): void {
+    if (form.wouldShortenRetention && !form.hasErrors) {
+      setIsConfirmOpen(true);
+    } else {
+      form.save();
+    }
+  }
+  function handleConfirmSave(): void {
+    setIsConfirmOpen(false);
+    form.save();
+  }
   const sections = SETTINGS_GROUPS.filter(
     (group) =>
       SHOWN_GROUPS.includes(group.id) &&
@@ -121,18 +144,26 @@ function SettingsEditor({ isDeveloper }: SettingsEditorProps): ReactNode {
         />
         <div className="flex max-w-[880px] min-w-0 flex-col gap-6">
           <BookingRulesGroup form={form} />
-          {/* 08: Booking reminders */}
+          <RemindersGroup form={form} />
           <OfficeGroup form={form} />
-          {/* 09: Emails · 08: Chat history, Sign-in protection */}
+          <EmailsGroup form={form} />
+          <ChatHistoryGroup form={form} />
+          <SignInGroup form={form} />
           {isDeveloper && <DeveloperGroup form={form} />}
           <SaveBar
             changeCount={form.changeCount}
             hasErrors={form.hasShownErrors}
             saveState={form.saveState}
-            onSave={form.save}
+            onSave={handleSave}
             onDiscard={form.discard}
           />
         </div>
+        <RetentionConfirm
+          form={form}
+          isOpen={isConfirmOpen}
+          onClose={() => setIsConfirmOpen(false)}
+          onConfirm={handleConfirmSave}
+        />
       </div>
     );
   }

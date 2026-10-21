@@ -22,11 +22,16 @@ import {
 import type { Role } from "@/lib/auth/auth";
 import type { StaffRead } from "@/lib/queries/staff";
 import { roleLabel } from "@/lib/users/users";
+import StaffChildrenTab from "@/pages/staff/components/staff-children-tab";
 import StaffDetailsSkeleton from "@/pages/staff/components/staff-details-skeleton";
+import StaffAvailabilityTab from "@/pages/staff/components/staff-availability-tab";
+import StaffBookingsTab from "@/pages/staff/components/staff-bookings-tab";
 import StaffOverviewTab from "@/pages/staff/components/staff-overview-tab";
+import StaffTimeOffTab from "@/pages/staff/components/staff-time-off-tab";
 import { useStaffDetails } from "@/pages/staff/hooks/use-staff-details";
 import { getSignInLabel } from "@/pages/staff/lib/staff-labels";
 import type { StaffTab } from "@/pages/staff/lib/staff-labels";
+import type { Viewer } from "@/pages/time-off/lib/time-off-rules";
 import { getStaffPermissions } from "@/pages/staff/lib/staff-permissions";
 import type { StaffPermissions } from "@/pages/staff/lib/staff-permissions";
 
@@ -71,15 +76,23 @@ function StaffDetailsHeader({
   );
 }
 
-// Availability, Children, Time off and Bookings land in their own
-// tickets (11, 09); until then each tab has an empty body.
-function getTabBodies(staff: StaffRead): Record<StaffTab, ReactNode> {
+function getTabBodies(
+  staff: StaffRead,
+  can: StaffPermissions,
+  viewer: Viewer,
+): Record<StaffTab, ReactNode> {
   return {
     overview: <StaffOverviewTab staff={staff} />,
-    availability: null,
-    children: null,
-    "time-off": null,
-    bookings: null,
+    availability: (
+      <StaffAvailabilityTab staff={staff} canEdit={can.canEditTeaching} />
+    ),
+    children: (
+      <StaffChildrenTab staff={staff} canEditChildren={can.canEditChildren} />
+    ),
+    "time-off": (
+      <StaffTimeOffTab staff={staff} viewer={viewer} canAdd={can.canAddTimeOff} />
+    ),
+    bookings: <StaffBookingsTab staff={staff} />,
   };
 }
 
@@ -203,7 +216,7 @@ export default function StaffDetails({
             items={details.tabs}
           />
         </div>
-        <div className="pt-5">{getTabBodies(staff)[details.tab]}</div>
+        <div className="pt-5">{getTabBodies(staff, can, { id: viewerId, role: viewerRole })[details.tab]}</div>
       </>
     );
   }

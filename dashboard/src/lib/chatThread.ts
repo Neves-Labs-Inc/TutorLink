@@ -51,6 +51,14 @@ export const markConversationHandled = async (
   return response.data
 }
 
+export const undoConversationHandled = async (conversationId: string): Promise<ConversationDetail> => {
+  const response = await api.post<ConversationDetail>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/handled/undo`,
+  )
+
+  return response.data
+}
+
 const HANDLEABLE_FLAG_REASONS: readonly FlagReason[] = [
   'stuck',
   'didnt_understand',

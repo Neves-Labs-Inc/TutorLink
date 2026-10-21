@@ -111,6 +111,7 @@ def list_user_exceptions(
     db: DbSession,
     date_from: Annotated[datetime.date | None, Query(alias="from")] = None,
     date_to: Annotated[datetime.date | None, Query(alias="to")] = None,
+    order: Literal["asc", "desc"] = "asc",
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ExceptionRead]:
@@ -122,6 +123,7 @@ def list_user_exceptions(
             user_id=user_id,
             date_from=date_from,
             date_to=date_to,
+            is_newest_first=order == "desc",
             limit=page_size,
             offset=(page - 1) * page_size,
         )

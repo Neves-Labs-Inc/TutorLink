@@ -99,7 +99,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ];
 
 export const BUSINESS_TIMEZONE_KEY = "business_timezone";
-const RETENTION_KEY = "chat_retention_days";
+export const RETENTION_KEY = "chat_retention_days";
+export const PURGE_HOUR_KEY = "retention_purge_hour_utc";
 
 // Email subjects, bodies and colours save from the email editor, and the
 // time zone is never written from this page.

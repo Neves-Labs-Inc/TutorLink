@@ -339,6 +339,7 @@ def list_exceptions(
     user_id: uuid.UUID,
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
+    is_newest_first: bool = False,
     limit: int,
     offset: int,
 ) -> tuple[list[TutorAvailabilityException], int]:
@@ -356,6 +357,9 @@ def list_exceptions(
     rather than rows contained by it: `end_date >= date_from` and `start_date <= date_to`. A
     containment test (`start_date >= date_from`) would drop Time off that began before the
     window and runs through it — exactly the row a weekly grid exists to show.
+
+    Rows come oldest first by `start_date`; `is_newest_first` reverses that (and the `id`
+    tiebreaker), so page one holds the latest rows for a long history.
     """
     _assert_may_read(actor_id=actor_id, actor_role=actor_role, owner_id=user_id)
 
@@ -374,6 +378,11 @@ def list_exceptions(
 
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
+    ordering = (
+        (TutorAvailabilityException.start_date.desc(), TutorAvailabilityException.id.desc())
+        if is_newest_first
+        else (TutorAvailabilityException.start_date, TutorAvailabilityException.id)
+    )
     # `id` is the tiebreaker, not decoration: several rows on one `start_date` is the ordinary
     # case, and LIMIT/OFFSET over a sort key that does not distinguish them may order two
     # executions differently — so page two can repeat or skip a row page one already showed.
@@ -385,7 +394,7 @@ def list_exceptions(
                 selectinload(TutorAvailabilityException.canceller),
                 selectinload(TutorAvailabilityException.creator),
             )
-            .order_by(TutorAvailabilityException.start_date, TutorAvailabilityException.id)
+            .order_by(*ordering)
             .limit(limit)
             .offset(offset)
         ).all()

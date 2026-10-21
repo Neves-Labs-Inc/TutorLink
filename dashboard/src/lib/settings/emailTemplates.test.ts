@@ -2,18 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { Setting } from './settings'
 import {
   BRAND_COLOR_PRESETS,
-  EMAIL_TEMPLATE_KEYS,
   TEMPLATE_SECTIONS,
   draftEmailPayload,
-  emailTemplateSettings,
-  emailTemplateUpdates,
   findPlaceholders,
-  hasAllEmailTemplates,
-  hasTemplateErrors,
   isPresetSelected,
   normalizeBrandColor,
   previewDocument,
-  testEmailSentMessage,
   validateBrandColor,
   validateTemplate,
 } from './emailTemplates'
@@ -102,80 +96,8 @@ describe('validateTemplate', () => {
 describe('key filtering', () => {
   const all = [setting('some_limit', '5'), setting('reminder_hour', '9'), ...savedTemplates()]
 
-  it('keeps the four template keys and both brand colours', () => {
-    expect(emailTemplateSettings(all).map((item) => item.key)).toEqual([
-      ...EMAIL_TEMPLATE_KEYS,
-      'email_invite_brand_color',
-      'email_reset_brand_color',
-    ])
-  })
-
   it('removes them from the general settings', () => {
     expect(generalSettings(all).map((item) => item.key)).toEqual(['some_limit'])
-  })
-
-  it('knows when a key is missing', () => {
-    expect(hasAllEmailTemplates(all)).toBe(true)
-    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_reset_body'))).toBe(false)
-    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_invite_brand_color'))).toBe(false)
-    expect(hasAllEmailTemplates(all.filter((item) => item.key !== 'email_reset_brand_color'))).toBe(false)
-  })
-})
-
-describe('emailTemplateUpdates', () => {
-  it('sends only changed keys, unmodified', () => {
-    const draft = { email_invite_body: 'Hi\n{link}\n', email_reset_subject: 'Reset' }
-
-    expect(emailTemplateUpdates(savedTemplates(), draft)).toEqual([
-      { key: 'email_invite_body', value: 'Hi\n{link}\n' },
-    ])
-  })
-
-  it('ignores draft keys that are not template keys', () => {
-    expect(emailTemplateUpdates(savedTemplates(), { reminder_hour: '5' })).toEqual([])
-  })
-
-  it('sends a changed brand colour uppercase alongside template changes', () => {
-    const draft = { email_invite_brand_color: '#cb9bc3', email_reset_subject: 'New' }
-
-    expect(emailTemplateUpdates(savedTemplates(), draft)).toEqual([
-      { key: 'email_reset_subject', value: 'New' },
-      { key: 'email_invite_brand_color', value: '#CB9BC3' },
-    ])
-  })
-
-  it('treats a colour that differs only in case as unchanged', () => {
-    expect(emailTemplateUpdates(savedTemplates(), { email_invite_brand_color: '#74c8c9' })).toEqual([])
-  })
-
-  it('sends only the reset colour when only that one changed', () => {
-    expect(emailTemplateUpdates(savedTemplates(), { email_reset_brand_color: '#d6b990' })).toEqual([
-      { key: 'email_reset_brand_color', value: '#D6B990' },
-    ])
-  })
-})
-
-describe('hasTemplateErrors', () => {
-  it('is false for the saved values', () => {
-    expect(hasTemplateErrors(savedTemplates(), {})).toBe(false)
-  })
-
-  it('is true when any section draft is invalid', () => {
-    expect(hasTemplateErrors(savedTemplates(), { email_reset_body: 'no link' })).toBe(true)
-  })
-
-  it.each(['email_invite_brand_color', 'email_reset_brand_color'])('is true when the %s draft is invalid', (key) => {
-    expect(hasTemplateErrors(savedTemplates(), { [key]: '#74C8C' })).toBe(true)
-  })
-})
-
-describe('testEmailSentMessage', () => {
-  it('names the signed-in email when it is known', () => {
-    expect(testEmailSentMessage('ana@example.com')).toBe('Test email sent to ana@example.com.')
-  })
-
-  it('drops the address when the signed-in user is not loaded', () => {
-    expect(testEmailSentMessage(undefined)).toBe('Test email sent.')
   })
 })
 

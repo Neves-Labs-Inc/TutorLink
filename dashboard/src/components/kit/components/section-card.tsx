@@ -13,6 +13,10 @@ type SectionCardProps = {
   badge?: ReactNode;
   isCollapsible?: boolean;
   isInitiallyOpen?: boolean;
+  // Controlled open state for a collapsible card. Leave both out and the
+  // card keeps its own.
+  isOpen?: boolean;
+  onOpenChange?: (isOpen: boolean) => void;
   children: ReactNode;
 };
 
@@ -23,16 +27,20 @@ export function SectionCard({
   badge,
   isCollapsible = false,
   isInitiallyOpen = false,
+  isOpen: controlledIsOpen,
+  onOpenChange,
   children,
 }: SectionCardProps): ReactNode {
-  const [isOpen, setIsOpen] = useState(!isCollapsible || isInitiallyOpen);
+  const [ownIsOpen, setOwnIsOpen] = useState(!isCollapsible || isInitiallyOpen);
+  const isOpen = controlledIsOpen ?? ownIsOpen;
   // Only an open the person caused rises; the first paint stays still.
   const [hasToggled, setHasToggled] = useState(false);
   const headingId = getSectionHeadingId(id);
 
   function handleToggle(): void {
-    setIsOpen(!isOpen);
+    setOwnIsOpen(!isOpen);
     setHasToggled(true);
+    onOpenChange?.(!isOpen);
   }
 
   const titleId = `${id}-title`;

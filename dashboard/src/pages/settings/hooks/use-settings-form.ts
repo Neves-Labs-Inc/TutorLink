@@ -34,6 +34,10 @@ export type SettingsForm = {
   isRetrying: boolean;
   retry: () => void;
   valueOf: (key: string) => string;
+  // The value as last saved, ignoring the draft.
+  savedValueOf: (key: string) => string;
+  // True while WhatsApp hasn't approved the reminder message.
+  areRemindersPaused: boolean;
   setValue: (key: string, value: string) => void;
   // Shows the key's error from now on (a blur after a change).
   touch: (key: string) => void;
@@ -43,6 +47,8 @@ export type SettingsForm = {
   changeCount: number;
   countIn: (groupId: GroupId) => number;
   hasShownErrors: boolean;
+  // True when any changed value is invalid, shown yet or not.
+  hasErrors: boolean;
   saveState: SaveState;
   // True when saving would delete chats sooner, so it needs a confirm.
   wouldShortenRetention: boolean;
@@ -193,6 +199,8 @@ export function useSettingsForm({
     isRetrying: hasLoadFailed && query.isFetching,
     retry: () => void query.refetch(),
     valueOf,
+    savedValueOf: (key) => readSetting(items, key),
+    areRemindersPaused: query.data?.reminders_paused ?? false,
     setValue,
     touch,
     errorOf,
@@ -206,6 +214,7 @@ export function useSettingsForm({
     changeCount: updates.length,
     countIn: (groupId) => countChangesIn(groupId, updates),
     hasShownErrors: updates.some((update) => errorOf(update.key) !== undefined),
+    hasErrors: clientErrors.size > 0 || Object.keys(serverErrors).length > 0,
     saveState,
     wouldShortenRetention: wouldShortenRetention(items, updates),
     save,

@@ -1,11 +1,12 @@
 // The signed-in frame for every guarded route (a layout route): one
 // KitRoot on the chosen theme, the kit AppShell with the role's nav, the
-// leave guard every nav goes through, and the old Toaster for screens
-// not yet rebuilt.
+// leave guard every nav goes through, Booking details and the booking
+// form any page can open, and the old Toaster for screens not yet rebuilt.
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import KitRoot from "@/components/kit/kit-root";
+import BookingOverlaysProvider from "@/components/booking-overlays/booking-overlays-provider";
 import { AppShell } from "@/components/kit/shell/app-shell";
 import type { NavId } from "@/components/kit/shell/nav";
 import LeaveGuardProvider from "@/components/layout/leave-guard-provider";
@@ -18,7 +19,12 @@ import { useAuthStore } from "@/stores/authStore";
 
 const PROFILE_PATH = "/profile";
 
-export default function AppLayout(): ReactNode {
+type AppLayoutProps = {
+  // Shown in place of the matched child route (the catch-all page).
+  children?: ReactNode;
+};
+
+export default function AppLayout({ children }: AppLayoutProps): ReactNode {
   const role = useAuthStore((state) => state.role);
   const { theme } = useTheme();
   // The route guard around this layout has already settled a role.
@@ -28,7 +34,9 @@ export default function AppLayout(): ReactNode {
     <>
       <KitRoot theme={theme}>
         <LeaveGuardProvider>
-          <SignedInShell role={role} />
+          <BookingOverlaysProvider>
+            <SignedInShell role={role}>{children}</SignedInShell>
+          </BookingOverlaysProvider>
         </LeaveGuardProvider>
       </KitRoot>
       <Toaster aboveTabBar />
@@ -36,9 +44,9 @@ export default function AppLayout(): ReactNode {
   );
 }
 
-type SignedInShellProps = { role: Role };
+type SignedInShellProps = { role: Role; children?: ReactNode };
 
-function SignedInShell({ role }: SignedInShellProps): ReactNode {
+function SignedInShell({ role, children }: SignedInShellProps): ReactNode {
   // Asks first while a page holds unsaved changes.
   const navigate = useGuardedNavigate();
   const { pathname } = useLocation();
@@ -67,7 +75,7 @@ function SignedInShell({ role }: SignedInShellProps): ReactNode {
       activeId={activeId}
       onNavigate={handleNavigate}
     >
-      <Outlet />
+      {children ?? <Outlet />}
     </AppShell>
   );
 }

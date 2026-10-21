@@ -38,6 +38,8 @@ vi.mock("@/lib/queries/settings", () => ({
       }),
   },
   updateSettings: network.updateSettings,
+  // The Emails group imports it; these tests never open an email editor.
+  sendTestEmail: vi.fn(),
 }));
 
 const ME = { id: "u-1", email: "rita@example.com", role: "admin", name: "Rita Souza" };

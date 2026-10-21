@@ -130,7 +130,9 @@ export function getGuardianToTell(booking: BookingDetail): GuardianToTell {
 }
 
 // "Thu, Oct 15 at 3:30 PM".
-export function describeBookingTime(booking: BookingDetail): string {
+export function describeBookingTime(
+  booking: Pick<BookingDetail, "scheduled_date" | "start_time">,
+): string {
   const day = formatDay(booking.scheduled_date, {
     weekday: "short",
     month: "short",

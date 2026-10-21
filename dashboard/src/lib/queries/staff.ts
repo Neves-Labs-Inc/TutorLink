@@ -39,12 +39,12 @@ export const staffQueries = {
       },
     }),
 
-  // Staff who can be booked: everyone not archived.
+  // Staff who can be booked: everyone not archived, with their Subjects.
   active: () =>
     queryOptions({
       queryKey: ['staff', 'list', { archived: false }],
       queryFn: async () => {
-        const response = await api.get<Page<Staff>>('/api/staff', {
+        const response = await api.get<Page<StaffRead>>('/api/staff', {
           params: { archived: false, page_size: STAFF_PAGE_SIZE },
         })
 

@@ -97,7 +97,12 @@ export type TimeOffListParams = {
   page_size?: number;
 };
 
-export type UserTimeOffParams = { page?: number; page_size?: number };
+export type UserTimeOffParams = {
+  // Oldest first unless "desc".
+  order?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
+};
 
 const HTTP_CONFLICT = 409;
 const NOT_READABLE = new Set([403, 404]);

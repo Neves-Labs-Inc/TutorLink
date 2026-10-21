@@ -1,7 +1,7 @@
 // Booking details (DESIGN §11.3, §11.4, §11.6): the one place every act on
 // a Booking lives. Bookings, Home and Families open it with their own back
 // label. Keep it mounted and drive it with bookingId, so it plays its exit.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { CalendarX2 } from "lucide-react";
@@ -30,6 +30,9 @@ type BookingDetailsOverlayProps = {
   backLabel: string;
   onClose: () => void;
   onChangeBooking: (booking: BookingDetail) => void;
+  // A new value moves focus to the title once it shows (back from Change
+  // booking).
+  titleFocusKey?: number;
 };
 
 export default function BookingDetailsOverlay({
@@ -37,6 +40,7 @@ export default function BookingDetailsOverlay({
   backLabel,
   onClose,
   onChangeBooking,
+  titleFocusKey,
 }: BookingDetailsOverlayProps): ReactNode {
   const role = useAuthStore((state) => state.role);
   // Keep and Stop keeping are the Admins' (and Developers') alone.
@@ -56,6 +60,14 @@ export default function BookingDetailsOverlay({
     onUpdatedInPlace: () => titleRef.current?.focus(),
   });
   const { booking } = details;
+  const focusedKeyRef = useRef(titleFocusKey);
+  const hasTitle = booking !== null && bookingId !== null;
+  // Runs after the overlay's own focus-in (a child effect), so it wins.
+  useEffect(() => {
+    if (!hasTitle || titleFocusKey === focusedKeyRef.current) return;
+    focusedKeyRef.current = titleFocusKey;
+    titleRef.current?.focus();
+  }, [hasTitle, titleFocusKey]);
 
   function handleAct(act: BookingAct): void {
     if (!booking) return;

@@ -27,7 +27,11 @@ const COUNTS: CountsRead = {
 
 const network = vi.hoisted(() => ({ get: vi.fn() }));
 
-vi.mock("@/lib/api", () => ({ api: { get: network.get } }));
+// The layout now mounts the booking overlays, which import the error helpers.
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  api: { get: network.get },
+}));
 
 type Responses = {
   me?: () => Promise<unknown>;

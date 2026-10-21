@@ -17,7 +17,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { landingPath } from "@/lib/auth/auth";
 import { formatWait } from "@/lib/auth/sign-in";
 import type { SignInFailure } from "@/lib/auth/sign-in";
-import { useCountdown } from "@/pages/auth/hooks/use-countdown";
+import { useCountdown } from "@/hooks/use-countdown";
 
 type FieldErrors = { email?: string; password?: string };
 

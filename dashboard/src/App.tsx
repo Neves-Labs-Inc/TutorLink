@@ -19,7 +19,7 @@ import { Dashboard } from "@/pages/admin/Dashboard";
 import { Bookings } from "@/pages/admin/Bookings";
 import ChatsPage from "@/pages/chats/chats-page";
 import { TimeOff } from "@/pages/tutor/TimeOff";
-import { NotFound } from "@/pages/NotFound";
+import NotFoundPage from "@/pages/not-found/not-found-page";
 import ProfilePage from "@/pages/profile/profile-page";
 import SettingsPage from "@/pages/settings/settings-page";
 import FamiliesPage from "@/pages/families/families-page";
@@ -33,9 +33,7 @@ import { VisualDirectionPrototype } from "@/pages/prototype/visual-direction/Vis
 import HomePrototype from "@/pages/prototype/home/home-prototype";
 import BookingsPrototype from "@/pages/prototype/bookings/bookings-prototype";
 import ChatsPrototype from "@/pages/prototype/chats/chats-prototype";
-import SettingsPrototype from "@/pages/prototype/settings/settings-prototype";
 import TutorTimeOffPrototype from "@/pages/prototype/tutor-timeoff/tutor-timeoff-prototype";
-import AuthPrototype from "@/pages/prototype/auth/auth-prototype";
 import AccountsStaffPrototype from "@/pages/prototype/accounts-staff/accounts-staff-prototype";
 
 const TUTOR_ONLY: readonly Role[] = ["tutor"];
@@ -220,16 +218,10 @@ export const App = (): ReactNode => (
           <Route path="/prototype/chats" element={<ChatsPrototype />} />
         )}
         {import.meta.env.DEV && (
-          <Route path="/prototype/settings" element={<SettingsPrototype />} />
-        )}
-        {import.meta.env.DEV && (
           <Route
             path="/prototype/tutor-timeoff"
             element={<TutorTimeOffPrototype />}
           />
-        )}
-        {import.meta.env.DEV && (
-          <Route path="/prototype/auth" element={<AuthPrototype />} />
         )}
         {import.meta.env.DEV && (
           <Route
@@ -238,7 +230,7 @@ export const App = (): ReactNode => (
           />
         )}
         <Route path="/" element={<Navigate to="/login" replace />} />
-        <Route path="*" element={<NotFound />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AuthProvider>
   </BrowserRouter>

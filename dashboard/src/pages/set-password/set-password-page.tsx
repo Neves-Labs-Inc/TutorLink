@@ -11,14 +11,17 @@ import KitRoot from "@/components/kit/kit-root";
 import { AuthFrame, AuthFrameSkeleton } from "@/components/kit/auth/auth-frame";
 import { Button, TextLink } from "@/components/kit/components/button";
 import { useAuth } from "@/hooks/useAuth";
+import { useCountdown } from "@/hooks/use-countdown";
 import { useTheme } from "@/hooks/use-theme";
 import { requestLinkLookup } from "@/lib/api";
 import type { PasswordLinkKind } from "@/lib/api";
+import { formatWait } from "@/lib/auth/sign-in";
+import type { Lockout } from "@/lib/auth/sign-in";
 import PasswordForm from "@/pages/set-password/password-form";
 import { getLinkView } from "@/pages/set-password/link-view";
 import type { LinkView } from "@/pages/set-password/link-view";
-import { formatWait, useCountdown } from "@/pages/set-password/use-countdown";
 
+const MS_PER_SECOND = 1000;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNPROCESSABLE = 422;
 const LOGIN_PATH = "/login";
@@ -141,10 +144,15 @@ function LinkPage(): ReactNode {
     isLinkSpent,
   );
 
-  const secondsLeft = useCountdown(
-    view.name === "rate-limited" ? view.retryAfterSeconds : 0,
-    lookup.dataUpdatedAt,
-  );
+  // Each fresh answer from the server restarts the wait.
+  const lockout: Lockout | null =
+    view.name === "rate-limited"
+      ? {
+          from: lookup.dataUpdatedAt,
+          until: lookup.dataUpdatedAt + view.retryAfterSeconds * MS_PER_SECOND,
+        }
+      : null;
+  const secondsLeft = useCountdown(lockout);
 
   if (view.name === "checking") {
     return <AuthFrameSkeleton label="Checking your link" />;

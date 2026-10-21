@@ -706,6 +706,56 @@ def test_a_manager_lists_their_own_time_off(api: TestClient, db: Session) -> Non
     assert [item["id"] for item in response.json()["items"]] == [str(row.id)]
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_order"),
+    [("", [0, 1, 2]), ("?order=asc", [0, 1, 2]), ("?order=desc", [2, 1, 0])],
+)
+def test_a_persons_time_off_lists_oldest_first_unless_newest_first_is_asked(
+    api: TestClient, db: Session, query: str, expected_order: list[int]
+) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    target = _make_staff(db, role=UserRole.TUTOR)
+    rows = [
+        _make_exception(
+            db,
+            user_id=target.id,
+            status=ExceptionStatus.APPROVED,
+            start_date=FUTURE + datetime.timedelta(days=10 * offset),
+        )
+        for offset in range(3)
+    ]
+
+    response = api.get(f"/api/users/{target.id}/exceptions{query}", headers=_bearer(admin))
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [
+        str(rows[index].id) for index in expected_order
+    ]
+
+
+def test_newest_first_pages_start_at_the_latest_row(api: TestClient, db: Session) -> None:
+    admin = _make_staff(db, role=UserRole.ADMIN)
+    target = _make_staff(db, role=UserRole.TUTOR)
+    rows = [
+        _make_exception(
+            db,
+            user_id=target.id,
+            status=ExceptionStatus.APPROVED,
+            start_date=FUTURE + datetime.timedelta(days=10 * offset),
+        )
+        for offset in range(3)
+    ]
+
+    response = api.get(
+        f"/api/users/{target.id}/exceptions?order=desc&page=2&page_size=2", headers=_bearer(admin)
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["total"] == 3
+    assert [item["id"] for item in body["items"]] == [str(rows[0].id)]
+
+
 @pytest.mark.parametrize("role", ADMIN_ROLE_CASES)
 @pytest.mark.parametrize("target_role", [UserRole.TUTOR, UserRole.MANAGER, UserRole.ADMIN])
 def test_an_admin_lists_anyones_time_off(

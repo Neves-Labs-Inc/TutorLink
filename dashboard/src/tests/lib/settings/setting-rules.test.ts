@@ -36,7 +36,7 @@ describe("checkSettingValue", () => {
     ],
     ["max_slots_offered", "0", "Enter 1 or more."],
     ["chat_retention_days", "36501", "Enter a period from 0 days to 100 years."],
-    ["login_rate_limit_ip_max_attempts", "0", "Enter 1 or more."],
+    ["login_rate_limit_ip_max_attempts", "0", "Enter 1 or more tries."],
     [
       "login_rate_limit_email_window_seconds",
       "59",

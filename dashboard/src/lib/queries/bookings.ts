@@ -168,6 +168,8 @@ export type BookingCreate = {
 // sent: `null` clears them (omitting the key would keep the row's).
 export type BookingReplace = Omit<BookingCreate, 'child_id' | 'notes'> & {
   notes: string | null
+  // The `updated_at` the caller last read; a changed row is refused with a stale 409.
+  expected_updated_at?: string
 }
 
 // The body of `PATCH /api/bookings/{id}` beyond the new status.

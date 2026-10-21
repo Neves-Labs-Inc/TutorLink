@@ -51,7 +51,7 @@ const HOME: NavItem = {
   id: "home",
   label: "Home",
   icon: House,
-  path: "/dashboard",
+  path: "/home",
 };
 const BOOKINGS: NavItem = {
   id: "bookings",
@@ -69,13 +69,13 @@ const FAMILIES: NavItem = {
   id: "accounts",
   label: "Families",
   icon: BookUser,
-  path: "/children",
+  path: "/families",
 };
 const STAFF: NavItem = {
   id: "staff",
   label: "Staff",
   icon: Users,
-  path: "/tutors",
+  path: "/staff",
 };
 const TIME_OFF: NavItem = {
   id: "time-off",
@@ -101,7 +101,7 @@ const TUTOR_NAV: NavItem[] = [
     id: "my-availability",
     label: "My availability",
     icon: CalendarClock,
-    path: "/schedule",
+    path: "/availability",
   },
   TIME_OFF,
 ];
@@ -109,17 +109,22 @@ const TUTOR_NAV: NavItem[] = [
 // First path segment → the item it belongs to. Pages without an item of
 // their own (Guardians, Users, Reminders) mark their nearest one.
 const NAV_ID_BY_SEGMENT: Record<string, NavId> = {
+  home: "home",
   dashboard: "home",
   bookings: "bookings",
   chats: "chats",
   reminders: "chats",
+  families: "accounts",
+  // Old URLs that redirect into Families.
   children: "accounts",
   guardians: "accounts",
+  staff: "staff",
   tutors: "staff",
   users: "staff",
   settings: "settings",
   sessions: "my-sessions",
   schedule: "my-availability",
+  availability: "my-availability",
   "time-off": "time-off",
   profile: "profile",
 };
@@ -129,6 +134,7 @@ export type CountsRead = {
   needs_attention: number;
   time_off_pending: number | null;
   children_awaiting_evaluation: number;
+  children_needing_tutor: number;
   bookings_to_sort_out: number;
   unread_chats: number;
 };
@@ -136,7 +142,8 @@ export type CountsRead = {
 type NavOptions = {
   // Left out: items without badges; see applyCounts for the rest.
   counts?: CountsRead | null;
-  // The office Time off screen comes with area 6; prototypes show it now.
+  // On by default: the office Time off screen is live (area 6). Kept so
+  // the prototypes that pass it still compile.
   hasOfficeTimeOff?: boolean;
 };
 
@@ -158,7 +165,10 @@ function getCountBadge(id: NavId, counts: CountsRead): NavBadge | undefined {
   let badge: NavBadge | undefined;
   if (id === "bookings") {
     badge = {
-      count: counts.bookings_to_sort_out + counts.children_awaiting_evaluation,
+      count:
+        counts.bookings_to_sort_out +
+        counts.children_awaiting_evaluation +
+        counts.children_needing_tutor,
       label: "to sort out",
       tone: "pink",
     };
@@ -189,7 +199,7 @@ export function applyCounts(
 
 export function getNav(
   role: NavRole,
-  { counts, hasOfficeTimeOff = false }: NavOptions = {},
+  { counts, hasOfficeTimeOff = true }: NavOptions = {},
 ): NavItem[] {
   const items =
     role === "tutor" ? TUTOR_NAV : getOfficeNav(role, hasOfficeTimeOff);

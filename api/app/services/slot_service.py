@@ -19,6 +19,10 @@ what makes the lead-time and lookahead behaviour testable without freezing the c
 router passes the business wall-clock (`clock.business_now`, per `BUSINESS_TIMEZONE`), the zone
 every scheduling column is stored in.
 
+**The cap binds the bot only.** `find_available_slots` caps `items` at `max_slots_offered` by
+default, the bot's limit; the router passes `should_cap=False` because the dashboard shows every
+free time. `exclude_booking_id` is the router's too: the Booking being changed is not busy.
+
 **Assigned Tutors bound the bot only** (#242). `assigned_only=True` is the bot's call and keeps
 the Child's Assigned Tutors; the router never passes it, so the office may book anyone.
 
@@ -83,9 +87,9 @@ class OpenSlot:
 class SlotSearchResult:
     """`items` capped at `page_size`; `total` is the pre-cap count (REQ-043.3, REQ-043.4).
 
-    `page_size` is the one read of `max_slots_offered` this search makes, so the cap the router
-    reports is the exact cap it applied to `items` rather than a second, possibly-stale read of
-    the same setting.
+    Capped, `page_size` is the one read of `max_slots_offered` this search makes, so the cap the
+    bot reports is the exact cap it applied to `items` rather than a second, possibly-stale read
+    of the same setting. Uncapped, it is `len(items)`.
     """
 
     items: list[OpenSlot]
@@ -104,6 +108,8 @@ def find_available_slots(
     now: datetime.datetime,
     location: BookingLocation | None = None,
     assigned_only: bool = False,
+    should_cap: bool = True,
+    exclude_booking_id: uuid.UUID | None = None,
 ) -> SlotSearchResult:
     """The cap is applied last, after every subtraction and after the sort, so `total` is the
     number that matched and `items` is the earliest few of them.
@@ -114,6 +120,10 @@ def find_available_slots(
     the full gap against every booking, as before the parameter existed.
 
     `assigned_only` keeps only the Child's Assigned Tutors (`_qualified_tutor_names`).
+
+    `should_cap=False` returns every open slot (the dashboard). `exclude_booking_id` leaves that
+    Booking out of its Staff member's busy windows, travel gap included, so a Booking being
+    changed does not block its own time; an id that matches nothing excludes nothing.
     """
     settings = load_scheduling_settings(db)
     assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
@@ -132,7 +142,9 @@ def find_available_slots(
     # never PostgreSQL's `EXTRACT(DOW)`, which makes Sunday 0.
     ranges = _active_ranges(db, tutor_ids=tutor_ids, day_of_week=date.weekday(), location=location)
     whole_day_off, exception_windows = _approved_exceptions(db, tutor_ids=tutor_ids, date=date)
-    booking_windows = _live_booking_windows(db, tutor_ids=tutor_ids, date=date)
+    booking_windows = _live_booking_windows(
+        db, tutor_ids=tutor_ids, date=date, exclude_booking_id=exclude_booking_id
+    )
     # With no Location chosen the candidate is treated as a home visit, which keeps the full
     # gap against every neighbour: today's answer, and the stricter of the two.
     candidate_location = location if location is not None else BookingLocation.HOME
@@ -172,11 +184,9 @@ def find_available_slots(
 
     open_slots.sort(key=lambda slot: (slot.start_time, slot.tutor_id))
 
-    return SlotSearchResult(
-        items=open_slots[: settings.max_slots_offered],
-        total=len(open_slots),
-        page_size=settings.max_slots_offered,
-    )
+    cap = settings.max_slots_offered if should_cap else len(open_slots)
+
+    return SlotSearchResult(items=open_slots[:cap], total=len(open_slots), page_size=cap)
 
 
 def allowed_locations(
@@ -383,13 +393,17 @@ def _approved_exceptions(
 
 
 def _live_booking_windows(
-    db: Session, *, tutor_ids: list[uuid.UUID], date: datetime.date
+    db: Session,
+    *,
+    tutor_ids: list[uuid.UUID],
+    date: datetime.date,
+    exclude_booking_id: uuid.UUID | None = None,
 ) -> dict[uuid.UUID, list[BookingWindow]]:
     """Step 3's rows, keyed by profile. `LIVE_BOOKING_STATUSES` is the one definition of a
     booking that counts. A booking names its Staff member as a user (#130), so the profile is
     reached through `tutors.user_id`. Each window carries the booking's Location, which decides
-    the travel gap a candidate needs from it."""
-    rows = db.execute(
+    the travel gap a candidate needs from it. `exclude_booking_id` drops that one Booking."""
+    statement = (
         select(Tutor.id, Booking.start_time, Booking.end_time, Booking.location)
         .join(Booking, Booking.user_id == Tutor.user_id)
         .where(
@@ -397,7 +411,10 @@ def _live_booking_windows(
             Booking.scheduled_date == date,
             Booking.status.in_(LIVE_BOOKING_STATUSES),
         )
-    ).all()
+    )
+    if exclude_booking_id is not None:
+        statement = statement.where(Booking.id != exclude_booking_id)
+    rows = db.execute(statement).all()
 
     windows: dict[uuid.UUID, list[BookingWindow]] = {}
     for tutor, start_time, end_time, location in rows:

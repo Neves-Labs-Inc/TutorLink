@@ -4,7 +4,7 @@
 // drop out below 1024px. The whole row opens the record (a stretched
 // button in the first cell), so there is one tab stop per row.
 import type { ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, LoaderCircle } from "lucide-react";
 import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
 
 export type Column<T> = {
@@ -18,6 +18,8 @@ export type Column<T> = {
 export type PhoneRow = {
   leading?: ReactNode;
   title: string;
+  // Struck through, e.g. a cancelled Booking.
+  isTitleStruck?: boolean;
   subtitle?: string;
   meta?: string;
   trailing?: ReactNode;
@@ -32,6 +34,8 @@ type DataTableProps<T> = {
   getPhoneRow: (row: T) => PhoneRow;
   onOpenRow: (row: T) => void;
   isRowMuted?: (row: T) => boolean;
+  // A row being opened: aria-busy, and a spinner in place of its chevron.
+  isRowBusy?: (row: T) => boolean;
 };
 
 export function DataTable<T>({
@@ -43,6 +47,7 @@ export function DataTable<T>({
   getPhoneRow,
   onOpenRow,
   isRowMuted = () => false,
+  isRowBusy = () => false,
 }: DataTableProps<T>): ReactNode {
   const [firstColumn, ...otherColumns] = columns;
   return (
@@ -85,6 +90,7 @@ export function DataTable<T>({
                     type="button"
                     onClick={() => onOpenRow(row)}
                     aria-label={`Open ${getRowTitle(row)}`}
+                    aria-busy={isRowBusy(row) || undefined}
                     className="absolute inset-0 z-0 cursor-pointer rounded-none focus-visible:-outline-offset-2"
                   />
                   <div className="relative z-10 pointer-events-none">
@@ -103,10 +109,17 @@ export function DataTable<T>({
                   </td>
                 ))}
                 <td className="pointer-events-none relative z-10 pr-3 text-right">
-                  <ChevronRight
-                    aria-hidden
-                    className="inline size-5 text-(--tl-muted) transition-transform duration-150 group-hover:translate-x-0.5"
-                  />
+                  {isRowBusy(row) ? (
+                    <LoaderCircle
+                      aria-hidden
+                      className="kit-spin inline size-5 text-(--tl-muted)"
+                    />
+                  ) : (
+                    <ChevronRight
+                      aria-hidden
+                      className="inline size-5 text-(--tl-muted) transition-transform duration-150 group-hover:translate-x-0.5"
+                    />
+                  )}
                 </td>
               </tr>
             ))}
@@ -125,6 +138,7 @@ export function DataTable<T>({
               <button
                 type="button"
                 onClick={() => onOpenRow(row)}
+                aria-busy={isRowBusy(row) || undefined}
                 className={cn(
                   "flex min-h-[72px] w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-(--tl-tint) active:bg-(--tl-tint-strong) focus-visible:-outline-offset-2",
                   isRowMuted(row) && "text-(--tl-muted)",
@@ -132,7 +146,12 @@ export function DataTable<T>({
               >
                 {phoneRow.leading}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] leading-6 font-semibold">
+                  <span
+                    className={cn(
+                      "block truncate text-[15px] leading-6 font-semibold",
+                      phoneRow.isTitleStruck && "line-through",
+                    )}
+                  >
                     {phoneRow.title}
                   </span>
                   {phoneRow.subtitle && (
@@ -147,10 +166,17 @@ export function DataTable<T>({
                   )}
                 </span>
                 {phoneRow.trailing}
-                <ChevronRight
-                  aria-hidden
-                  className="size-5 shrink-0 text-(--tl-muted)"
-                />
+                {isRowBusy(row) ? (
+                  <LoaderCircle
+                    aria-hidden
+                    className="kit-spin size-5 shrink-0 text-(--tl-muted)"
+                  />
+                ) : (
+                  <ChevronRight
+                    aria-hidden
+                    className="size-5 shrink-0 text-(--tl-muted)"
+                  />
+                )}
               </button>
             </li>
           );

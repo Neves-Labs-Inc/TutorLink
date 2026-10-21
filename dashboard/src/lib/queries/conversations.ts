@@ -11,6 +11,7 @@ export type FlagReason =
   | 'reactivation_request'
   | 'booking_request'
   | 'question'
+  | 'reply_window_closed'
 export type MessageAuthorKind = 'client' | 'bot' | 'admin' | 'system'
 export type MessageStatus = 'received' | 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
 export type SystemMessageKind =
@@ -27,7 +28,7 @@ export type ConversationGuardianRef = { id: string; name: string }
 export type ConversationAdminRef = { id: string; name: string }
 
 export type ReactivationRequest = {
-  child: { id: string; name: string; is_active: boolean }
+  child: { id: string; name: string; archived: boolean }
 }
 
 export type Conversation = {
@@ -37,17 +38,19 @@ export type Conversation = {
   status: ConversationStatus
   taken_over_by: ConversationAdminRef | null
   last_message_at: string
-  last_message_preview: string
+  last_message_preview: string | null
   unread: boolean
   flag_reason: FlagReason | null
   intake_in_progress: boolean
+  last_client_message_at: string | null
+  is_window_open: boolean
+  flagged_at: string | null
 }
 
 export type ConversationDetail = Omit<Conversation, 'last_message_preview' | 'unread'> & {
   taken_over_at: string | null
   last_read_at: string
   message_count: number
-  unread_count: number
   created_at: string
   reactivation_request: ReactivationRequest | null
   flagged_at: string | null
@@ -72,6 +75,7 @@ export type ConversationListParams = {
   status?: ConversationStatus
   unread?: boolean
   flagged?: boolean
+  holder?: ('bot' | 'mine' | 'others')[]
   q?: string
   page?: number
   page_size?: number
@@ -85,7 +89,7 @@ export type ConversationMessageListParams = {
 
 export const approveReactivation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/reactivation/approve`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/reactivation/approve`,
   )
 
   return response.data
@@ -93,7 +97,7 @@ export const approveReactivation = async (conversationId: string): Promise<Conve
 
 export const denyReactivation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/reactivation/deny`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/reactivation/deny`,
   )
 
   return response.data
@@ -101,7 +105,7 @@ export const denyReactivation = async (conversationId: string): Promise<Conversa
 
 export const transferConversation = async (conversationId: string): Promise<ConversationDetail> => {
   const response = await api.post<ConversationDetail>(
-    `/api/conversations/${conversationId}/transfer`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/transfer`,
   )
 
   return response.data
@@ -111,7 +115,7 @@ export const updateConversationLanguage = async (
   conversationId: string,
   language: Language | null,
 ): Promise<ConversationDetail> => {
-  const response = await api.patch<ConversationDetail>(`/api/conversations/${conversationId}`, {
+  const response = await api.patch<ConversationDetail>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
     language,
   })
 
@@ -120,7 +124,7 @@ export const updateConversationLanguage = async (
 
 export const retryNotice = async (conversationId: string, messageId: string): Promise<Message> => {
   const response = await api.post<Message>(
-    `/api/conversations/${conversationId}/messages/${messageId}/retry`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/retry`,
   )
 
   return response.data
@@ -133,6 +137,8 @@ export const conversationQueries = {
       queryFn: async () => {
         const response = await api.get<Page<Conversation>>('/api/conversations', {
           params: { page_size: DEFAULT_PAGE_SIZE, ...params },
+          // holder=bot&holder=mine, not holder[]=bot
+          paramsSerializer: { indexes: null },
         })
 
         return response.data
@@ -145,7 +151,7 @@ export const conversationQueries = {
       queryKey: ['conversations', 'detail', conversationId],
       queryFn: async () => {
         const response = await api.get<ConversationDetail>(
-          `/api/conversations/${conversationId}`,
+          `/api/conversations/${encodeURIComponent(conversationId)}`,
         )
 
         return response.data
@@ -157,7 +163,7 @@ export const conversationQueries = {
       queryKey: ['conversations', 'detail', conversationId, 'messages', params],
       queryFn: async () => {
         const response = await api.get<Page<Message>>(
-          `/api/conversations/${conversationId}/messages`,
+          `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
           { params: { page_size: DEFAULT_PAGE_SIZE, ...params } },
         )
 

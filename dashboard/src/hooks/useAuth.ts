@@ -1,8 +1,10 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { flushDeferredActions } from '@/components/kit/overlays/use-deferred-action'
 import {
   errorDetail,
+  errorHeader,
   errorStatus,
   requestForgotPassword,
   requestLogin,
@@ -10,6 +12,7 @@ import {
   requestSetPassword,
 } from '@/lib/api'
 import { decodeAccessToken, landingPath } from '@/lib/auth/auth'
+import { getSignInFailure, type SignInFailure } from '@/lib/auth/sign-in'
 import { useAuthStore } from '@/stores/authStore'
 
 const LOGIN_FALLBACK_ERROR = 'Something went wrong. Please try again.'
@@ -22,6 +25,8 @@ export const useAuth = () => {
   const tutorId = useAuthStore((state) => state.tutorId)
   const setSession = useAuthStore((state) => state.setSession)
   const clearSession = useAuthStore((state) => state.clearSession)
+  // Stamped when the failure arrives, so a lockout's countdown starts from the 429 itself.
+  const [signInFailure, setSignInFailure] = useState<SignInFailure | null>(null)
 
   const loginMutation = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
@@ -32,6 +37,11 @@ export const useAuth = () => {
 
       return { accessToken: data.access_token, role: claims.role }
     },
+    onMutate: () => setSignInFailure(null),
+    onError: (error) =>
+      setSignInFailure(
+        getSignInFailure(errorStatus(error), errorHeader(error, 'Retry-After'), Date.now()),
+      ),
     onSuccess: ({ accessToken, role: nextRole }) => {
       setSession({ accessToken })
       navigate(landingPath(nextRole), { replace: true })
@@ -48,21 +58,28 @@ export const useAuth = () => {
       return { accessToken: data.access_token, role: claims.role }
     },
     onSuccess: ({ accessToken, role: nextRole }) => {
+      // Someone already signed in who opens a link becomes that link's account: drop the
+      // previous account's cached rows so they never show under the new one. Queries only: this mutation is still settling.
+      queryClient.removeQueries()
       setSession({ accessToken })
       navigate(landingPath(nextRole), { replace: true })
     },
   })
 
+  // Every 2xx reads the same (hit, miss or throttled), so only success or failure matters.
   const forgotPasswordMutation = useMutation({
     mutationFn: async (email: string) => {
-      const { data } = await requestForgotPassword(email)
-
-      return data.detail
+      await requestForgotPassword(email)
     },
   })
 
   const logoutMutation = useMutation({
-    mutationFn: requestLogout,
+    mutationFn: async () => {
+      // Pending Undo-window acts go out now, while the token is still in the store; once the
+      // session clears they would be sent anonymously.
+      flushDeferredActions()
+      await requestLogout()
+    },
     onSuccess: () => {
       clearSession()
       // Without this the next user to sign in on this tab inherits the previous user's
@@ -80,7 +97,7 @@ export const useAuth = () => {
     [loginMutate],
   )
   const { mutate: setPasswordMutate } = setPasswordMutation
-  const { mutate: forgotPasswordMutate } = forgotPasswordMutation
+  const { mutate: forgotPasswordMutate, reset: resetForgotPassword } = forgotPasswordMutation
 
   const setPasswordWithToken = useCallback(
     (token: string, password: string) => setPasswordMutate({ token, password }),
@@ -112,17 +129,13 @@ export const useAuth = () => {
           },
     forgotPassword,
     isSendingReset: forgotPasswordMutation.isPending,
-    // The server's confirmation sentence once any 2xx came back, else null.
-    forgotPasswordConfirmation: forgotPasswordMutation.isSuccess
-      ? forgotPasswordMutation.data
-      : null,
-    forgotPasswordError: forgotPasswordMutation.isError ? LOGIN_FALLBACK_ERROR : null,
-    isLoggingIn: loginMutation.isPending,
-    // Already a renderable string: the server's `detail` when it sent one, a fixed fallback
-    // otherwise. Never a raw Axios error, a status code, or a stack.
-    loginError:
-      loginMutation.error === null
-        ? null
-        : (errorDetail(loginMutation.error) ?? LOGIN_FALLBACK_ERROR),
+    isResetSent: forgotPasswordMutation.isSuccess,
+    hasResetFailed: forgotPasswordMutation.isError,
+    // Back to the empty form ("send another link").
+    resetForgotPassword,
+    // Stays true after a 200 on purpose: the form holds its pending look through the redirect.
+    isLoggingIn: loginMutation.isPending || loginMutation.isSuccess,
+    // A typed reason, never the server's `detail`, a status code or a stack.
+    signInFailure,
   }
 }

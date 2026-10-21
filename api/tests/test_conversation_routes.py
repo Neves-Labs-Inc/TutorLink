@@ -431,6 +431,196 @@ def test_a_thread_with_no_guardian_still_lists_under_its_number(
     assert body["items"][0]["taken_over_by"] is None
 
 
+@dataclass(frozen=True)
+class _HolderInbox:
+    me: User
+    colleague: User
+    bot: list[Conversation]
+    mine: list[Conversation]
+    others: list[Conversation]
+
+
+def _make_holder_inbox(db: Session, *, marker: str) -> _HolderInbox:
+    """Two chats per holder, newest activity first within each group: the bot's, `me`'s, and
+    the colleague's."""
+    me = _make_user(db)
+    colleague = _make_user(db)
+
+    def pair(offset: int, holder: User | None) -> list[Conversation]:
+        return [
+            _make_conversation(
+                db, marker=marker, last_message_at=NOON + _minutes(offset + 1), holder=holder
+            ),
+            _make_conversation(
+                db, marker=marker, last_message_at=NOON + _minutes(offset), holder=holder
+            ),
+        ]
+
+    return _HolderInbox(
+        me=me,
+        colleague=colleague,
+        bot=pair(0, None),
+        mine=pair(10, me),
+        others=pair(20, colleague),
+    )
+
+
+def _ids(chats: list[Conversation]) -> set[str]:
+    return {str(chat.id) for chat in chats}
+
+
+def _holder_params(*holders: str, **params: str | int) -> list[tuple[str, str | int]]:
+    return [*params.items(), *(("holder", holder) for holder in holders)]
+
+
+@pytest.mark.parametrize("holder", ["bot", "mine", "others"])
+def test_holder_filters_to_one_group(api: TestClient, db: Session, holder: str) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params(holder, q=marker),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert {row["id"] for row in body["items"]} == _ids(getattr(inbox, holder))
+    assert body["total"] == 2
+
+
+def test_holder_values_combine_with_or(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", "others", q=marker),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert {row["id"] for row in body["items"]} == _ids(inbox.mine + inbox.others)
+    assert body["total"] == 4
+
+
+def test_all_three_holder_values_are_no_filter(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("bot", "mine", "others", q=marker),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert body["total"] == 6
+    assert {row["id"] for row in body["items"]} == _ids(inbox.bot + inbox.mine + inbox.others)
+
+
+def test_mine_is_the_callers_not_every_admins(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    as_colleague = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", q=marker),
+        headers=_auth(inbox.colleague),
+    ).json()
+    colleague_others = api.get(
+        "/api/conversations",
+        params=_holder_params("others", q=marker),
+        headers=_auth(inbox.colleague),
+    ).json()
+
+    assert {row["id"] for row in as_colleague["items"]} == _ids(inbox.others)
+    assert {row["id"] for row in colleague_others["items"]} == _ids(inbox.mine)
+
+
+def test_holder_keeps_the_needs_attention_order(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+    newer_flag, older_flag = inbox.mine[0], inbox.others[0]
+    for chat, flagged_at in ((newer_flag, NOON), (older_flag, NOON - _minutes(30))):
+        chat.flag_reason = FlagReason.STUCK
+        chat.flagged_at = flagged_at
+    inbox.bot[0].flag_reason = FlagReason.STUCK
+    inbox.bot[0].flagged_at = NOON - _minutes(60)
+    db.flush()
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", "others", q=marker, flagged="true"),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert [row["id"] for row in body["items"]] == [str(older_flag.id), str(newer_flag.id)]
+    assert body["total"] == 2
+
+
+def test_holder_combines_with_q_and_unread(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+    unread_mine = inbox.mine[0]
+    for chat in inbox.mine + inbox.others + inbox.bot:
+        _make_message(db, chat, body="hi", at=chat.last_message_at)
+        chat.last_read_at = chat.last_message_at
+    unread_mine.last_read_at = None
+    inbox.others[0].last_read_at = None
+    db.flush()
+
+    unread = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", q=marker, unread="true"),
+        headers=_auth(inbox.me),
+    ).json()
+    other_marker = api.get(
+        "/api/conversations",
+        params=_holder_params("mine", q=_marker()),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert [row["id"] for row in unread["items"]] == [str(unread_mine.id)]
+    assert unread["total"] == 1
+    assert other_marker["total"] == 0
+
+
+def test_holder_combines_with_status(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+
+    body = api.get(
+        "/api/conversations",
+        params=_holder_params("bot", "mine", q=marker, status="human"),
+        headers=_auth(inbox.me),
+    ).json()
+
+    assert {row["id"] for row in body["items"]} == _ids(inbox.mine)
+
+
+def test_holder_total_counts_before_paging(api: TestClient, db: Session) -> None:
+    marker = _marker()
+    inbox = _make_holder_inbox(db, marker=marker)
+    params = _holder_params("mine", "others", q=marker, page_size=3)
+
+    first = api.get("/api/conversations", params=[*params, ("page", 1)], headers=_auth(inbox.me))
+    second = api.get("/api/conversations", params=[*params, ("page", 2)], headers=_auth(inbox.me))
+
+    assert len(first.json()["items"]) == 3
+    assert len(second.json()["items"]) == 1
+    assert first.json()["total"] == second.json()["total"] == 4
+
+
+def test_an_unknown_holder_is_400(api: TestClient, db: Session) -> None:
+    admin = _make_user(db)
+
+    response = api.get(
+        "/api/conversations", params=_holder_params("mine", "nobody"), headers=_auth(admin)
+    )
+
+    assert response.status_code == 400
+    assert set(response.json()) == {"detail"}
+    assert response.json()["detail"].startswith("query.holder")
+
+
 @pytest.mark.parametrize(
     "query", [{"status": "nobody"}, {"unread": "maybe"}, {"flagged": "maybe"}, {"page": "0"}]
 )

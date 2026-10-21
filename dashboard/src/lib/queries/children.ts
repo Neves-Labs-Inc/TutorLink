@@ -43,6 +43,13 @@ export type ChildLevel = {
   updated_at: string
 }
 
+// A Subject level on a list row (`ChildLevelRef`): non-archived Subjects only, by Subject name.
+export type ChildLevelRef = {
+  subject_id: string
+  name: string
+  level: number
+}
+
 export type ChildSummary = {
   id: string
   name: string
@@ -52,6 +59,8 @@ export type ChildSummary = {
   guardians: NamedRef[]
   homes: ChildHomeRef[]
   next_session: NextSession | null
+  // The API always sends it; optional so rows built before it was typed stay valid.
+  levels?: ChildLevelRef[]
   evaluated: Evaluated | null
   created_at: string
 }
@@ -96,6 +105,9 @@ export type ChildListParams = {
   awaiting_evaluation?: boolean
   // Only Children who are not yet Evaluated and have no live Evaluation.
   evaluable?: boolean
+  // Active, Evaluated Children with no Assigned Tutor (To do's Bookings group).
+  needs_tutor?: boolean
+  evaluated?: boolean
   page?: number
   page_size?: number
 }
@@ -142,7 +154,9 @@ export const childQueries = {
     queryOptions({
       queryKey: ['children', 'detail', childId],
       queryFn: async () => {
-        const response = await api.get<ChildDetail>(`/api/children/${childId}`)
+        const response = await api.get<ChildDetail>(
+          `/api/children/${encodeURIComponent(childId)}`,
+        )
 
         return response.data
       },
@@ -168,30 +182,4 @@ export const linkGuardian = async (
   const response = await api.post<ChildRecord>(`/api/children/${childId}/guardians`, data)
 
   return response.data
-}
-
-export const setChildLevel = async (
-  childId: string,
-  subjectId: string,
-  level: number,
-): Promise<ChildLevel> => {
-  const response = await api.put<ChildLevel>(`/api/children/${childId}/levels/${subjectId}`, {
-    level,
-  })
-
-  return response.data
-}
-
-export const removeChildLevel = async (childId: string, subjectId: string): Promise<void> => {
-  await api.delete(`/api/children/${childId}/levels/${subjectId}`)
-}
-
-export const markChildEvaluated = async (childId: string): Promise<Evaluated> => {
-  const response = await api.post<Evaluated>(`/api/children/${childId}/evaluated`)
-
-  return response.data
-}
-
-export const clearChildEvaluated = async (childId: string): Promise<void> => {
-  await api.delete(`/api/children/${childId}/evaluated`)
 }

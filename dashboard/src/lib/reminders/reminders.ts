@@ -5,6 +5,7 @@ import { addDaysIso, formatIsoDate, formatTime, todayLocalIso } from '@/lib/date
 export type SkipReason = 'blocked_by_whatsapp' | 'takeover' | 'template_not_approved'
 export type ReminderStatus = 'sent' | 'delivered' | 'read' | 'failed' | 'undeliverable' | 'skipped'
 export type Language = 'en' | 'es'
+export type RemindersState = 'on' | 'off' | 'not_set_up'
 
 export type ReminderPreviewItem = {
   guardian_id: string
@@ -31,6 +32,8 @@ export type ReminderWeek = {
   has_run: boolean
   preview: ReminderPreviewItem[] | null
   rows: ReminderRow[]
+  reminders: RemindersState
+  next_run_at: string | null
 }
 
 export type DetailTone = 'error' | 'warning' | 'muted' | 'none'

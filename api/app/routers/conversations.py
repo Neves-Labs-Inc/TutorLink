@@ -14,6 +14,11 @@ nobody reads would arm the unapplied-scope guard and turn every query in this mo
 500 — `client_bookings.py:36-37` documents that exact mistake. The name is deliberately
 absent from this file, prose included, so that the grep criterion 8 names is a real gate.
 
+**`GET /api/conversations` takes a repeatable `holder` (`bot`, `mine`, `others`)**, the Chats
+list's **With** filter. Values combine with OR and the result ANDs with `status`, `unread`,
+`flagged` and `q`; `mine` and `others` are relative to the calling admin, and an unknown value is
+a 400. It is filtered in SQL so `total` and paging stay right.
+
 **Takeover, release, approve, deny and mark handled publish `conversation.updated` after the
 commit**, on every 200 including a no-op, so the other admins' list screens move without a
 reload. `POST /read` publishes nothing: the watermark is shared,
@@ -86,6 +91,7 @@ from app.services.conversation_service import (
     ConversationWindowClosed,
     FlagChanged,
     FlagNeedsReactivationDecision,
+    HolderFilter,
     NoReactivationPending,
     NothingToUndo,
     change_language,
@@ -138,6 +144,7 @@ def list_all(
     unread: bool | None = None,
     flagged: bool | None = None,
     q: str | None = None,
+    holder: Annotated[list[HolderFilter] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = DEFAULT_PAGE,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> Page[ConversationSummary]:
@@ -152,6 +159,8 @@ def list_all(
         q=q,
         limit=page_size,
         offset=(page - 1) * page_size,
+        holders=holder or (),
+        caller_id=user.id,
     )
 
     return Page[ConversationSummary](

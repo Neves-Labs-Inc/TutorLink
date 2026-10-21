@@ -1,4 +1,9 @@
-import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import axios, {
+  AxiosHeaders,
+  type AxiosError,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from 'axios'
 import type { BookingWarning } from '@/lib/queries/bookings'
 import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/stores/authStore'
@@ -31,16 +36,61 @@ export const authApi = axios.create({ ...clientConfig })
 
 export const requestLogin = (email: string, password: string) =>
   // Form-encoded, and the field is `username`, not `email` (D-021). JSON here returns 400.
-  authApi.post<TokenPairResponse>(
-    '/auth/token',
-    new URLSearchParams({ username: email, password }),
-  )
+  authApi.post<TokenPairResponse>('/auth/token', new URLSearchParams({ username: email, password }))
 
 export const requestForgotPassword = (email: string) =>
   authApi.post<{ detail: string }>('/auth/password/forgot', { email })
 
 export const requestSetPassword = (token: string, password: string) =>
   authApi.post<TokenPairResponse>('/auth/password/set', { token, password })
+
+export type PasswordLinkKind = 'invite' | 'reset'
+
+export type PasswordLinkState = 'valid' | 'expired' | 'used' | 'invalid'
+
+// `kind` is null only for `invalid`; `name` and `email` only come with a valid Invite.
+export type PasswordLink = {
+  kind: PasswordLinkKind | null
+  state: PasswordLinkState
+  name: string | null
+  email: string | null
+}
+
+export type LinkLookupResult =
+  | { isRateLimited: false; link: PasswordLink }
+  | { isRateLimited: true; retryAfterSeconds: number }
+
+const HTTP_TOO_MANY_REQUESTS = 429
+const SECONDS_PER_MINUTE = 60
+// Used when a 429 comes without a readable `Retry-After`.
+const FALLBACK_RETRY_AFTER_SECONDS = 15 * SECONDS_PER_MINUTE
+
+const parseRetryAfter = (header: unknown): number => {
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : FALLBACK_RETRY_AFTER_SECONDS
+}
+
+// Says what a link is before a password is typed. A 429 is an answer, not a failure: it
+// resolves with the wait. Network errors and 5xx reject so the caller can offer a retry.
+export const requestLinkLookup = async (token: string): Promise<LinkLookupResult> => {
+  let result: LinkLookupResult
+
+  try {
+    const { data } = await authApi.post<PasswordLink>('/auth/password/link', { token })
+    result = { isRateLimited: false, link: data }
+  } catch (error) {
+    const isRateLimited =
+      axios.isAxiosError(error) && error.response?.status === HTTP_TOO_MANY_REQUESTS
+    if (!isRateLimited) throw error
+
+    result = {
+      isRateLimited: true,
+      retryAfterSeconds: parseRetryAfter(error.response?.headers['retry-after']),
+    }
+  }
+
+  return result
+}
 
 // No body: the HttpOnly cookie carries the refresh token.
 export const requestRefresh = () => authApi.post<TokenPairResponse>('/auth/refresh')
@@ -80,10 +130,77 @@ export const warningsOf = (error: unknown): BookingWarning[] | null => {
   return warnings
 }
 
+// The `booking_ids` of a Home refusal (archive, or taking a Guardian off it) that upcoming
+// Bookings block, or null when the failure carried none.
+export function bookingIdsOf(error: unknown): string[] | null {
+  let bookingIds: string[] | null = null
+
+  if (axios.isAxiosError(error)) {
+    // The API's refusal body: `{detail, booking_ids}` (`routers/homes.py`, `archive.py`).
+    const data = error.response?.data as { booking_ids?: unknown } | undefined
+    bookingIds = Array.isArray(data?.booking_ids) ? (data.booking_ids as string[]) : null
+  }
+
+  return bookingIds
+}
+
+// What a 409 from the Booking writes means, so the screen can pick the right recovery: confirm
+// the warnings, reload a stale row, pick another time, or just show the sentence.
+export type Conflict =
+  | { kind: 'warnings'; warnings: BookingWarning[] }
+  | { kind: 'stale' }
+  | { kind: 'overlap' }
+  | { kind: 'refused'; detail: string }
+
+const STALE_DETAIL = /changed since/i
+const OVERLAP_DETAIL = /overlap/i
+
+// Null when the failure is not a 409. The API words these in `detail` (`booking_writes.py`,
+// `booking_status.py`); only the warnings 409 has a structured body.
+export const conflictOf = (error: unknown): Conflict | null => {
+  if (errorStatus(error) !== 409) return null
+
+  const warnings = warningsOf(error)
+  const detail = errorDetail(error) ?? ''
+  let conflict: Conflict = { kind: 'refused', detail }
+
+  if (warnings !== null) {
+    conflict = { kind: 'warnings', warnings }
+  } else if (STALE_DETAIL.test(detail)) {
+    conflict = { kind: 'stale' }
+  } else if (OVERLAP_DETAIL.test(detail)) {
+    conflict = { kind: 'overlap' }
+  }
+
+  return conflict
+}
+
 // The HTTP status of a failed request, so callers can tell a refusal (403) from a conflict (409)
 // without importing axios.
 export const errorStatus = (error: unknown): number | null =>
   axios.isAxiosError(error) ? (error.response?.status ?? null) : null
+
+// Request config for a call that must outlive the page (a deferred act flushed on `pagehide`):
+// only fetch's `keepalive` survives unload, so it switches to axios's fetch adapter. The request
+// interceptors run before any adapter, so the bearer token still rides along.
+export function getKeepaliveConfig(keepalive: boolean): AxiosRequestConfig {
+  if (!keepalive) return {}
+
+  return { adapter: 'fetch', fetchOptions: { keepalive: true } }
+}
+
+// One response header of a failed request (e.g. a 429's `Retry-After`), so callers can read it
+// without importing axios. Lookup is case-insensitive.
+export const errorHeader = (error: unknown, name: string): string | null => {
+  let value: string | null = null
+
+  if (axios.isAxiosError(error) && error.response !== undefined) {
+    const header = AxiosHeaders.from(error.response.headers as AxiosHeaders).get(name)
+    value = typeof header === 'string' ? header : null
+  }
+
+  return value
+}
 
 // Single-flight, and module-level on purpose. Refresh tokens rotate on every use (D-017)
 // and the server treats a replayed one as a breach: it revokes the entire family, which

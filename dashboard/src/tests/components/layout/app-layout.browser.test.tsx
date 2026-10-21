@@ -20,13 +20,18 @@ const COUNTS: CountsRead = {
   needs_attention: 1,
   time_off_pending: 4,
   children_awaiting_evaluation: 2,
+  children_needing_tutor: 4,
   bookings_to_sort_out: 3,
   unread_chats: 7,
 };
 
 const network = vi.hoisted(() => ({ get: vi.fn() }));
 
-vi.mock("@/lib/api", () => ({ api: { get: network.get } }));
+// The layout now mounts the booking overlays, which import the error helpers.
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  api: { get: network.get },
+}));
 
 type Responses = {
   me?: () => Promise<unknown>;
@@ -96,32 +101,33 @@ describe("app shell from 1024px", () => {
   });
 
   it("gives an Admin the full nav, each item opening its path", async () => {
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     const nav = mainNav();
     await expect.element(nav.getByText("7 unread")).toBeVisible();
     expect(getNavLabels()).toEqual([
       "Home",
-      "Bookings5 to sort out",
+      "Bookings9 to sort out",
       "Chats7 unread",
       "Families",
       "Staff",
+      "Time off4 to review",
       "Settings",
     ]);
 
     await nav.getByRole("button", { name: /Families/ }).click();
-    await expect.element(currentPath()).toHaveTextContent("/children");
+    await expect.element(currentPath()).toHaveTextContent("/families");
     await nav.getByRole("button", { name: /Staff/ }).click();
-    await expect.element(currentPath()).toHaveTextContent("/tutors");
+    await expect.element(currentPath()).toHaveTextContent("/staff");
   });
 
   it("gives a Developer the Admin nav", async () => {
-    await renderShell("developer", "/dashboard");
+    await renderShell("developer", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect.element(nav.getByRole("button", { name: /Settings/ })).toBeVisible();
   });
 
   it("gives a Manager the office nav without Settings", async () => {
-    await renderShell("manager", "/dashboard");
+    await renderShell("manager", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect.element(nav.getByRole("button", { name: /Staff/ })).toBeVisible();
     expect(getNavLabels().map((label) => label.replace(/\d.*/, ""))).toEqual([
@@ -130,6 +136,7 @@ describe("app shell from 1024px", () => {
       "Chats",
       "Families",
       "Staff",
+      "Time off",
     ]);
   });
 
@@ -143,11 +150,12 @@ describe("app shell from 1024px", () => {
       .toHaveAttribute("aria-current", "page");
 
     await nav.getByRole("button", { name: "My availability" }).click();
-    await expect.element(currentPath()).toHaveTextContent("/schedule");
+    await expect.element(currentPath()).toHaveTextContent("/availability");
     expect(getCountRequests()).toBe(0);
   });
 
   it.each([
+    ["/families/g-1", /Families/],
     ["/guardians/g-1", /Families/],
     ["/users", /Staff/],
     ["/reminders", /Chats/],
@@ -164,7 +172,7 @@ describe("app shell from 1024px", () => {
 
   it("shows no badges while counts load", async () => {
     respond({ counts: never });
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     await expect.element(page.getByText("Rita Souza")).toBeVisible();
     expect(getNavLabels()).toContain("Bookings");
     expect(getNavLabels()).toContain("Chats");
@@ -172,7 +180,7 @@ describe("app shell from 1024px", () => {
 
   it("shows no badges and no message when counts fail", async () => {
     respond({ counts: async () => Promise.reject(new Error("500")) });
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     await expect.element(page.getByText("Rita Souza")).toBeVisible();
     await vi.waitFor(() => expect(getCountRequests()).toBeGreaterThan(0));
     expect(getNavLabels()).toContain("Bookings");
@@ -180,7 +188,7 @@ describe("app shell from 1024px", () => {
   });
 
   it("refetches counts when the window regains focus", async () => {
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     await expect.element(mainNav().getByText("7 unread")).toBeVisible();
     respond({ counts: async () => ({ ...COUNTS, unread_chats: 9 }) });
 
@@ -191,7 +199,7 @@ describe("app shell from 1024px", () => {
 
   it("refetches counts every 60 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     await expect.element(mainNav().getByText("7 unread")).toBeVisible();
     respond({ counts: async () => ({ ...COUNTS, unread_chats: 9 }) });
 
@@ -200,7 +208,7 @@ describe("app shell from 1024px", () => {
   });
 
   it("opens Profile from the person card", async () => {
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     const card = page.getByRole("button", { name: /Rita Souza/ });
     await expect.element(card).toHaveTextContent("Admin");
 
@@ -211,7 +219,7 @@ describe("app shell from 1024px", () => {
 
   it("shows a skeleton and the role while the person loads", async () => {
     respond({ me: never });
-    await renderShell("manager", "/dashboard");
+    await renderShell("manager", "/home");
     const loading = page.getByRole("status", { name: "Loading your name" });
     await expect.element(loading).toBeVisible();
     await expect.element(page.getByText("Manager")).toBeVisible();
@@ -220,7 +228,7 @@ describe("app shell from 1024px", () => {
   it("keeps the person card's height when the person lands", async () => {
     let resolveMe: (me: unknown) => void = () => {};
     respond({ me: () => new Promise((resolve) => (resolveMe = resolve)) });
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     const loading = page.getByRole("status", { name: "Loading your name" });
     await expect.element(loading).toBeVisible();
     const card = page.getByRole("button", { name: /Your profile/ }).first();
@@ -233,7 +241,7 @@ describe("app shell from 1024px", () => {
 
   it("names the card Your profile when the person fails to load", async () => {
     respond({ me: async () => Promise.reject(new Error("500")) });
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     const card = page.getByRole("button", { name: /Your profile/ }).first();
     await expect.element(card).toHaveTextContent("Your profile");
     await expect.element(card).toHaveTextContent("Admin");
@@ -248,7 +256,7 @@ describe("app shell below 1024px", () => {
     await page.viewport(PHONE.width, PHONE.height);
   });
 
-  it("gives an Admin 4 tabs and More, with Staff and Settings inside", async () => {
+  it("gives an Admin 4 tabs and More, with Staff, Time off and Settings inside", async () => {
     await renderShell("admin", "/settings");
     const nav = page.getByRole("navigation", { name: "Main" });
     const more = nav.getByRole("button", { name: "More" });
@@ -256,10 +264,11 @@ describe("app shell below 1024px", () => {
     // A tab's corner badge comes before its label.
     expect(getNavLabels()).toEqual([
       "Home",
-      "5 to sort outBookings",
+      "9 to sort outBookings",
       "7 unreadChats",
       "Families",
-      "More",
+      // More carries the Time off it holds.
+      "4 waitingMore",
     ]);
     expect(more.element().ariaCurrent).toBeNull();
 
@@ -270,14 +279,16 @@ describe("app shell below 1024px", () => {
       .toHaveAttribute("aria-current", "page");
 
     await sheet.getByRole("button", { name: "Staff" }).click();
-    await expect.element(currentPath()).toHaveTextContent("/tutors");
+    await expect.element(currentPath()).toHaveTextContent("/staff");
   });
 
-  it("gives a Manager 5 tabs and no More", async () => {
-    await renderShell("manager", "/dashboard");
+  it("gives a Manager 4 tabs and More, with Staff and Time off inside", async () => {
+    await renderShell("manager", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
-    await expect.element(nav.getByRole("button", { name: "Staff" })).toBeVisible();
-    expect(nav.getByRole("button", { name: "More" }).elements()).toHaveLength(0);
+    await nav.getByRole("button", { name: /More/ }).click();
+    const sheet = page.getByRole("dialog", { name: "More" });
+    await expect.element(sheet.getByRole("button", { name: /^Staff/ })).toBeVisible();
+    await expect.element(sheet.getByRole("button", { name: /^Time off/ })).toBeVisible();
   });
 
   it("opens Profile from the avatar button", async () => {
@@ -300,7 +311,7 @@ describe("app shell below 1024px", () => {
 
   it("fits 320px with 44px targets and no sideways scroll", async () => {
     await page.viewport(NARROW_PHONE.width, NARROW_PHONE.height);
-    await renderShell("admin", "/dashboard");
+    await renderShell("admin", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect.element(nav.getByRole("button", { name: "More" })).toBeVisible();
 

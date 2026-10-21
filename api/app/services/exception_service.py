@@ -301,6 +301,36 @@ def cancel_exception(
     return row
 
 
+def get_exception(
+    db: Session, *, actor_id: uuid.UUID, actor_role: UserRole, exception_id: uuid.UUID
+) -> TutorAvailabilityException:
+    """One row, with `staff`, `decider`, `canceller` and `creator` loaded in the same statement.
+
+    Found first, readability second, as `cancel_exception` orders it: an id matching no row is
+    404 for everyone, another person's row is 403 (the owner or an Office role may read it, a
+    Developer's only a Developer). Nothing is locked; this is a read.
+    """
+    row = db.scalars(
+        select(TutorAvailabilityException)
+        .where(TutorAvailabilityException.id == exception_id)
+        .options(
+            joinedload(TutorAvailabilityException.staff),
+            joinedload(TutorAvailabilityException.decider),
+            joinedload(TutorAvailabilityException.canceller),
+            joinedload(TutorAvailabilityException.creator),
+        )
+    ).one_or_none()
+
+    if row is None:
+        logger.warning("exception_service.get: actor %s, no exception %s", actor_id, exception_id)
+        raise ExceptionNotFound(f"no exception {exception_id}")
+
+    _assert_may_read(actor_id=actor_id, actor_role=actor_role, owner_id=row.user_id)
+    _assert_developer_boundary(actor_id=actor_id, actor_role=actor_role, owner=row.staff)
+
+    return row
+
+
 def list_exceptions(
     db: Session,
     *,
@@ -309,6 +339,7 @@ def list_exceptions(
     user_id: uuid.UUID,
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
+    is_newest_first: bool = False,
     limit: int,
     offset: int,
 ) -> tuple[list[TutorAvailabilityException], int]:
@@ -326,6 +357,9 @@ def list_exceptions(
     rather than rows contained by it: `end_date >= date_from` and `start_date <= date_to`. A
     containment test (`start_date >= date_from`) would drop Time off that began before the
     window and runs through it — exactly the row a weekly grid exists to show.
+
+    Rows come oldest first by `start_date`; `is_newest_first` reverses that (and the `id`
+    tiebreaker), so page one holds the latest rows for a long history.
     """
     _assert_may_read(actor_id=actor_id, actor_role=actor_role, owner_id=user_id)
 
@@ -344,6 +378,11 @@ def list_exceptions(
 
     total = db.scalar(select(func.count()).select_from(matching.subquery())) or 0
 
+    ordering = (
+        (TutorAvailabilityException.start_date.desc(), TutorAvailabilityException.id.desc())
+        if is_newest_first
+        else (TutorAvailabilityException.start_date, TutorAvailabilityException.id)
+    )
     # `id` is the tiebreaker, not decoration: several rows on one `start_date` is the ordinary
     # case, and LIMIT/OFFSET over a sort key that does not distinguish them may order two
     # executions differently — so page two can repeat or skip a row page one already showed.
@@ -355,7 +394,7 @@ def list_exceptions(
                 selectinload(TutorAvailabilityException.canceller),
                 selectinload(TutorAvailabilityException.creator),
             )
-            .order_by(TutorAvailabilityException.start_date, TutorAvailabilityException.id)
+            .order_by(*ordering)
             .limit(limit)
             .offset(offset)
         ).all()

@@ -7,7 +7,6 @@ import {
   guardDecision,
   isOfficeRole,
   landingPath,
-  setPasswordFormErrors,
   type Role,
 } from './auth'
 
@@ -81,9 +80,9 @@ describe('decodeAccessToken', () => {
 
 describe('landingPath', () => {
   const cases: { role: Role; expected: string }[] = [
-    { role: 'admin', expected: '/dashboard' },
-    { role: 'developer', expected: '/dashboard' },
-    { role: 'manager', expected: '/dashboard' },
+    { role: 'admin', expected: '/home' },
+    { role: 'developer', expected: '/home' },
+    { role: 'manager', expected: '/home' },
     { role: 'tutor', expected: '/sessions' },
   ]
 
@@ -135,10 +134,10 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'manager', OFFICE_ROLES)).toEqual({ kind: 'allow' })
   })
 
-  it('sends a manager on an admin-only route such as /users or /settings to the dashboard', () => {
+  it('sends a manager on an admin-only route such as /users or /settings to Home', () => {
     expect(guardDecision('authenticated', 'manager', ADMIN_ROLES)).toEqual({
       kind: 'redirect',
-      to: '/dashboard',
+      to: '/home',
     })
   })
 
@@ -150,31 +149,6 @@ describe('guardDecision', () => {
     expect(guardDecision('authenticated', 'tutor', OFFICE_ROLES)).toEqual({
       kind: 'redirect',
       to: '/sessions',
-    })
-  })
-})
-
-describe('setPasswordFormErrors', () => {
-  it('accepts a matching password of at least 8 characters', () => {
-    expect(setPasswordFormErrors('12345678', '12345678')).toEqual({})
-  })
-
-  it('refuses a password shorter than 8 characters', () => {
-    expect(setPasswordFormErrors('short', 'short')).toEqual({
-      password: 'Password must be at least 8 characters.',
-    })
-  })
-
-  it('refuses an empty password with the length error and an empty confirm with the mismatch error', () => {
-    expect(setPasswordFormErrors('', '')).toEqual({
-      password: 'Password must be at least 8 characters.',
-    })
-    expect(setPasswordFormErrors('12345678', '')).toEqual({ confirm: 'Passwords do not match.' })
-  })
-
-  it('refuses a confirm that differs from the password', () => {
-    expect(setPasswordFormErrors('12345678', '12345679')).toEqual({
-      confirm: 'Passwords do not match.',
     })
   })
 })

@@ -15,6 +15,8 @@ type PageToolbarProps = {
   activeFilterCount?: number;
   onClearFilters?: () => void;
   view?: ReactNode;
+  // False hides the search where it doesn't apply (Bookings' Needs attention).
+  hasSearch?: boolean;
 };
 
 export function PageToolbar({
@@ -26,16 +28,19 @@ export function PageToolbar({
   activeFilterCount = 0,
   onClearFilters,
   view,
+  hasSearch = true,
 }: PageToolbarProps): ReactNode {
   return (
     <div className="flex flex-col gap-3 @3xl:flex-row @3xl:flex-wrap @3xl:items-center">
-      <SearchInput
-        label={searchLabel}
-        placeholder={searchPlaceholder}
-        value={query}
-        onChange={onQueryChange}
-        className="@3xl:w-[300px]"
-      />
+      {hasSearch && (
+        <SearchInput
+          label={searchLabel}
+          placeholder={searchPlaceholder}
+          value={query}
+          onChange={onQueryChange}
+          className="@3xl:w-[300px]"
+        />
+      )}
       {filters && (
         <div
           role="group"

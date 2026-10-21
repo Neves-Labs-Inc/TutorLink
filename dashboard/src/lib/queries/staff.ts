@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import type { QueryClient } from '@tanstack/react-query'
+import { api, errorStatus } from '@/lib/api'
+import { BOOKING_QUERY_KEY, bookingSearchParams } from '@/lib/queries/bookings'
 import type { Page } from '@/lib/queries/page'
 
 // A Booking's Staff member is one of these; a Developer is never bookable.
@@ -17,6 +19,15 @@ export type Staff = {
 // The API caps a page at 100; the Office is far smaller, so one page is the whole list.
 const STAFF_PAGE_SIZE = 100
 
+// A malformed id is refused as 400 (validation) and an unknown one as 404: neither is there.
+export const isStaffMissing = (error: unknown): boolean => {
+  const status = errorStatus(error)
+
+  return status === 400 || status === 404
+}
+
+const DETAIL_RETRIES = 1
+
 export const staffQueries = {
   list: () =>
     queryOptions({
@@ -29,4 +40,185 @@ export const staffQueries = {
         return response.data
       },
     }),
+
+  // Staff who can be booked: everyone not archived, with their Subjects.
+  active: () =>
+    queryOptions({
+      queryKey: ['staff', 'list', { archived: false }],
+      queryFn: async () => {
+        const response = await api.get<Page<StaffRead>>('/api/staff', {
+          params: { archived: false, page_size: STAFF_PAGE_SIZE },
+        })
+
+        return response.data
+      },
+    }),
 }
+
+// The Staff screen's row (`api/app/schemas/staff.py`). `id` is the user id; a Developer is never
+// listed.
+export type SignInStateWire = 'not_invited' | 'invited' | 'active'
+
+export type StaffSubject = { id: string; name: string; max_grade_level: number }
+
+export type AssignedChild = { id: string; name: string }
+
+export type StaffRead = Staff & {
+  email: string
+  sign_in_state: SignInStateWire
+  invite_expires_at: string | null
+  archived: boolean
+  subjects: StaffSubject[]
+  sessions_this_week: number
+  assigned_children: AssignedChild[]
+  phone_number: string | null
+  bio: string | null
+  has_pending_time_off: boolean
+}
+
+export type StaffListParams = {
+  archived: boolean
+  roles: StaffRole[]
+  signInStates: SignInStateWire[]
+  q: string
+}
+
+// FastAPI reads a repeated key (`role=tutor&role=admin`); axios's default array form is
+// `role[]=`, so the params go as URLSearchParams.
+function toSearchParams(params: StaffListParams): URLSearchParams {
+  const search = new URLSearchParams({
+    archived: String(params.archived),
+    page_size: String(STAFF_PAGE_SIZE),
+  })
+  for (const role of params.roles) search.append('role', role)
+  for (const state of params.signInStates) search.append('sign_in_state', state)
+  const q = params.q.trim()
+  if (q !== '') search.set('q', q)
+  return search
+}
+
+export const staffDirectoryQueries = {
+  list: (params: StaffListParams) =>
+    queryOptions({
+      queryKey: ['staff', 'directory', params] as const,
+      queryFn: async () => {
+        const response = await api.get<Page<StaffRead>>('/api/staff', {
+          params: toSearchParams(params),
+        })
+
+        return response.data
+      },
+      // Keeps rows up while a search narrows them, but never shows one tab's rows under the other.
+      placeholderData: (previous, previousQuery) =>
+        previousQuery?.queryKey[2].archived === params.archived ? previous : undefined,
+    }),
+
+  // A tab's total for its count; one row is the smallest page the API serves.
+  count: (archived: boolean) =>
+    queryOptions({
+      queryKey: ['staff', 'count', archived],
+      queryFn: async () => {
+        const response = await api.get<Page<StaffRead>>('/api/staff', {
+          params: { archived, page_size: 1 },
+        })
+
+        return response.data.total
+      },
+    }),
+
+  detail: (staffId: string) =>
+    queryOptions({
+      queryKey: ['staff', 'detail', staffId],
+      queryFn: async () => {
+        const response = await api.get<StaffRead>(`/api/staff/${encodeURIComponent(staffId)}`)
+
+        return response.data
+      },
+      // A missing member won't appear on a second ask; anything else gets the app's one retry.
+      retry: (failureCount, error) => !isStaffMissing(error) && failureCount < DETAIL_RETRIES,
+    }),
+
+  // How many live Bookings (Pending, Confirmed) they have from today on: what an archive leaves
+  // waiting for the office. Under ['bookings', 'list'], so Booking writes refresh it.
+  upcomingBookingCount: (userId: string, today: string) =>
+    queryOptions({
+      queryKey: [...BOOKING_QUERY_KEY, 'list', 'staff-upcoming-count', userId, today],
+      queryFn: async () => {
+        const search = bookingSearchParams({
+          user_id: userId,
+          status: ['pending', 'confirmed'],
+          from: today,
+          page_size: 1,
+        })
+        const response = await api.get<Page<unknown>>(`/api/bookings?${search}`)
+
+        return response.data.total
+      },
+    }),
+}
+
+// Staff writes (Admins only; the API refuses the rest). `POST /api/users` and every account write
+// answer with the Staff row.
+export type StaffCreate = {
+  email: string
+  name: string
+  role: StaffRole
+  send_invite: boolean
+  // A Tutor's or Manager's teaching profile; an Admin has none.
+  tutor?: { phone_number: string }
+}
+
+export type StaffAccountUpdate = { name?: string; email?: string; role?: StaffRole }
+
+export type TeachingProfileUpdate = { phone_number?: string; bio?: string | null }
+
+// The one warning a Staff archive raises; sending it says the Admin saw the count.
+const STAFF_BOOKINGS_WARNING = 'archived_staff_bookings'
+
+export const createStaff = async (data: StaffCreate): Promise<StaffRead> => {
+  const response = await api.post<StaffRead>('/api/users', data)
+
+  return response.data
+}
+
+export const updateStaffAccount = async (
+  userId: string,
+  data: StaffAccountUpdate,
+): Promise<StaffRead> => {
+  const response = await api.patch<StaffRead>(`/api/users/${encodeURIComponent(userId)}`, data)
+
+  return response.data
+}
+
+export const updateTeachingProfile = async (
+  tutorId: string,
+  data: TeachingProfileUpdate,
+): Promise<void> => {
+  await api.patch(`/api/tutors/${encodeURIComponent(tutorId)}`, data)
+}
+
+export const sendStaffInvite = async (userId: string): Promise<void> => {
+  await api.post(`/api/users/${encodeURIComponent(userId)}/invite`)
+}
+
+export const sendStaffPasswordReset = async (userId: string): Promise<void> => {
+  await api.post(`/api/users/${encodeURIComponent(userId)}/password-reset`)
+}
+
+export const archiveStaff = async (userId: string): Promise<void> => {
+  await api.post('/api/archive', {
+    type: 'staff',
+    id: userId,
+    confirm_warnings: [STAFF_BOOKINGS_WARNING],
+  })
+}
+
+export const restoreStaff = async (userId: string): Promise<void> => {
+  await api.post('/api/restore', { type: 'staff', id: userId })
+}
+
+// After any Staff write: the list, both tab counts, details, and the app's counts.
+export const refreshStaff = (client: QueryClient): Promise<unknown[]> =>
+  Promise.all(
+    [['staff'], ['counts']].map((queryKey) => client.invalidateQueries({ queryKey })),
+  )

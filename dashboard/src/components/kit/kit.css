@@ -26,6 +26,11 @@
   outline-offset: -2px;
 }
 
+/* Booking blocks sit in a clipped calendar grid: ring inside the block. */
+[data-kit] [data-booking-block]:focus-visible {
+  outline-offset: -2px;
+}
+
 [data-kit] .kit-display {
   font-family: "Lato", ui-sans-serif, system-ui, sans-serif;
 }

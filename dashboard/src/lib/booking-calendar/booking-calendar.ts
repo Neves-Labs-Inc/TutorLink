@@ -1,13 +1,18 @@
 import { bookingListParams, type BookingFilterState } from '@/lib/bookings/bookings'
 import type { Booking, BookingListParams } from '@/lib/queries/bookings'
-import { weekDaysIso } from '@/lib/tutor-schedule/tutorSchedule'
+import { addDaysIso } from '@/lib/dates/dates'
 
 export type BookingView = 'list' | 'calendar'
 
 export type CalendarDay = { dayIso: string; bookings: Booking[] }
 
+const DAYS_IN_WEEK = 7
 const VIEW_PARAM = 'view'
 const SUNDAY_INDEX = 6
+
+// Index `i` of the result is `day_of_week === i`, Monday first.
+const weekDaysIso = (weekStart: string): string[] =>
+  Array.from({ length: DAYS_IN_WEEK }, (_, index) => addDaysIso(weekStart, index))
 
 export const bookingViewFromSearchParams = (search: URLSearchParams): BookingView =>
   search.get(VIEW_PARAM) === 'calendar' ? 'calendar' : 'list'

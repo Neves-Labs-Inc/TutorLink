@@ -56,9 +56,17 @@ export function useDialogFocus(
         ? document.activeElement
         : null;
     stack?.open(panel);
+    // A control marked `data-autofocus` (a dialog's safe choice) takes focus
+    // itself; a form marked with it has its first field focused; anything
+    // else gets the panel.
+    const autofocus = panel.querySelector<HTMLElement>("[data-autofocus]");
+    const target =
+      (autofocus?.matches(FOCUSABLE) ? autofocus : null) ??
+      (autofocus && getFocusables(autofocus)[0]) ??
+      panel;
     // preventScroll: a sheet starts its enter below the kit, and focusing
     // it there would scroll the (overflow-hidden) kit root to reveal it.
-    panel.focus({ preventScroll: true });
+    target.focus({ preventScroll: true });
 
     function isActive(event: KeyboardEvent): boolean {
       if (!panel) return false;

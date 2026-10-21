@@ -17,14 +17,53 @@ const ME = {
 const network = vi.hoisted(() => ({
   get: vi.fn(),
   patch: vi.fn(),
+  put: vi.fn(),
   logout: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
-  api: { get: network.get, patch: network.patch },
+  api: { get: network.get, patch: network.patch, put: network.put },
   requestLogout: network.logout,
 }));
+
+const MANAGER = {
+  ...ME,
+  id: "u-3",
+  email: "ana@example.com",
+  role: "manager",
+  name: "Ana Lima",
+  tutor_id: "t-3",
+  office_phone: "+15125550100",
+};
+const TUTOR = {
+  ...MANAGER,
+  id: "u-7",
+  email: "marco@example.com",
+  role: "tutor",
+  name: "Marco Rossi",
+  tutor_id: "t-7",
+};
+const MONDAY = {
+  id: "s-1",
+  tutor_id: "t-3",
+  day_of_week: 0,
+  start_time: "15:00:00",
+  end_time: "18:00:00",
+  is_active: true,
+  mode: "anywhere",
+};
+
+function weekOf(items: (typeof MONDAY)[]) {
+  return { items, total: items.length, page: 1, page_size: 100 };
+}
+
+// `me` for /api/me; every other read is the person's week.
+function respondAs(me: object): void {
+  network.get.mockImplementation(async (url: string) => ({
+    data: url === "/api/me" ? me : weekOf([MONDAY]),
+  }));
+}
 
 function renderProfile() {
   return renderWithProviders(
@@ -55,6 +94,7 @@ beforeEach(async () => {
   await page.viewport(1280, 800);
   network.get.mockReset();
   network.patch.mockReset();
+  network.put.mockReset();
   network.logout.mockReset();
   network.get.mockResolvedValue({ data: ME });
   network.logout.mockResolvedValue(undefined);
@@ -189,5 +229,107 @@ describe("sign out", () => {
     expect(network.logout).toHaveBeenCalledTimes(1);
     expect(useAuthStore.getState().status).toBe("anonymous");
     expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+});
+
+const availabilityHeading = () =>
+  page.getByRole("heading", { name: "Your availability" });
+
+describe.each([
+  ["desktop", 1280],
+  ["phone", 390],
+])("Manager availability on %s", (_label, width) => {
+  beforeEach(async () => {
+    await page.viewport(width, 800);
+    useAuthStore.setState({ status: "authenticated", role: "manager" });
+  });
+
+  it("shows Your availability with its hint and week", async () => {
+    respondAs(MANAGER);
+    await renderProfile();
+    await expect.element(availabilityHeading()).toBeVisible();
+    await expect
+      .element(
+        page.getByText("You teach too: the bot offers you to Guardians in these times."),
+      )
+      .toBeVisible();
+    await expect.element(page.getByText("3:00 PM – 6:00 PM")).toBeVisible();
+    expect(network.get).toHaveBeenCalledWith("/api/tutors/t-3/availability", {
+      params: { page: 1, page_size: 100 },
+    });
+  });
+
+  it("saves the week through PUT", async () => {
+    respondAs(MANAGER);
+    network.put.mockResolvedValue({
+      data: weekOf([{ ...MONDAY, mode: "only_office" }]),
+    });
+    await renderProfile();
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await page.getByRole("combobox", { name: "Monday range 1 location" }).click();
+    await page.getByRole("option", { name: "Office only", exact: true }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+
+    await expect
+      .element(page.getByText("Availability saved. The bot offers the new times now."))
+      .toBeVisible();
+    expect(network.put).toHaveBeenCalledWith("/api/tutors/t-3/availability", {
+      slots: [
+        {
+          day_of_week: 0,
+          start_time: "15:00:00",
+          end_time: "18:00:00",
+          mode: "only_office",
+        },
+      ],
+    });
+  });
+});
+
+describe("who gets an availability section", () => {
+  it("gives a Manager without a teaching profile nothing extra", async () => {
+    respondAs({ ...MANAGER, tutor_id: null });
+    await renderProfile();
+    await expect.element(page.getByText("Ana Lima")).toBeVisible();
+    expect(availabilityHeading().elements()).toHaveLength(0);
+    expect(network.get).not.toHaveBeenCalledWith(
+      expect.stringContaining("/availability"),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    ["an Admin", { ...MANAGER, role: "admin" }],
+    ["a Tutor", TUTOR],
+  ])("gives %s no availability section", async (_who, me) => {
+    respondAs(me);
+    await renderProfile();
+    await expect.element(page.getByText(me.name)).toBeVisible();
+    expect(availabilityHeading().elements()).toHaveLength(0);
+  });
+});
+
+describe("office phone", () => {
+  it("shows a Tutor the office's phone as a call link", async () => {
+    respondAs(TUTOR);
+    await renderProfile();
+    await expect.element(page.getByText("The office:")).toBeVisible();
+    await expect
+      .element(page.getByRole("link", { name: "+1 (512) 555-0100" }))
+      .toHaveAttribute("href", "tel:+15125550100");
+  });
+
+  it("shows nothing while the office has no phone", async () => {
+    respondAs({ ...TUTOR, office_phone: null });
+    await renderProfile();
+    await expect.element(page.getByText("Marco Rossi")).toBeVisible();
+    expect(page.getByText("The office:").elements()).toHaveLength(0);
+  });
+
+  it("is a Tutor's line only", async () => {
+    respondAs(MANAGER);
+    await renderProfile();
+    await expect.element(page.getByText("Ana Lima")).toBeVisible();
+    expect(page.getByText("The office:").elements()).toHaveLength(0);
   });
 });

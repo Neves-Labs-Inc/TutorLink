@@ -7,6 +7,12 @@ export type Me = {
   email: string
   role: Role
   name: string
+  // True once the person has dismissed their landing-page welcome card; never goes back.
+  welcome_seen: boolean
+  // The caller's own teaching profile id, or null for someone with none.
+  tutor_id: string | null
+  // The office's E.164 number, or null while an Admin hasn't set one.
+  office_phone: string | null
 }
 
 export const meQueries = {
@@ -29,4 +35,8 @@ export const updateMe = async (data: MeUpdatePayload): Promise<Me> => {
   const response = await api.patch<Me>('/api/me', data)
 
   return response.data
+}
+
+export const markWelcomeSeen = async (): Promise<void> => {
+  await api.post('/api/me/welcome-seen')
 }

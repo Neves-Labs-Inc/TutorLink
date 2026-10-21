@@ -21,7 +21,7 @@ const OFFICE_ROLE_SET: ReadonlySet<Role> = new Set(OFFICE_ROLES)
 
 export const isOfficeRole = (role: Role): boolean => OFFICE_ROLE_SET.has(role)
 
-const OFFICE_LANDING_PATH = '/dashboard'
+const OFFICE_LANDING_PATH = '/home'
 const TUTOR_LANDING_PATH = '/sessions'
 const LOGIN_PATH = '/login'
 
@@ -75,19 +75,4 @@ export const decodeAccessToken = (token: string): AccessTokenClaims | null => {
   }
 
   return claims
-}
-
-const MIN_PASSWORD_LENGTH = 8
-
-export type SetPasswordFormErrors = { password?: string; confirm?: string }
-
-export const setPasswordFormErrors = (password: string, confirm: string): SetPasswordFormErrors => {
-  const errors: SetPasswordFormErrors = {}
-
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    errors.password = 'Password must be at least 8 characters.'
-  }
-  if (confirm !== password) errors.confirm = 'Passwords do not match.'
-
-  return errors
 }

@@ -31,6 +31,7 @@ const STATUS_LABELS: Record<BookingStatus, string> = {
   confirmed: 'Confirmed',
   cancelled: 'Cancelled',
   completed: 'Completed',
+  didnt_happen: "Didn't happen",
 }
 
 export const STATUS_OPTIONS: readonly BookingStatus[] = [

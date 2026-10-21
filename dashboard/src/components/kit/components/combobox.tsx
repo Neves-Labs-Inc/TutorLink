@@ -45,6 +45,11 @@ type ComboboxProps = {
   placeholder?: string;
   help?: string;
   error?: string;
+  isRequired?: boolean;
+  // Shown, greyed, while its options load.
+  isDisabled?: boolean;
+  // What the list says when there is nothing to pick at all.
+  emptyText?: string;
 };
 
 export function Combobox({
@@ -55,6 +60,9 @@ export function Combobox({
   placeholder = "Search",
   help,
   error,
+  isRequired = false,
+  isDisabled = false,
+  emptyText = "Nothing to pick.",
 }: ComboboxProps): ReactNode {
   // Destructured: the compiler lint reads any property of an object that
   // holds refs as a ref read during render.
@@ -107,7 +115,7 @@ export function Combobox({
       id={isLeaving ? undefined : listId}
       label={label}
       options={matches}
-      noMatchText={options.length === 0 ? "Nothing to pick." : getNoMatchText(query)}
+      noMatchText={options.length === 0 ? emptyText : getNoMatchText(query)}
       value={value}
       activeIndex={activeIndex}
       isInSheet={isInSheet}
@@ -126,6 +134,9 @@ export function Combobox({
         className="text-[14px] leading-5 font-semibold text-(--tl-ink)"
       >
         {label}
+        {isRequired ? (
+          <span className="font-normal text-(--tl-muted)"> (required)</span>
+        ) : null}
       </label>
       <div className="relative">
         {selected && hasAvatar && (
@@ -143,6 +154,7 @@ export function Combobox({
           aria-activedescendant={isListbox ? activeId : undefined}
           aria-describedby={message ? messageId : undefined}
           aria-invalid={error ? true : undefined}
+          disabled={isDisabled}
           value={isListbox ? query : (selected?.label ?? "")}
           placeholder={selected && isListbox ? selected.label : placeholder}
           onChange={(event) => handleTriggerChange(event.target.value)}

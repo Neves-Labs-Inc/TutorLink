@@ -77,6 +77,8 @@ ROUTE_MATRIX: dict[tuple[str, str], Access] = {
     ("POST", "/api/users/{user_id}/exceptions"): Access.TUTOR_SCOPED,
     # The owner or an Admin role, checked on the loaded row.
     ("POST", "/api/exceptions/{exception_id}/cancel"): Access.TUTOR_SCOPED,
+    # The owner or an Office role, checked on the loaded row.
+    ("GET", "/api/exceptions/{exception_id}"): Access.TUTOR_SCOPED,
     ("GET", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,
     # Self or an Admin role, checked against the slot's profile (#208).
     ("POST", "/api/tutors/{tutor_id}/availability"): Access.TUTOR_SCOPED,

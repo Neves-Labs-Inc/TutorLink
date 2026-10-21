@@ -13,10 +13,13 @@ import {
   Home,
   Sparkles,
   UserRound,
+  UserRoundPlus,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn, TONE_CLASSES } from "@/components/kit/tokens";
 import type { Tone } from "@/components/kit/tokens";
+import { BOOKING_REASON } from "@/components/kit/lib/booking-reason";
+import type { BookingReasonKey } from "@/components/kit/lib/booking-reason";
 import { getInitials } from "@/components/kit/format";
 import type {
   AttentionReason,
@@ -135,6 +138,19 @@ export function KindBadge({
   return (
     <Badge tone={style.tone} icon={style.icon}>
       {label}
+    </Badge>
+  );
+}
+
+export function BookingReasonBadge({
+  reason,
+}: {
+  reason: BookingReasonKey;
+}): ReactNode {
+  const style = BOOKING_REASON[reason];
+  return (
+    <Badge tone={style.tone} icon={style.icon}>
+      {style.label}
     </Badge>
   );
 }
@@ -279,7 +295,7 @@ export function SlotLocationBadge({
 
 type CountBadgeProps = {
   count: number;
-  tone?: "primary" | "pink" | "quiet";
+  tone?: "primary" | "pink" | "yellow" | "quiet";
   label?: string;
 };
 
@@ -292,6 +308,7 @@ export function CountBadge({
   const toneClasses = {
     primary: "bg-(--tl-primary) text-(--tl-on-primary)",
     pink: "bg-(--tl-pink-tint) text-(--tl-pink-ink)",
+    yellow: "bg-(--tl-yellow-tint) text-(--tl-yellow-ink)",
     quiet: "bg-(--tl-surface-sunk) text-(--tl-muted)",
   };
   return (
@@ -325,9 +342,26 @@ const AVATAR_SIZES = {
   lg: "size-12 text-[15px]",
 };
 
-type AvatarProps = { name: string; size?: keyof typeof AVATAR_SIZES };
+const UNNAMED_ICON_SIZES = { sm: "size-4", md: "size-5", lg: "size-5" };
 
+type AvatarProps = { name: string | null; size?: keyof typeof AVATAR_SIZES };
+
+// A `null` name is an unnamed number (Intake not finished): a sunk disc with
+// a "new person" icon. The number is always written beside it.
 export function Avatar({ name, size = "md" }: AvatarProps): ReactNode {
+  if (name === null) {
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "inline-flex shrink-0 items-center justify-center rounded-full bg-(--tl-surface-sunk) text-(--tl-muted)",
+          AVATAR_SIZES[size],
+        )}
+      >
+        <UserRoundPlus className={UNNAMED_ICON_SIZES[size]} />
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden

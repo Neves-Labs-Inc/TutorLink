@@ -121,14 +121,3 @@ export const updateGuardian = async (
 
   return response.data
 }
-
-export const findGuardianByPhone = async (
-  phoneNumber: string,
-  isActive: boolean,
-): Promise<Guardian | null> => {
-  const response = await api.get<Page<Guardian>>('/api/clients', {
-    params: { phone_number: phoneNumber, is_active: isActive, page_size: 1 },
-  })
-
-  return response.data.items[0] ?? null
-}

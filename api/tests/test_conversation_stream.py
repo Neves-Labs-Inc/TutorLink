@@ -841,7 +841,8 @@ def _terminate_listener(engine: Engine) -> None:
         terminated = connection.execute(
             text(
                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
-                " WHERE application_name = :name"
+                # Every worker's listener shares the name; never kill another worker's.
+                " WHERE application_name = :name AND datname = current_database()"
             ),
             {"name": LISTENER_NAME},
         ).all()

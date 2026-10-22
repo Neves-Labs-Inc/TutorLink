@@ -783,6 +783,9 @@ describe("round 2", () => {
       .element(page.getByRole("button", { name: "Didn’t happen" }))
       .toBeVisible();
 
+    // The Re-open toast sits over the footer's corner on desktop; the
+    // user clears it before the next act, or the click waits out its 8s.
+    await userEvent.click(page.getByRole("button", { name: "Dismiss" }));
     network.patch.mockResolvedValue(statusChanged("didnt_happen"));
     await userEvent.click(page.getByRole("button", { name: "Didn’t happen" }));
     await vi.waitFor(() =>

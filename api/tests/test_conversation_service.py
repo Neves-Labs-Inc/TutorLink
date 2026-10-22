@@ -32,6 +32,7 @@ creates what it asserts on under a `uuid4`-suffixed phone number and filters by 
 """
 
 import datetime
+import itertools
 import pathlib
 import threading
 import time
@@ -902,8 +903,11 @@ def _marker() -> str:
     return f"{uuid.uuid4().int % 10**8:08d}"
 
 
+_phone_suffixes = itertools.count()
+
+
 def _phone_number(marker: str | None = None) -> str:
-    suffix = f"{uuid.uuid4().int % 10**4:04d}"
+    suffix = f"{next(_phone_suffixes) % 10**4:04d}"
     return f"+1{marker or _marker()}{suffix}"
 
 

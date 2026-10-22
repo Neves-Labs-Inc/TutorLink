@@ -26,6 +26,7 @@ the two-connection tests delete what they commit.
 """
 
 import datetime
+import itertools
 import threading
 import time
 import uuid
@@ -987,6 +988,9 @@ def _minutes(count: int) -> datetime.timedelta:
     return datetime.timedelta(minutes=count)
 
 
+_phone_suffixes = itertools.count()
+
+
 def _make_conversation(
     db: Session,
     *,
@@ -999,7 +1003,7 @@ def _make_conversation(
     """A conversation flagged `reason` at `TOKEN`, with a pending request for `child` when one
     is given — under whatever `reason` says, standing in for a flag raised after it."""
     conversation = Conversation(
-        phone_number=f"+1{marker or _marker()}{uuid.uuid4().int % 10**4:04d}",
+        phone_number=f"+1{marker or _marker()}{next(_phone_suffixes) % 10**4:04d}",
         status=ConversationStatus.BOT if holder is None else ConversationStatus.HUMAN,
         taken_over_by_user_id=None if holder is None else holder.id,
         taken_over_at=None if holder is None else NOON,

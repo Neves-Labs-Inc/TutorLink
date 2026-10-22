@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read
@@ -51,7 +51,7 @@ jobs:
         run: uv run --frozen ruff format --check app tests
 
       - name: Test
-        run: uv run --frozen pytest
+        run: uv run --frozen pytest -n auto
 
   dashboard:
     runs-on: ubuntu-24.04

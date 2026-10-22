@@ -173,3 +173,89 @@ def test_example_books_carry_every_field_a_book_needs(prompt: str) -> None:
     for example in books:
         assert all(field in example for field in needed), example
         assert re.search(r'start_time: "\d{2}:\d{2}"', example), example
+
+
+def _section(prompt: str, heading: str) -> str:
+    """The text under a `## heading`, up to the next `## `."""
+    return prompt.split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+
+
+def _intake_example(prompt: str) -> str:
+    return prompt.split('<example scenario="Intake in one go"', 1)[1].split("</example>", 1)[0]
+
+
+def test_intake_opens_with_account_first_framing_missing_details_and_the_evaluation(
+    prompt: str,
+) -> None:
+    intake = _section(prompt, "Intake (setting up a new Guardian)")
+
+    assert "first reply" in intake
+    assert "set up their account first" in intake
+    assert "only what they haven't given yet" in intake
+    assert "first session will be an evaluation" in intake
+    assert "office arranges" in intake
+
+
+def test_intake_forbids_booking_language(prompt: str) -> None:
+    intake = _section(prompt, "Intake (setting up a new Guardian)")
+
+    assert "never say or imply you will book or schedule a session" in intake
+
+
+def test_early_booking_puts_the_account_first_and_still_hands_off_a_booking_request(
+    prompt: str,
+) -> None:
+    early = _section(prompt, "Early booking")
+
+    assert "account comes first" in early
+    assert "evaluation the office arranges" in early
+    assert "`booking_request`" in early
+
+
+def test_the_reminder_offer_asks_yes_or_no_without_mentioning_stop(prompt: str) -> None:
+    close = next(line for line in prompt.split("\n- ") if line.startswith("Intake close"))
+
+    assert "Please reply yes or no." in close
+    assert "Por favor responda sí o no." in close
+    offer = close.split("Would you like that?", 1)[0]
+    assert "STOP" not in offer
+    assert "reply STOP" not in close
+
+
+def test_a_yes_gets_the_stop_line_as_its_own_message_and_a_no_gets_none(prompt: str) -> None:
+    reminders = _section(prompt, "Booking reminders")
+
+    assert "After a yes" in reminders
+    assert "`set_reminder_preference(opt_in=true)`" in reminders
+    assert "two paragraphs" in reminders
+    assert "You can message STOP at any time to opt out." in reminders
+    assert "Puede enviar STOP en cualquier momento para dejar de recibirlos." in reminders
+    assert "After a no" in reminders
+    assert "no STOP line" in reminders
+
+
+def test_an_unclear_reminder_answer_is_re_asked_once_then_left_unset(prompt: str) -> None:
+    reminders = _section(prompt, "Booking reminders")
+
+    assert "re-ask once" in reminders
+    assert "Would you like the weekly reminder? Please reply yes or no." in reminders
+    assert "leave the preference unset and don't offer again" in reminders
+
+
+def test_the_intake_example_shows_the_new_flow(prompt: str) -> None:
+    example = _intake_example(prompt)
+    first_reply = example.split("-> reply(", 1)[1].split('")', 1)[0]
+    offer, after_yes = example.split("Guardian: sí, claro", 1)
+
+    assert "primero" in first_reply
+    assert "evaluación" in first_reply
+    assert "Ya tengo su nombre" in first_reply
+    assert "me falta" not in first_reply
+    assert not re.search(r"\b(reserv|agend)\w*", first_reply, re.IGNORECASE)
+    assert "Por favor responda sí o no." in offer
+    assert "STOP" not in offer
+    confirmation, stop_line = re.search(
+        r'reply\(language="es", text="([^"]*)\n\n([^"]*)"\)', after_yes
+    ).groups()
+    assert "recibirá un recordatorio cada semana" in confirmation
+    assert "STOP" in stop_line

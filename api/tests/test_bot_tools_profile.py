@@ -30,7 +30,7 @@ from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.models.subject import Subject
 from app.models.user import User
-from app.services.bot_tool_contract import ToolContext, ToolResult
+from app.services.bot_tool_contract import SavedValue, ToolContext, ToolResult
 from app.services.bot_tools_profile import TOOLS
 
 PHONE = "+12025550123"
@@ -134,7 +134,10 @@ def test_create_home_labels_the_first_home_with_the_guardians_first_name(
     assert result.content["home_id"] == str(home.id)
     assert (home.label, home.address, home.directions) == ("Maria's", "12 Oak Street", "Gate 1234")
     # The turn marks its own reply with these, since it may echo the address back.
-    assert result.redacted == (RedactedField.HOME_ADDRESS, RedactedField.HOME_DIRECTIONS)
+    assert result.redacted == (
+        SavedValue(field=RedactedField.HOME_ADDRESS, text="12 Oak Street"),
+        SavedValue(field=RedactedField.HOME_DIRECTIONS, text="Gate 1234"),
+    )
 
 
 def test_create_home_reads_omitted_optional_keys_as_null(
@@ -408,7 +411,10 @@ def test_update_child_fills_empty_notes_and_date_of_birth(ctx: ToolContext, ana:
     assert result.status == "ok"
     assert result.progress is True
     assert (ana.notes, ana.date_of_birth) == ("Loves maths", datetime.date(2016, 4, 23))
-    assert result.redacted == (RedactedField.CHILD_DATE_OF_BIRTH, RedactedField.CHILD_NOTES)
+    assert result.redacted == (
+        SavedValue(field=RedactedField.CHILD_DATE_OF_BIRTH, text="2016-04-23"),
+        SavedValue(field=RedactedField.CHILD_NOTES, text="Loves maths"),
+    )
 
 
 def test_update_child_leaves_omitted_fields_alone(ctx: ToolContext, ana: Child) -> None:
@@ -489,18 +495,18 @@ def staff_id(db: Session) -> uuid.UUID:
     return user.id
 
 
-def test_a_new_home_marks_the_guardian_and_bot_messages_in_the_history_window(
+def test_a_new_home_marks_the_history_window_messages_holding_its_values(
     db: Session, ctx: ToolContext, conversation: Conversation, guardian: Guardian
 ) -> None:
     # 21 Guardian and bot messages: the oldest is outside the 20-message window.
     chat = [
-        add_message(db, conversation, author, minutes=index)
+        add_message(db, conversation, author, minutes=index, body="12 Oak Street, gate 1234")
         for index, author in enumerate(
             [MessageAuthor.CLIENT, MessageAuthor.BOT] * 10 + [MessageAuthor.CLIENT]
         )
     ]
-    office = add_message(db, conversation, MessageAuthor.ADMIN, minutes=30)
-    note = add_message(db, conversation, MessageAuthor.SYSTEM, minutes=31)
+    office = add_message(db, conversation, MessageAuthor.ADMIN, minutes=30, body="12 Oak Street")
+    note = add_message(db, conversation, MessageAuthor.SYSTEM, minutes=31, body="12 Oak Street")
 
     run(ctx, "create_home", address="12 Oak Street", directions="Gate 1234", label=None)
 
@@ -510,49 +516,145 @@ def test_a_new_home_marks_the_guardian_and_bot_messages_in_the_history_window(
     )
     assert office.redacted_fields is None
     assert note.redacted_fields is None
-    assert all(message.body == "hello" for message in chat)
+    assert all(message.body == "12 Oak Street, gate 1234" for message in chat)
 
 
-def test_filling_directions_marks_the_messages_since_the_homes_last_save(
+def test_a_new_home_leaves_unmarked_the_messages_without_its_values(
+    db: Session, ctx: ToolContext, conversation: Conversation, guardian: Guardian
+) -> None:
+    request = add_message(
+        db, conversation, MessageAuthor.CLIENT, minutes=1, body="2h next Friday for Ana"
+    )
+    asked = add_message(db, conversation, MessageAuthor.BOT, minutes=2, body="Your address?")
+    answered = add_message(
+        db,
+        conversation,
+        MessageAuthor.CLIENT,
+        minutes=3,
+        body="Maria Lopez\nAddress: 12 oak\nSTREET.\nSchool: Lincoln\nGrade: 5",
+    )
+
+    run(ctx, "create_home", address="12 Oak Street", directions=None, label=None)
+
+    assert request.redacted_fields is None
+    assert asked.redacted_fields is None
+    assert answered.redacted_fields == ["home_address"]
+
+
+def test_a_value_found_nowhere_marks_the_guardian_messages_this_turn_answers(
+    db: Session, ctx: ToolContext, conversation: Conversation, guardian: Guardian
+) -> None:
+    """The model reworded the address, so the messages it came from are hidden whole."""
+    earlier = add_message(db, conversation, MessageAuthor.CLIENT, minutes=1, body="hi")
+    asked = add_message(db, conversation, MessageAuthor.BOT, minutes=2, body="Your address?")
+    first = add_message(db, conversation, MessageAuthor.CLIENT, minutes=3, body="12 Oak")
+    second = add_message(db, conversation, MessageAuthor.CLIENT, minutes=4, body="the street one")
+
+    run(ctx, "create_home", address="12 Oak Street", directions=None, label=None)
+
+    assert earlier.redacted_fields is None
+    assert asked.redacted_fields is None
+    assert first.redacted_fields == ["home_address"]
+    assert second.redacted_fields == ["home_address"]
+
+
+def test_filling_directions_marks_the_messages_since_the_homes_last_save_holding_them(
     db: Session, ctx: ToolContext, conversation: Conversation, home: Home
 ) -> None:
     home.updated_at = EARLIER + datetime.timedelta(minutes=10)
     db.flush()
-    before = add_message(db, conversation, MessageAuthor.CLIENT, minutes=5)
-    asked = add_message(db, conversation, MessageAuthor.BOT, minutes=11)
-    answered = add_message(db, conversation, MessageAuthor.CLIENT, minutes=12)
+    before = add_message(db, conversation, MessageAuthor.CLIENT, minutes=5, body="Gate 1234")
+    asked = add_message(db, conversation, MessageAuthor.BOT, minutes=11, body="Any directions?")
+    answered = add_message(db, conversation, MessageAuthor.CLIENT, minutes=12, body="gate 1234")
 
     run(ctx, "update_home", home_id=str(home.id), directions="Gate 1234", label=None)
 
-    # `before` is in the window, so it already carries the address from the Home's creation.
+    # `before` is in the window, so the Home's creation already marked it if it held a value.
     assert before.redacted_fields is None
-    assert asked.redacted_fields == ["home_directions"]
+    assert asked.redacted_fields is None
     assert answered.redacted_fields == ["home_directions"]
 
 
-def test_a_new_child_marks_only_the_fields_it_saved(
+def test_a_new_child_marks_the_messages_holding_each_field_it_saved(
     db: Session, ctx: ToolContext, conversation: Conversation, home: Home
 ) -> None:
-    message = add_message(db, conversation, MessageAuthor.CLIENT, minutes=1)
+    gave = add_message(
+        db,
+        conversation,
+        MessageAuthor.CLIENT,
+        minutes=1,
+        body="Ana, allergic to peanuts, born 20160423",
+    )
+    echoed = add_message(db, conversation, MessageAuthor.BOT, minutes=2, body="Born 2016-04-23?")
+    confirmed = add_message(db, conversation, MessageAuthor.CLIENT, minutes=3, body="yes")
 
-    create_ana(ctx, notes="Allergic to peanuts", date_of_birth="2016-04-23")
+    create_ana(ctx, notes="Allergic to peanuts", date_of_birth="20160423")
     create_ana(ctx, name="Leo")
 
-    assert message.redacted_fields == ["child_date_of_birth", "child_notes"]
+    # The date of birth matches as typed to the tool and as the ISO date.
+    assert gave.redacted_fields == ["child_date_of_birth", "child_notes"]
+    assert echoed.redacted_fields == ["child_date_of_birth"]
+    assert confirmed.redacted_fields is None
 
 
-def test_filling_notes_marks_the_messages_since_the_childs_last_save(
+def test_filling_notes_marks_the_messages_since_the_childs_last_save_holding_them(
     db: Session, ctx: ToolContext, conversation: Conversation, ana: Child
 ) -> None:
     ana.updated_at = EARLIER + datetime.timedelta(minutes=10)
     db.flush()
-    before = add_message(db, conversation, MessageAuthor.CLIENT, minutes=5)
-    after = add_message(db, conversation, MessageAuthor.CLIENT, minutes=12)
+    before = add_message(db, conversation, MessageAuthor.CLIENT, minutes=5, body="Loves maths")
+    after = add_message(db, conversation, MessageAuthor.CLIENT, minutes=12, body="Loves maths!")
 
     run(ctx, "update_child", child_id=str(ana.id), notes="Loves maths", date_of_birth=None)
 
     assert before.redacted_fields is None
     assert after.redacted_fields == ["child_notes"]
+
+
+def test_reworded_notes_mark_the_guardian_messages_this_turn_answers(
+    db: Session, ctx: ToolContext, conversation: Conversation, ana: Child
+) -> None:
+    ana.updated_at = EARLIER + datetime.timedelta(minutes=10)
+    db.flush()
+    earlier = add_message(db, conversation, MessageAuthor.CLIENT, minutes=11, body="hi")
+    asked = add_message(db, conversation, MessageAuthor.BOT, minutes=12, body="Any notes?")
+    answered = add_message(db, conversation, MessageAuthor.CLIENT, minutes=13, body="she ❤️ math")
+
+    run(ctx, "update_child", child_id=str(ana.id), notes="Loves maths", date_of_birth=None)
+
+    assert earlier.redacted_fields is None
+    assert asked.redacted_fields is None
+    assert answered.redacted_fields == ["child_notes"]
+
+
+def test_a_value_matches_whole_words_only(
+    db: Session, ctx: ToolContext, conversation: Conversation, ana: Child
+) -> None:
+    ana.updated_at = EARLIER + datetime.timedelta(minutes=10)
+    db.flush()
+    gave = add_message(db, conversation, MessageAuthor.CLIENT, minutes=11, body="she has ADD")
+    echoed = add_message(
+        db, conversation, MessageAuthor.BOT, minutes=12, body="Noted. Is your address additional?"
+    )
+    answered = add_message(db, conversation, MessageAuthor.CLIENT, minutes=13, body="ok")
+
+    run(ctx, "update_child", child_id=str(ana.id), notes="ADD", date_of_birth=None)
+
+    assert gave.redacted_fields == ["child_notes"]
+    assert echoed.redacted_fields is None
+    assert answered.redacted_fields is None
+
+
+def test_a_value_that_is_only_the_start_of_a_word_falls_back_to_this_turns_messages(
+    db: Session, ctx: ToolContext, conversation: Conversation, guardian: Guardian
+) -> None:
+    asked = add_message(db, conversation, MessageAuthor.BOT, minutes=1, body="Your address?")
+    answered = add_message(db, conversation, MessageAuthor.CLIENT, minutes=2, body="12 Oak Street")
+
+    run(ctx, "create_home", address="12 Oak St", directions=None, label=None)
+
+    assert asked.redacted_fields is None
+    assert answered.redacted_fields == ["home_address"]
 
 
 def test_a_refused_save_marks_nothing(

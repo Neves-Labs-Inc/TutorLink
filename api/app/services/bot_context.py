@@ -8,9 +8,11 @@ Both are plain text, rebuilt from saved records on every turn; nothing here writ
   business zone, so the agent can work out "next Tuesday".
 - **Transcript.** The last `WINDOW_SIZE` messages the Guardian could have seen, oldest first,
   one line each, stamped in business time. Staff-only lines (a number change note, a handoff
-  note) are left out of the window. Notices are bracketed notes, a `--- N hours later ---` line
-  marks a gap of more than `GAP`, and a message marked with `redacted_fields` shows only a
-  placeholder (redaction is for the model only; the office reads the full text).
+  note) are left out of the window. Notices are bracketed notes and a `--- N hours later ---`
+  line marks a gap of more than `GAP`. In a message marked with `redacted_fields`, each saved value
+  of the Guardian's found in it (`bot_redaction`) shows as a placeholder; when some marked
+  field's value can't be found, the whole message does (spec §5). Redaction is for the model
+  only; the office reads the full text.
 
 **One message, one line.** Every value that came from outside code (message bodies, names,
 addresses, notes) is folded onto one line, its line breaks written as a literal `\\n`. The
@@ -51,6 +53,7 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor, TutorSubject
 from app.models.user import User
 from app.services import clock, conversation_service
+from app.services.bot_redaction import Span, find_value
 from app.services.bot_tools_booking import PROPOSAL_TTL
 from app.services.guardian_state import guardian_states
 from app.services.intake_progress import (
@@ -446,6 +449,7 @@ def _transcript(db: Session, *, conversation: Conversation, zone: ZoneInfo) -> s
     ).all()
     window = [(message, author) for message, author in reversed(rows)]
     reminders = _reminders_by_sid(db, [message for message, _author in window])
+    saved = _saved_values(db, conversation=conversation, window=window)
 
     lines: list[str] = []
     previous: datetime.datetime | None = None
@@ -453,7 +457,7 @@ def _transcript(db: Session, *, conversation: Conversation, zone: ZoneInfo) -> s
         if previous is not None and message.created_at - previous > GAP:
             lines.append(_gap_line(message.created_at - previous))
         stamp = _stamp(clock.to_business_wall_clock(message.created_at, zone))
-        lines.append(f"[{stamp}] {_message_text(message, author, reminders)}")
+        lines.append(f"[{stamp}] {_message_text(message, author, reminders, saved)}")
         previous = message.created_at
 
     return "\n".join(lines) or NO_MESSAGES
@@ -465,15 +469,22 @@ def _gap_line(gap: datetime.timedelta) -> str:
     return f"--- {amount} later ---"
 
 
-def _message_text(message: Message, author: User | None, reminders: dict[str, _Reminder]) -> str:
+def _message_text(
+    message: Message,
+    author: User | None,
+    reminders: dict[str, _Reminder],
+    saved: dict[str, tuple[str, ...]],
+) -> str:
     redacted = message.redacted_fields or []
+    hidden = _hidden_spans(message.body, redacted, saved) if redacted else None
 
     if message.author_kind is MessageAuthor.SYSTEM:
         text = _notice(message, author, reminders)
-    elif redacted:
+    elif redacted and hidden is None:
         text = _placeholder(message.author_kind, author, redacted)
     else:
-        text = f"{_speaker(message.author_kind, author)}: {_one_line(message.body)}"
+        body = message.body if hidden is None else _replaced(message.body, hidden)
+        text = f"{_speaker(message.author_kind, author)}: {_one_line(body)}"
 
     if message.status is MessageStatus.FAILED:
         text += " [not delivered]"
@@ -501,6 +512,93 @@ def _placeholder(author_kind: MessageAuthor, author: User | None, redacted: list
     verb = _REDACTION_VERBS.get(author_kind) or f"{_speaker(author_kind, author)} repeated"
     phrases = [phrase for field, phrase in _REDACTED_PHRASES.items() if field in redacted]
     return f"[{verb} {_join(phrases)}: saved]"
+
+
+@dataclass(frozen=True, slots=True)
+class _Hidden:
+    span: Span
+    fields: frozenset[str]
+
+
+def _saved_values(
+    db: Session,
+    *,
+    conversation: Conversation,
+    window: Sequence[tuple[Message, User | None]],
+) -> dict[str, tuple[str, ...]]:
+    """The owning Guardian's saved text per redactable field: every Home's address and
+    directions and every linked Child's notes, archived records included, since a marked
+    message may name one archived since. A date of birth is a date, so it has no text."""
+    is_marked = any(message.redacted_fields for message, _author in window)
+    guardian_id = (
+        conversation_service.owner_id(db, conversation=conversation) if is_marked else None
+    )
+
+    if guardian_id is None:
+        return {}
+
+    homes = db.execute(
+        select(Home.address, Home.directions)
+        .join(GuardianHome, GuardianHome.home_id == Home.id)
+        .where(GuardianHome.guardian_id == guardian_id)
+    ).all()
+    notes = db.scalars(
+        select(Child.notes)
+        .join(ChildGuardian, ChildGuardian.child_id == Child.id)
+        .where(ChildGuardian.guardian_id == guardian_id, Child.notes.is_not(None))
+    ).all()
+    return {
+        RedactedField.HOME_ADDRESS.value: tuple(address for address, _ in homes),
+        RedactedField.HOME_DIRECTIONS.value: tuple(
+            directions for _, directions in homes if directions is not None
+        ),
+        RedactedField.CHILD_NOTES.value: tuple(note for note in notes if note is not None),
+    }
+
+
+def _hidden_spans(
+    body: str, redacted: Sequence[str], saved: dict[str, tuple[str, ...]]
+) -> list[_Hidden] | None:
+    """The spans of `body` holding a saved value of a marked field, overlapping ones merged,
+    or `None` when some marked field has no value found: then the whole message is hidden."""
+    found = {
+        field: [span for value in saved.get(field, ()) for span in find_value(body, value)]
+        for field in redacted
+    }
+
+    if not all(found.values()):
+        return None
+
+    ordered = sorted(
+        (
+            _Hidden(span=span, fields=frozenset({field}))
+            for field, spans in found.items()
+            for span in spans
+        ),
+        key=lambda hidden: hidden.span.start,
+    )
+    merged: list[_Hidden] = []
+    for hidden in ordered:
+        if merged and hidden.span.start < merged[-1].span.end:
+            last = merged[-1]
+            merged[-1] = _Hidden(
+                span=Span(start=last.span.start, end=max(last.span.end, hidden.span.end)),
+                fields=last.fields | hidden.fields,
+            )
+        else:
+            merged.append(hidden)
+    return merged
+
+
+def _replaced(body: str, hidden: Sequence[_Hidden]) -> str:
+    """`body` with each hidden span as `[the Home address: saved]`."""
+    text = ""
+    position = 0
+    for item in hidden:
+        phrases = [phrase for field, phrase in _REDACTED_PHRASES.items() if field in item.fields]
+        text += f"{body[position : item.span.start]}[{_join(phrases)}: saved]"
+        position = item.span.end
+    return text + body[position:]
 
 
 def _join(phrases: Sequence[str]) -> str:

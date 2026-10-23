@@ -128,8 +128,8 @@ def record_bot_reply(
     is recorded first and `attach_twilio_sid` stores the SID once Twilio accepts it; the status
     callback then advances it like an office reply. A send that fails for good is `mark_failed`.
 
-    `redacted_fields` are the private fields saved in the turn this reply ends: it may echo
-    them, so the bot's history shows it as a placeholder (spec §5).
+    `redacted_fields` are the private fields saved in the turn this reply ends whose values
+    the reply echoes, so the bot's history hides them (spec §5).
     """
     message = _insert(
         db,

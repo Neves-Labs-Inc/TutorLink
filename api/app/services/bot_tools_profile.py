@@ -15,10 +15,12 @@ the `update_*` tools only fill a field that is empty now (the closing asks). Cha
 value is refused `saved_details_go_to_office`, and the agent hands that request off.
 
 **Redaction marking.** A save that stores an address, directions, a date of birth or notes
-marks every Guardian message and bot reply since that record's last save (`updated_at`) with
-the field, so the history shows a placeholder. A new record marks the last
-`HISTORY_WINDOW_MESSAGES` Guardian and bot messages: every Guardian or bot message any
-20-message history window can show is among them. Bodies are never changed.
+marks the Guardian messages and bot replies holding the saved value (`bot_redaction`) with the
+field, so the history hides it. The candidates are those since that record's last save
+(`updated_at`); for a new record, the last `HISTORY_WINDOW_MESSAGES`, among which is every
+Guardian or bot message any 20-message history window can show. A value no candidate holds was
+reworded, so the Guardian messages this turn answers are marked instead and the history hides
+them whole. Bodies are never changed.
 """
 
 import datetime
@@ -27,7 +29,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.child import HIGHEST_GRADE, LOWEST_GRADE, NOTES_MAX_LENGTH, Child
@@ -44,6 +46,7 @@ from app.models.home import DIRECTIONS_MAX_LENGTH, GuardianHome, Home
 from app.models.message import Message
 from app.models.reminder_consent import ReminderConsent
 from app.services import (
+    bot_redaction,
     child_service,
     client_service,
     conversation_service,
@@ -52,7 +55,7 @@ from app.services import (
     reminder_consent_service,
     subject_service,
 )
-from app.services.bot_tool_contract import ToolContext, ToolResult, ToolSpec
+from app.services.bot_tool_contract import SavedValue, ToolContext, ToolResult, ToolSpec
 from app.services.intake_progress import intake_progress
 from app.services.name_rules import InvalidName, normalize_name
 from app.services.phone_service import InvalidPhoneNumber
@@ -196,10 +199,10 @@ def _create_home(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResu
         directions=details.directions,
     )
 
-    fields = _home_fields(home)
-    _mark_redacted(ctx, fields=fields, since=None)
+    saved = _home_values(home)
+    _mark_redacted(ctx, saved=saved, since=None)
 
-    return ToolResult(status="ok", content=_home_content(home), progress=True, redacted=fields)
+    return ToolResult(status="ok", content=_home_content(home), progress=True, redacted=saved)
 
 
 def _create_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResult:
@@ -280,10 +283,12 @@ def _create_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolRes
     except child_service.InvalidDateOfBirth:
         return _refused(DATE_OF_BIRTH_IMPLAUSIBLE)
 
-    fields = _child_fields(child)
-    _mark_redacted(ctx, fields=fields, since=None)
+    saved = _child_values(
+        date_of_birth=child.date_of_birth, raw_date_of_birth=raw_date_of_birth, notes=child.notes
+    )
+    _mark_redacted(ctx, saved=saved, since=None)
 
-    return ToolResult(status="ok", content=_child_content(child), progress=True, redacted=fields)
+    return ToolResult(status="ok", content=_child_content(child), progress=True, redacted=saved)
 
 
 def _update_guardian(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResult:
@@ -360,10 +365,12 @@ def _update_home(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolResu
             ctx.db, home_id=home.id, label=new_label, address=None, directions=new_directions
         )
 
-    filled: tuple[RedactedField, ...] = (
-        () if new_directions is None else (RedactedField.HOME_DIRECTIONS,)
+    filled = (
+        ()
+        if new_directions is None
+        else (SavedValue(field=RedactedField.HOME_DIRECTIONS, text=new_directions),)
     )
-    _mark_redacted(ctx, fields=filled, since=last_saved_at)
+    _mark_redacted(ctx, saved=filled, since=last_saved_at)
 
     return ToolResult(
         status="ok", content=_home_content(home), progress=is_changed, redacted=filled
@@ -424,11 +431,10 @@ def _update_child(ctx: ToolContext, tool_input: Mapping[str, object]) -> ToolRes
         except child_service.InvalidDateOfBirth:
             return _refused(DATE_OF_BIRTH_IMPLAUSIBLE)
 
-    filled = (
-        *(() if new_date_of_birth is None else (RedactedField.CHILD_DATE_OF_BIRTH,)),
-        *(() if new_notes is None else (RedactedField.CHILD_NOTES,)),
+    filled = _child_values(
+        date_of_birth=new_date_of_birth, raw_date_of_birth=raw_date_of_birth, notes=new_notes
     )
-    _mark_redacted(ctx, fields=filled, since=last_saved_at)
+    _mark_redacted(ctx, saved=filled, since=last_saved_at)
 
     return ToolResult(
         status="ok", content=_child_content(child), progress=bool(filled), redacted=filled
@@ -612,11 +618,23 @@ def _child_content(child: Child) -> dict[str, object]:
     }
 
 
-def _child_fields(child: Child) -> tuple[RedactedField, ...]:
-    date_of_birth = () if child.date_of_birth is None else (RedactedField.CHILD_DATE_OF_BIRTH,)
-    notes = () if child.notes is None else (RedactedField.CHILD_NOTES,)
+def _child_values(
+    *, date_of_birth: datetime.date | None, raw_date_of_birth: str | None, notes: str | None
+) -> tuple[SavedValue, ...]:
+    """The saved date of birth, as the ISO date and as the tool received it, and the notes."""
+    birth_texts = (
+        ()
+        if date_of_birth is None or raw_date_of_birth is None
+        else dict.fromkeys((date_of_birth.isoformat(), raw_date_of_birth.strip()))
+    )
+    birth = tuple(
+        SavedValue(field=RedactedField.CHILD_DATE_OF_BIRTH, text=text) for text in birth_texts
+    )
+    saved_notes = (
+        () if notes is None else (SavedValue(field=RedactedField.CHILD_NOTES, text=notes),)
+    )
 
-    return (*date_of_birth, *notes)
+    return (*birth, *saved_notes)
 
 
 def _date(raw: str | None) -> datetime.date | None:
@@ -629,10 +647,14 @@ def _date(raw: str | None) -> datetime.date | None:
     return value
 
 
-def _home_fields(home: Home) -> tuple[RedactedField, ...]:
-    directions = () if home.directions is None else (RedactedField.HOME_DIRECTIONS,)
+def _home_values(home: Home) -> tuple[SavedValue, ...]:
+    directions = (
+        ()
+        if home.directions is None
+        else (SavedValue(field=RedactedField.HOME_DIRECTIONS, text=home.directions),)
+    )
 
-    return (RedactedField.HOME_ADDRESS, *directions)
+    return (SavedValue(field=RedactedField.HOME_ADDRESS, text=home.address), *directions)
 
 
 def _home_text_refusal(
@@ -652,11 +674,13 @@ def _home_text_refusal(
 
 
 def _mark_redacted(
-    ctx: ToolContext, *, fields: Sequence[RedactedField], since: datetime.datetime | None
+    ctx: ToolContext, *, saved: Sequence[SavedValue], since: datetime.datetime | None
 ) -> None:
-    """Add `fields` to the Guardian messages and bot replies since `since` (a record's last
-    save), or, for a new record (`None`), to those any history window can show."""
-    if not fields:
+    """Mark each saved field on the Guardian messages and bot replies since `since` (a record's
+    last save), or, for a new record (`None`), those any history window can show, that hold
+    its value. A value none of them holds was reworded, so the Guardian messages this turn
+    answers are marked instead: the history then hides them whole."""
+    if not saved:
         return
 
     statement = (
@@ -673,14 +697,47 @@ def _mark_redacted(
     else:
         statement = statement.where(Message.created_at > since)
 
-    for message in ctx.db.scalars(statement).all():
-        stored = message.redacted_fields or []
-        added = [field.value for field in fields if field.value not in stored]
+    candidates = ctx.db.scalars(statement).all()
+    texts_by_field: dict[RedactedField, list[str]] = {}
+    for value in saved:
+        texts_by_field.setdefault(value.field, []).append(value.text)
 
-        if added:
-            message.redacted_fields = [*stored, *added]
+    for field, texts in texts_by_field.items():
+        holding = [
+            message
+            for message in candidates
+            if any(bot_redaction.contains_value(message.body, text) for text in texts)
+        ]
+        for message in holding or _answered_guardian_messages(ctx):
+            _add_field(message, field)
 
     ctx.db.flush()
+
+
+def _answered_guardian_messages(ctx: ToolContext) -> list[Message]:
+    """The Guardian messages since the last bot reply: the ones this turn answers."""
+    last_reply_at = ctx.db.scalars(
+        select(func.max(Message.created_at)).where(
+            Message.conversation_id == ctx.conversation.id,
+            Message.author_kind == MessageAuthor.BOT,
+        )
+    ).first()
+    statement = select(Message).where(
+        Message.conversation_id == ctx.conversation.id,
+        Message.author_kind == MessageAuthor.CLIENT,
+    )
+
+    if last_reply_at is not None:
+        statement = statement.where(Message.created_at > last_reply_at)
+
+    return list(ctx.db.scalars(statement).all())
+
+
+def _add_field(message: Message, field: RedactedField) -> None:
+    stored = message.redacted_fields or []
+
+    if field.value not in stored:
+        message.redacted_fields = [*stored, field.value]
 
 
 def _latest_inbound(ctx: ToolContext) -> Message:

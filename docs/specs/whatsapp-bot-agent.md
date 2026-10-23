@@ -236,9 +236,12 @@ Single and multi-action confirmations use the same shape. The lead-ins for cance
 
 Address, directions, date of birth and notes reach the model when typed, but appear as placeholders in history once saved.
 
-- When a save tool stores one of these fields, **every Guardian message and bot reply since that record's last save** (or since its Intake began) is marked with the field.
-- History renders a marked message as a placeholder, e.g. `[Guardian gave the Home address: saved]`. Other content in that message is dropped from history, since the snapshot holds it.
-- The agent may echo a value to confirm it ("Saved 12 Oak Street"). That reply is marked the same way.
+- **Matching.** A message holds a value when the value appears in its body once both are normalised: lowercased, every run of characters that aren't letters or digits (spaces, line breaks, punctuation) collapsed to one space, trimmed. The value must match whole words: "12 Oak St\nApt 4" holds the saved "12 Oak St, Apt 4", but "address" doesn't hold the notes "ADD", and "12 Oak Street" doesn't hold "12 Oak St". A blank value never matches. One helper (`bot_redaction`) does this for marking and for history.
+- **Marking.** When `create_home`, `create_child`, `update_home` or `update_child` stores one of these fields, the candidates are the Guardian messages and bot replies since that record's last save (for a new record, the last 20, which covers any history window). Each field marks only the candidates holding its saved value. A date of birth matches as the tool received it and as the ISO date.
+- **Fallback.** When no candidate holds the value (the model reworded it, typical for directions and notes), the Guardian messages this turn answers (those since the last bot reply) are marked with the field instead.
+- The agent may echo a value to confirm it ("Saved 12 Oak Street"). Each paragraph of the reply is marked with a field only if it holds that field's value.
+- **History.** For a marked message, the history collects the owning Guardian's saved values per marked field: every Home's address and directions and every linked Child's notes, archived records included. When every marked field has a value found in the body, the message shows as usual with each found value replaced inline, e.g. `Guardian: Jane Doe\nAddress: [the Home address: saved]\nSchool: Lincoln`. Overlapping matches merge into one placeholder. Otherwise (a date of birth, which is never matched here, a reworded value, or one the office changed since) the whole message shows as a placeholder, e.g. `[Guardian gave the Home address: saved]`.
+- Bodies are never changed, and messages marked before these rules are not re-marked.
 - A value typed but **never saved** stays verbatim until it leaves the 20-message window.
 - Redaction is for the model only. The office sees full text (section 9).
 
@@ -333,7 +336,7 @@ No new table.
 ### `messages` gains `redacted_fields`
 
 - **Shape:** text[] NULL, e.g. `{home_address, home_directions, child_date_of_birth, child_notes}`.
-- **History** builds the placeholder from it.
+- **History** builds the placeholders from it (section 5).
 - **The body is kept**, so the office's record stays intact.
 
 ### Derived or existing, no new storage

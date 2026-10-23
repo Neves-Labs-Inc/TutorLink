@@ -40,7 +40,7 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -58,9 +58,9 @@ from app.models.enums import (
     RedactedField,
 )
 from app.models.message import Message
-from app.services import bot_messages, conversation_service, message_service
+from app.services import bot_messages, bot_redaction, conversation_service, message_service
 from app.services.bot_model import ModelClient, ModelResponse, ModelUnavailable, ToolCall
-from app.services.bot_tool_contract import ToolContext, ToolResult, ToolSpec
+from app.services.bot_tool_contract import SavedValue, ToolContext, ToolResult, ToolSpec
 from app.services.twilio_service import (
     TwilioSendFailed,
     TwilioServiceError,
@@ -434,12 +434,12 @@ def _record_reply(db: Session, start: _TurnStart, agent_reply: _AgentReply) -> _
         recorded = _Recorded(TurnOutcome(kind="skipped_takeover", sent_message_ids=()))
     else:
         confirmation, paragraphs = _reply_bodies(db, agent_reply)
-        # The reply may echo a private value saved this turn, so it is marked like the
-        # Guardian's message that gave it (spec §5). The fixed confirmation never does.
-        redacted = tuple(field for result in agent_reply.results for field in result.redacted)
+        # A reply echoing a private value saved this turn is marked like the Guardian's
+        # message that gave it (spec §5). The fixed confirmation never echoes one.
+        saved = tuple(value for result in agent_reply.results for value in result.redacted)
         bodies: list[tuple[str, tuple[RedactedField, ...]]] = [
             *([] if confirmation is None else [(confirmation, ())]),
-            *((body, redacted) for body in paragraphs),
+            *((body, _echoed_fields(body, saved)) for body in paragraphs),
         ]
         messages = [
             message_service.record_bot_reply(
@@ -454,6 +454,11 @@ def _record_reply(db: Session, start: _TurnStart, agent_reply: _AgentReply) -> _
             new_proposal_at=new_proposal_at,
         )
     return recorded
+
+
+def _echoed_fields(body: str, saved: Sequence[SavedValue]) -> tuple[RedactedField, ...]:
+    fields = (value.field for value in saved if bot_redaction.contains_value(body, value.text))
+    return tuple(dict.fromkeys(fields))
 
 
 def _apply_tool_changes(row: Conversation, start: _TurnStart) -> None:

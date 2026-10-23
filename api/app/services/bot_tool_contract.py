@@ -38,6 +38,14 @@ class CommittedAction:
 
 
 @dataclass(frozen=True)
+class SavedValue:
+    """A private value a tool saved: the field, and text a message holding it would show."""
+
+    field: RedactedField
+    text: str
+
+
+@dataclass(frozen=True)
 class ToolResult:
     status: Literal["ok", "refused"]
     # JSON the model sees; a refusal carries {"reason": ...}. `Any` because it is free JSON.
@@ -46,9 +54,9 @@ class ToolResult:
     progress: bool = False
     # Set only by `commit_proposal`.
     committed: tuple[CommittedAction, ...] = ()
-    # The private fields this call saved. The turn marks its own reply with them, since the
-    # reply may echo a value back and is recorded after the tools ran (spec §5).
-    redacted: tuple[RedactedField, ...] = ()
+    # The private values this call saved. The reply is recorded after the tools ran, so the
+    # turn marks it with each field whose value it echoes back (spec §5).
+    redacted: tuple[SavedValue, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -347,8 +347,9 @@ def test_a_gap_marker_appears_only_between_lines_more_than_3_hours_apart(db: Ses
     ]
 
 
-def test_a_redacted_message_renders_only_its_placeholder(db: Session) -> None:
-    conversation = _make_conversation(db)
+def test_a_redacted_message_shows_its_saved_values_as_inline_placeholders(db: Session) -> None:
+    family = _make_family(db)
+    conversation = family.conversation
     _say(
         db,
         conversation,
@@ -370,10 +371,158 @@ def test_a_redacted_message_renders_only_its_placeholder(db: Session) -> None:
     transcript = build_turn_context(db, conversation=conversation, now=NOW).transcript
 
     assert transcript.splitlines() == [
-        "[Mon Oct 19 09:00] [Guardian gave the Home address: saved]",
-        "[Mon Oct 19 09:01] [Bot repeated the Home address and the Home directions: saved]",
+        "[Mon Oct 19 09:00] Guardian: we live at [the Home address: saved], call me later",
+        "[Mon Oct 19 09:01] Bot: Saved [the Home address: saved], [the Home directions: saved].",
         "[Mon Oct 19 09:02] Guardian: actually 14 Oak St",
     ]
+
+
+def test_only_the_address_is_hidden_in_a_message_holding_other_facts(db: Session) -> None:
+    family = _make_family(db)
+    # Split across lines, cased and punctuated unlike the saved "12 Oak St".
+    _say(
+        db,
+        family.conversation,
+        MessageAuthor.CLIENT,
+        "Carmen Diaz\nAddress: 12 OAK\nst.\nSchool: Lincoln Elementary\nGrade: 5",
+        MORNING,
+        redacted=["home_address"],
+    )
+
+    transcript = build_turn_context(db, conversation=family.conversation, now=NOW).transcript
+
+    assert transcript == (
+        "[Mon Oct 19 09:00] Guardian: Carmen Diaz\\nAddress: [the Home address: saved].\\n"
+        "School: Lincoln Elementary\\nGrade: 5"
+    )
+
+
+def test_archived_records_values_are_hidden_inline_too(db: Session) -> None:
+    family = _make_family(db)
+    # The old Home is archived; the notes are Ana's.
+    _say(
+        db,
+        family.conversation,
+        MessageAuthor.CLIENT,
+        "we moved from 9 Elm St; Ana is allergic to peanuts",
+        MORNING,
+        redacted=["home_address", "child_notes"],
+    )
+
+    transcript = build_turn_context(db, conversation=family.conversation, now=NOW).transcript
+
+    assert transcript == (
+        "[Mon Oct 19 09:00] Guardian: we moved from [the Home address: saved]; "
+        "Ana is [a Child's notes: saved]"
+    )
+
+
+def test_overlapping_values_merge_into_one_placeholder(db: Session) -> None:
+    family = _make_family(db)
+    db.get_one(Home, family.home_id).directions = "Oak St back gate"
+    _say(
+        db,
+        family.conversation,
+        MessageAuthor.CLIENT,
+        "12 Oak St back gate, ring twice",
+        MORNING,
+        redacted=["home_address", "home_directions"],
+    )
+
+    transcript = build_turn_context(db, conversation=family.conversation, now=NOW).transcript
+
+    assert transcript == (
+        "[Mon Oct 19 09:00] Guardian: [the Home address and the Home directions: saved], ring twice"
+    )
+
+
+def test_a_marked_message_whose_value_is_not_found_renders_as_a_whole_placeholder(
+    db: Session,
+) -> None:
+    family = _make_family(db)
+    conversation = family.conversation
+    # Reworded, or changed by the office since.
+    _say(
+        db,
+        conversation,
+        MessageAuthor.CLIENT,
+        "the blue house on Oak",
+        MORNING,
+        redacted=["home_address"],
+    )
+    # A date of birth is never matched at read time.
+    _say(
+        db,
+        conversation,
+        MessageAuthor.CLIENT,
+        "she was born 2016-03-02",
+        MORNING + MINUTE,
+        redacted=["child_date_of_birth"],
+    )
+    # One field found is not enough: every marked field must be.
+    _say(
+        db,
+        conversation,
+        MessageAuthor.CLIENT,
+        "12 Oak St, and she was born March 2nd 2016",
+        MORNING + 2 * MINUTE,
+        redacted=["home_address", "child_date_of_birth"],
+    )
+
+    transcript = build_turn_context(db, conversation=conversation, now=NOW).transcript
+
+    assert transcript.splitlines() == [
+        "[Mon Oct 19 09:00] [Guardian gave the Home address: saved]",
+        "[Mon Oct 19 09:01] [Guardian gave a Child's date of birth: saved]",
+        "[Mon Oct 19 09:02] [Guardian gave the Home address and a Child's date of birth: saved]",
+    ]
+
+
+def test_a_value_inside_a_longer_word_is_not_found(db: Session) -> None:
+    family = _make_family(db)
+    # The saved "12 Oak St" is only the start of "Street", so the whole message is hidden.
+    _say(
+        db,
+        family.conversation,
+        MessageAuthor.CLIENT,
+        "we live at 12 Oak Street",
+        MORNING,
+        redacted=["home_address"],
+    )
+    db.get_one(Child, family.ana_id).notes = "ADD"
+    _say(
+        db,
+        family.conversation,
+        MessageAuthor.CLIENT,
+        "she has ADD; my address is above",
+        MORNING + MINUTE,
+        redacted=["child_notes"],
+    )
+
+    transcript = build_turn_context(db, conversation=family.conversation, now=NOW).transcript
+
+    assert transcript.splitlines() == [
+        "[Mon Oct 19 09:00] [Guardian gave the Home address: saved]",
+        "[Mon Oct 19 09:01] Guardian: she has [a Child's notes: saved]; my address is above",
+    ]
+
+
+def test_a_marked_message_in_a_chat_with_no_guardian_renders_as_a_whole_placeholder(
+    db: Session,
+) -> None:
+    conversation = _make_conversation(db)
+    _say(
+        db,
+        conversation,
+        MessageAuthor.CLIENT,
+        "we live at 12 Oak St",
+        MORNING,
+        redacted=["home_address"],
+    )
+
+    transcript = build_turn_context(db, conversation=conversation, now=NOW).transcript
+
+    assert transcript == "[Mon Oct 19 09:00] [Guardian gave the Home address: saved]"
 
 
 def test_a_guardian_cannot_forge_an_office_line_with_a_newline(db: Session) -> None:

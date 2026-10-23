@@ -212,6 +212,34 @@ def test_early_booking_puts_the_account_first_and_still_hands_off_a_booking_requ
     assert "`booking_request`" in early
 
 
+def test_early_booking_says_the_office_will_take_the_requested_date_into_account(
+    prompt: str,
+) -> None:
+    early = _section(prompt, "Early booking")
+
+    assert "If the Guardian named a date, also say the office will take it into account" in early
+    assert "will take the date you asked for into account" in early
+    assert "tendrá en cuenta la fecha que pidió" in early
+    assert "never say or imply you will book or schedule" in early
+
+
+def test_intake_close_puts_the_requested_date_in_the_booking_request_summary(
+    prompt: str,
+) -> None:
+    close = next(line for line in prompt.split("\n- ") if line.startswith("Intake close"))
+
+    assert "the date and time the Guardian asked for" in close
+    assert "calendar date" in close
+    assert "asked for Fri Oct 30, 2h" in close
+
+
+def test_history_treats_an_inline_placeholder_as_a_saved_detail(prompt: str) -> None:
+    history = _section(prompt, "History")
+
+    assert "[the Home address: saved]" in history
+    assert "inside a message" in history
+
+
 def test_the_reminder_offer_asks_yes_or_no_without_mentioning_stop(prompt: str) -> None:
     close = next(line for line in prompt.split("\n- ") if line.startswith("Intake close"))
 

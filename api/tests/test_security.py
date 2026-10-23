@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import bcrypt
 import jwt
 import pytest
 
@@ -19,6 +20,7 @@ from app.security import (
     password_is_encodable,
     verify_password,
 )
+from tests.cheap_bcrypt import REAL_GENSALT
 
 
 def _encode(claims: dict, *, key: str | None = None) -> str:
@@ -201,3 +203,9 @@ def test_refresh_token_missing_its_family_claim_is_rejected() -> None:
 
     with pytest.raises(TokenError):
         decode_token(token, expected_type=REFRESH_TOKEN_TYPE)
+
+
+def test_production_hashing_uses_cost_12(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bcrypt, "gensalt", REAL_GENSALT)
+
+    assert hash_password("a-password").startswith("$2b$12$")

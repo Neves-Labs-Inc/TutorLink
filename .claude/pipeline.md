@@ -34,7 +34,7 @@ To find the item id of something already on the board: `gh project item-list 4 -
 
 ## Commands
 
-- API (from `api/`): `UV_SYSTEM_CERTS=1`; tests need a fresh DB: `docker exec tutorlink-test-pg psql -U test -d postgres -c "CREATE DATABASE <name>;"`, then `DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/<name> uv run pytest`, drop `<name>` and `<name>_test` afterwards. Lint: `uv run ruff check` and `uv run ruff format --check app tests scripts` (never format `alembic/`).
+- API (from `api/`): `UV_SYSTEM_CERTS=1`; tests need a fresh DB: `docker exec tutorlink-test-pg psql -U test -d postgres -c "CREATE DATABASE <name>;"`, then `DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/<name> uv run pytest`, drop `<name>` and `<name>_test` afterwards. For a faster run, opt in to 4 parallel workers with `uv run pytest -n 4` (CI runs `-n auto`); each worker uses its own `<name>_test_gw0`..`gw3`, so also drop every `<name>_test_gw*` afterwards. Lint: `uv run ruff check` and `uv run ruff format --check app tests scripts` (never format `alembic/`).
 - Dashboard (from `dashboard/`): `npm run test`, `npx tsc -b`, `npm run lint`, `npm run build`.
 - PRs target `develop`; `main` is deployed by the Deploy workflow.
 

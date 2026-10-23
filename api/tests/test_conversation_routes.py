@@ -25,6 +25,7 @@ on it with `?q=`, which is the same isolation `test_conversation_service.py` use
 """
 
 import datetime
+import itertools
 import pathlib
 import threading
 import time
@@ -1340,8 +1341,11 @@ def _statement_count(db: Session, call: Callable[[], object]) -> int:
     return len(statements)
 
 
+_phone_suffixes = itertools.count()
+
+
 def _phone_number(marker: str) -> str:
-    return f"+1{marker}{uuid.uuid4().int % 10**4:04d}"
+    return f"+1{marker}{next(_phone_suffixes) % 10**4:04d}"
 
 
 def _minutes(count: int) -> datetime.timedelta:

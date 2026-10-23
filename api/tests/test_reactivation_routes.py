@@ -18,6 +18,7 @@ The test database outlives the run, so every row is created under a `uuid4`-deri
 """
 
 import datetime
+import itertools
 import uuid
 
 import pytest
@@ -322,6 +323,9 @@ def _marker() -> str:
     return f"{uuid.uuid4().int % 10**8:08d}"
 
 
+_phone_suffixes = itertools.count()
+
+
 def _make_conversation(
     db: Session,
     *,
@@ -335,7 +339,7 @@ def _make_conversation(
         flag_reason = FlagReason.REACTIVATION_REQUEST
 
     conversation = Conversation(
-        phone_number=f"+1{marker or _marker()}{uuid.uuid4().int % 10**4:04d}",
+        phone_number=f"+1{marker or _marker()}{next(_phone_suffixes) % 10**4:04d}",
         status=ConversationStatus.BOT,
         last_message_at=NOON,
         flag_reason=flag_reason,

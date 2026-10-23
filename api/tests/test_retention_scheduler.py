@@ -372,6 +372,8 @@ def _retention_lock_is_held(sessions: sessionmaker[Session]) -> bool:
             text(
                 "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'"
                 " AND classid = :namespace AND objid = :key AND objsubid = 2"
+                # `pg_locks` is cluster-wide: count only this database, not a parallel worker's.
+                " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
             ),
             {"namespace": RETENTION_LOCK_NAMESPACE, "key": RETENTION_LOCK_KEY},
         ).scalar_one()

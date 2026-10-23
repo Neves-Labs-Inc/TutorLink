@@ -391,6 +391,8 @@ def _held_bot_turn_locks(sessions: sessionmaker[Session]) -> int:
         return db.execute(
             text(
                 "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = :namespace"
+                # `pg_locks` is cluster-wide: count only this database, not a parallel worker's.
+                " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
             ),
             {"namespace": BOT_TURN_LOCK_NAMESPACE},
         ).scalar_one()

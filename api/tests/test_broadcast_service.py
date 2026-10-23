@@ -510,7 +510,11 @@ def _listener_dsn(engine: Engine) -> str:
 def _listener_query(engine: Engine) -> str | None:
     with engine.connect() as connection:
         return connection.execute(
-            text("SELECT query FROM pg_stat_activity WHERE application_name = :name"),
+            # Every worker's listener shares the name; `pg_stat_activity` spans the cluster.
+            text(
+                "SELECT query FROM pg_stat_activity"
+                " WHERE application_name = :name AND datname = current_database()"
+            ),
             {"name": LISTENER_NAME},
         ).scalar_one_or_none()
 
@@ -520,7 +524,8 @@ def _terminate_listener(engine: Engine) -> None:
         terminated = connection.execute(
             text(
                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
-                " WHERE application_name = :name"
+                # Every worker's listener shares the name; never kill another worker's.
+                " WHERE application_name = :name AND datname = current_database()"
             ),
             {"name": LISTENER_NAME},
         ).all()

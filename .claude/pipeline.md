@@ -34,7 +34,7 @@ To find the item id of something already on the board: `gh project item-list 4 -
 
 ## Commands
 
-- API (from `api/`): `UV_SYSTEM_CERTS=1`; tests need a fresh DB: `docker exec tutorlink-test-pg psql -U test -d postgres -c "CREATE DATABASE <name>;"`, then `DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/<name> uv run pytest`, drop `<name>` and `<name>_test` afterwards. Lint: `uv run ruff check` and `uv run ruff format --check app tests scripts` (never format `alembic/`).
+- API (from `api/`): `UV_SYSTEM_CERTS=1`; tests need a fresh DB: `docker exec tutorlink-test-pg psql -U test -d postgres -c "CREATE DATABASE <name>;"`, then `DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/<name> uv run pytest`, drop `<name>` and `<name>_test` afterwards. For a faster run, opt in to 4 parallel workers with `uv run pytest -n 4` (CI runs `-n auto`); each worker uses its own `<name>_test_gw0`..`gw3`, so also drop every `<name>_test_gw*` afterwards. Lint: `uv run ruff check` and `uv run ruff format --check app tests scripts` (never format `alembic/`).
 - Dashboard (from `dashboard/`): `npm run test`, `npx tsc -b`, `npm run lint`, `npm run build`.
 - PRs target `develop`; `main` is deployed by the Deploy workflow.
 
@@ -71,4 +71,4 @@ Collected during the WhatsApp bot agent wave 1 (2026-10-19).
 - Landing a worktree that deletes or adds binary files (images): build the patch with `git diff --binary`, or `git apply` fails the whole patch and applies nothing.
 - **Deleting test files can drop global types.** A browser test may carry `/// <reference types="@vitest/browser-playwright" />` that other tests rely on (CDPSession.send, node types). After deleting tests, run `npx tsc -b`; the reference now lives in `dashboard/src/test/browser-setup.ts`.
 - Kit `Button` with `isLoading` uses `aria-disabled`, not native `disabled` (it keeps focus). Playwright treats aria-disabled as non-actionable, so tests that click a loading Button need `{ force: true }`; `toBeDisabled()` also accepts aria-disabled, so assert `toHaveAttribute("disabled")` for a native disable.
-- **`develop` has no pytest-xdist yet** (2026-10-23): `-n 4` fails with "unrecognized arguments: -n" on worktrees made from `develop`; run serially (or `-k bot` for bot-only changes).
+- **A failing `expect.element` takes 15 s, not 3 s.** In Vitest 4.1.11, `expect.element` ignores `expect.poll.timeout` from `dashboard/vite.config.ts` and waits out the 15 s test timeout. A browser test stuck near 15 s is a failing or barely-passing assertion; look for a toast covering the target, a substring `getByText` also matching a toast, or a click during an overlay's enter animation (wait for `toBeInViewport({ ratio: 1 })`).

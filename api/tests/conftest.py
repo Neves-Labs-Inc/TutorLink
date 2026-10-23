@@ -1,3 +1,6 @@
+# First, before any import that loads `app`: `DUMMY_PASSWORD_HASH` is hashed at import time.
+from tests import cheap_bcrypt  # noqa: F401  # isort: skip
+
 import datetime
 import functools
 import importlib.util
@@ -103,9 +106,22 @@ def _test_engine() -> Generator[Engine, None, None]:
     engine.dispose()
 
 
+def _get_test_database_name(database: str) -> str:
+    """`<database>_test`, or `<database>_test_<worker>` (e.g. `test_test_gw0`) under pytest-xdist.
+
+    Each xdist worker gets its own database: committing and table-wiping tests
+    (`test_cli_purge_prelaunch`) would otherwise see or delete another worker's rows.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    name = f"{database}_test"
+    if worker:
+        name = f"{name}_{worker}"
+    return name
+
+
 @functools.cache
 def _get_test_engine() -> Engine:
-    """Build `<database>_test` once per run; shared by `_test_engine` and the business clock.
+    """Build `<database>_test` (one per xdist worker) once per run; shared by `_test_engine` and the business clock.
 
     Application imports are deferred into the body so importing this module needs no database.
     """
@@ -122,7 +138,7 @@ def _get_test_engine() -> Engine:
     )
 
     url = make_url(get_settings().database_url)
-    test_url = url.set(database=f"{url.database}_test")
+    test_url = url.set(database=_get_test_database_name(url.database))
 
     admin_engine = create_engine(url, isolation_level="AUTOCOMMIT")
     try:

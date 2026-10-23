@@ -34,6 +34,7 @@ from app.models.subject import Subject
 from app.models.tutor import Tutor
 from app.models.user import User
 from app.services import (
+    bot_context,
     bot_messages,
     bot_tools_booking,
     bot_tools_profile,
@@ -42,7 +43,13 @@ from app.services import (
     message_service,
 )
 from app.services.bot_model import ModelResponse, ModelUnavailable, ModelUsage, ToolCall
-from app.services.bot_tool_contract import CommittedAction, ToolContext, ToolResult, ToolSpec
+from app.services.bot_tool_contract import (
+    CommittedAction,
+    SavedValue,
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+)
 from app.services.bot_turn import TurnDeps, TurnOutcome, take_turn
 from tests.fake_twilio import CODE_OUTSIDE_WINDOW, FakeTwilio
 
@@ -145,6 +152,13 @@ def build_context(
     return FakeContext(snapshot=SNAPSHOT, transcript=TRANSCRIPT)
 
 
+def bot_context_for(
+    db: Session, *, conversation: Conversation, now: datetime.datetime
+) -> bot_context.TurnContext:
+    """The real snapshot and history, for a test replaying a whole chat."""
+    return bot_context.build_turn_context(db, conversation=conversation, now=now)
+
+
 class Clock:
     """A turn clock that tests move forward by hand."""
 
@@ -179,13 +193,18 @@ class Turn:
     clock: Clock
     sleeps: list[float]
 
-    def run(self, script: list[Step | Exception], tools: tuple[ToolSpec, ...] = ()) -> TurnOutcome:
+    def run(
+        self,
+        script: list[Step | Exception],
+        tools: tuple[ToolSpec, ...] = (),
+        context: Callable[..., Any] = build_context,
+    ) -> TurnOutcome:
         self.model = FakeModel(script=list(script))
         deps = TurnDeps(
             model=self.model,
             tools=tools,
             system_prompt=lambda: SYSTEM_PROMPT,
-            build_context=build_context,
+            build_context=context,
             clock=self.clock,
             sleep=self.sleeps.append,
         )
@@ -302,31 +321,95 @@ def test_each_paragraph_of_the_reply_is_its_own_message_in_order(
     ]
 
 
-def test_a_reply_after_a_private_save_is_marked_with_the_saved_fields(
+def test_a_reply_echoing_a_private_value_saved_this_turn_is_marked_with_its_field(
     turn: Turn, fake_twilio: FakeTwilio
 ) -> None:
-    """The reply may echo the address back ("Saved 12 Oak Street"), so history shows it as a
-    placeholder like the Guardian's message that gave it (spec §5)."""
+    """A paragraph echoing the address ("Saved 12 Oak Street") is marked like the Guardian's
+    message that gave it (spec §5); one that doesn't echo a value is not."""
     turn.guardian_says("12 Oak Street, gate code 1234")
     saved = ToolResult(
         status="ok",
         content={"home_id": "h1"},
         progress=True,
-        redacted=(RedactedField.HOME_ADDRESS, RedactedField.HOME_DIRECTIONS),
+        redacted=(
+            SavedValue(field=RedactedField.HOME_ADDRESS, text="12 Oak Street"),
+            SavedValue(field=RedactedField.HOME_DIRECTIONS, text="gate code 1234"),
+        ),
     )
 
     turn.run(
         [
             call(("create_home", {})),
-            reply("Saved 12 Oak Street.\n\nWhat's your child's name?"),
+            reply("Saved 12 oak street.\n\nWhat's your child's name?"),
         ],
         tools=(tool("create_home", lambda ctx, tool_input: saved),),
     )
 
-    assert [m.redacted_fields for m in turn.bot_messages()] == [
-        ["home_address", "home_directions"],
-        ["home_address", "home_directions"],
-    ]
+    assert [m.redacted_fields for m in turn.bot_messages()] == [["home_address"], None]
+
+
+def test_details_given_with_the_address_reach_the_next_turn_without_the_address(
+    turn: Turn, fake_twilio: FakeTwilio
+) -> None:
+    """The production Intake: once `create_home` saved the address, the next turn still saw
+    the child's name, school, grade, the booking request and its own question (spec §5)."""
+    turn.conversation = conversation_service.resolve_or_create(
+        turn.db, phone_number=f"+1202555{uuid.uuid4().int % 10**4:04d}"
+    )
+    tools = bot_tools_profile.TOOLS
+    another_parent = "Are any of your children already with us through another parent?"
+
+    turn.guardian_says("I want to book a tutoring class for 2h Next friday for Sofia Reyes")
+    turn.run([reply("Happy to help! What's your name and address?")], tools, bot_context_for)
+    turn.guardian_says(
+        "Laura Reyes\nAddress: 48 Maple Ave,\nApt 3B\nSchool: Lincoln Elementary\nGrade: 4"
+    )
+    turn.run(
+        [
+            call(
+                ("create_guardian", {"name": "Laura Reyes"}),
+                ("create_home", {"address": "48 Maple Ave, Apt 3B"}),
+            ),
+            reply(f"Thanks Laura, I saved your details.\n\n{another_parent}"),
+        ],
+        tools,
+        bot_context_for,
+    )
+    turn.guardian_says("Nope")
+    turn.run(
+        [
+            call(
+                (
+                    "create_child",
+                    {"name": "Sofia Reyes", "school": "Lincoln Elementary", "grade": 4},
+                )
+            ),
+            reply("Sofia is added."),
+        ],
+        tools,
+        bot_context_for,
+    )
+
+    turn_input = turn.model.requests[0]["messages"][0]["content"]
+    assert "Sofia Reyes" in turn_input
+    assert "School: Lincoln Elementary" in turn_input
+    assert "Grade: 4" in turn_input
+    assert "next friday" in turn_input.lower()
+    assert another_parent in turn_input
+    assert "[the Home address: saved]" in turn_input
+    assert "Maple" not in turn_input
+    assert "3B" not in turn_input
+    guardian_id = turn.refreshed().guardian_id
+    [child] = turn.db.scalars(
+        select(Child)
+        .join(ChildGuardian, ChildGuardian.child_id == Child.id)
+        .where(ChildGuardian.guardian_id == guardian_id)
+    ).all()
+    assert (child.name, child.school_name, child.grade_level) == (
+        "Sofia Reyes",
+        "Lincoln Elementary",
+        4,
+    )
 
 
 def test_a_reply_after_no_private_save_is_not_marked(turn: Turn, fake_twilio: FakeTwilio) -> None:

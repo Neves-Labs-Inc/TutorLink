@@ -57,7 +57,13 @@ jobs:
         run: uv run --frozen pytest -n auto
 
   dashboard-test:
+    name: dashboard-test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-24.04
+    # The suite is CPU-bound on 4-vCPU runners, and Vitest shards by file: more legs, shorter wall time.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     defaults:
       run:
         working-directory: dashboard
@@ -96,7 +102,7 @@ jobs:
         run: npx playwright install-deps chromium
 
       - name: Test
-        run: npm run test
+        run: npm run test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
   dashboard-lint-build:
     runs-on: ubuntu-24.04

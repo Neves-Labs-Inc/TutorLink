@@ -215,6 +215,7 @@ function renderAt(path = "/families/g-1?child=c-1", theme: Theme = "light") {
 const overlay = (name = "Sofia Souza") => page.getByRole("dialog", { name });
 const sheet = (name: string) => page.getByRole("dialog", { name });
 const location = () => page.getByRole("status", { name: "Location" });
+const familyChildren = () => page.getByRole("region", { name: /^Children/ });
 
 async function openMenuItem(name: string | RegExp): Promise<void> {
   await overlay().getByRole("button", { name: "More actions" }).click();
@@ -316,6 +317,9 @@ describe("child details body", () => {
       .click();
     await expect.element(overlay("Laura Souza")).toBeVisible();
     await expect.element(location()).toHaveTextContent("/families/g-1?guardian=g-1");
+    // The page pushes in from off-screen; under load its slide can start
+    // late, and a click before it lands misses Back entirely.
+    await expect.element(overlay("Laura Souza")).toBeInViewport({ ratio: 1 });
 
     await overlay("Laura Souza").getByRole("button", { name: "Sofia Souza" }).click();
     await expect.element(overlay("Laura Souza")).not.toBeInTheDocument();
@@ -664,8 +668,12 @@ describe("change guardians", () => {
       .toBeVisible();
     expect(window.location.pathname + window.location.search).toBe("/families/g-1");
     await expect.element(overlay()).not.toBeInTheDocument();
-    // Laura's family, still on screen, drops Sofia.
-    await expect.element(page.getByText("Sofia Souza")).not.toBeInTheDocument();
+    // Laura's family, still on screen, drops Sofia. Scoped to the
+    // Children section: the toast names Sofia too, for its whole 8s.
+    await expect.element(familyChildren()).toBeVisible();
+    await expect
+      .element(familyChildren().getByText("Sofia Souza"))
+      .not.toBeInTheDocument();
   });
 
   it("still words a failed Undo after the user has left the Child", async () => {

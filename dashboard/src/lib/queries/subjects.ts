@@ -1,13 +1,14 @@
-import { keepPreviousData, queryOptions } from '@tanstack/react-query'
+import { keepPreviousData, queryOptions, type QueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { DEFAULT_PAGE_SIZE, type Page } from '@/lib/queries/page'
+import type { ArchiveRead } from '@/types/families'
 
 export type Subject = {
   id: string
   name: string
   name_es: string | null
   description: string | null
-  is_active: boolean
+  archived: boolean
   tutor_count: number
 }
 
@@ -15,7 +16,7 @@ export type Subject = {
 const ACTIVE_PAGE_SIZE = 100
 
 export type SubjectListParams = {
-  is_active?: boolean
+  archived?: boolean
   page?: number
   page_size?: number
 }
@@ -30,7 +31,6 @@ export type SubjectUpdate = {
   name?: string
   name_es?: string | null
   description?: string | null
-  is_active?: boolean
 }
 
 export const subjectQueries = {
@@ -70,13 +70,23 @@ export const createSubject = async (data: SubjectCreate): Promise<Subject> => {
 }
 
 export const updateSubject = async (subjectId: string, data: SubjectUpdate): Promise<Subject> => {
-  const response = await api.patch<Subject>(`/api/subjects/${subjectId}`, data)
+  const response = await api.patch<Subject>(`/api/subjects/${encodeURIComponent(subjectId)}`, data)
 
   return response.data
 }
 
-export const deactivateSubject = async (subjectId: string): Promise<Subject> => {
-  const response = await api.delete<Subject>(`/api/subjects/${subjectId}`)
+export const archiveSubject = async (subjectId: string): Promise<ArchiveRead> => {
+  const response = await api.post<ArchiveRead>('/api/archive', { type: 'subject', id: subjectId })
 
   return response.data
 }
+
+export const restoreSubject = async (subjectId: string): Promise<ArchiveRead> => {
+  const response = await api.post<ArchiveRead>('/api/restore', { type: 'subject', id: subjectId })
+
+  return response.data
+}
+
+// After any Subject write: every `['subjects', ...]` query (list and active) refetches.
+export const refreshSubjects = (client: QueryClient): Promise<void> =>
+  client.invalidateQueries({ queryKey: ['subjects'] })

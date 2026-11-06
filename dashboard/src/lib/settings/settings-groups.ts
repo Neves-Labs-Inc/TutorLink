@@ -13,6 +13,7 @@ export type GroupId =
   | "booking-rules"
   | "reminders"
   | "office"
+  | "subjects"
   | "emails"
   | "chat-history"
   | "sign-in"
@@ -54,6 +55,13 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       "default_phone_country_code",
       "business_timezone",
     ],
+    isDeveloperOnly: false,
+  },
+  {
+    id: "subjects",
+    title: "Subjects",
+    // Subjects save on their own, outside the page's Save bar.
+    keys: [],
     isDeveloperOnly: false,
   },
   {

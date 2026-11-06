@@ -147,8 +147,7 @@ type NavOptions = {
   hasOfficeTimeOff?: boolean;
 };
 
-function getOfficeNav(role: NavRole, hasOfficeTimeOff: boolean): NavItem[] {
-  const isAdmin = role === "admin" || role === "developer";
+function getOfficeNav(hasOfficeTimeOff: boolean): NavItem[] {
   return [
     // No badge on Home (Franklin): Chats and Time off carry their own.
     HOME,
@@ -157,7 +156,8 @@ function getOfficeNav(role: NavRole, hasOfficeTimeOff: boolean): NavItem[] {
     FAMILIES,
     STAFF,
     ...(hasOfficeTimeOff ? [TIME_OFF] : []),
-    ...(isAdmin ? [SETTINGS] : []),
+    // A Manager sees Settings too, with only the Subjects group.
+    SETTINGS,
   ];
 }
 
@@ -202,7 +202,7 @@ export function getNav(
   { counts, hasOfficeTimeOff = true }: NavOptions = {},
 ): NavItem[] {
   const items =
-    role === "tutor" ? TUTOR_NAV : getOfficeNav(role, hasOfficeTimeOff);
+    role === "tutor" ? TUTOR_NAV : getOfficeNav(hasOfficeTimeOff);
   return counts === undefined ? items : applyCounts(items, counts);
 }
 

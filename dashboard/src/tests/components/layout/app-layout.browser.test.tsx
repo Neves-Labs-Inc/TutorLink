@@ -126,7 +126,7 @@ describe("app shell from 1024px", () => {
     await expect.element(nav.getByRole("button", { name: /Settings/ })).toBeVisible();
   });
 
-  it("gives a Manager the office nav without Settings", async () => {
+  it("gives a Manager the office nav with Settings last", async () => {
     await renderShell("manager", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
     await expect.element(nav.getByRole("button", { name: /Staff/ })).toBeVisible();
@@ -137,6 +137,7 @@ describe("app shell from 1024px", () => {
       "Families",
       "Staff",
       "Time off",
+      "Settings",
     ]);
   });
 
@@ -282,13 +283,14 @@ describe("app shell below 1024px", () => {
     await expect.element(currentPath()).toHaveTextContent("/staff");
   });
 
-  it("gives a Manager 4 tabs and More, with Staff and Time off inside", async () => {
+  it("gives a Manager 4 tabs and More, with Staff, Time off and Settings inside", async () => {
     await renderShell("manager", "/home");
     const nav = page.getByRole("navigation", { name: "Main" });
     await nav.getByRole("button", { name: /More/ }).click();
     const sheet = page.getByRole("dialog", { name: "More" });
     await expect.element(sheet.getByRole("button", { name: /^Staff/ })).toBeVisible();
     await expect.element(sheet.getByRole("button", { name: /^Time off/ })).toBeVisible();
+    await expect.element(sheet.getByRole("button", { name: "Settings" })).toBeVisible();
   });
 
   it("opens Profile from the avatar button", async () => {

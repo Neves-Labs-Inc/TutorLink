@@ -245,8 +245,8 @@ Owners: `kit/shell/app-shell.tsx`, `sidebar.tsx`, `bottom-tab-bar.tsx`, `nav.ts`
   bar. Up to 5 tabs; with more items the first 4 show and the rest go under **More** (a
   `BottomSheet`), which carries the sum of its items' badges.
 - Nav per role (`nav.ts`): Admin: Home · Bookings · Chats · Families · Staff · Time off · Settings.
-  Manager: the same without Settings (own sessions via the **Mine** filter and Home; Availability on
-  their Profile). Tutor: My sessions (landing) · My availability · Time off.
+  Manager: the same, with Settings last showing only Subjects (own sessions via the **Mine**
+  filter and Home; Availability on their Profile). Tutor: My sessions (landing) · My availability · Time off.
 - Nav badges: Bookings = to sort out + Evaluations to book (pink), Chats = unread (primary),
   Time off = pending, Admins only (pink). Home has no badge. While counts load, no badges show.
 - Every page starts with `PageHeader`: optional eyebrow, Lato title, optional description,
@@ -309,7 +309,7 @@ Reuse these before writing anything. A new primitive is a decision for Franklin.
 |---|---|---|
 | A record's details and its actions | `DetailOverlay` (`phoneMode="page"`) | Opening a Booking, Session, Child, Guardian, Staff member, Time off request, chat from To do. Phone: full-screen page pushed from the right with "← {back label}". From 672px: 440px slide-over on the right. Actions live in its footer. Stacks (Child → Guardian) step back with `onBack`. `isHeaderPinned` for long content (threads, Bookings) |
 | A short task or picker | `BottomSheet` | Add/edit forms (Add guardian, Add home, Time off request, Mark Evaluated, Assigned Tutors), More menu, action lists. Phone: bottom sheet up to 88% tall with grab handle. From 672px: centred 480px card. Footer: Cancel (`outline`/`ghost`) then the commit (`primary`) |
-| Ask before a destructive act | `ConfirmDialog` (`isDestructive`) | Only the destructive acts in the §11.6 rule: Cancel booking, Archive (Child, Guardian, Staff, Home), Cancel time off, deleting chat history. No Undo after them. Both buttons name the act ("Cancel booking" / "Keep booking"); never OK/Cancel. `role="alertdialog"` |
+| Ask before a destructive act | `ConfirmDialog` (`isDestructive`) | Only the destructive acts in the §11.6 rule: Cancel booking, Archive (Child, Guardian, Staff, Home, Subject), Cancel time off, deleting chat history. No Undo after them. Both buttons name the act ("Cancel booking" / "Keep booking"); never OK/Cancel. `role="alertdialog"` |
 | A non-destructive decision that acts on a colleague | `ConfirmDialog` without `isDestructive` | Only Take over from a colleague ("Take over" / "Leave it with Daniela") |
 | Transient result | `useToast().showToast` (`overlays/use-toast.ts`) | §11.6 |
 
@@ -369,7 +369,7 @@ unsaved changes and a "Changed" tag per field; emails save in their own editor.
   Mark done, Keep over Time off, Approve time off, Decline time off, Hand back. This applies wherever
   the act appears (Home, Bookings, Chats, Time off, details). Time off decisions send after the Undo window.
 - **Destructive acts confirm first and have no Undo:** Cancel booking, Archive (Child, Guardian,
-  Staff, Home), Cancel time off, deleting chat history. `ConfirmDialog` with `isDestructive`, then a
+  Staff, Home, Subject), Cancel time off, deleting chat history. `ConfirmDialog` with `isDestructive`, then a
   plain success toast. Restore, where it exists, is a separate act on the record.
 - **One exception:** Take over from a colleague keeps a non-destructive confirm, because it acts on someone else's chat.
 

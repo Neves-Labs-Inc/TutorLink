@@ -171,6 +171,23 @@ def test_strict_mode_makes_the_agent_send_every_field_its_kind_needs(
     assert set(items["properties"]) == needed | optional
 
 
+def test_list_slots_takes_the_guardians_place_as_optional_and_never_nullable() -> None:
+    schema = _tool("list_slots").input_schema
+
+    assert set(schema["required"]) == {"child_id", "subject_id", "date_from", "date_to"}
+    assert schema["properties"]["location"]["type"] == "string"
+    assert "leave out if they didn't say" in schema["properties"]["location"]["description"]
+    assert "no_office_times" in _tool("list_slots").description
+
+
+def test_propose_copies_the_location_list_slots_returned() -> None:
+    book = _tool("propose").input_schema["properties"]["book"]["items"]
+
+    assert book["properties"]["location"]["description"] == (
+        "The chosen slot's location, as list_slots returned it."
+    )
+
+
 # --- list_slots ---------------------------------------------------------------------------------
 
 
@@ -193,13 +210,59 @@ def test_list_slots_offers_only_the_assigned_tutors_free_slots(db: Session, worl
     assert result.progress is False
 
 
-def test_list_slots_keeps_only_ranges_that_allow_the_location(db: Session, world: World) -> None:
+@pytest.mark.parametrize("asked", ["home", None])
+def test_an_office_only_tutor_is_offered_at_the_office_whatever_the_guardian_asked(
+    db: Session, world: World, asked: str | None
+) -> None:
     _set_mode(db, world.assigned_tutor_id, AvailabilityMode.ONLY_OFFICE)
-    # Home visits on Tuesdays only, so home is a Location this Tutor works, just not Mondays.
+
+    result = _list_slots(db, world, location=asked)
+
+    assert [(slot["start_time"], slot["location"]) for slot in result.content["slots"]] == [
+        ("09:00", "office"),
+        ("10:30", "office"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("asked", "held"), [("home", "home"), ("office", "office"), (None, "home")]
+)
+def test_a_home_or_office_tutor_is_offered_where_the_guardian_asked_or_at_home(
+    db: Session, world: World, asked: str | None, held: str
+) -> None:
+    result = _list_slots(db, world, location=asked)
+
+    assert [slot["location"] for slot in result.content["slots"]] == [held, held]
+
+
+def test_a_home_visits_tutor_asked_for_the_office_has_no_office_times(
+    db: Session, world: World
+) -> None:
+    _set_mode(db, world.assigned_tutor_id, AvailabilityMode.TRAVELER)
+
+    result = _list_slots(db, world, location="office")
+
+    assert result == _refused("no_office_times")
+
+
+@pytest.mark.parametrize("asked", ["home", None])
+def test_a_home_visits_tutor_is_offered_at_home(
+    db: Session, world: World, asked: str | None
+) -> None:
+    _set_mode(db, world.assigned_tutor_id, AvailabilityMode.TRAVELER)
+
+    result = _list_slots(db, world, location=asked)
+
+    assert [slot["location"] for slot in result.content["slots"]] == ["home", "home"]
+
+
+def test_each_day_holds_its_slots_where_that_days_range_works(db: Session, world: World) -> None:
+    _set_mode(db, world.assigned_tutor_id, AvailabilityMode.ONLY_OFFICE)
+    tuesday = DATE + datetime.timedelta(days=1)
     db.add(
         TutorAvailability(
             tutor_id=world.assigned_tutor_id,
-            day_of_week=DATE.weekday() + 1,
+            day_of_week=tuesday.weekday(),
             start_time=NINE,
             end_time=TWELVE,
             mode=AvailabilityMode.TRAVELER,
@@ -207,11 +270,14 @@ def test_list_slots_keeps_only_ranges_that_allow_the_location(db: Session, world
     )
     db.flush()
 
-    at_home = _list_slots(db, world, location="home")
-    at_office = _list_slots(db, world, location="office")
+    result = _list_slots(db, world, date_to=tuesday, location="home")
 
-    assert at_home.content["slots"] == []
-    assert [slot["start_time"] for slot in at_office.content["slots"]] == ["09:00", "10:30"]
+    assert [(slot["date"], slot["location"]) for slot in result.content["slots"]] == [
+        (DATE.isoformat(), "office"),
+        (DATE.isoformat(), "office"),
+        (tuesday.isoformat(), "home"),
+        (tuesday.isoformat(), "home"),
+    ]
 
 
 def test_list_slots_reports_no_tutor_for_subject_apart_from_none_free(
@@ -226,14 +292,44 @@ def test_list_slots_reports_no_tutor_for_subject_apart_from_none_free(
     assert result == _refused("no_tutor_for_subject")
 
 
-def test_list_slots_reports_no_tutor_when_the_assigned_tutor_never_works_there(
-    db: Session, world: World
+@pytest.mark.parametrize("asked", ["home", "office", None])
+def test_list_slots_reports_no_tutor_when_the_assigned_tutor_has_no_active_range(
+    db: Session, world: World, asked: str | None
 ) -> None:
-    _set_mode(db, world.assigned_tutor_id, AvailabilityMode.ONLY_OFFICE)
+    for row in _ranges_of(db, world.assigned_tutor_id):
+        row.is_active = False
+    db.flush()
 
-    result = _list_slots(db, world, location="home")
+    result = _list_slots(db, world, location=asked)
 
     assert result == _refused("no_tutor_for_subject")
+
+
+@pytest.mark.parametrize(
+    ("mode", "asked", "starts"),
+    [
+        # Office beside an office booking: bare overlap, so 9:00 right after it is free.
+        (AvailabilityMode.ONLY_OFFICE, "home", ["09:00", "10:30"]),
+        # Home beside it: the full 30-minute travel gap, so 9:00 is too close.
+        (AvailabilityMode.ANYWHERE, "home", ["10:30"]),
+    ],
+)
+def test_each_slot_keeps_the_travel_gap_of_its_own_location(
+    db: Session, world: World, mode: AvailabilityMode, asked: str, starts: list[str]
+) -> None:
+    _set_mode(db, world.assigned_tutor_id, mode)
+    _book(
+        db,
+        world,
+        child_id=world.sibling_id,
+        start=datetime.time(8, 0),
+        end=NINE,
+        home=False,
+    )
+
+    result = _list_slots(db, world, location=asked)
+
+    assert [slot["start_time"] for slot in result.content["slots"]] == starts
 
 
 def test_list_slots_with_nobody_free_is_an_empty_list(db: Session, world: World) -> None:
@@ -465,6 +561,27 @@ def test_a_slot_from_list_slots_proposes_as_it_is(db: Session, world: World) -> 
     result = _propose_raw(db, world, {"book": [book], "cancel": [], "reschedule": []})
 
     assert result.status == "ok"
+
+
+def test_an_office_slot_from_list_slots_proposes_and_commits_as_it_is(
+    db: Session, world: World
+) -> None:
+    """No `home_id`: the tutor's office-only range put the slot at the office."""
+    _set_mode(db, world.assigned_tutor_id, AvailabilityMode.ONLY_OFFICE)
+    slot = _list_slots(db, world, location="home").content["slots"][0]
+    book = {
+        "child_id": str(world.child_id),
+        "subject_id": str(world.subject_id),
+        **{key: slot[key] for key in ("tutor_id", "date", "start_time", "location")},
+    }
+
+    proposed = _propose_raw(db, world, {"book": [book], "cancel": [], "reschedule": []})
+    _guardian_says(db, world, at=NOW + datetime.timedelta(minutes=2))
+    committed = _commit(db, world, now=NOW + datetime.timedelta(minutes=3))
+
+    [booking] = _live_bookings(db, world)
+    assert (proposed.status, committed.status) == ("ok", "ok")
+    assert (booking.location, booking.home_id) == (BookingLocation.IN_OFFICE, None)
 
 
 def test_propose_names_every_problem_with_its_expected_format(db: Session, world: World) -> None:
@@ -994,18 +1111,19 @@ def _list_slots(
     subject_id: uuid.UUID | None = None,
     date_from: datetime.date = DATE,
     date_to: datetime.date = DATE,
-    location: str = "home",
+    location: str | None = "home",
 ) -> ToolResult:
-    return _tool("list_slots").run(
-        _context(db, world, NOW),
-        {
-            "child_id": str(child_id or world.child_id),
-            "subject_id": str(subject_id or world.subject_id),
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
-            "location": location,
-        },
-    )
+    """`location=None` leaves the field out, as the agent does when the Guardian named no place."""
+    raw = {
+        "child_id": str(child_id or world.child_id),
+        "subject_id": str(subject_id or world.subject_id),
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+    }
+    if location is not None:
+        raw["location"] = location
+
+    return _tool("list_slots").run(_context(db, world, NOW), raw)
 
 
 def _propose(

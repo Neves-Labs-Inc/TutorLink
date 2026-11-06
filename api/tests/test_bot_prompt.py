@@ -150,7 +150,7 @@ def _example_calls(prompt: str, tool: str) -> list[str]:
 @pytest.mark.parametrize(
     ("tool", "fields"),
     [
-        ("list_slots", ("child_id=", "subject_id=", "date_from=", "date_to=", "location=")),
+        ("list_slots", ("child_id=", "subject_id=", "date_from=", "date_to=")),
         ("propose", ("book=", "cancel=", "reschedule=")),
     ],
 )
@@ -163,6 +163,43 @@ def test_example_booking_calls_use_the_tools_real_field_names(
     assert calls
     for example in calls:
         assert all(field in example for field in fields), example
+
+
+def test_example_lookups_leave_the_place_out_when_the_guardian_named_none(prompt: str) -> None:
+    """No example Guardian names a place, and a `location="home"` there is what sent office-only
+    tutors' Children to the office."""
+    calls = _example_calls(prompt, "list_slots")
+
+    assert calls
+    assert not [call for call in calls if "location=" in call]
+
+
+def test_list_slots_takes_the_place_asked_for_and_each_slot_says_where(prompt: str) -> None:
+    tools = prompt.split("# Tools", 1)[1].split("# Rules", 1)[0]
+    entry = next(line for line in tools.split("\n- ") if line.startswith("`list_slots`"))
+
+    assert "the place the Guardian asked for, if any" in entry
+    assert "each slot says where it will be" in entry
+
+
+def test_the_tutors_place_decides_and_a_different_place_is_said_in_the_offer(
+    prompt: str,
+) -> None:
+    booking = _section(prompt, "Booking, cancelling and moving sessions")
+
+    assert "The tutor's place decides" in booking
+    assert "offer it anyway and say in the offer that it will be at the office" in booking
+    assert "This one is at the office:" in booking
+    assert "Never hand off because of the place" in booking
+
+
+def test_no_office_times_is_said_plainly_without_listing_home_times(prompt: str) -> None:
+    booking = _section(prompt, "Booking, cancelling and moving sessions")
+    rule = next(line for line in booking.split("\n- ") if "`no_office_times`" in line)
+
+    assert "no times at the office" in rule
+    assert "whether home would work" in rule
+    assert "don't list home times" in rule
 
 
 def test_example_books_carry_every_field_a_book_needs(prompt: str) -> None:

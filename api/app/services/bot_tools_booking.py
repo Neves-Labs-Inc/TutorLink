@@ -70,6 +70,7 @@ NOTHING_PENDING = "nothing_pending"
 PROPOSAL_EXPIRED = "proposal_expired"
 NEEDS_GUARDIAN_YES = "needs_guardian_yes"
 NO_TUTOR_FOR_SUBJECT = "no_tutor_for_subject"
+NO_OFFICE_TIMES = "no_office_times"
 CHILD_NOT_EVALUATED = "child_not_evaluated"
 CHILD_ARCHIVED = "child_archived"
 INVALID_INPUT = "invalid_input"
@@ -217,28 +218,29 @@ def _list_slots(ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
     subject_id = fields.uuid("subject_id")
     date_from = fields.date("date_from")
     date_to = fields.date("date_to")
-    location = fields.location()
+    # Where the Guardian asked for the session; each slot's own Location is the tutor's call.
+    requested = fields.location() if fields.has("location") else None
     fields.check()
     wall_now = _wall_clock(ctx)
 
     _check_bookable_child(ctx, child_id=child_id)
-    if not slot_service.has_assigned_tutor(
-        ctx.db, child_id=child_id, subject_id=subject_id, location=location
-    ):
+    modes = slot_service.assigned_tutor_modes(ctx.db, child_id=child_id, subject_id=subject_id)
+    if not modes:
         raise _Refused(NO_TUTOR_FOR_SUBJECT)
+    # Home and no wish resolve for every mode, so only an office request lands here.
+    if all(slot_service.resolve_location(mode, requested) is None for mode in modes):
+        raise _Refused(NO_OFFICE_TIMES)
 
     slots = [
-        _slot_json(slot, location=location)
+        _slot_json(slot)
         for day in _days_in_window(ctx.db, date_from, date_to, today=wall_now.date())
-        for slot in slot_service.find_available_slots(
+        for slot in slot_service.find_bot_slots(
             ctx.db,
             subject_id=subject_id,
             child_id=child_id,
             date=day,
-            tutor_id=None,
             now=wall_now,
-            location=location,
-            assigned_only=True,
+            requested=requested,
         ).items
     ]
 
@@ -268,13 +270,17 @@ def _days_in_window(
     ]
 
 
-def _slot_json(slot: slot_service.OpenSlot, *, location: BookingLocation) -> dict[str, Any]:
-    """`tutor_id`, `date`, `start_time` and `location` are exactly what `propose` takes."""
+def _slot_json(slot: slot_service.OpenSlot) -> dict[str, Any]:
+    """`tutor_id`, `date`, `start_time` and `location` are exactly what `propose` takes. The bot's
+    search always resolves a slot's Location."""
+    if slot.location is None:
+        raise ValueError("a bot slot carries its resolved location")
+
     return {
         "tutor_id": str(slot.tutor_id),
         "date": slot.date.isoformat(),
         "start_time": _hhmm(slot.start_time),
-        "location": _LOCATION_NAMES[location],
+        "location": _LOCATION_NAMES[slot.location],
         "end_time": _hhmm(slot.end_time),
         "tutor_name": slot.tutor_name,
     }
@@ -1049,7 +1055,10 @@ _SLOT_PROPERTIES = {
         "type": "string",
         "description": "The chosen slot's start_time: HH:MM, 24-hour (16:30, not 4:30 PM).",
     },
-    "location": {**_LOCATION, "description": "The location list_slots was asked for."},
+    "location": {
+        **_LOCATION,
+        "description": "The chosen slot's location, as list_slots returned it.",
+    },
     "home_id": {
         **_UUID,
         "description": "The Home's home id from the snapshot. Needed when location is home and "
@@ -1082,10 +1091,12 @@ LIST_SLOTS = ToolSpec(
     name="list_slots",
     description=(
         "Free Session times for an Evaluated Child and a Subject, between two dates (at most "
-        f"{MAX_LIST_DAYS} days), at home or at the office. Each slot's tutor_id, date, "
-        "start_time and location are exactly what propose takes. Refused no_tutor_for_subject "
-        "when nobody can teach it at that Location (hand off to the office); an empty list "
-        "means nobody is free in that range (offer other days first)."
+        f"{MAX_LIST_DAYS} days). Each slot's location is where the tutor holds it, which can "
+        "differ from the place asked for. Each slot's tutor_id, date, start_time and location "
+        "are exactly what propose takes. Refused no_tutor_for_subject when nobody can teach it "
+        "(hand off to the office); no_office_times when the office was asked for and the tutors "
+        "only do home visits; an empty list means nobody is free in that range (offer other "
+        "days first)."
     ),
     input_schema=_strict(
         {
@@ -1093,8 +1104,13 @@ LIST_SLOTS = ToolSpec(
             "subject_id": {**_UUID, "description": "The Subject's subject id from the snapshot."},
             "date_from": _DATE,
             "date_to": {**_DATE, "description": "YYYY-MM-DD, on or after date_from."},
-            "location": _LOCATION,
-        }
+            "location": {
+                **_LOCATION,
+                "description": "Where the Guardian asked for the session; leave out if they "
+                "didn't say. Each slot's location is where it will be held.",
+            },
+        },
+        optional=frozenset({"location"}),
     ),
     run=_logged("list_slots", _list_slots),
 )

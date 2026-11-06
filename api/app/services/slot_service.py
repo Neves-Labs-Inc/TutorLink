@@ -23,8 +23,12 @@ every scheduling column is stored in.
 default, the bot's limit; the router passes `should_cap=False` because the dashboard shows every
 free time. `exclude_booking_id` is the router's too: the Booking being changed is not busy.
 
-**Assigned Tutors bound the bot only** (#242). `assigned_only=True` is the bot's call and keeps
-the Child's Assigned Tutors; the router never passes it, so the office may book anyone.
+**Assigned Tutors bound the bot only** (#242). `find_bot_slots` keeps the Child's Assigned
+Tutors; the router never passes `assigned_only`, so the office may book anyone.
+
+**The tutor's range decides the bot's Location.** `find_bot_slots` holds each range's slots at
+`resolve_location(mode, requested)`, so an Office only tutor is offered at the office even when
+the Guardian asked for home. The dashboard keeps `find_available_slots`' filter on `location`.
 
 `DateOutOfWindow` is `scheduling_service`'s and is deliberately re-exported by propagation
 rather than wrapped in a local class: the router maps the same exception from this endpoint and
@@ -73,6 +77,25 @@ MODE_LOCATIONS: dict[AvailabilityMode, frozenset[BookingLocation]] = {
 }
 
 
+def resolve_location(
+    mode: AvailabilityMode, requested: BookingLocation | None
+) -> BookingLocation | None:
+    """Where a range of `mode` holds the bot's slots, given the Location the Guardian asked for
+    (`None`: they didn't say). The tutor's range decides and the wish comes second: an Office
+    only range is always the office, an unstated wish is home, and a Home visits range asked
+    for the office holds nothing (`None`)."""
+    if mode is AvailabilityMode.ONLY_OFFICE:
+        location = BookingLocation.IN_OFFICE
+    elif requested is None:
+        location = BookingLocation.HOME
+    elif requested in MODE_LOCATIONS[mode]:
+        location = requested
+    else:
+        location = None
+
+    return location
+
+
 @dataclass(frozen=True, slots=True)
 class OpenSlot:
     tutor_id: uuid.UUID
@@ -81,6 +104,9 @@ class OpenSlot:
     date: datetime.date
     start_time: datetime.time
     end_time: datetime.time
+    # Where the slot is held: the bot's search resolves it per range (`resolve_location`). `None`
+    # is the dashboard's search with no Location chosen, which leaves the place to the office.
+    location: BookingLocation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +140,8 @@ def find_available_slots(
     """The cap is applied last, after every subtraction and after the sort, so `total` is the
     number that matched and `items` is the earliest few of them.
 
-    `location` is the bot's chosen Location: only ranges whose `mode` allows it produce slots,
+    `location` is a chosen Location (the route's `?location=`; the bot has `find_bot_slots`):
+    only ranges whose `mode` allows it produce slots,
     and the neighbour test against an In office booking relaxes to bare overlap for an In
     office candidate (`travel_gap_minutes`). `None` is the dashboard's call: every range, and
     the full gap against every booking, as before the parameter existed.
@@ -141,16 +168,74 @@ def find_available_slots(
     # stores (`models/availability.py:32`). Never `isoweekday()`, which makes Monday 1, and
     # never PostgreSQL's `EXTRACT(DOW)`, which makes Sunday 0.
     ranges = _active_ranges(db, tutor_ids=tutor_ids, day_of_week=date.weekday(), location=location)
+
+    return _search(
+        db,
+        names=names,
+        located_ranges=[(row, location) for row in ranges],
+        date=date,
+        now=now,
+        settings=settings,
+        should_cap=should_cap,
+        exclude_booking_id=exclude_booking_id,
+    )
+
+
+def find_bot_slots(
+    db: Session,
+    *,
+    subject_id: uuid.UUID,
+    child_id: uuid.UUID,
+    date: datetime.date,
+    now: datetime.datetime,
+    requested: BookingLocation | None,
+) -> SlotSearchResult:
+    """The bot's search: the Child's Assigned Tutors, capped at `max_slots_offered`, every
+    active range read. Each range holds its slots at `resolve_location(mode, requested)`, which
+    each `OpenSlot.location` carries and each slot's travel gap uses; a range that resolves to
+    no Location offers nothing."""
+    settings = load_scheduling_settings(db)
+    assert_date_in_window(date, today=now.date(), lookahead_days=settings.booking_lookahead_days)
+
+    names = _qualified_tutor_names(
+        db, subject_id=subject_id, child_id=child_id, tutor_id=None, assigned_only=True
+    )
+    ranges = _active_ranges(db, tutor_ids=list(names), day_of_week=date.weekday(), location=None)
+    resolved = [(row, resolve_location(row.mode, requested)) for row in ranges]
+
+    return _search(
+        db,
+        names=names,
+        located_ranges=[(row, location) for row, location in resolved if location is not None],
+        date=date,
+        now=now,
+        settings=settings,
+        should_cap=True,
+        exclude_booking_id=None,
+    )
+
+
+def _search(
+    db: Session,
+    *,
+    names: dict[uuid.UUID, str],
+    located_ranges: list[tuple[TutorAvailability, BookingLocation | None]],
+    date: datetime.date,
+    now: datetime.datetime,
+    settings: SchedulingSettings,
+    should_cap: bool,
+    exclude_booking_id: uuid.UUID | None,
+) -> SlotSearchResult:
+    """Steps 2 and 3 over `date`'s ranges, each paired with the Location its slots are held
+    at. The window gate and the tutor set are the caller's."""
+    tutor_ids = list(names)
     whole_day_off, exception_windows = _approved_exceptions(db, tutor_ids=tutor_ids, date=date)
     booking_windows = _live_booking_windows(
         db, tutor_ids=tutor_ids, date=date, exclude_booking_id=exclude_booking_id
     )
-    # With no Location chosen the candidate is treated as a home visit, which keeps the full
-    # gap against every neighbour: today's answer, and the stricter of the two.
-    candidate_location = location if location is not None else BookingLocation.HOME
 
     open_slots: list[OpenSlot] = []
-    for row in ranges:
+    for row, location in located_ranges:
         if row.tutor_id in whole_day_off:
             continue
 
@@ -160,6 +245,9 @@ def find_available_slots(
             length_minutes=settings.session_length_minutes,
             gap_minutes=settings.session_gap_minutes,
         )
+        # With no Location chosen the candidate is treated as a home visit, which keeps the
+        # full gap against every neighbour: the dashboard's answer, and the stricter of the two.
+        gap_location = location if location is not None else BookingLocation.HOME
         open_slots.extend(
             OpenSlot(
                 tutor_id=row.tutor_id,
@@ -168,6 +256,7 @@ def find_available_slots(
                 date=date,
                 start_time=start,
                 end_time=end,
+                location=location,
             )
             for start, end in grid
             if _is_offerable(
@@ -176,7 +265,7 @@ def find_available_slots(
                 date=date,
                 now=now,
                 settings=settings,
-                location=candidate_location,
+                location=gap_location,
                 exceptions=exception_windows.get(row.tutor_id, ()),
                 bookings=booking_windows.get(row.tutor_id, ()),
             )
@@ -222,28 +311,25 @@ def allowed_locations(
     return frozenset().union(*(MODE_LOCATIONS[row.mode] for row in ranges))
 
 
-def has_assigned_tutor(
-    db: Session, *, child_id: uuid.UUID, subject_id: uuid.UUID, location: BookingLocation
-) -> bool:
-    """Whether any of the Child's Assigned Tutors teaches `subject_id` at the Child's level and
-    has an active range, on any weekday, whose `mode` allows `location`: the Tutors
-    `find_available_slots(assigned_only=True, location=...)` could ever offer. Lets the bot tell
-    "nobody teaches it there" (an Office handoff) from "nobody is free" (other days)."""
+def assigned_tutor_modes(
+    db: Session, *, child_id: uuid.UUID, subject_id: uuid.UUID
+) -> frozenset[AvailabilityMode]:
+    """The modes of the active ranges, on any weekday, of the Child's Assigned Tutors who teach
+    `subject_id` at the Child's level: the ranges `find_bot_slots` could ever read. Empty means
+    nobody can teach it (an Office handoff), apart from nobody being free (other days)."""
     names = _qualified_tutor_names(
         db, subject_id=subject_id, child_id=child_id, tutor_id=None, assigned_only=True
     )
-    allowing_modes = [mode for mode, allowed in MODE_LOCATIONS.items() if location in allowed]
-    any_range = db.scalar(
-        select(TutorAvailability.id)
+    modes = db.scalars(
+        select(TutorAvailability.mode)
         .where(
             TutorAvailability.tutor_id.in_(list(names)),
             TutorAvailability.is_active.is_(True),
-            TutorAvailability.mode.in_(allowing_modes),
         )
-        .limit(1)
+        .distinct()
     )
 
-    return any_range is not None
+    return frozenset(modes)
 
 
 def _qualified_tutor_names(

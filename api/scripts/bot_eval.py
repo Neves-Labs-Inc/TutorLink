@@ -74,6 +74,7 @@ from sqlalchemy.pool import NullPool  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.models.availability import TutorAvailability  # noqa: E402
 from app.models.booking import Booking  # noqa: E402
+from app.models.booking_reminder import BookingReminder  # noqa: E402
 from app.models.child import Child  # noqa: E402
 from app.models.child_assigned_tutor import ChildAssignedTutor  # noqa: E402
 from app.models.child_subject_level import ChildSubjectLevel  # noqa: E402
@@ -81,8 +82,10 @@ from app.models.conversation import Conversation  # noqa: E402
 from app.models.enums import (  # noqa: E402
     AvailabilityMode,
     BookingLocation,
+    Language,
     MessageAuthor,
     MessageStatus,
+    ReminderStatus,
     SystemMessageKind,
     UserRole,
 )
@@ -97,7 +100,16 @@ from app.models.system_setting import (  # noqa: E402
 )
 from app.models.tutor import Tutor, TutorSubject  # noqa: E402
 from app.models.user import User  # noqa: E402
-from app.services import bot_agent, bot_turn, clock, webhook_service  # noqa: E402
+from app.services import (  # noqa: E402
+    bot_agent,
+    bot_messages,
+    bot_turn,
+    clock,
+    conversation_service,
+    message_service,
+    reminder_service,
+    webhook_service,
+)
 from app.services.bot_context import STAFF_ONLY_KINDS  # noqa: E402
 from app.services.bot_model import (  # noqa: E402
     SDK_RETRIES,
@@ -201,6 +213,8 @@ class Family:
     school: str
     address: str
     directions: str
+    # The text of the reminder's quick-reply button, which the Guardian taps to start a chat.
+    book_button: str
 
 
 FAMILIES = {
@@ -211,6 +225,7 @@ FAMILIES = {
         school="Lincoln Elementary",
         address="48 Oak Street, Apt 3B, Coral Gables, FL 33134",
         directions="gate code 4412",
+        book_button="Book a session",
     ),
     "es": Family(
         guardian="María González",
@@ -219,6 +234,7 @@ FAMILIES = {
         school="Escuela Primaria Roosevelt",
         address="1520 SW 8th Street, Miami, FL 33135",
         directions="toque el timbre del apartamento 2",
+        book_button="Reservar una sesión",
     ),
 }
 
@@ -241,6 +257,10 @@ class Persona:
     brief: Callable[[Family], str]
     goal: Callable[[Family], str]
     gap: Gap | None = None
+    # The Assigned Tutor's availability mode; the other Tutors always take `anywhere`.
+    assigned_tutor_mode: AvailabilityMode = AvailabilityMode.ANYWHERE
+    # Whether a sent Booking reminder naming the Child is already in the chat.
+    has_reminder: bool = False
 
 
 PERSONAS = (
@@ -308,6 +328,23 @@ PERSONAS = (
             " the chat was. The goal is met once a session is booked."
         ),
         gap=Gap(after_messages=3, hours=26),
+    ),
+    Persona(
+        key="reminder",
+        title="Reminder tap, office-only tutor",
+        is_known_guardian=True,
+        brief=lambda f: (
+            f"{f.guardian}, an existing client; {f.child} is already evaluated and has a tutor."
+            " You just got the weekly reminder and tapped its button."
+        ),
+        goal=lambda f: (
+            f'Your first message is exactly the button text, "{f.book_button}". When times are'
+            " offered, say once that you'd prefer home. Accept a session at the office for that"
+            " week. The goal is met once a session is booked. Give up if the assistant says the"
+            " office will find a tutor, or keeps asking the same thing."
+        ),
+        assigned_tutor_mode=AvailabilityMode.ONLY_OFFICE,
+        has_reminder=True,
     ),
 )
 
@@ -664,7 +701,14 @@ def _set_setting(db: Session, key: str, value: str, value_type: str) -> None:
 
 
 def seed_world(
-    db: Session, *, persona: Persona, family: Family, catalog: Catalog, run_index: int
+    db: Session,
+    *,
+    persona: Persona,
+    family: Family,
+    catalog: Catalog,
+    run_index: int,
+    # Only the reminder's copy depends on it.
+    language: str = "en",
 ) -> str:
     """One run's Tutors and, for a known Guardian, their Home and Evaluated Child. Each run has
     its own, so no run takes another's slots. Returns the Guardian's phone number."""
@@ -675,6 +719,7 @@ def seed_world(
         email=f"laura.rivera.{run_index}@eval.example",
         phone_number=TUTOR_PHONE.format(index=run_index * 2),
         subject_ids=(catalog.math_id, catalog.reading_id),
+        mode=persona.assigned_tutor_mode,
     )
     science = _make_tutor(
         db,
@@ -684,7 +729,7 @@ def seed_world(
         subject_ids=(catalog.science_id,),
     )
     if persona.is_known_guardian:
-        _make_family(
+        guardian_id, child_id = _make_family(
             db,
             family=family,
             phone_number=phone_number,
@@ -692,12 +737,72 @@ def seed_world(
             evaluator_id=science.user_id,
             subject_ids=(catalog.math_id, catalog.reading_id),
         )
+        if persona.has_reminder:
+            _make_sent_reminder(
+                db,
+                guardian_id=guardian_id,
+                child_id=child_id,
+                child_name=family.child,
+                phone_number=phone_number,
+                language=language,
+                run_index=run_index,
+            )
     db.commit()
     return phone_number
 
 
+def _make_sent_reminder(
+    db: Session,
+    *,
+    guardian_id: uuid.UUID,
+    child_id: uuid.UUID,
+    child_name: str,
+    phone_number: str,
+    language: str,
+    run_index: int,
+) -> None:
+    """A Booking reminder already sent for next week, recorded the way `reminder_service`
+    records one: the row, and its copy in the chat, matched on the Twilio SID."""
+    week_start = reminder_service.week_start_after(clock.business_today())
+    twilio_sid = f"SMreminder{run_index:04d}"
+    db.add(
+        BookingReminder(
+            guardian_id=guardian_id,
+            week_start=week_start,
+            language=Language(language),
+            child_ids=[child_id],
+            template_name=f"{reminder_service.TEMPLATE_NAME_PREFIX}{language}",
+            status=ReminderStatus.SENT,
+            twilio_sid=twilio_sid,
+            sent_at=datetime.datetime.now(tz=datetime.UTC),
+        )
+    )
+    conversation = conversation_service.resolve_or_create(db, phone_number=phone_number)
+    conversation_service.link_guardian(db, conversation=conversation, guardian_id=guardian_id)
+    copy = message_service.record_system_notice(
+        db,
+        conversation=conversation,
+        body=bot_messages.render(
+            reminder_service.TEMPLATE_MESSAGE_ID,
+            language,
+            names=bot_messages.format_names([child_name], language),
+            week=bot_messages.format_week(week_start, language),
+        ),
+        system_kind=SystemMessageKind.BOOKING_REMINDER,
+        author_user_id=None,
+    )
+    message_service.attach_twilio_sid(db, message=copy, twilio_sid=twilio_sid)
+    db.flush()
+
+
 def _make_tutor(
-    db: Session, *, name: str, email: str, phone_number: str, subject_ids: Sequence[uuid.UUID]
+    db: Session,
+    *,
+    name: str,
+    email: str,
+    phone_number: str,
+    subject_ids: Sequence[uuid.UUID],
+    mode: AvailabilityMode = AvailabilityMode.ANYWHERE,
 ) -> Tutor:
     tutor = Tutor(
         user=User(email=email, name=name, name_is_default=False, role=UserRole.TUTOR),
@@ -715,7 +820,7 @@ def _make_tutor(
             day_of_week=day,
             start_time=AFTERNOON_START,
             end_time=AFTERNOON_END,
-            mode=AvailabilityMode.ANYWHERE,
+            mode=mode,
         )
         for day in WEEKDAYS
     )
@@ -731,7 +836,8 @@ def _make_family(
     assigned_user_id: uuid.UUID,
     evaluator_id: uuid.UUID,
     subject_ids: Sequence[uuid.UUID],
-) -> None:
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Returns the new Guardian's and Child's ids."""
     guardian = Guardian(phone_number=phone_number, name=family.guardian)
     home = Home(address=family.address, directions=family.directions)
     child = Child(
@@ -760,6 +866,7 @@ def _make_family(
         ]
     )
     db.flush()
+    return guardian.id, child.id
 
 
 # --- one run ----------------------------------------------------------------------------------
@@ -848,7 +955,12 @@ def run_one(spec: RunSpec, *, run_index: int, context: RunContext) -> RunResult:
 
     with context.session_factory() as db:
         phone_number = seed_world(
-            db, persona=spec.persona, family=family, catalog=context.catalog, run_index=run_index
+            db,
+            persona=spec.persona,
+            family=family,
+            language=spec.language,
+            catalog=context.catalog,
+            run_index=run_index,
         )
         conversation_id: uuid.UUID | None = None
         for index in range(context.max_turns):

@@ -78,3 +78,8 @@ Collected during admin subjects (2026-11-05).
 - **Vitest browser runs print nothing until the run ends.** A run with failing `expect.element`s looks hung (15 s each). Pass `--testTimeout=6000` while iterating, and watch the screenshots dir for progress.
 - **Playwright MCP only loads script files under the repo root.** Design reviewers keep their scripts in `.scratch/<feature>/review/<NN>-design-scripts/`.
 - **Playwright `getByRole("button", {name: /^More/})` also matches Admin form steppers ("More times")**, which dirties the form and makes a `beforeunload` dialog hang `page.goto`. Scope nav lookups to `navigation "Main"`; sidebar items are buttons, not links.
+
+Collected during bot location and reminder (2026-11-06).
+
+- **The shared test Postgres container can be stopped.** If `tutorlink-test-pg` isn't running, start Docker Desktop first if needed (`open -a Docker`), then `docker start tutorlink-test-pg` (never recreate it).
+- **Don't drop `bot_eval_*` databases by pattern.** `scripts/bot_eval.py --keep-db` leaves them behind, but parallel agents create them too; drop only the names your own run printed.

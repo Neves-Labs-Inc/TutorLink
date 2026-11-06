@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, make_url, text
 from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
@@ -35,6 +35,7 @@ class FakeAgentModel:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.first_inputs: list[str] = []
         self.warm_up_tools: list[list[str]] = []
 
     def warm_up(self, *, system: str, tools: list[dict[str, Any]]) -> float | None:
@@ -50,6 +51,8 @@ class FakeAgentModel:
         timeout_s: float,
     ) -> ModelResponse:
         self.calls += 1
+        if not isinstance(messages[0]["content"], list):
+            self.first_inputs.append(str(messages[0]["content"]))
         is_after_tool = isinstance(messages[-1]["content"], list)
         call = (
             ToolCall(id=f"r{self.calls}", name="reply", input={"text": BOT_REPLY, "language": "en"})
@@ -75,9 +78,11 @@ class FakeGuardian:
     def __init__(self, messages: list[str]) -> None:
         self._messages = list(messages)
         self.threads: list[str] = []
+        self.systems: list[str] = []
 
     def next_move(self, *, system: str, thread: str) -> bot_eval.GuardianMove:
         self.threads.append(thread)
+        self.systems.append(system)
         message = self._messages.pop(0) if self._messages else ""
         return bot_eval.GuardianMove(
             message=message,
@@ -145,6 +150,75 @@ def test_one_persona_runs_end_to_end_and_its_database_is_dropped(tmp_path: pathl
     assert "reply" in warm_up_tools
     assert "- sonnet: 7.5 s" in summary
     assert not _database_exists(_database_named_in(report))
+
+
+def _availability_modes(database: str) -> set[str]:
+    url = make_url(get_settings().database_url).set(database=database)
+    engine = create_engine(url, poolclass=NullPool)
+    try:
+        with engine.connect() as connection:
+            modes = connection.execute(
+                text(
+                    "SELECT DISTINCT a.mode FROM tutor_availability a"
+                    " JOIN tutors t ON t.id = a.tutor_id"
+                    " JOIN child_assigned_tutors c ON c.user_id = t.user_id"
+                )
+            ).scalars()
+            return set(modes)
+    finally:
+        engine.dispose()
+
+
+def _drop_database(name: str) -> None:
+    engine = create_engine(get_settings().database_url, poolclass=NullPool)
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text(f'DROP DATABASE "{name}" WITH (FORCE)'))
+    finally:
+        engine.dispose()
+
+
+def test_the_reminder_persona_starts_from_a_reminder_tap_with_an_office_only_tutor(
+    tmp_path: pathlib.Path,
+) -> None:
+    guardian = FakeGuardian(["Book a session"])
+    agent = FakeAgentModel()
+    clients = bot_eval.Clients(agent_model=lambda _model, _effort: agent, guardian=guardian)
+
+    status = bot_eval.main(
+        [
+            "--models",
+            "sonnet",
+            "--personas",
+            "reminder",
+            "--langs",
+            "en",
+            "--keep-db",
+            "--out",
+            str(tmp_path),
+        ],
+        clients=clients,
+    )
+
+    database = _database_named_in((tmp_path / "reminder-en-sonnet.md").read_text())
+    try:
+        modes = _availability_modes(database)
+    finally:
+        _drop_database(database)
+    assert status == 0
+    assert modes == {"only_office"}
+    assert 'exactly the button text, "Book a session"' in guardian.systems[0]
+    # The reminder is in the chat before the Guardian's first message, and the agent sees it.
+    [first_input, *_] = agent.first_inputs
+    assert "Booking reminder sent: Ethan Mitchell" in first_input
+    assert first_input.index("Booking reminder sent") < first_input.index("Book a session")
+
+
+def test_the_other_personas_are_unchanged_and_all_includes_the_reminder_persona() -> None:
+    assert "reminder" in bot_eval.parse_args(["--out", "x"]).personas
+    others = [persona for persona in bot_eval.PERSONAS if persona.key != "reminder"]
+    assert all(not persona.has_reminder for persona in others)
+    assert all(persona.assigned_tutor_mode.value == "anywhere" for persona in others)
 
 
 def test_it_refuses_to_start_without_an_api_key(

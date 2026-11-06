@@ -37,6 +37,7 @@ SCENARIOS = (
     "Typo-laden reminder reply",
     "No tutor / none free",
     "Two Children with one yes",
+    "Book a session tap for an office-only tutor",
 )
 
 # Sonnet 5.5 and Haiku 5.5 cache prefixes from 512 tokens. English and Spanish run at well under
@@ -324,3 +325,25 @@ def test_the_intake_example_shows_the_new_flow(prompt: str) -> None:
     ).groups()
     assert "recibirá un recordatorio cada semana" in confirmation
     assert "STOP" in stop_line
+
+
+def test_a_reply_to_the_reminder_means_book_for_the_named_children_that_week(prompt: str) -> None:
+    reminders = _section(prompt, "Booking reminders")
+
+    assert "Book a session" in reminders
+    assert "Reservar una sesión" in reminders
+    assert "request to book for the Children it named, in the week it named" in reminders
+    assert "ask which Children they want to book first" in reminders
+    assert "already passed: ask which day suits" in reminders
+
+
+def test_the_tap_example_offers_office_times_and_proposes_without_a_home(prompt: str) -> None:
+    example = prompt.split('<example scenario="Book a session tap for an office-only tutor"', 1)[
+        1
+    ].split("</example>", 1)[0]
+
+    assert "Guardian: Book a session" in example
+    assert "location=" not in example.split("-> propose(", 1)[0]
+    assert "at the office" in example
+    assert 'location: "office"' in example
+    assert "home_id" not in example

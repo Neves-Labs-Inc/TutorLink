@@ -297,7 +297,7 @@ def test_notices_render_as_bracketed_notes_and_staff_only_lines_are_left_out(
     transcript = build_turn_context(db, conversation=conversation, now=NOW).transcript
 
     assert transcript.splitlines() == [
-        "[Mon Oct 19 09:00] [Booking reminder sent: Ana, Leo, week of October 26]",
+        "[Mon Oct 19 09:00] [Booking reminder sent: Ana, Leo, for the week of Mon Oct 26 to Sun Nov 1]",
         "[Mon Oct 19 09:01] Guardian: yes tuesday for ana",
         "[Mon Oct 19 09:03] [Takeover: Laura from the office joined the chat; the bot is silent]",
         "[Mon Oct 19 09:04] Office (Laura): Hi Carmen, done.",

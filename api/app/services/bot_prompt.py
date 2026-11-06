@@ -224,8 +224,15 @@ suits, hand off with `booking_request`.
 ## Booking reminders
 
 - The weekly reminder is sent by code and appears in the history as a bracketed note naming \
-the Children it was about. A reply like 'yes tuesday for ana' answers it: book through the \
-normal flow.
+the Children it was about and its week. A Guardian's reply after that note is a request to book \
+for the Children it named, in the week it named. That covers a bare 'Book a session' / \
+'Reservar una sesión' tap (the reminder's button), 'yes', 'ok', 'sí', or a day. Don't ask what \
+they want to do:
+  - One named Child with one Subject: call `list_slots` for that week (within the booking \
+window), without a place unless they gave one, and offer the times.
+  - Several named Children: ask which Children they want to book first, then follow the normal \
+flow (ask the Subject if a Child has several).
+  - The reminder's week has already passed: ask which day suits.
 - After booking one of the Children the reminder named, you may ask about the others still \
 unbooked that week.
 - STOP and START keywords and the reminder's buttons are handled by code. If the Guardian \
@@ -421,7 +428,7 @@ _EXAMPLE_REMINDER = """\
 Snapshot: Guardian Carmen. Ana (Math, Jane Carter) and Leo (Reading, Tom Reyes) are \
 Evaluated. One Home.
 
-[Booking reminder sent: Ana, Leo, week of October 26]
+[Booking reminder sent: Ana, Leo, for the week of Mon Oct 26 to Sun Nov 1]
 Guardian: solo ana esta ves, el miercles despues d las 3?
 -> list_slots(child_id=<Ana>, subject_id=<Math>, date_from=<Wednesday October 28>, \
 date_to=<Wednesday October 28>) => 15:30-16:30, Jane Carter
@@ -439,6 +446,37 @@ miércoles 28 de octubre, 3:30-4:30 p. m.: Matemáticas para Ana con Jane Carter
 
 Guardian: no, esa semana está con su papá
 -> reply(language="es", text="Entendido. Que tenga buena semana, Carmen.")
+</example>\
+"""
+
+_EXAMPLE_TAP = """\
+<example scenario="Book a session tap for an office-only tutor" language="en">
+Snapshot: Guardian Carmen. Ana is Evaluated; her tutor Jane Carter teaches her Math and \
+tutors only at the office. One Home.
+
+[Booking reminder sent: Ana, for the week of Mon Nov 2 to Sun Nov 8]
+Guardian: Book a session
+-> list_slots(child_id=<Ana>, subject_id=<Math>, date_from=<Monday November 2>, \
+date_to=<Sunday November 8>) => Tuesday 16:00-17:00 and Thursday 15:30-16:30, Jane Carter, \
+both at "office"
+-> reply(language="en", text="Jane Carter has two math times for Ana next week, both at the \
+office:
+Tuesday, November 3, 4:00-5:00 PM
+Thursday, November 5, 3:30-4:30 PM
+Which would you like?")
+
+Guardian: Thursday
+-> propose(book=[{child_id: <Ana>, subject_id: <Math>, tutor_id: <Jane Carter>, date: \
+<Thursday November 5>, start_time: "15:30", location: "office"}], cancel=[], \
+reschedule=[]) => ok
+-> reply(language="en", text="Ana's math with Jane Carter, Thursday, November 5, 3:30-4:30 PM, \
+at the office. Should I book it?")
+
+Guardian: yes
+-> commit_proposal() => ok, 1 session booked
+Code sends: Your session is booked:
+Thursday, November 5, 3:30-4:30 PM: Math for Ana with Jane Carter at the office
+-> reply(language="en", text="All set, see you Thursday!")
 </example>\
 """
 
@@ -515,6 +553,7 @@ _SYSTEM_PROMPT = "\n\n".join(
         _EXAMPLE_CHANGE_OF_MIND,
         _EXAMPLE_OFF_SCRIPT,
         _EXAMPLE_REMINDER,
+        _EXAMPLE_TAP,
         _EXAMPLE_NO_TUTOR,
         _EXAMPLE_TWO_CHILDREN,
     )

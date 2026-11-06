@@ -185,7 +185,7 @@ export const BookingForm = ({
   const slotTutorId = draft.staffTutorId ?? ''
 
   const staff = useQuery(staffQueries.list())
-  const subjects = useQuery(subjectQueries.list({ is_active: true, page_size: REFERENCE_PAGE_SIZE }))
+  const subjects = useQuery(subjectQueries.list({ archived: false, page_size: REFERENCE_PAGE_SIZE }))
   const childDetail = useQuery({
     ...childQueries.detail(draft.childId),
     enabled: draft.childId !== '',

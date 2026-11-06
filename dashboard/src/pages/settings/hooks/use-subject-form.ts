@@ -49,6 +49,7 @@ type SubjectForm = {
   handleBlur: () => void;
   handleSubmit: (event: FormEvent<HTMLFormElement>) => void;
   handleClose: () => void;
+  clearFormError: () => void;
 };
 
 function getInitialValues(subject: Subject | null): SubjectValues {
@@ -180,5 +181,6 @@ export function useSubjectForm(
     handleClose: () => {
       if (!isSaving) onClose();
     },
+    clearFormError: () => setFormError(null),
   };
 }

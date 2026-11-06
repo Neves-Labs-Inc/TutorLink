@@ -30,3 +30,10 @@ export const descriptionValue = (draft: string): string | null => {
 
   return trimmed === '' ? null : trimmed
 }
+
+// The archive confirm's first sentence: who loses the Subject.
+export const tutorCountSentence = (count: number): string => {
+  if (count === 0) return 'No tutors teach it.'
+
+  return count === 1 ? '1 tutor teaches it.' : `${count} tutors teach it.`
+}

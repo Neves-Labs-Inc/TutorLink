@@ -1,6 +1,7 @@
 // Subjects: the catalogue Tutors teach from. Lists Active and Archived,
 // and adds or edits one in a sheet. It saves on its own and never takes
 // the Settings form, so a page without that form can render it alone.
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Archive, BookOpen, Plus } from "lucide-react";
 import { Button, IconButton } from "@/components/kit/components/button";
@@ -67,6 +68,19 @@ function getPhoneRow(subject: Subject) {
 
 export default function SubjectsGroup(): ReactNode {
   const group = useSubjectsGroup();
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  // The row that opened the sheet is gone after an Archive or Restore, so
+  // focus the tab instead of dropping it on the body. Done in an effect so
+  // it lands after the overlays' own focus return.
+  const [focusRequest, setFocusRequest] = useState(0);
+  useEffect(() => {
+    if (focusRequest > 0) {
+      tabsRef.current
+        ?.querySelector<HTMLElement>('[aria-current="page"]')
+        ?.focus();
+    }
+  }, [focusRequest]);
 
   let list: ReactNode;
   if (group.isLoading) {
@@ -113,7 +127,7 @@ export default function SubjectsGroup(): ReactNode {
       description="The Subjects Tutors teach and the bot offers. Open one to change it."
     >
       <div className="flex items-end gap-3">
-        <div className="min-w-0 flex-1">
+        <div ref={tabsRef} className="min-w-0 flex-1">
           <SubPageTabs
             label="Subject lists"
             items={TABS}
@@ -156,6 +170,7 @@ export default function SubjectsGroup(): ReactNode {
         subject={group.sheet.subject}
         onClose={group.closeSheet}
         onAdded={group.handleAdded}
+        onActed={() => setFocusRequest((count) => count + 1)}
       />
     </SectionCard>
   );

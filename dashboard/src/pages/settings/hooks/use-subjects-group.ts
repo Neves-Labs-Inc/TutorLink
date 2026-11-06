@@ -51,6 +51,11 @@ export function useSubjectsGroup() {
         : undefined,
   });
 
+  // An Archive can empty the last page: step back to one that has rows.
+  const isPastLastPage =
+    page > 1 && !query.isPlaceholderData && query.data?.items?.length === 0;
+  if (isPastLastPage) setPage(page - 1);
+
   function changeTab(next: SubjectTab): void {
     setTab(next);
     setPage(1);

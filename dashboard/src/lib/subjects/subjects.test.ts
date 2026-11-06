@@ -7,6 +7,7 @@ import {
   spanishNameValue,
   subjectErrorMessage,
   subjectNameValue,
+  tutorCountSentence,
 } from './subjects'
 
 describe('spanishNameDisplay', () => {
@@ -84,5 +85,19 @@ describe('descriptionValue', () => {
 
   it('sends a blank draft as null', () => {
     expect(descriptionValue('  ')).toBeNull()
+  })
+})
+
+describe('tutorCountSentence', () => {
+  it('says no tutors teach it for 0', () => {
+    expect(tutorCountSentence(0)).toBe('No tutors teach it.')
+  })
+
+  it('says 1 tutor teaches it for 1', () => {
+    expect(tutorCountSentence(1)).toBe('1 tutor teaches it.')
+  })
+
+  it('says N tutors teach it for more', () => {
+    expect(tutorCountSentence(4)).toBe('4 tutors teach it.')
   })
 })

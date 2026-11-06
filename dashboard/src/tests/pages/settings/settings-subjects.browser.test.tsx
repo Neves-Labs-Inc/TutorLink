@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 import { AxiosError, AxiosHeaders } from "axios";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import AppLayout from "@/components/layout/app-layout";
 import type { Subject } from "@/lib/queries/subjects";
 import SettingsPage from "@/pages/settings/settings-page";
@@ -344,6 +344,225 @@ describe("editing a Subject", () => {
 
     await expect.element(page.getByText("Subject saved.")).toBeVisible();
     await expect.element(saveBar()).not.toBeInTheDocument();
+  });
+});
+
+const confirmDialog = () => page.getByRole("alertdialog");
+
+// POST /api/archive and /api/restore move the Subject between the lists.
+function stubArchiveActs(): void {
+  network.post.mockImplementation(async (url: string, data: { id: string }) => {
+    if (url === "/api/archive") {
+      const found = active.find((item) => item.id === data.id);
+      active = active.filter((item) => item.id !== data.id);
+      archived = [...archived, { ...found!, archived: true }];
+    } else if (url === "/api/restore") {
+      const found = archived.find((item) => item.id === data.id);
+      archived = archived.filter((item) => item.id !== data.id);
+      active = [...active, { ...found!, archived: false }];
+    }
+    return { data: {} };
+  });
+}
+
+describe("archiving a Subject", () => {
+  it("offers Archive on an active Subject and Restore on an archived one, never both", async () => {
+    archived = [subject({ id: "s-9", name: "Latin", archived: true })];
+    await renderSubjects();
+
+    await row("Math").click();
+    await expect
+      .element(sheet().getByRole("button", { name: "Archive" }))
+      .toBeVisible();
+    expect(
+      sheet().getByRole("button", { name: "Restore" }).elements(),
+    ).toHaveLength(0);
+    await sheet().getByRole("button", { name: "Cancel" }).click();
+    await expect.element(sheet()).not.toBeInTheDocument();
+
+    await group().getByRole("button", { name: "Archived" }).click();
+    await row("Latin").click();
+    await expect
+      .element(sheet().getByRole("button", { name: "Restore" }))
+      .toBeVisible();
+    expect(
+      sheet().getByRole("button", { name: "Archive" }).elements(),
+    ).toHaveLength(0);
+  });
+
+  it("asks first, naming the stored name and the tutor count", async () => {
+    await renderSubjects();
+
+    await row("Math").click();
+    await sheet().getByRole("textbox", { name: /^Name/ }).fill("Draft name");
+    await sheet().getByRole("button", { name: "Archive" }).click();
+
+    await expect
+      .element(confirmDialog().getByRole("heading", { name: "Archive Math?" }))
+      .toBeVisible();
+    await expect
+      .element(confirmDialog())
+      .toHaveTextContent(
+        "3 tutors teach it. The bot stops offering it and it can’t be picked for new Bookings or levels. Upcoming Bookings stay.",
+      );
+    await expect
+      .element(confirmDialog().getByRole("button", { name: "Archive subject" }))
+      .toBeVisible();
+    expect(network.post).not.toHaveBeenCalled();
+  });
+
+  it("archives, toasts, moves the row to Archived and focuses the tab", async () => {
+    await renderSubjects();
+    stubArchiveActs();
+
+    await row("Math").click();
+    await sheet().getByRole("button", { name: "Archive" }).click();
+    await confirmDialog()
+      .getByRole("button", { name: "Archive subject" })
+      .click();
+
+    await expect.element(page.getByText("Math archived.")).toBeVisible();
+    expect(network.post).toHaveBeenCalledWith("/api/archive", {
+      type: "subject",
+      id: "s-1",
+    });
+    await expect.element(sheet()).not.toBeInTheDocument();
+    expect(row("Math").elements()).toHaveLength(0);
+    await expect.element(row("Art")).toBeVisible();
+    await expect
+      .element(group().getByRole("button", { name: "Active" }))
+      .toHaveFocus();
+    await group().getByRole("button", { name: "Archived" }).click();
+    await expect.element(row("Math")).toBeVisible();
+  });
+
+  it("closes only the dialog on Keep subject", async () => {
+    await renderSubjects();
+
+    await row("Math").click();
+    await sheet().getByRole("textbox", { name: /^Name/ }).fill("Maths");
+    await sheet().getByRole("button", { name: "Archive" }).click();
+    await confirmDialog().getByRole("button", { name: "Keep subject" }).click();
+
+    await expect.element(confirmDialog()).not.toBeInTheDocument();
+    await expect.element(sheet()).toBeVisible();
+    await expect
+      .element(sheet().getByRole("textbox", { name: /^Name/ }))
+      .toHaveValue("Maths");
+    expect(network.post).not.toHaveBeenCalled();
+  });
+
+  it("shows a failure in the dialog, keeps it open, and retries", async () => {
+    await renderSubjects();
+    stubArchiveActs();
+    network.post.mockRejectedValueOnce(new Error("offline"));
+
+    await row("Math").click();
+    await sheet().getByRole("button", { name: "Archive" }).click();
+    await confirmDialog()
+      .getByRole("button", { name: "Archive subject" })
+      .click();
+
+    await expect
+      .element(
+        confirmDialog().getByText(
+          "Couldn’t archive Math. Check your connection and try again.",
+        ),
+      )
+      .toBeVisible();
+    await confirmDialog()
+      .getByRole("button", { name: "Archive subject" })
+      .click();
+    await expect.element(page.getByText("Math archived.")).toBeVisible();
+  });
+
+  it("ignores Escape while the archive is in flight", async () => {
+    await renderSubjects();
+    let finish: () => void = () => {};
+    network.post.mockImplementation(
+      () => new Promise((resolve) => (finish = () => resolve({ data: {} }))),
+    );
+
+    await row("Math").click();
+    await sheet().getByRole("button", { name: "Archive" }).click();
+    await confirmDialog()
+      .getByRole("button", { name: "Archive subject" })
+      .click();
+    await userEvent.keyboard("{Escape}");
+
+    await expect.element(confirmDialog()).toBeVisible();
+    await expect
+      .element(confirmDialog().getByRole("button", { name: "Keep subject" }))
+      .toBeDisabled();
+    finish();
+    await expect.element(page.getByText("Math archived.")).toBeVisible();
+  });
+
+  it("steps back a page when archiving empties the last one", async () => {
+    active = Array.from({ length: 21 }, (_, index) =>
+      subject({
+        id: `s-${index}`,
+        name: `Subject ${String(index).padStart(2, "0")}`,
+      }),
+    );
+    await renderSubjects();
+    stubArchiveActs();
+
+    await page.getByRole("button", { name: /next/i }).click();
+    await row("Subject 20").click();
+    await sheet().getByRole("button", { name: "Archive" }).click();
+    await confirmDialog()
+      .getByRole("button", { name: "Archive subject" })
+      .click();
+
+    await expect.element(page.getByText("Subject 20 archived.")).toBeVisible();
+    await expect.element(row("Subject 00")).toBeVisible();
+  });
+});
+
+describe("restoring a Subject", () => {
+  it("restores at once, toasts, and moves the row to Active", async () => {
+    archived = [subject({ id: "s-9", name: "Latin", archived: true })];
+    await renderSubjects();
+    stubArchiveActs();
+
+    await group().getByRole("button", { name: "Archived" }).click();
+    await row("Latin").click();
+    await sheet().getByRole("button", { name: "Restore" }).click();
+
+    await expect.element(page.getByText("Latin restored.")).toBeVisible();
+    expect(network.post).toHaveBeenCalledWith("/api/restore", {
+      type: "subject",
+      id: "s-9",
+    });
+    await expect.element(sheet()).not.toBeInTheDocument();
+    await expect
+      .element(group().getByText("No archived subjects"))
+      .toBeVisible();
+    await expect
+      .element(group().getByRole("button", { name: "Archived" }))
+      .toHaveFocus();
+  });
+
+  it("shows a form alert on failure and keeps the sheet and its values", async () => {
+    archived = [subject({ id: "s-9", name: "Latin", archived: true })];
+    await renderSubjects();
+    network.post.mockRejectedValue(new Error("offline"));
+
+    await group().getByRole("button", { name: "Archived" }).click();
+    await row("Latin").click();
+    await sheet().getByRole("textbox", { name: /^Name/ }).fill("Latina");
+    await sheet().getByRole("button", { name: "Restore" }).click();
+
+    await expect
+      .element(sheet().getByRole("alert"))
+      .toHaveTextContent("Couldn’t restore Latin.");
+    await expect
+      .element(sheet().getByRole("textbox", { name: /^Name/ }))
+      .toHaveValue("Latina");
+    await expect
+      .element(sheet().getByRole("button", { name: "Restore" }))
+      .toBeEnabled();
   });
 });
 

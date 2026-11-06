@@ -83,3 +83,8 @@ Collected during bot location and reminder (2026-11-06).
 
 - **The shared test Postgres container can be stopped.** If `tutorlink-test-pg` isn't running, start Docker Desktop first if needed (`open -a Docker`), then `docker start tutorlink-test-pg` (never recreate it).
 - **Don't drop `bot_eval_*` databases by pattern.** `scripts/bot_eval.py --keep-db` leaves them behind, but parallel agents create them too; drop only the names your own run printed.
+
+Collected during the Staff stuck-details fix (2026-11-06).
+
+- **Vitest browser mode: `history.back()` can leave the test iframe** and kill the run. Push a fresh entry first and guard on `history.state.idx`. The default viewport is phone-sized (set 1280 for table rows); `page.screenshot` can't write outside the repo; `console.log` shows only with `--reporter=verbose`.
+- **Dashboard browser tests flake under parallel load.** Timing tests (`info-tip.browser.test.tsx`, `staff-tabs.browser.test.tsx` at 390px) failed once each while several reviewers ran suites at the same time, and passed when rerun alone. Rerun a failing file alone before calling it real.

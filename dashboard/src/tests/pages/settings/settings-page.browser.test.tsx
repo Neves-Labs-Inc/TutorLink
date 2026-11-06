@@ -201,15 +201,53 @@ describe("who sees what", () => {
     expect(headings.at(-1)).toContain("Developer only");
   });
 
-  it("tells a Manager Settings are for Admins and sends them Home", async () => {
+  it("gives a Manager only the Subjects group, never loading the settings", async () => {
+    network.get.mockImplementation(async (url: string) => {
+      if (url === "/api/settings") throw new Error("Managers get 403 here");
+      if (url === "/api/subjects") {
+        return {
+          data: {
+            items: [
+              {
+                id: "s-1",
+                name: "Math",
+                name_es: null,
+                description: null,
+                archived: false,
+                tutor_count: 2,
+              },
+            ],
+            total: 1,
+            page: 1,
+            page_size: 20,
+          },
+        };
+      }
+      return { data: {} };
+    });
     await renderSettings("manager");
-    await expect
-      .element(page.getByRole("heading", { name: "Settings are for Admins" }))
-      .toBeVisible();
-    expect(network.getSettings).not.toHaveBeenCalled();
 
-    await page.getByRole("button", { name: "Go to Home" }).click();
-    await expect.element(page.getByRole("heading", { name: "Home page" })).toBeVisible();
+    await expect
+      .element(page.getByRole("region", { name: "Subjects", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText("The Subjects Tutors teach. Admins manage the rest of Settings."))
+      .toBeVisible();
+    await expect
+      .element(page.getByText("Math", { exact: true }).first())
+      .toBeVisible();
+    const headings = page
+      .getByRole("main")
+      .getByRole("heading", { level: 2 })
+      .elements()
+      .map((heading) => heading.textContent ?? "");
+    expect(headings).toHaveLength(1);
+    expect(page.getByRole("navigation", { name: "Settings groups" }).elements()).toHaveLength(0);
+    expect(saveBar().elements()).toHaveLength(0);
+    expect(page.getByText("Settings are for Admins").elements()).toHaveLength(0);
+    expect(network.getSettings).not.toHaveBeenCalled();
+    expect(network.get).not.toHaveBeenCalledWith("/api/settings");
+    expect(network.get).not.toHaveBeenCalledWith("/api/settings", expect.anything());
   });
 });
 

@@ -1,22 +1,15 @@
 // Settings: how TutorLink runs for the whole office. One page of groups
 // with a jump list, one Save bar, and a leave guard while anything is
-// unsaved. Admin and Developer edit; a Manager is told to ask an Admin.
+// unsaved. Admin and Developer edit; a Manager sees only Subjects.
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Settings } from "lucide-react";
-import { Button } from "@/components/kit/components/button";
 import { SaveBar } from "@/components/kit/components/save-bar";
 import { SectionIndex } from "@/components/kit/components/section-index";
 import { useToast } from "@/components/kit/overlays/use-toast";
 import { PageHeader } from "@/components/kit/shell/page-header";
-import {
-  EmptyState,
-  ErrorState,
-  PermissionState,
-} from "@/components/kit/states/states";
-import { useGuardedNavigate, useLeaveGuard } from "@/hooks/use-leave-guard";
-import { landingPath } from "@/lib/auth/auth";
-import type { Role } from "@/lib/auth/auth";
+import { EmptyState, ErrorState } from "@/components/kit/states/states";
+import { useLeaveGuard } from "@/hooks/use-leave-guard";
 import { SETTINGS_GROUPS } from "@/lib/settings/settings-groups";
 import type { GroupId } from "@/lib/settings/settings-groups";
 import BookingRulesGroup from "@/pages/settings/components/booking-rules-group";
@@ -35,6 +28,8 @@ import { useAuthStore } from "@/stores/authStore";
 const TITLE = "Settings";
 const DESCRIPTION =
   "How TutorLink runs for the whole office. Changes apply as soon as you save.";
+const MANAGER_DESCRIPTION =
+  "The Subjects Tutors teach. Admins manage the rest of Settings.";
 
 // The groups this page renders, in page order.
 const SHOWN_GROUPS: readonly GroupId[] = [
@@ -54,28 +49,21 @@ export default function SettingsPage(): ReactNode {
   if (role === null) return null;
 
   return role === "manager" ? (
-    <ManagerState role={role} />
+    <ManagerSettings />
   ) : (
     <SettingsEditor isDeveloper={role === "developer"} />
   );
 }
 
-type ManagerStateProps = { role: Role };
-
-function ManagerState({ role }: ManagerStateProps): ReactNode {
-  const navigate = useGuardedNavigate();
+// A Manager never loads the settings (Admin-only), so there is no form,
+// Save bar or leave guard here, and no jump list for one group.
+function ManagerSettings(): ReactNode {
   return (
     <>
-      <PageHeader title={TITLE} />
-      <PermissionState
-        title="Settings are for Admins"
-        body="Ask an Admin if something about how TutorLink runs needs to change."
-        action={
-          <Button variant="primary" onClick={() => navigate(landingPath(role))}>
-            Go to Home
-          </Button>
-        }
-      />
+      <PageHeader title={TITLE} description={MANAGER_DESCRIPTION} />
+      <div className="flex max-w-[880px] min-w-0 flex-col gap-6">
+        <SubjectsGroup />
+      </div>
     </>
   );
 }

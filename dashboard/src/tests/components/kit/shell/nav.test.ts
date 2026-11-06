@@ -48,8 +48,12 @@ describe("getNav", () => {
     },
   );
 
-  it("gives a manager the office nav without Settings", () => {
-    expect(getLinks(getNav("manager"))).toEqual(ADMIN_LINKS.slice(0, 6));
+  it("gives a manager the full office nav, Settings last", () => {
+    expect(getLinks(getNav("manager"))).toEqual(ADMIN_LINKS);
+  });
+
+  it("keeps Settings out of a tutor's nav", () => {
+    expect(getNav("tutor").map((item) => item.id)).not.toContain("settings");
   });
 
   it("gives a tutor My sessions, My availability and Time off", () => {

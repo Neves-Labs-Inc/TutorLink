@@ -41,12 +41,12 @@ afterEach(() => {
 });
 
 describe("/settings", () => {
-  it("tells a Manager Settings are for Admins without loading them", async () => {
+  it("opens Settings for a Manager with only Subjects, without loading the rest", async () => {
     answerOnlyMe("manager");
     await openApp("manager", "/settings");
 
     await expect
-      .element(page.getByRole("heading", { name: "Settings are for Admins" }))
+      .element(page.getByRole("region", { name: "Subjects", exact: true }))
       .toBeVisible();
     expect(window.location.pathname).toBe("/settings");
     expect(network.get).not.toHaveBeenCalledWith("/api/settings");

@@ -245,8 +245,8 @@ Owners: `kit/shell/app-shell.tsx`, `sidebar.tsx`, `bottom-tab-bar.tsx`, `nav.ts`
   bar. Up to 5 tabs; with more items the first 4 show and the rest go under **More** (a
   `BottomSheet`), which carries the sum of its items' badges.
 - Nav per role (`nav.ts`): Admin: Home · Bookings · Chats · Families · Staff · Time off · Settings.
-  Manager: the same without Settings (own sessions via the **Mine** filter and Home; Availability on
-  their Profile). Tutor: My sessions (landing) · My availability · Time off.
+  Manager: the same, with Settings last showing only Subjects (own sessions via the **Mine**
+  filter and Home; Availability on their Profile). Tutor: My sessions (landing) · My availability · Time off.
 - Nav badges: Bookings = to sort out + Evaluations to book (pink), Chats = unread (primary),
   Time off = pending, Admins only (pink). Home has no badge. While counts load, no badges show.
 - Every page starts with `PageHeader`: optional eyebrow, Lato title, optional description,

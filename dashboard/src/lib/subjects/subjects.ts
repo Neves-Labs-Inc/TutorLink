@@ -21,3 +21,12 @@ export const subjectErrorMessage = (detail: string | null): string | null =>
   detail === null ? null : detail.replace(NAME_PREFIX, NAME_LABEL).replace(NAME_ES_PREFIX, NAME_ES_LABEL)
 
 export const isNameError = (detail: string | null): boolean => detail !== null && NAME_PREFIX.test(detail)
+
+export const isNameEsError = (detail: string | null): boolean => detail !== null && NAME_ES_PREFIX.test(detail)
+
+// Blank means no description, which the API stores as null.
+export const descriptionValue = (draft: string): string | null => {
+  const trimmed = draft.trim()
+
+  return trimmed === '' ? null : trimmed
+}

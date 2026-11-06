@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  descriptionValue,
+  isNameEsError,
   isNameError,
   spanishNameDisplay,
   spanishNameValue,
@@ -61,5 +63,26 @@ describe('subjectErrorMessage', () => {
   it('keeps other messages and null', () => {
     expect(subjectErrorMessage('Subject name already exists')).toBe('Subject name already exists')
     expect(subjectErrorMessage(null)).toBeNull()
+  })
+})
+
+describe('isNameEsError', () => {
+  it('is true for a name_es detail', () => {
+    expect(isNameEsError('name_es: String should have at most 100 characters')).toBe(true)
+  })
+
+  it('is false for a name detail and for anything else', () => {
+    expect(isNameEsError('name: Field required')).toBe(false)
+    expect(isNameEsError(null)).toBe(false)
+  })
+})
+
+describe('descriptionValue', () => {
+  it('trims the draft', () => {
+    expect(descriptionValue('  Fractions ')).toBe('Fractions')
+  })
+
+  it('sends a blank draft as null', () => {
+    expect(descriptionValue('  ')).toBeNull()
   })
 })

@@ -28,6 +28,7 @@ import RemindersGroup from "@/pages/settings/components/reminders-group";
 import RetentionConfirm from "@/pages/settings/components/retention-confirm";
 import SettingsSkeleton from "@/pages/settings/components/settings-skeleton";
 import SignInGroup from "@/pages/settings/components/sign-in-group";
+import SubjectsGroup from "@/pages/settings/components/subjects-group";
 import { useSettingsForm } from "@/pages/settings/hooks/use-settings-form";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -40,6 +41,7 @@ const SHOWN_GROUPS: readonly GroupId[] = [
   "booking-rules",
   "reminders",
   "office",
+  "subjects",
   "emails",
   "chat-history",
   "sign-in",
@@ -146,6 +148,7 @@ function SettingsEditor({ isDeveloper }: SettingsEditorProps): ReactNode {
           <BookingRulesGroup form={form} />
           <RemindersGroup form={form} />
           <OfficeGroup form={form} />
+          <SubjectsGroup />
           <EmailsGroup form={form} />
           <ChatHistoryGroup form={form} />
           <SignInGroup form={form} />

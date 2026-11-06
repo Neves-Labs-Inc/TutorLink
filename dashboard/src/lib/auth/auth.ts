@@ -14,7 +14,7 @@ export type AccessTokenClaims = {
 // Every role that works the office side (Dashboard, Chats, Bookings...). Tutor is the only one out.
 export const OFFICE_ROLES: readonly Role[] = ['admin', 'manager', 'developer']
 
-// The account-management subset: Users and Settings stay closed to a Manager.
+// The account-management subset: Users stays closed to a Manager; on Settings a Manager sees only Subjects.
 export const ADMIN_ROLES: readonly Role[] = ['admin', 'developer']
 
 const OFFICE_ROLE_SET: ReadonlySet<Role> = new Set(OFFICE_ROLES)

@@ -72,3 +72,9 @@ Collected during the WhatsApp bot agent wave 1 (2026-10-19).
 - **Deleting test files can drop global types.** A browser test may carry `/// <reference types="@vitest/browser-playwright" />` that other tests rely on (CDPSession.send, node types). After deleting tests, run `npx tsc -b`; the reference now lives in `dashboard/src/test/browser-setup.ts`.
 - Kit `Button` with `isLoading` uses `aria-disabled`, not native `disabled` (it keeps focus). Playwright treats aria-disabled as non-actionable, so tests that click a loading Button need `{ force: true }`; `toBeDisabled()` also accepts aria-disabled, so assert `toHaveAttribute("disabled")` for a native disable.
 - **A failing `expect.element` takes 15 s, not 3 s.** In Vitest 4.1.11, `expect.element` ignores `expect.poll.timeout` from `dashboard/vite.config.ts` and waits out the 15 s test timeout. A browser test stuck near 15 s is a failing or barely-passing assertion; look for a toast covering the target, a substring `getByText` also matching a toast, or a click during an overlay's enter animation (wait for `toBeInViewport({ ratio: 1 })`).
+
+Collected during admin subjects (2026-11-05).
+
+- **Vitest browser runs print nothing until the run ends.** A run with failing `expect.element`s looks hung (15 s each). Pass `--testTimeout=6000` while iterating, and watch the screenshots dir for progress.
+- **Playwright MCP only loads script files under the repo root.** Design reviewers keep their scripts in `.scratch/<feature>/review/<NN>-design-scripts/`.
+- **Playwright `getByRole("button", {name: /^More/})` also matches Admin form steppers ("More times")**, which dirties the form and makes a `beforeunload` dialog hang `page.goto`. Scope nav lookups to `navigation "Main"`; sidebar items are buttons, not links.

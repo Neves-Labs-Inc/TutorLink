@@ -153,7 +153,7 @@ export const App = (): ReactNode => (
               </RouteGuard>
             }
           />
-          {/* Office roles: a Manager gets "Settings are for Admins". */}
+          {/* Office roles: a Manager sees only the Subjects group. */}
           <Route
             path="/settings"
             element={

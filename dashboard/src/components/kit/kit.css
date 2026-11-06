@@ -26,6 +26,16 @@
   outline-offset: -2px;
 }
 
+/* Table rows: the first-cell button takes focus, but the ring goes round the
+   whole row, inside it (the table card clips overflow). */
+[data-kit] [data-row-open]:focus-visible {
+  outline: none;
+}
+[data-kit] tr:has(> td > [data-row-open]:focus-visible) {
+  outline: 2px solid var(--tl-focus);
+  outline-offset: -2px;
+}
+
 /* Booking blocks sit in a clipped calendar grid: ring inside the block. */
 [data-kit] [data-booking-block]:focus-visible {
   outline-offset: -2px;

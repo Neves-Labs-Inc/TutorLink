@@ -1,10 +1,11 @@
 // Lists fork A: Office data as a real table, collapsing to tappable
 // rows when the table itself is narrower than 768px (it queries its own
 // width, so a narrow column collapses too). Columns marked `isWideOnly`
-// drop out below 1024px. The whole row opens the record (a stretched
-// button in the first cell), so there is one tab stop per row.
-import type { ReactNode } from "react";
+// drop out below 1024px. The whole row opens the record (the row
+// handles the click; the first cell holds the one focusable button).
+import type { MouseEvent, ReactNode } from "react";
 import { ChevronRight, LoaderCircle } from "lucide-react";
+import { isFromInteractiveDescendant } from "@/lib/isFromInteractiveDescendant";
 import { CARD, cn, EYEBROW } from "@/components/kit/tokens";
 
 export type Column<T> = {
@@ -50,6 +51,21 @@ export function DataTable<T>({
   isRowBusy = () => false,
 }: DataTableProps<T>): ReactNode {
   const [firstColumn, ...otherColumns] = columns;
+
+  // The row owns the click, so the open button's own click (mouse, Enter,
+  // Space) bubbles here and fires once; other controls in a cell keep theirs.
+  const handleRowClick = (event: MouseEvent<HTMLTableRowElement>, row: T) => {
+    const isOpenButton =
+      event.target instanceof Element &&
+      event.target.closest("[data-row-open]") !== null;
+    if (
+      !isOpenButton &&
+      isFromInteractiveDescendant(event.target, event.currentTarget)
+    ) {
+      return;
+    }
+    onOpenRow(row);
+  };
   return (
     <div className="@container">
       <div className={cn(CARD, "hidden overflow-hidden @3xl:block")}>
@@ -80,35 +96,35 @@ export function DataTable<T>({
             {rows.map((row) => (
               <tr
                 key={getRowId(row)}
+                onClick={(event) => handleRowClick(event, row)}
                 className={cn(
-                  "group relative border-b border-(--tl-border) transition-colors duration-150 last:border-b-0 hover:bg-(--tl-tint) active:bg-(--tl-tint-strong)",
+                  "group cursor-pointer border-b border-(--tl-border) transition-colors duration-150 last:border-b-0 hover:bg-(--tl-tint) active:bg-(--tl-tint-strong)",
                   isRowMuted(row) && "text-(--tl-muted)",
                 )}
               >
                 <td className="h-[72px] px-5 py-3 align-middle">
                   <button
                     type="button"
-                    onClick={() => onOpenRow(row)}
+                    data-row-open
                     aria-label={`Open ${getRowTitle(row)}`}
                     aria-busy={isRowBusy(row) || undefined}
-                    className="absolute inset-0 z-0 cursor-pointer rounded-none focus-visible:-outline-offset-2"
-                  />
-                  <div className="relative z-10 pointer-events-none">
+                    className="block w-full cursor-pointer text-left"
+                  >
                     {firstColumn.render(row)}
-                  </div>
+                  </button>
                 </td>
                 {otherColumns.map((column) => (
                   <td
                     key={column.id}
                     className={cn(
-                      "pointer-events-none relative z-10 px-5 py-3 align-middle text-[14px]",
+                      "px-5 py-3 align-middle text-[14px]",
                       column.isWideOnly && "hidden @5xl:table-cell",
                     )}
                   >
                     {column.render(row)}
                   </td>
                 ))}
-                <td className="pointer-events-none relative z-10 pr-3 text-right">
+                <td className="pr-3 text-right">
                   {isRowBusy(row) ? (
                     <LoaderCircle
                       aria-hidden

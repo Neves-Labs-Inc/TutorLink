@@ -92,6 +92,7 @@ _MONTHS = (
     "December",
 )
 _SHORT = 3
+_LAST_DAY_OFFSET = 6  # a week runs Monday to Sunday
 
 _MISSING_LABELS = {
     MISSING_GUARDIAN_NAME: "Guardian name",
@@ -638,9 +639,13 @@ def _reminder_note(reminder: _Reminder | None) -> str:
     if reminder is None:
         return "[Booking reminder sent]"
 
-    week = reminder.week_start
+    first_day = reminder.week_start
+    last_day = first_day + datetime.timedelta(days=_LAST_DAY_OFFSET)
     names = "".join(f"{name}, " for name in reminder.child_names)
-    return f"[Booking reminder sent: {names}week of {_MONTHS[week.month - 1]} {week.day}]"
+    return (
+        f"[Booking reminder sent: {names}for the week of "
+        f"{_short_date(first_day)} to {_short_date(last_day)}]"
+    )
 
 
 def _reminders_by_sid(db: Session, messages: Sequence[Message]) -> dict[str, _Reminder]:

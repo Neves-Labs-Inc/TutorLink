@@ -55,12 +55,22 @@ function describeFailure(error: unknown): string {
   return message;
 }
 
-// Takes the row once loaded; until then nothing can call it.
-export function useStaffArchive(staff: StaffRead | undefined): StaffArchive {
+// Takes the row once loaded; until then nothing can call it. The confirm
+// closes when `openStaffId` (the member the route has open) changes.
+export function useStaffArchive(
+  staff: StaffRead | undefined,
+  openStaffId: string | undefined,
+): StaffArchive {
   const client = useQueryClient();
   const { showToast } = useToast();
   const [isConfirming, setIsConfirming] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [seenStaffId, setSeenStaffId] = useState(openStaffId);
+  if (seenStaffId !== openStaffId) {
+    setSeenStaffId(openStaffId);
+    setIsConfirming(false);
+    setFailure(null);
+  }
   const staffId = staff?.id ?? "";
   const name = staff?.name ?? "";
   const countQuery = staffDirectoryQueries.upcomingBookingCount(

@@ -159,7 +159,7 @@ export default function StaffDetails({
   const details = useStaffDetails(staffId);
   const { staff } = details;
   const isAdminViewer = viewerRole === "admin" || viewerRole === "developer";
-  const acts = useStaffAccountActs(staff);
+  const acts = useStaffAccountActs(staff, staffId);
   const isSettingUp =
     isAdminViewer && staff !== undefined && !staff.archived && staff.role !== "admin";
   const slotCount = useSlotCount(staff?.tutor_id ?? null, isSettingUp);
@@ -240,7 +240,8 @@ export default function StaffDetails({
         actions={accountActs && <StaffHeaderActions can={can} acts={accountActs} />}
       />
     );
-    overlays = accountActs && (
+    // Only while a member is open: `staff` outlives the route while details exit.
+    overlays = accountActs && staffId !== undefined && (
       <StaffAccountOverlays staff={staff} can={can} acts={accountActs} />
     );
     body = (

@@ -34,9 +34,16 @@ export type StaffAccountActs = {
   restore: () => void;
 };
 
-function useSheetState(): SheetState {
+// Closes when the member Staff details is open on changes (or goes away):
+// a sheet belongs to the member it was opened for.
+function useSheetState(openStaffId: string | undefined): SheetState {
   const [isOpen, setIsOpen] = useState(false);
   const [key, setKey] = useState(0);
+  const [seenStaffId, setSeenStaffId] = useState(openStaffId);
+  if (seenStaffId !== openStaffId) {
+    setSeenStaffId(openStaffId);
+    setIsOpen(false);
+  }
   return {
     isOpen,
     key,
@@ -48,16 +55,18 @@ function useSheetState(): SheetState {
   };
 }
 
-// Takes the row once loaded; until then nothing can call it.
+// Takes the row once loaded; until then nothing can call it. `openStaffId` is
+// the member the route has open: `staff` can outlive it while details animate out.
 export function useStaffAccountActs(
   staff: StaffRead | undefined,
+  openStaffId: string | undefined,
 ): StaffAccountActs {
   const client = useQueryClient();
   const { showToast } = useToast();
-  const menu = useSheetState();
-  const edit = useSheetState();
-  const subjects = useSheetState();
-  const archive = useStaffArchive(staff);
+  const menu = useSheetState(openStaffId);
+  const edit = useSheetState(openStaffId);
+  const subjects = useSheetState(openStaffId);
+  const archive = useStaffArchive(staff, openStaffId);
   const onSuccess = () => refreshStaff(client);
   const invite = useMutation({ mutationFn: sendStaffInvite, onSuccess });
   const reset = useMutation({ mutationFn: sendStaffPasswordReset, onSuccess });
